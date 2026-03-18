@@ -1,0 +1,5 @@
+openai>=1.30.0
+streamlit>=1.35.0
+tiktoken>=0.7.0
+pytest>=8.0.0
+cryptography>=43.0.0
