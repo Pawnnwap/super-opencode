@@ -236,7 +236,7 @@ defaults = {
     "opencode_executable": _load_opencode_path(),
     "max_retries": 3,
     "context_threshold": 60,
-    "timeout": 300,
+    "timeout": 5,
     # self-evolution page
     "evo_goal": "",
     "evo_extra_restrictions": "",
@@ -374,11 +374,11 @@ def page_wizard():
                 value=int(st.session_state.context_threshold),
             )
             st.session_state.timeout = st.number_input(
-                "Timeout (s)",
+                "Timeout (min)",
                 key="cfg_timeout",
-                min_value=30,
-                max_value=3600,
-                value=int(st.session_state.timeout),
+                min_value=1,
+                max_value=999,
+                value=min(max(int(st.session_state.timeout) // 60, 1), 999),
             )
     # Auto-save settings to disk whenever the config panel is shown
     _save_settings()
@@ -557,7 +557,7 @@ def page_run():
             f"**Protocol:** `{proto_path}`  \n"
             f"**Supervisor model:** `{st.session_state.supervisor_model}`  \n"
             f"**Max retries:** {st.session_state.max_retries} · "
-            f"**Timeout:** {st.session_state.timeout}s · "
+            f"**Timeout:** {st.session_state.timeout} min · "
             f"**Compaction at:** {st.session_state.context_threshold}%"
         )
     with col2:
@@ -604,7 +604,7 @@ def _start_run():
         opencode_model=st.session_state.opencode_model or None,
         opencode_executable=st.session_state.opencode_executable,
         supervisor_model=st.session_state.supervisor_model,
-        timeout=int(st.session_state.timeout),
+        timeout=int(st.session_state.timeout) * 60,
     )
 
     # Thread-safe shared state — never touch st.session_state from the thread
@@ -1023,7 +1023,7 @@ def _start_evolution(repo_root: Path):
         opencode_model=st.session_state.opencode_model or None,
         opencode_executable=st.session_state.opencode_executable,
         supervisor_model=st.session_state.supervisor_model,
-        timeout=int(st.session_state.timeout),
+        timeout=int(st.session_state.timeout) * 60,
     )
 
     # Thread-safe shared state — never touch st.session_state from the thread
