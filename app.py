@@ -236,7 +236,7 @@ defaults = {
     "opencode_executable": _load_opencode_path(),
     "max_retries": 3,
     "context_threshold": 60,
-    "timeout": 5,
+    "timeout": 120,
     # self-evolution page
     "evo_goal": "",
     "evo_extra_restrictions": "",
@@ -378,7 +378,7 @@ def page_wizard():
                 key="cfg_timeout",
                 min_value=1,
                 max_value=999,
-                value=min(max(int(st.session_state.timeout) // 60, 1), 999),
+                value=min(max(int(st.session_state.timeout), 1), 999),
             )
     # Auto-save settings to disk whenever the config panel is shown
     _save_settings()
