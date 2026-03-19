@@ -187,6 +187,10 @@ class SupervisorLoop:
         import time
         if self._timeout_extension_count >= self._max_timeout_extensions:
             return False
+        activity_state = self.runner.get_activity_state()
+        if activity_state in ("active_progress", "waiting_for_output"):
+            time_since_last_step = time.time() - self._last_step_time
+            return time_since_last_step < (self.config.timeout * 0.8)
         if progress.current_step > 0 and progress.phase.name != "UNKNOWN":
             time_since_last_step = time.time() - self._last_step_time
             return time_since_last_step < (self.config.timeout * 0.8)
@@ -196,10 +200,12 @@ class SupervisorLoop:
         self, progress
     ) -> Generator[Event, None, None]:
         ext_count = self._timeout_extension_count + 1
+        activity_state = self.runner.get_activity_state()
+        wait_msg = " (may be waiting for output)" if activity_state == "waiting_for_output" else ""
         yield _ev(
             "info",
             f"opencode is actively working (step {progress.current_step}, "
-            f"phase: {progress.phase.name.lower()}). "
+            f"phase: {progress.phase.name.lower()}, state: {activity_state}{wait_msg}). "
             f"Timeout extension {ext_count}/{self._max_timeout_extensions} — continuing...",
         )
 

@@ -305,6 +305,28 @@ class OpencodeStepDetector:
         if self._progress_callback:
             self._progress_callback(self._progress)
 
+    def is_progressing(self) -> bool:
+        return (
+            self._progress.current_step > 0
+            and self._progress.phase != StepPhase.UNKNOWN
+        )
+
+    def is_waiting_for_output(self) -> bool:
+        return (
+            self._progress.phase in (StepPhase.CODING, StepPhase.TESTING)
+            and len(self._progress.steps) > 0
+            and self._progress.steps[-1].phase == StepPhase.CODING
+        )
+
+    def get_activity_state(self) -> str:
+        if self._progress.phase == StepPhase.UNKNOWN:
+            return "initializing"
+        if self.is_waiting_for_output():
+            return "waiting_for_output"
+        if self.is_progressing():
+            return "active_progress"
+        return "unknown"
+
     def reset(self) -> None:
         self._progress = StepProgress()
         self._last_phase = StepPhase.UNKNOWN

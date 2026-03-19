@@ -340,8 +340,16 @@ class OpencodeRunner:
         return self._step_detector.progress.phase.name.lower()
 
     def is_active(self) -> bool:
-        progress = self._step_detector.progress
-        return progress.current_step > 0 and progress.phase.name != "UNKNOWN"
+        return self._step_detector.is_progressing()
+
+    def is_progressing(self) -> bool:
+        return self._step_detector.is_progressing()
+
+    def is_waiting_for_output(self) -> bool:
+        return self._step_detector.is_waiting_for_output()
+
+    def get_activity_state(self) -> str:
+        return self._step_detector.get_activity_state()
 
     def get_step_summary(self) -> dict:
         progress = self._step_detector.progress
