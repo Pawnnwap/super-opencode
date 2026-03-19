@@ -13,6 +13,27 @@ debug and evolve its own source code.
 
 ---
 
+## Windows Installation
+
+To install opencode on Windows using Chocolatey:
+
+```bash
+choco install opencode
+```
+
+The executable is installed to `C:\ProgramData\chocolatey\bin\opencode.exe`.
+
+For UI configuration, use the path `C:\ProgramData\chocolatey\bin\opencode.exe`.
+
+---
+
+## Free API Recommendations
+
+- **NVIDIA NIM** — Free tier available for AI model access
+- **IFlow CN** — Free API for AI model access
+
+---
+
 ## Setup
 
 ### 1. Create a Virtual Environment
