@@ -361,3 +361,191 @@ class OpencodeRunner:
             "completed_phases": list(progress.completed_phases),
             "step_count": len(progress.steps),
         }
+
+    def send_cleanup_inquiry(self, candidates: list[str]) -> None:
+        """
+        Send an inquiry to opencode about the identified cleanup candidates.
+        Opencode will evaluate the files and respond with its recommendations.
+        """
+        if not candidates:
+            return
+
+        workspace_rel = self.workspace.relative_to(self.workspace) if self.workspace.is_absolute() else self.workspace
+        inquiry = (
+            f"You are working in workspace: {workspace_rel}\n\n"
+            f"I have identified the following files that may be outdated or unused:\n"
+        )
+        for i, candidate in enumerate(candidates, 1):
+            inquiry += f"  {i}. {candidate}\n"
+
+        inquiry += (
+            "\nPlease analyze these files and respond with a JSON list of file paths "
+            "that should be deleted. Consider:\n"
+            "- Files that are clearly temporary, backup, or cache files\n"
+            "- Files that are not referenced by other code\n"
+            "- Files that appear to be duplicate or superseded versions\n"
+            "- Any __pycache__ directories\n\n"
+            "Respond ONLY with a JSON array of file paths to delete, nothing else. "
+            "Example: [\"file1.bak\", \"file2.tmp\"]"
+        )
+
+        logger.info("Sending cleanup inquiry to opencode for %d candidates", len(candidates))
+        self.send(inquiry)
+
+    def identify_cleanup_candidates(self) -> list[str]:
+        """
+        Identify files that might be outdated or unused, then send an inquiry to
+        opencode for its recommendation on what should be deleted.
+        Returns opencode's response parsed as a list of file paths.
+        """
+        import re
+
+        candidates: list[str] = []
+        workspace = self.workspace
+
+        _VERSION_PATTERNS = [
+            re.compile(r"\.bak$"),
+            re.compile(r"\.backup$"),
+            re.compile(r"\.old$"),
+            re.compile(r"\.orig$"),
+            re.compile(r"\.tmp$"),
+            re.compile(r"~\d+$"),
+            re.compile(r"\.v\d+$"),
+            re.compile(r"_backup_\d+$"),
+            re.compile(r"_old_\d+$"),
+            re.compile(r"\.\d+$"),
+        ]
+
+        _SOURCE_EXTS = {
+            ".py", ".pyc", ".pyo", ".pyd",
+            ".md", ".txt", ".rst",
+            ".json", ".yaml", ".yml", ".toml", ".cfg", ".ini",
+            ".js", ".ts", ".jsx", ".tsx",
+            ".css", ".scss", ".html", ".xml",
+            ".sh", ".bat", ".ps1",
+        }
+
+        def should_ignore(path: Path) -> bool:
+            if not path.is_file():
+                if not (path.is_dir() and path.name == "__pycache__"):
+                    return True
+            rel = path.relative_to(workspace)
+            if ".checkpoints" in rel.parts:
+                return True
+            if path == workspace / ".checkpoints":
+                return True
+            ignore_dirs = {".git", ".venv", "venv", "node_modules", ".mypy_cache", ".opencode"}
+            if any(part in ignore_dirs for part in rel.parts):
+                return True
+            return False
+
+        def is_versioned_backup(name: str) -> bool:
+            for pattern in _VERSION_PATTERNS:
+                if pattern.search(name):
+                    return True
+            return False
+
+        def get_base_name(path: Path) -> str:
+            name = path.name
+            base = name
+            changed = True
+            while changed:
+                changed = False
+                for pattern in _VERSION_PATTERNS:
+                    new_base = pattern.sub('', base)
+                    if new_base != base:
+                        base = new_base
+                        changed = True
+                        break
+            return base
+
+        candidates.extend(self._identify_versioned_backups(workspace, should_ignore, is_versioned_backup, get_base_name))
+        candidates.extend(self._identify_orphaned_files(workspace, should_ignore, _SOURCE_EXTS))
+
+        if candidates:
+            self.send_cleanup_inquiry(candidates)
+
+        return candidates
+
+    def _identify_versioned_backups(
+        self,
+        workspace: Path,
+        should_ignore,
+        is_versioned_backup,
+        get_base_name,
+    ) -> list[str]:
+        candidates: list[str] = []
+        backup_groups: dict[str, list[Path]] = {}
+        all_files: dict[str, Path] = {}
+
+        for path in workspace.rglob("*"):
+            if should_ignore(path):
+                continue
+            all_files[path.name] = path
+            if is_versioned_backup(path.name):
+                base = get_base_name(path)
+                if base not in backup_groups:
+                    backup_groups[base] = []
+                backup_groups[base].append(path)
+
+        for base_name, backups in backup_groups.items():
+            if base_name in all_files:
+                backups.append(all_files[base_name])
+            backups_sorted = sorted(backups, key=lambda p: len(p.name))
+            for backup in backups_sorted[1:]:
+                candidates.append(str(backup.relative_to(workspace)))
+
+        return candidates
+
+    def _identify_orphaned_files(
+        self,
+        workspace: Path,
+        should_ignore,
+        source_exts: set,
+    ) -> list[str]:
+        candidates: list[str] = []
+        import re
+        import_patterns = [
+            (re.compile(r'^(?:from|import)\s+([\w.]+)', re.MULTILINE), 'py'),
+            (re.compile(r'require\s*\(\s*["\']([^"\']+)["\']\s*\)', re.MULTILINE), 'js'),
+            (re.compile(r'import\s+.*?from\s+["\']([^"\']+)["\']', re.MULTILINE), 'js'),
+            (re.compile(r'#include\s*["<]([^">]+)[">]', re.MULTILINE), 'c'),
+        ]
+
+        referenced_paths: set[str] = set()
+        for path in workspace.rglob("*"):
+            if should_ignore(path):
+                continue
+            if not path.suffix in source_exts and not path.name.endswith('.h'):
+                continue
+            try:
+                content = path.read_text(encoding="utf-8", errors="ignore")
+                for pattern, ptype in import_patterns:
+                    for match in pattern.finditer(content):
+                        ref = match.group(1)
+                        if ptype == 'py':
+                            ref = ref.replace('.', '/')
+                            if not ref.endswith('.py'):
+                                ref += '.py'
+                        referenced_paths.add(ref)
+            except Exception:
+                pass
+
+        for path in workspace.rglob("*"):
+            if should_ignore(path):
+                continue
+            rel_str = str(path.relative_to(workspace))
+            path_name = path.name
+            
+            is_pycache_dir = path.is_dir() and path.name == "__pycache__"
+            if is_pycache_dir:
+                candidates.append(rel_str)
+                continue
+
+            is_cache_file = path.suffix in {".pyc", ".pyo", ".pyc.tmp"} or path.name.endswith('.pyc')
+            if is_cache_file:
+                candidates.append(rel_str)
+                continue
+
+        return candidates
+

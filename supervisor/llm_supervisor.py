@@ -115,6 +115,44 @@ class LLMSupervisor:
         )
         return self._chat(msg)
 
+    def ask_for_deletion_permission(
+        self, candidates: list[str], workspace: Path
+    ) -> SupervisorVerdict:
+        if not candidates:
+            msg = (
+                "The opencode agent's context window is nearly full. "
+                "Generate instructions for it to:\n"
+                "1. Keep only the latest version of every file.\n"
+                "2. Retain any foundational/fallback code it may reference.\n"
+                "3. Write summary.md to the workspace with: current status, "
+                "key decisions, remaining tasks and future directions.\n"
+                "Output ONLY the instruction text to send to opencode."
+            )
+            return self._chat(msg)
+
+        file_list = "\n".join(f"  - {f}" for f in candidates)
+        msg = (
+            "The opencode agent's context window is nearly full. "
+            "Before compacting the context, you MUST address the following cleanup:\n\n"
+            "## DELETION PERMISSION\n\n"
+            "The supervisor has identified the following files as outdated, unused, or safe to delete:\n\n"
+            f"{file_list}\n\n"
+            "You are granted permission to DELETE these files ONLY if:\n"
+            "1. The file is confirmed outdated (e.g., backup files, old versions, temp files)\n"
+            "2. The file is unused by any current code\n"
+            "3. The file is not a core module or essential configuration\n\n"
+            "Generate instructions for the agent to:\n"
+            "1. Review the file list above and DELETE only the confirmed outdated/unused files\n"
+            "2. Keep all core modules and essential files\n"
+            "3. Keep only the latest version of every file\n"
+            "4. Retain any foundational/fallback code it may reference\n"
+            "5. Write summary.md to the workspace with: current status, "
+            "key decisions, remaining tasks and future directions\n\n"
+            "Output ONLY the instruction text to send to opencode, "
+            "including explicit permission to delete the listed files."
+        )
+        return self._chat(msg)
+
     def report_final_status(
         self, reason: str, opencode_output: str, workspace: Path
     ) -> str:
@@ -125,6 +163,43 @@ class LLMSupervisor:
             "2. Last known bug / blocker.\n"
             "3. Remaining undone tasks.\n\n"
             f"Latest opencode output:\n{opencode_output}"
+        )
+        return self._chat(msg).raw
+
+    def generate_suggestions(
+        self,
+        opencode_output: str,
+        current_summary: str = "",
+        step_context: StepContext | None = None,
+    ) -> str:
+        context_info = ""
+        if step_context:
+            phases_str = ", ".join(step_context.completed_phases) if step_context.completed_phases else "none"
+            context_info = (
+                f"Current step: {step_context.current_step}/{step_context.total_steps_estimate}\n"
+                f"Current phase: {step_context.phase}\n"
+                f"Completed phases: {phases_str}\n\n"
+            )
+
+        summary_context = (
+            f"\n\nCurrent implementation summary:\n{current_summary}"
+            if current_summary
+            else ""
+        )
+
+        msg = (
+            "Based on the opencode output below and the current implementation status,\n"
+            "generate actionable suggestions for improving the code or approach.\n"
+            "Focus on:\n"
+            "1. Code quality improvements\n"
+            "2. Potential bugs or edge cases\n"
+            "3. Performance optimizations\n"
+            "4. Better patterns or practices\n"
+            "5. Missing tests or error handling\n\n"
+            f"--- Step Context ---\n{context_info}"
+            f"--- opencode output ---\n{opencode_output}\n--- end ---{summary_context}\n\n"
+            "Output ONLY the suggestions in a clear, actionable format. "
+            "If no suggestions are needed, output 'No suggestions at this time.'"
         )
         return self._chat(msg).raw
 

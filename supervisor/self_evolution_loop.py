@@ -257,17 +257,28 @@ class SelfEvolutionLoop:
         yield _ev("opencode_prompt", safe_msg)
         self.runner.send(safe_msg)
 
+        suggestions = self.supervisor.generate_suggestions(
+            opencode_output=augmented,
+        )
+        if suggestions and "no suggestions" not in suggestions.lower():
+            yield _ev("supervisor_suggestions", suggestions)
+
     def _do_compaction(self) -> Generator[Event, None, None]:
         yield _ev(
             "warn", f"Context at {self.ctx_monitor.fraction * 100:.0f}% — compacting."
         )
-        verdict = self.supervisor.ask_for_compaction_instructions()
-        yield _ev("supervisor_response", verdict.raw)
-        msg, _ = self.guard.sanitize_message(verdict.feedback)
+        candidates = self.runner.identify_cleanup_candidates()
+        if candidates:
+            yield _ev("info", f"Identified {len(candidates)} files for potential cleanup.")
+        deletion_permission = self.supervisor.ask_for_deletion_permission(
+            candidates, self.config.workspace
+        )
+        yield _ev("supervisor_response", deletion_permission.raw)
+        msg, _ = self.guard.sanitize_message(deletion_permission.feedback)
         yield _ev("opencode_prompt", msg)
         self.runner.send(msg)
         self.ctx_monitor.reset()
-        yield _ev("info", "Compaction prompt sent.")
+        yield _ev("info", "Compaction prompt with deletion permissions sent.")
 
     def _handle_failure(self, last_output: str) -> Generator[Event, None, None]:
         self._failures += 1
