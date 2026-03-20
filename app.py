@@ -533,9 +533,29 @@ def page_run():
     st.markdown("# Live Run")
 
     # Pre-flight check
-    ready = bool(st.session_state.protocol_md and st.session_state.workspace)
-    if not ready:
-        st.warning("Complete the Protocol Wizard first.")
+    workspace = Path(st.session_state.workspace) if st.session_state.workspace else None
+    if not workspace:
+        st.warning("Please set a workspace path in the Protocol Wizard configuration.")
+        return
+
+    if not workspace.exists():
+        st.error(f"Workspace directory does not exist: {workspace}")
+        return
+
+    proto_path = workspace / "protocol.md"
+    if not proto_path.exists():
+        st.error(f"**protocol.md not found** in workspace: `{workspace}`")
+        st.info("Please complete the Protocol Wizard to generate a protocol.md file, or manually create one in your workspace.")
+        return
+
+    # Validate protocol.md content
+    try:
+        proto_content = proto_path.read_text(encoding="utf-8")
+        if not proto_content.strip():
+            st.error("protocol.md exists but is empty. Please regenerate it via the Protocol Wizard.")
+            return
+    except Exception as e:
+        st.error(f"Error reading protocol.md: {e}")
         return
 
     # Sync thread-safe shared dict → session_state BEFORE rendering buttons
@@ -545,9 +565,6 @@ def page_run():
         if sh["state"] != "running":
             st.session_state.run_state = sh["state"]
             st.session_state.final_report = sh["report"]
-
-    workspace = Path(st.session_state.workspace)
-    proto_path = workspace / "protocol.md"
 
     col1, col2 = st.columns([2, 1])
     with col1:
