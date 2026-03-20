@@ -29,8 +29,8 @@ For UI configuration, use the path `C:\ProgramData\chocolatey\bin\opencode.exe`.
 
 ## Free API Recommendations
 
-- **NVIDIA NIM** — Free tier available for AI model access
-- **IFlow CN** — Free API for AI model access
+- **[NVIDIA NIM](https://build.nvidia.com/models)** — Free tier available for AI model access
+- **[IFlow CN](https://platform.iflow.cn/models)** — Free API for AI model access
 
 ---
 
