@@ -300,18 +300,28 @@ class SelfEvolutionLoop:
 
     def _handle_failure(self, last_output: str) -> Generator[Event, None, None]:
         self._failures += 1
+        retries_remaining = max(0, self.config.max_retries - self._failures)
+        
         yield _ev(
             "warn",
-            f"Empty/timeout (failure {self._failures}/{self.config.max_retries}).",
+            f"Empty/timeout (failure {self._failures}/{self.config.max_retries}, "
+            f"{retries_remaining} {'retry' if retries_remaining == 1 else 'retries'} remaining).",
         )
         yield from self._forced_summary(last_output)
 
         if self._failures >= self.config.max_retries:
-            yield _ev("error", "Max retries exceeded.")
+            yield _ev(
+                "error",
+                f"All {self.config.max_retries} {'retry' if self.config.max_retries == 1 else 'retries'} exhausted. "
+                f"Self-evolution terminated after {self._failures} failures."
+            )
             self._state = EvoState.ENDED_FAILURE
             return
 
-        yield _ev("info", "Retrying…")
+        yield _ev(
+            "info",
+            f"Retrying… (attempt {self._failures}/{self.config.max_retries})"
+        )
         self.runner.start(self._restart_prompt())
 
     def _forced_summary(self, last_output: str) -> Generator[Event, None, None]:

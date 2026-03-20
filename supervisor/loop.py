@@ -300,9 +300,12 @@ class SupervisorLoop:
 
     def _handle_failure(self, last_output: str) -> Generator[Event, None, None]:
         self._failures += 1
+        retries_remaining = max(0, self.config.max_retries - self._failures)
+        
         yield _ev(
             "warn",
-            f"opencode returned empty/timeout (failure {self._failures}/{self.config.max_retries}).",
+            f"opencode returned empty/timeout (failure {self._failures}/{self.config.max_retries}, "
+            f"{retries_remaining} {'retry' if retries_remaining == 1 else 'retries'} remaining).",
         )
         yield from self._forced_summary(last_output)
 
@@ -313,11 +316,18 @@ class SupervisorLoop:
                 workspace=self.config.workspace,
             )
             self._write(report, "failure_report.md")
-            yield _ev("error", "Max retries exceeded.\n\n" + report)
+            yield _ev(
+                "error",
+                f"All {self.config.max_retries} {'retry' if self.config.max_retries == 1 else 'retries'} exhausted. "
+                f"Run terminated after {self._failures} failures.\n\n{report}"
+            )
             self._state = LoopState.ENDED_FAILURE
             return
 
-        yield _ev("info", "Retrying with restart prompt…")
+        yield _ev(
+            "info",
+            f"Retrying with restart prompt… (attempt {self._failures}/{self.config.max_retries})"
+        )
         self.runner.start(self._restart_prompt())
 
     def _forced_summary(self, last_output: str) -> Generator[Event, None, None]:
