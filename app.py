@@ -414,9 +414,9 @@ def page_wizard():
 
     st.markdown('<div class="card">', unsafe_allow_html=True)
     st.markdown("**INPUT** — what already exists / what the agent starts with")
-    st.session_state.raw_input = st.text_area(
+    st.text_area(
         "input_area",
-        value=st.session_state.raw_input,
+        key="raw_input",
         height=120,
         placeholder="e.g. A Python repo is at ./src. The main entry point is main.py.",
         label_visibility="collapsed",
@@ -425,9 +425,9 @@ def page_wizard():
 
     st.markdown('<div class="card">', unsafe_allow_html=True)
     st.markdown("**TARGET** — concrete, testable deliverables")
-    st.session_state.raw_target = st.text_area(
+    st.text_area(
         "target_area",
-        value=st.session_state.raw_target,
+        key="raw_target",
         height=140,
         placeholder=(
             "e.g.\n"
@@ -441,9 +441,9 @@ def page_wizard():
 
     st.markdown('<div class="card">', unsafe_allow_html=True)
     st.markdown("**RESTRICTIONS** — hard rules the agent must not break")
-    st.session_state.raw_restrictions = st.text_area(
+    st.text_area(
         "restrictions_area",
-        value=st.session_state.raw_restrictions,
+        key="raw_restrictions",
         height=100,
         placeholder=(
             "e.g.\n"
@@ -500,11 +500,10 @@ def page_wizard():
 
         edited = st.text_area(
             "proto_edit",
-            value=st.session_state.protocol_md,
+            key="protocol_md",
             height=300,
             label_visibility="collapsed",
         )
-        st.session_state.protocol_md = edited
 
         col_a, col_b, _ = st.columns([1, 1, 3])
         with col_a:
@@ -868,9 +867,9 @@ def page_evolve():
         st.markdown(
             "**Evolution goal** — describe the improvement, bug to fix, or feature to add"
         )
-        st.session_state.evo_goal = st.text_area(
+        st.text_area(
             "evo_goal_input",
-            value=st.session_state.evo_goal,
+            key="evo_goal",
             height=130,
             placeholder=(
                 "e.g.\n"
@@ -887,9 +886,9 @@ def page_evolve():
         st.markdown(
             "**Extra restrictions** *(optional)* — anything the agent must not touch"
         )
-        st.session_state.evo_extra_restrictions = st.text_area(
+        st.text_area(
             "evo_restrictions_input",
-            value=st.session_state.evo_extra_restrictions,
+            key="evo_extra_restrictions",
             height=80,
             placeholder="e.g. Do not change the Streamlit UI layout. Do not add new dependencies.",
             label_visibility="collapsed",
@@ -943,11 +942,10 @@ def page_evolve():
 
         edited = st.text_area(
             "evo_proto_edit",
-            value=st.session_state.evo_meta_protocol_md,
+            key="evo_meta_protocol_md",
             height=340,
             label_visibility="collapsed",
         )
-        st.session_state.evo_meta_protocol_md = edited
 
         col_a, col_b, col_c, _ = st.columns([1, 1, 1, 2])
         with col_a:
