@@ -209,6 +209,6 @@ __marimo__/
 # Opencode
 .opencode
 .checkpoints
-
+tests
 # Markdown
 *.md

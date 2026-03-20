@@ -24,6 +24,7 @@ from .opencode_runner import OpencodeRunner
 from .opencode_step_detector import OpencodeStepDetector, Step, StepProgress
 from .protocol import load_protocol
 from .workspace_guard import WorkspaceGuard
+from .workspace_archiver import WorkspaceArchiver
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +54,7 @@ class SupervisorLoop:
         )
         self.ctx_monitor = ContextMonitor(config.context_threshold)
         self.guard = WorkspaceGuard(config.workspace)
+        self.archiver = WorkspaceArchiver(config.workspace)
         self._step_detector = OpencodeStepDetector()
         self._step_detector_initialized = False
 
@@ -94,6 +96,13 @@ class SupervisorLoop:
 
     def _run(self) -> Generator[Event, None, None]:
         import time
+
+        yield _ev("info", "Archiving previous workspace state...")
+        archive_result = self.archiver.archive_before_new_run()
+        if archive_result.success:
+            yield _ev("info", f"Archived {len(archive_result.archived_files)} files to {archive_result.archive_path}")
+        else:
+            yield _ev("warn", f"Archive warning: {archive_result.message}")
 
         yield _ev("info", "Running initial prompt with opencode…")
 
@@ -332,6 +341,8 @@ class SupervisorLoop:
             "All files you create or modify MUST be inside this directory.\n"
             "Use relative paths from this directory for all file operations.\n"
             "A .opencode/ folder has been created there to mark this as your project root.\n"
+            "IMPORTANT: Never touch .checkpoints/ — that is reserved for the supervisor.\n"
+            "The .archive/ directory preserves historical versions — do not modify it.\n"
             "Begin."
         )
 

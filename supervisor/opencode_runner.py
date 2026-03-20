@@ -25,6 +25,7 @@ from .opencode_step_detector import (
     PhaseTransition,
     StepProgress,
 )
+from .workspace_archiver import WorkspaceArchiver, ArchiveResult
 
 logger = logging.getLogger(__name__)
 
@@ -162,6 +163,7 @@ class OpencodeRunner:
         self._last_result: Optional[RunResult] = None
         self._chars_exchanged: int = 0
         self._alive: bool = False
+        self._archiver = WorkspaceArchiver(workspace)
 
         if step_detector is not None:
             self._step_detector = step_detector
@@ -366,6 +368,7 @@ class OpencodeRunner:
         """
         Send an inquiry to opencode about the identified cleanup candidates.
         Opencode will evaluate the files and respond with its recommendations.
+        Files will be archived instead of deleted to preserve history.
         """
         if not candidates:
             return
@@ -380,12 +383,16 @@ class OpencodeRunner:
 
         inquiry += (
             "\nPlease analyze these files and respond with a JSON list of file paths "
-            "that should be deleted. Consider:\n"
+            "that should be archived. These files will be moved to .archive/ "
+            "instead of being deleted, preserving historical versions.\n"
+            "Consider:\n"
             "- Files that are clearly temporary, backup, or cache files\n"
             "- Files that are not referenced by other code\n"
             "- Files that appear to be duplicate or superseded versions\n"
             "- Any __pycache__ directories\n\n"
-            "Respond ONLY with a JSON array of file paths to delete, nothing else. "
+            "IMPORTANT: Never select protected paths (.opencode/, .checkpoints/, .archive/) "
+            "for archiving.\n\n"
+            "Respond ONLY with a JSON array of file paths to archive, nothing else. "
             "Example: [\"file1.bak\", \"file2.tmp\"]"
         )
 
@@ -548,4 +555,30 @@ class OpencodeRunner:
                 continue
 
         return candidates
+
+    def archive_files(self, files: list[str]) -> ArchiveResult:
+        """
+        Archive specified files instead of deleting them.
+        This preserves historical versions while cleaning up the workspace.
+        """
+        return self._archiver.archive_workspace(label="cleanup", files_to_archive=files)
+
+    def archive_before_new_run(self) -> ArchiveResult:
+        """
+        Archive the current workspace state before starting a new run.
+        Called at the beginning of a supervisor loop execution.
+        """
+        return self._archiver.archive_before_new_run()
+
+    def get_archiver(self) -> WorkspaceArchiver:
+        """Return the workspace archiver instance."""
+        return self._archiver
+
+    def list_archives(self) -> list[dict]:
+        """List all available archives."""
+        return self._archiver.list_archives()
+
+    def get_archive_stats(self) -> dict:
+        """Get archive statistics."""
+        return self._archiver.get_archive_stats()
 

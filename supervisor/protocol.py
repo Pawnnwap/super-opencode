@@ -11,6 +11,10 @@ _HEADING_RE = re.compile(
     r"^#{1,3}\s+(INPUT|TARGET|RESTRICTIONS)\s*$", re.IGNORECASE | re.MULTILINE
 )
 
+PROTECTED_PATHS_RESTRICTION = "- Do not delete or modify the .opencode directory or its contents\n- Do not delete or rename the .checkpoints directory\n- Do not delete or rename the archive directory"
+
+_OPENCODE_RESTRICTION = "- Do not delete or modify the .opencode directory or its contents"
+
 
 @dataclass
 class Protocol:
@@ -45,6 +49,13 @@ class Protocol:
             f"{self.target_section}\n\n"
             "## RESTRICTIONS\n\n"
             f"{self.restrictions_section}\n"
+        )
+
+    def get_full_restrictions(self) -> str:
+        return (
+            f"{self.restrictions_section}\n\n"
+            "## SYSTEM PROTECTIONS\n\n"
+            f"{PROTECTED_PATHS_RESTRICTION}\n"
         )
 
 

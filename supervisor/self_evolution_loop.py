@@ -4,6 +4,7 @@ supervisor/self_evolution_loop.py
 Self-evolution loop using the CLI-based opencode runner.
 Each turn: opencode -p "<prompt>" runs, exits, output is captured.
 Tests run after each turn; regressions trigger rollback.
+Versions are archived in the .archive/ directory.
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ from .opencode_runner import OpencodeRunner
 from .opencode_step_detector import OpencodeStepDetector
 from .protocol import load_protocol
 from .test_runner import RunTestResult, OcTestRunner
+from .workspace_archiver import WorkspaceArchiver, ArchiveResult
 from .workspace_guard import WorkspaceGuard
 
 logger = logging.getLogger(__name__)
@@ -55,6 +57,7 @@ class SelfEvolutionLoop:
         self.guard = WorkspaceGuard(config.workspace)
         self.checkpoints = CheckpointManager(config.workspace)
         self.test_runner = OcTestRunner(config.workspace)
+        self.archiver = WorkspaceArchiver(config.workspace)
         self._step_detector = OpencodeStepDetector()
 
         self._failures = 0
@@ -69,6 +72,8 @@ class SelfEvolutionLoop:
         self._active_progress_steps: int = 0
         self._timeout_extension_count: int = 0
         self._max_timeout_extensions: int = 3
+        self._current_archive_result: ArchiveResult | None = None
+        self._evolution_logs: list[str] = []
 
     # ------------------------------------------------------------------ #
 
@@ -103,6 +108,12 @@ class SelfEvolutionLoop:
         pre_cp = self.checkpoints.save("pre-evolution baseline")
         self._best_cp = pre_cp
         yield _ev("info", f"Checkpoint saved: {pre_cp}")
+
+        yield _ev("info", "📦  Creating initial archive…")
+        self._current_archive_result = self.archiver.archive_workspace(
+            label="pre-evolution",
+        )
+        yield _ev("info", f"Archive created: {self._current_archive_result.archive_path}")
 
         yield _ev("info", "🚀  Starting opencode for self-evolution…")
         init_prompt = self._init_prompt()
@@ -242,6 +253,13 @@ class SelfEvolutionLoop:
         self._best_cp = cp
         yield _ev("success", f"💾  Checkpoint: {cp} (step {progress.current_step})")
 
+        archive_label = f"iter-{self._iteration}-step-{progress.current_step}"
+        archive_result = self.archiver.archive_workspace(
+            label=archive_label,
+        )
+        self._current_archive_result = archive_result
+        yield _ev("success", f"📦  Archive saved: {archive_result.archive_path}")
+
         test_info = f"Step {progress.current_step}/{progress.total_steps_estimate} | Phase: {progress.phase.name.lower()} | Tests: {result.summary()}"
         augmented = f"{output}\n\n--- evolution progress ---\n{test_info}\n\n--- test output ---\n{result.output[-400:]}"
         verdict = self.supervisor.judge(augmented)
@@ -356,6 +374,17 @@ class SelfEvolutionLoop:
         if self._best_cp:
             lines.append(f"\n**Best checkpoint:** {self._best_cp}")
 
+        yield _ev("info", "📦  Creating final archive…")
+        final_archive_result = self.archiver.archive_workspace(
+            label=f"final-{self._iteration}-iterations",
+        )
+        yield _ev("info", f"Final archive created: {final_archive_result.archive_path}")
+
+        all_archives = self.archiver.list_archives()
+        lines.append(f"\n**Archives saved:** {len(all_archives)}")
+        for arch in all_archives[-5:]:
+            lines.append(f"  - {arch.get('name', arch)}")
+
         yield _ev("info", "Asking supervisor for narrative…")
         narrative = self.supervisor.report_final_status(
             reason="self-evolution completed" if success else "self-evolution failed",
@@ -392,6 +421,9 @@ class SelfEvolutionLoop:
             "All files you create or modify MUST be inside this directory.\n"
             "Use relative paths from this directory for all file operations.\n"
             "Never touch .checkpoints/ — that is reserved for the supervisor.\n"
+            "All versions are automatically archived in the .archive/ directory.\n"
+            "Do NOT delete or manually manage version files — the archive system handles this.\n"
+            "Do NOT delete or modify the .opencode directory or its contents.\n"
             "Run tests after every logical change. Begin."
         )
 
@@ -408,6 +440,7 @@ class SelfEvolutionLoop:
             f"PROTOCOL:\n{text}\n\n"
             f"LAST SUMMARY:\n{summary}\n\n"
             f"Working directory: {self.config.workspace.resolve()}\n"
+            "All versions are automatically archived in .archive/. Do NOT delete version files manually.\n"
             "Continue from the summary."
         )
 
