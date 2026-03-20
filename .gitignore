@@ -211,5 +211,9 @@ __marimo__/
 .checkpoints
 .archive
 tests
+
 # Markdown
 *.md
+
+# Batch file
+*.bat
