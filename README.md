@@ -1,5 +1,9 @@
 # opencode-supervisor
 
+---
+
+[English](./README.md) | [中文](./README_zh.md)
+
 Streamlit UI + modular Python backend that runs an `opencode` agent in a
 supervised feedback loop — and can turn that same loop on **itself** to
 debug and evolve its own source code.
@@ -8,6 +12,7 @@ debug and evolve its own source code.
 
 ## Prerequisites
 
+- Opencode
 - Python 3.11 or higher
 - An API key for OpenAI or any compatible provider (e.g., Ollama)
 
@@ -31,6 +36,17 @@ For UI configuration, use the path `C:\ProgramData\chocolatey\bin\opencode.exe`.
 
 - **[NVIDIA NIM](https://build.nvidia.com/models)** — Free tier available for AI model access
 - **[IFlow CN](https://platform.iflow.cn/models)** — Free API for AI model access
+
+---
+
+## Recommended Models
+
+### Supervisor Model
+- With Nvidia nim: **nvidia/nemotron-3-super-120b-a12b** or **qwen/qwen3.5-397b-a17b**
+- With iflow: **qwen3-coder-plus**
+
+### opencode Model
+- **opencode/big-pickle**
 
 ---
 
@@ -66,6 +82,12 @@ pip install -e . --force-reinstall
 
 ```bash
 streamlit run app.py
+```
+
+If the above command does not work, try:
+
+```bash
+python -m streamlit run app.py
 ```
 
 The app will open in your browser at `http://localhost:8501`.
@@ -156,3 +178,12 @@ pyproject.toml                  Makes `supervisor` an installable package
 | Max retries | 3 | Consecutive failures before forced stop |
 | Context threshold | 60 % | Compaction fires at this fraction of estimated max |
 | Timeout | 300 s | Silence before opencode is deemed unresponsive |
+
+---
+
+## TODO
+
+- [ ] Get rid of `pip install -e . --force-reinstall` so that every self evolution will be auto applied
+- [ ] Add multi agent cooperation/competition
+- [ ] Better timeout handling and process tracking
+

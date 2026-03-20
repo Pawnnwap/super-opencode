@@ -213,7 +213,8 @@ __marimo__/
 tests
 
 # Markdown
-*.md
+*protocol.md
+*report.md
 
 # Batch file
 *.bat
