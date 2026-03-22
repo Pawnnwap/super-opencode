@@ -53,7 +53,7 @@ class SupervisorLoop:
             config.timeout,
         )
         self.ctx_monitor = ContextMonitor(config.context_threshold)
-        self.guard = WorkspaceGuard(config.workspace)
+        self.guard = WorkspaceGuard(config.workspace, config.protected_files)
         self.archiver = WorkspaceArchiver(config.workspace)
         self._step_detector = OpencodeStepDetector()
         self._step_detector_initialized = False
@@ -345,6 +345,7 @@ class SupervisorLoop:
     def _init_prompt(self) -> str:
         text = self.config.protocol_path.read_text(encoding="utf-8")
         ws = self.config.workspace.resolve()
+        protected_files_desc = self.guard.get_all_protected_files_description()
         return (
             f"Here is your protocol:\n\n{text}\n\n"
             f"Your project root (cwd) is: {ws}\n"
@@ -353,6 +354,7 @@ class SupervisorLoop:
             "A .opencode/ folder has been created there to mark this as your project root.\n"
             "IMPORTANT: Never touch .checkpoints/ — that is reserved for the supervisor.\n"
             "The .archive/ directory preserves historical versions — do not modify it.\n"
+            f"{protected_files_desc}"
             "Begin."
         )
 

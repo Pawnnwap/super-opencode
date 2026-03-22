@@ -54,7 +54,7 @@ class SelfEvolutionLoop:
             config.timeout,
         )
         self.ctx_monitor = ContextMonitor(config.context_threshold)
-        self.guard = WorkspaceGuard(config.workspace)
+        self.guard = WorkspaceGuard(config.workspace, config.protected_files)
         self.checkpoints = CheckpointManager(config.workspace)
         self.test_runner = OcTestRunner(config.workspace)
         self.archiver = WorkspaceArchiver(config.workspace)
@@ -423,6 +423,7 @@ class SelfEvolutionLoop:
             else ""
         )
         ws = self.config.workspace.resolve()
+        protected_files_desc = self.guard.get_all_protected_files_description()
         return (
             "You are modifying the codebase you live in. Read the protocol carefully.\n\n"
             f"PROTOCOL:\n{text}\n"
@@ -434,6 +435,7 @@ class SelfEvolutionLoop:
             "All versions are automatically archived in the .archive/ directory.\n"
             "Do NOT delete or manually manage version files — the archive system handles this.\n"
             "Do NOT delete or modify the .opencode directory or its contents.\n"
+            f"{protected_files_desc}"
             "Run tests after every logical change. Begin."
         )
 

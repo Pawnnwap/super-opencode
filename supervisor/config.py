@@ -11,7 +11,8 @@ class SupervisorConfig:
     max_retries: int = 3
     context_threshold: float = 0.60
     opencode_model: str | None = None
-    opencode_executable: str = ""   # explicit path/command; auto-detected if blank
+    opencode_executable: str = ""
     supervisor_model: str = "gpt-4o"
     timeout: int = 300
     log_level: str = "INFO"
+    protected_files: tuple[str, ...] = ()

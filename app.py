@@ -183,6 +183,7 @@ _PERSIST_KEYS = [
     "raw_restrictions",
     "evo_goal",
     "evo_extra_restrictions",
+    "protected_files",
 ]
 
 
@@ -237,6 +238,7 @@ defaults = {
     "max_retries": 3,
     "context_threshold": 60,
     "timeout": 120,
+    "protected_files": [],
     # self-evolution page
     "evo_goal": "",
     "evo_extra_restrictions": "",
@@ -384,6 +386,42 @@ def page_wizard():
                 max_value=999,
                 value=min(max(int(st.session_state.timeout), 1), 999),
             )
+        with st.expander("🛡️  Protected Files", expanded=False):
+            st.caption("Files that opencode cannot modify or delete")
+            protected = st.session_state.get("protected_files", [])
+            if not isinstance(protected, list):
+                protected = []
+            
+            display_text = "\n".join(protected) if protected else ""
+            edited = st.text_area(
+                "protected_files_edit",
+                key="protected_files_input",
+                value=display_text,
+                height=100,
+                placeholder="e.g.\nconfig.json\nrequirements.txt\nREADME.md",
+                label_visibility="collapsed",
+            )
+            if edited != display_text:
+                new_protected = [
+                    line.strip() 
+                    for line in edited.split("\n") 
+                    if line.strip()
+                ]
+                st.session_state.protected_files = new_protected
+            
+            if protected:
+                st.success(f"{len(protected)} file(s) protected")
+                for pf in protected:
+                    col1, col2 = st.columns([4, 1])
+                    with col1:
+                        st.code(pf, language=None)
+                    with col2:
+                        if st.button("✕", key=f"remove_pf_{pf}"):
+                            st.session_state.protected_files = [
+                                x for x in protected if x != pf
+                            ]
+                            st.rerun()
+    
     # Auto-save settings to disk whenever the config panel is shown
     _save_settings()
 
@@ -630,6 +668,7 @@ def _start_run():
         opencode_executable=st.session_state.opencode_executable,
         supervisor_model=st.session_state.supervisor_model,
         timeout=int(st.session_state.timeout) * 60,
+        protected_files=tuple(st.session_state.get("protected_files", [])),
     )
 
     shared = {"events": [], "state": "running", "report": "", "heartbeat": 0, "last_event_time": time.time()}
@@ -1083,6 +1122,7 @@ def _start_evolution(repo_root: Path):
         opencode_executable=st.session_state.opencode_executable,
         supervisor_model=st.session_state.supervisor_model,
         timeout=int(st.session_state.timeout) * 60,
+        protected_files=tuple(st.session_state.get("protected_files", [])),
     )
 
     shared = {"events": [], "state": "running", "report": "", "heartbeat": 0, "last_event_time": time.time()}

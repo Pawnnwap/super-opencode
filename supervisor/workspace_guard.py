@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import Iterable
 
 _PATH_RE = re.compile(r"""(?:^|\s)(/?(?:[\w.\-]+/)+[\w.\-]*)""")
 
@@ -12,8 +13,11 @@ _PROTECTED_FILES = {".opencoderc", ".opencode"}
 
 
 class WorkspaceGuard:
-    def __init__(self, workspace: Path):
+    def __init__(self, workspace: Path, protected_files: Iterable[str] = ()):
         self.workspace = workspace.resolve()
+        self._protected_files: set[str] = set()
+        for pf in protected_files:
+            self._protected_files.add(Path(pf).as_posix())
 
     def sanitize_message(self, message: str) -> tuple[str, list[str]]:
         """Prepend workspace reminder; return (patched_msg, violations)."""
@@ -44,10 +48,13 @@ class WorkspaceGuard:
             return False
 
     def is_protected_path(self, path: str | Path) -> bool:
-        """Check if a path is a protected system directory."""
+        """Check if a path is a protected system directory or user-protected file."""
         path_obj = Path(path)
         parts = path_obj.parts
         path_str = str(path)
+        
+        if self.is_user_protected_file(path):
+            return True
         
         for protected in _PROTECTED_DIRS:
             if protected in parts:
@@ -90,6 +97,27 @@ class WorkspaceGuard:
                         violations.append(f"{match.group()}: {action.strip()}")
                         break
         
+        for protected_file in self._protected_files:
+            escaped = re.escape(protected_file)
+            pattern = rf'\b{escaped}\b'
+            for match in re.finditer(pattern, message, re.IGNORECASE):
+                context_start = max(0, match.start() - 20)
+                context_end = min(len(message), match.end() + 20)
+                context = message[context_start:context_end]
+                
+                action_patterns = [
+                    r'delete', r'remove', r'unlink', r'rm\s',
+                    r'move\s', r'mv\s', r'rename',
+                    r'modify', r'edit', r'change',
+                    r'overwrite', r'write',
+                    r'chmod', r'attrib',
+                ]
+                
+                for action in action_patterns:
+                    if re.search(action, context, re.IGNORECASE):
+                        violations.append(f"{protected_file}: {action.strip()}")
+                        break
+        
         return violations
 
     def sanitize_with_protection(self, message: str) -> tuple[str, list[str], list[str]]:
@@ -100,7 +128,7 @@ class WorkspaceGuard:
         sanitized, ws_violations = self.sanitize_message(message)
         protected_violations = self.check_protected_violations(message)
         
-        if protected_violations:
+        if protected_violations or self._protected_files:
             protection_warning = (
                 "\n\n[CRITICAL PROTECTION] The following paths are protected and must NOT be "
                 "modified or deleted:\n"
@@ -108,6 +136,10 @@ class WorkspaceGuard:
                 "  - .checkpoints/ directory (system checkpoints)\n"
                 "  - .archive/ directory (version archives)\n"
             )
+            if self._protected_files:
+                protection_warning += "\nUser-defined protected files:\n"
+                for pf in sorted(self._protected_files):
+                    protection_warning += f"  - {pf}\n"
             sanitized += protection_warning
         
         return sanitized, ws_violations, protected_violations
@@ -142,3 +174,63 @@ class WorkspaceGuard:
     def protected_paths(self) -> set[str]:
         """Return the set of protected path names."""
         return _PROTECTED_DIRS.copy()
+
+    def add_protected_file(self, path: str | Path) -> None:
+        """Add a user-defined protected file path."""
+        path_str = str(path)
+        self._protected_files.add(path_str)
+        normalized = Path(path_str).as_posix()
+        if normalized != path_str:
+            self._protected_files.add(normalized)
+
+    def remove_protected_file(self, path: str | Path) -> bool:
+        """Remove a user-defined protected file. Returns True if found and removed."""
+        path_str = str(path)
+        if path_str in self._protected_files:
+            self._protected_files.discard(path_str)
+            return True
+        normalized = Path(path_str).as_posix()
+        if normalized in self._protected_files:
+            self._protected_files.discard(normalized)
+            return True
+        return False
+
+    def get_user_protected_files(self) -> frozenset[str]:
+        """Return the set of user-defined protected files."""
+        return frozenset(self._protected_files)
+
+    def set_protected_files(self, paths: Iterable[str]) -> None:
+        """Replace all user-defined protected files."""
+        self._protected_files = set(paths)
+
+    def is_user_protected_file(self, path: str | Path) -> bool:
+        """Check if a path is a user-defined protected file."""
+        path_str = str(path)
+        if path_str in self._protected_files:
+            return True
+        normalized = Path(path_str).as_posix()
+        if normalized in self._protected_files:
+            return True
+        if Path(path_str).name in self._protected_files:
+            return True
+        if Path(normalized).name in self._protected_files:
+            return True
+        try:
+            rel = Path(path_str).resolve().relative_to(self.workspace)
+            if str(rel) in self._protected_files or rel.name in self._protected_files:
+                return True
+            normalized_rel = rel.as_posix()
+            if normalized_rel in self._protected_files:
+                return True
+        except ValueError:
+            pass
+        return False
+
+    def get_all_protected_files_description(self) -> str:
+        """Return a formatted string describing all protected files for prompts."""
+        if not self._protected_files:
+            return ""
+        lines = ["\n\n[USER PROTECTED FILES] The following files are protected and must NOT be modified or deleted:"]
+        for pf in sorted(self._protected_files):
+            lines.append(f"  - {pf}")
+        return "\n".join(lines)
