@@ -246,6 +246,10 @@ defaults = {
     "evo_report": "",
     "evo_wizard_step": 0,
     "verbose_log": True,
+    # internal state for live run
+    "_run_heartbeat": 0,
+    # internal state for self-evolution
+    "_evo_heartbeat": 0,
 }
 for k, v in defaults.items():
     if k not in st.session_state:
@@ -558,10 +562,15 @@ def page_run():
         st.error(f"Error reading protocol.md: {e}")
         return
 
-    # Sync thread-safe shared dict → session_state BEFORE rendering buttons
+    shared_state_changed = False
     if "_run_shared" in st.session_state:
         sh = st.session_state._run_shared
-        st.session_state.log_events = sh["events"]
+        st.session_state.log_events = list(sh["events"])
+        heartbeat = sh.get("heartbeat", 0)
+        current_heartbeat = st.session_state.get("_run_heartbeat", 0)
+        if current_heartbeat != heartbeat:
+            st.session_state._run_heartbeat = heartbeat
+            shared_state_changed = True
         if sh["state"] != "running":
             st.session_state.run_state = sh["state"]
             st.session_state.final_report = sh["report"]
@@ -583,6 +592,7 @@ def page_run():
 
         if st.button("▶  Start Run", type="primary", disabled=not can_start):
             _start_run()
+            st.rerun()
 
         if st.button("⏹  Stop", disabled=not can_stop):
             if "_run_stop" in st.session_state:
@@ -596,9 +606,8 @@ def page_run():
     st.markdown("### 🖥️  Live Log")
     _render_log()
 
-    # Auto-refresh while running
     if st.session_state.run_state == "running":
-        time.sleep(0.8)
+        time.sleep(0.5)
         st.rerun()
 
 
@@ -623,21 +632,36 @@ def _start_run():
         timeout=int(st.session_state.timeout) * 60,
     )
 
-    # Thread-safe shared state — never touch st.session_state from the thread
-    shared = {"events": [], "state": "running", "report": ""}
+    shared = {"events": [], "state": "running", "report": "", "heartbeat": 0, "last_event_time": time.time()}
     stop_event = threading.Event()
-    st.session_state.log_events = shared["events"]
     st.session_state.run_state = "running"
     st.session_state.final_report = ""
     st.session_state._run_shared = shared
     st.session_state._run_stop = stop_event
+    st.session_state._run_heartbeat = 0
+    st.session_state.log_events = []
 
     def _worker():
+        import time as time_module
+        heartbeat_interval = 3.0
+        last_heartbeat = time_module.time()
+
         loop = SupervisorLoop(config)
         for event in loop.run_streaming():
             if stop_event.is_set():
                 break
             shared["events"].append(event)
+            shared["last_event_time"] = time_module.time()
+
+            now = time_module.time()
+            if now - last_heartbeat >= heartbeat_interval:
+                shared["heartbeat"] += 1
+                shared["events"].append({
+                    "level": "heartbeat",
+                    "msg": f"Heartbeat #{shared['heartbeat']} — supervisor still active",
+                    "count": shared["heartbeat"]
+                })
+                last_heartbeat = now
 
         if any(e["level"] == "success" for e in shared["events"]):
             shared["state"] = "success"
@@ -730,7 +754,21 @@ def _render_step_progress():
         e for e in st.session_state.log_events if e.get("level") == "heartbeat"
     ]
 
-    if progress_events:
+    if st.session_state.run_state == "running":
+        heartbeat_count = len(heartbeat_events)
+        status_col1, status_col2, status_col3 = st.columns([3, 1, 1])
+        with status_col1:
+            st.markdown("🟢 **Background process active**")
+        with status_col2:
+            st.caption(f"💓 {heartbeat_count} heartbeat(s)")
+        with status_col3:
+            st.caption(f"🧭 {len(step_events)} step(s)")
+        if progress_events:
+            last_progress = progress_events[-1]
+            msg = last_progress.get("msg", "")
+            with st.expander("📊 Progress"):
+                st.caption(msg)
+    elif progress_events:
         last_progress = progress_events[-1]
         msg = last_progress.get("msg", "")
         
@@ -838,10 +876,15 @@ def page_evolve():
         )
         return
 
-    # Sync thread-safe shared dict → session_state BEFORE rendering buttons
+    evo_state_changed = False
     if "_evo_shared" in st.session_state:
         sh = st.session_state._evo_shared
-        st.session_state.evo_log_events = sh["events"]
+        st.session_state.evo_log_events = list(sh["events"])
+        heartbeat = sh.get("heartbeat", 0)
+        current_heartbeat = st.session_state.get("_evo_heartbeat", 0)
+        if current_heartbeat != heartbeat:
+            st.session_state._evo_heartbeat = heartbeat
+            evo_state_changed = True
         if sh["state"] != "running":
             st.session_state.evo_run_state = sh["state"]
             st.session_state.evo_report = sh["report"]
@@ -985,6 +1028,7 @@ def page_evolve():
 
         if launch:
             _start_evolution(repo_root)
+            st.rerun()
 
         # ── live log ─────────────────────────────────────────────────── #
         st.markdown("---")
@@ -993,7 +1037,7 @@ def page_evolve():
         _render_evo_step_progress()
 
         if st.session_state.evo_run_state == "running":
-            time.sleep(0.8)
+            time.sleep(0.5)
             st.rerun()
 
         # ── report when done ─────────────────────────────────────────── #
@@ -1041,23 +1085,38 @@ def _start_evolution(repo_root: Path):
         timeout=int(st.session_state.timeout) * 60,
     )
 
-    # Thread-safe shared state — never touch st.session_state from the thread
-    shared = {"events": [], "state": "running", "report": ""}
+    shared = {"events": [], "state": "running", "report": "", "heartbeat": 0, "last_event_time": time.time()}
     stop_event = threading.Event()
-    st.session_state.evo_log_events = shared["events"]
     st.session_state.evo_run_state = "running"
     st.session_state.evo_report = ""
     st.session_state._evo_shared = shared
     st.session_state._evo_stop = stop_event
+    st.session_state._evo_heartbeat = 0
+    st.session_state.evo_log_events = []
 
     def _worker():
+        import time as time_module
+        heartbeat_interval = 3.0
+        last_heartbeat = time_module.time()
+
         loop = SelfEvolutionLoop(config)
         for event in loop.run_streaming():
             if stop_event.is_set():
                 break
             shared["events"].append(event)
+            shared["last_event_time"] = time_module.time()
             if event.get("level") == "report":
                 shared["report"] = event["msg"]
+
+            now = time_module.time()
+            if now - last_heartbeat >= heartbeat_interval:
+                shared["heartbeat"] += 1
+                shared["events"].append({
+                    "level": "heartbeat",
+                    "msg": f"Heartbeat #{shared['heartbeat']} — evolution still active",
+                    "count": shared["heartbeat"]
+                })
+                last_heartbeat = now
 
         if any(e["level"] == "success" for e in shared["events"]):
             shared["state"] = "success"
@@ -1096,8 +1155,25 @@ def _render_evo_step_progress():
     progress_events = [
         e for e in st.session_state.evo_log_events if e.get("level") == "step_progress"
     ]
+    heartbeat_events = [
+        e for e in st.session_state.evo_log_events if e.get("level") == "heartbeat"
+    ]
 
-    if progress_events:
+    if st.session_state.evo_run_state == "running":
+        heartbeat_count = len(heartbeat_events)
+        status_col1, status_col2, status_col3 = st.columns([3, 1, 1])
+        with status_col1:
+            st.markdown("🟢 **Evolution process active**")
+        with status_col2:
+            st.caption(f"💓 {heartbeat_count} heartbeat(s)")
+        with status_col3:
+            st.caption(f"🧭 {len(step_events)} step(s)")
+        if progress_events:
+            last_progress = progress_events[-1]
+            msg = last_progress.get("msg", "")
+            with st.expander("📊 Progress"):
+                st.caption(msg)
+    elif progress_events:
         last_progress = progress_events[-1]
         msg = last_progress.get("msg", "")
 
