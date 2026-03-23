@@ -9,6 +9,7 @@ from typing import Iterable
 _PATH_RE = re.compile(r"""(?:^|\s)(/?(?:[\w.\-]+/)+[\w.\-]*)""")
 
 _PROTECTED_DIRS = {".opencode", ".checkpoints", "archive"}
+_PROTECTED_DIR_PREFIXES = (".",)
 _PROTECTED_FILES = {".opencoderc", ".opencode"}
 
 
@@ -58,6 +59,10 @@ class WorkspaceGuard:
         
         for protected in _PROTECTED_DIRS:
             if protected in parts:
+                return True
+
+        for part in parts:
+            if any(part.startswith(p) for p in _PROTECTED_DIR_PREFIXES):
                 return True
         
         for protected in _PROTECTED_FILES:

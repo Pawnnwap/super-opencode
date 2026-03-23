@@ -19,6 +19,7 @@ from pathlib import Path
 
 # Files/dirs to skip when snapshotting
 _IGNORE_DIRS  = {".git", "__pycache__", ".venv", "venv", "node_modules", ".mypy_cache"}
+_IGNORE_DIR_PREFIXES = (".",)
 _IGNORE_EXTS  = {".pyc", ".pyo", ".egg-info", ".DS_Store"}
 _MAX_FILE_CHARS = 6_000   # truncate individual files beyond this in the digest
 
@@ -97,7 +98,7 @@ def snapshot_codebase(root: Path) -> CodebaseSnapshot:
     for path in sorted(root.rglob("*")):
         if not path.is_file():
             continue
-        if any(part in _IGNORE_DIRS for part in path.parts):
+        if any(part in _IGNORE_DIRS or any(part.startswith(p) for p in _IGNORE_DIR_PREFIXES) for part in path.parts):
             continue
         if path.suffix in _IGNORE_EXTS:
             continue

@@ -25,6 +25,8 @@ from pathlib import Path
 from typing import Generator
 
 _ARCHIVE_DIR = ".archive"
+_ARCHIVE_IGNORE_DIRS = {".git", ".venv", "venv", "node_modules", ".mypy_cache", "_deps", ". Dune", "__pycache__"}
+_ARCHIVE_IGNORE_PREFIXES = (".",)
 _ARCHIVE_SUBDIRS = {
     "code": {".py", ".md", ".toml", ".cfg", ".ini", ".yaml", ".yml", ".txt", ".rst"},
     "results": {".json", ".html", ".csv", ".xml"},
@@ -73,17 +75,11 @@ class WorkspaceArchiver:
         rel = path.relative_to(self.workspace)
         parts = rel.parts
         if any(
-            part in {".git", ".venv", "venv", "node_modules", ".mypy_cache", "_deps", ". Dune", "__pycache__"}
+            part in _ARCHIVE_IGNORE_DIRS or any(part.startswith(p) for p in _ARCHIVE_IGNORE_PREFIXES)
             for part in parts
         ):
             return False
-        if ".checkpoints" in parts:
-            return False
-        if ".opencode" in parts:
-            return False
         if path == self.archive_root:
-            return False
-        if ".archive" in parts:
             return False
         return True
 

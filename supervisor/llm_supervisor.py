@@ -31,6 +31,11 @@ _OPENCODE_GENERATED_MD: set[str] = {
     "evolution_report.md",
 }
 
+_SKIP_DIRS = {".git", ".venv", "venv", "node_modules", "__pycache__",
+              ".checkpoints", ".archive", ".opencode", ".mypy_cache",
+              ".pytest_cache", "opencode_supervisor.egg-info"}
+_SKIP_DIR_PREFIXES = (".",)
+
 
 @dataclass
 class ProtocolViolation:
@@ -150,12 +155,8 @@ class LLMSupervisor:
         latest_any: Path | None = None
         latest_any_mtime: float = -1.0
 
-        _SKIP_DIRS = {".git", ".venv", "venv", "node_modules", "__pycache__",
-                      ".checkpoints", ".archive", ".opencode", ".mypy_cache",
-                      ".pytest_cache", "opencode_supervisor.egg-info"}
-
         for dirpath, dirnames, filenames in os.walk(workspace):
-            dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS]
+            dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS and not any(d.startswith(p) for p in _SKIP_DIR_PREFIXES)]
             for fname in filenames:
                 fpath = Path(dirpath) / fname
                 try:

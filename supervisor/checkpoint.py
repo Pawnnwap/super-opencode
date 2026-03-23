@@ -22,6 +22,7 @@ from pathlib import Path
 
 _CHECKPOINT_DIR = ".checkpoints"
 _IGNORE_DIRS    = {".git", "__pycache__", ".venv", "venv", ".checkpoints"}
+_IGNORE_DIR_PREFIXES = (".",)
 _SOURCE_EXTS    = {".py", ".md", ".toml", ".cfg", ".ini", ".txt", ".yaml", ".yml"}
 
 
@@ -121,7 +122,7 @@ class CheckpointManager:
         for path in sorted(self.workspace.rglob("*")):
             if not path.is_file():
                 continue
-            if any(part in _IGNORE_DIRS for part in path.relative_to(self.workspace).parts):
+            if any(part in _IGNORE_DIRS or any(part.startswith(p) for p in _IGNORE_DIR_PREFIXES) for part in path.relative_to(self.workspace).parts):
                 continue
             if path.suffix in _SOURCE_EXTS:
                 yield path
