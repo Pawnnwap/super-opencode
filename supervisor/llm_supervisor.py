@@ -12,6 +12,14 @@ from openai import OpenAI
 
 from .protocol import Protocol
 from .workspace_guard import _PROTECTED_DIRS, _PROTECTED_FILES
+from .token_estimator import (
+    estimate_tokens,
+    estimate_request_tokens,
+    should_warn,
+    should_truncate,
+    truncate_prompt,
+    truncate_with_fallback,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +87,7 @@ class LLMSupervisor:
         model: str,
         extra_system: str = "",
         read_external_feedback: bool = False,
+        max_tokens: int = 128_000,
     ):
         self._client = OpenAI()
         self._model = model
@@ -86,6 +95,8 @@ class LLMSupervisor:
         self._system = protocol.as_system_prompt(workspace) + extra_system
         self._history: list[dict] = []
         self._read_external_feedback = read_external_feedback
+        self._max_tokens = max_tokens
+        self._token_warnings: list[str] = []
 
     def read_protected_files(self) -> dict[str, str]:
         """Read all protected files and return their content as a dict mapping path to content."""
@@ -520,11 +531,64 @@ class LLMSupervisor:
 
     # ------------------------------------------------------------------ #
 
+    def get_token_warnings(self) -> list[str]:
+        """Return collected token warning messages."""
+        return list(self._token_warnings)
+
+    def clear_token_warnings(self) -> None:
+        """Clear token warning messages."""
+        self._token_warnings.clear()
+
+    def estimate_current_tokens(self) -> int:
+        """Estimate total tokens for current conversation state."""
+        conv_parts = [m["content"] for m in self._history]
+        conv_text = "\n".join(conv_parts)
+        return estimate_request_tokens(
+            self._system,
+            conv_text,
+            "",
+        ).total
+
     def _chat(self, user_content: str) -> SupervisorVerdict:
         self._history.append({"role": "user", "content": user_content})
 
         if len(self._history) > self._MAX_HISTORY_TURNS * 2:
             self._history = self._history[:2] + self._history[4:]
+
+        # Build conversation text for token estimation
+        conv_parts = []
+        for msg in self._history:
+            if msg.get("content"):
+                conv_parts.append(msg["content"])
+        conv_text = "\n".join(conv_parts)
+
+        # Estimate tokens
+        estimate = estimate_request_tokens(
+            self._system,
+            conv_text,
+            user_content,
+        )
+
+        # Warn if approaching limit
+        if should_warn(estimate, self._max_tokens):
+            warning_msg = (
+                f"Estimated request tokens ({estimate.total}) approaching model maximum "
+                f"({self._max_tokens}). System: {estimate.system_prompt}, "
+                f"History: {estimate.conversation_history}, Input: {estimate.user_input}."
+            )
+            logger.warning(warning_msg)
+            self._token_warnings.append(warning_msg)
+
+        # Truncate user content if needed
+        if should_truncate(estimate, self._max_tokens):
+            user_content = truncate_with_fallback(
+                user_content,
+                self._max_tokens,
+                system_prompt=self._system,
+                conversation_history=conv_text,
+            )
+            # Update the last history entry
+            self._history[-1]["content"] = user_content
 
         response = self._client.chat.completions.create(
             model=self._model,

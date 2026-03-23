@@ -46,6 +46,7 @@ class SupervisorLoop:
         self.supervisor = LLMSupervisor(
             self.protocol, config.workspace, config.supervisor_model,
             read_external_feedback=config.read_external_feedback,
+            max_tokens=config.max_tokens,
         )
         self.runner = OpencodeRunner(
             config.workspace,
@@ -53,7 +54,7 @@ class SupervisorLoop:
             config.opencode_executable,
             config.timeout,
         )
-        self.ctx_monitor = ContextMonitor(config.context_threshold)
+        self.ctx_monitor = ContextMonitor(config.context_threshold, config.max_tokens)
         self.guard = WorkspaceGuard(config.workspace, config.protected_files)
         self.archiver = WorkspaceArchiver(config.workspace)
         self._step_detector = OpencodeStepDetector()
@@ -135,6 +136,15 @@ class SupervisorLoop:
             self._failures = 0
             self.ctx_monitor.update(self.runner.estimated_context_tokens)
             
+            # Emit context warning if approaching limit
+            if self.ctx_monitor.approaching_limit:
+                advice = self.ctx_monitor.get_reduction_advice()
+                yield _ev(
+                    "warn",
+                    f"⚠️ Context usage high: {advice['current_tokens']}/{advice['max_tokens']} tokens "
+                    f"({self.ctx_monitor.fraction*100:.0f}%). {advice['recommendation']}."
+                )
+
             previous_step = self._active_progress_steps
             yield from self._emit_step_events(output)
             yield _ev("opencode_output", output)  # ← full output visible
@@ -251,6 +261,11 @@ class SupervisorLoop:
         )
         verdict = self.supervisor.judge_with_step_context(output, step_context)
         yield _ev("supervisor_response", verdict.raw)  # ← full supervisor reply
+
+        # Emit token warnings from supervisor if any
+        for warning in self.supervisor.get_token_warnings():
+            yield _ev("warn", f"⚠️ Token warning: {warning}")
+        self.supervisor.clear_token_warnings()
 
         if verdict.all_targets_met:
             self._state = LoopState.ENDED_SUCCESS

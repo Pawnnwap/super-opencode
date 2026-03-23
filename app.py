@@ -177,6 +177,7 @@ _PERSIST_KEYS = [
     "opencode_executable",
     "max_retries",
     "context_threshold",
+    "max_tokens",
     "timeout",
     "raw_input",
     "raw_target",
@@ -237,6 +238,7 @@ defaults = {
     "opencode_executable": _load_opencode_path(),
     "max_retries": 3,
     "context_threshold": 60,
+    "max_tokens": 128000,
     "timeout": 120,
     "protected_files": [],
     # self-evolution page
@@ -378,6 +380,14 @@ def page_wizard():
                 95,
                 key="cfg_ctx_threshold",
                 value=int(st.session_state.context_threshold),
+            )
+            st.session_state.max_tokens = st.number_input(
+                "Max tokens (model context window)",
+                key="cfg_max_tokens",
+                min_value=1000,
+                max_value=1000000,
+                value=int(st.session_state.max_tokens),
+                step=1000,
             )
             st.session_state.timeout = st.number_input(
                 "Timeout (min)",
@@ -621,7 +631,8 @@ def page_run():
             f"**Supervisor model:** `{st.session_state.supervisor_model}`  \n"
             f"**Max retries:** {st.session_state.max_retries} · "
             f"**Timeout:** {st.session_state.timeout} min · "
-            f"**Compaction at:** {st.session_state.context_threshold}%"
+            f"**Compaction at:** {st.session_state.context_threshold}% · "
+            f"**Max tokens:** {st.session_state.max_tokens:,}"
         )
     with col2:
         state = st.session_state.run_state
@@ -643,6 +654,9 @@ def page_run():
     st.markdown("---")
     st.markdown("### 🖥️  Live Log")
     _render_log()
+
+    # Token warnings display
+    _render_token_warnings(st.session_state.log_events, st.session_state.max_tokens)
 
     if st.session_state.run_state == "running":
         time.sleep(0.5)
@@ -669,6 +683,7 @@ def _start_run():
         supervisor_model=st.session_state.supervisor_model,
         timeout=int(st.session_state.timeout) * 60,
         protected_files=tuple(st.session_state.get("protected_files", [])),
+        max_tokens=int(st.session_state.max_tokens),
     )
 
     shared = {"events": [], "state": "running", "report": "", "heartbeat": 0, "last_event_time": time.time()}
@@ -778,6 +793,55 @@ def _render_events(events: list[dict], empty_msg: str, skip: set | None = None) 
 
 def _render_log():
     _render_events(st.session_state.log_events, "— waiting for run to start —")
+
+
+def _render_token_warnings(events: list[dict], max_tokens: int) -> None:
+    """Display token usage warnings and estimated usage from log events."""
+    token_events = [e for e in events if "token" in e.get("msg", "").lower() and e.get("level") == "warn"]
+    context_events = [e for e in events if "context usage" in e.get("msg", "").lower() and e.get("level") == "warn"]
+
+    # Collect the latest token usage info from context warning events
+    latest_fraction = 0.0
+    latest_current = 0
+    found_usage = False
+
+    for ev in events:
+        msg = ev.get("msg", "")
+        # Parse "Context usage high: X/Y tokens" or "Context usage at NN% threshold: X / Y tokens"
+        if "context usage" in msg.lower() and ("tokens" in msg.lower()):
+            try:
+                # Try pattern: "X / Y tokens"
+                import re
+                match = re.search(r'(\d[\d,]*)\s*/\s*(\d[\d,]*)\s*tokens', msg)
+                if match:
+                    current = int(match.group(1).replace(",", ""))
+                    max_t = int(match.group(2).replace(",", ""))
+                    fraction = current / max_t if max_t > 0 else 0
+                    if fraction >= latest_fraction:
+                        latest_fraction = fraction
+                        latest_current = current
+                        found_usage = True
+            except (ValueError, IndexError):
+                pass
+
+    # Always show token usage bar if we have data
+    if found_usage:
+        color = "🔴" if latest_fraction > 0.9 else "🟡" if latest_fraction > 0.7 else "🟢"
+        st.progress(
+            min(latest_fraction, 1.0),
+            text=f"{color} {latest_current:,} / {max_tokens:,} tokens ({latest_fraction*100:.0f}%)",
+        )
+
+    if not token_events and not context_events:
+        return
+
+    st.markdown("### ⚠️ Token Usage Warnings")
+    seen = set()
+    for ev in (token_events + context_events)[-5:]:
+        msg = ev.get("msg", "")[:200]
+        if msg not in seen:
+            seen.add(msg)
+            st.warning(msg)
 
 
 def _render_step_progress():
@@ -1075,6 +1139,9 @@ def page_evolve():
         _render_evo_log()
         _render_evo_step_progress()
 
+        # Token warnings display for evolution
+        _render_token_warnings(st.session_state.evo_log_events, st.session_state.max_tokens)
+
         if st.session_state.evo_run_state == "running":
             time.sleep(0.5)
             st.rerun()
@@ -1123,6 +1190,7 @@ def _start_evolution(repo_root: Path):
         supervisor_model=st.session_state.supervisor_model,
         timeout=int(st.session_state.timeout) * 60,
         protected_files=tuple(st.session_state.get("protected_files", [])),
+        max_tokens=int(st.session_state.max_tokens),
     )
 
     shared = {"events": [], "state": "running", "report": "", "heartbeat": 0, "last_event_time": time.time()}

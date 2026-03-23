@@ -41,12 +41,14 @@ class SelfEvolutionLoop:
     def __init__(self, config: SupervisorConfig):
         self.config = config
         self.protocol = load_protocol(config.protocol_path)
+        self._cached_snapshot = snapshot_codebase(self.config.workspace)
         self.supervisor = LLMSupervisor(
             self.protocol,
             config.workspace,
             config.supervisor_model,
             extra_system=self._codebase_preamble(),
             read_external_feedback=config.read_external_feedback,
+            max_tokens=config.max_tokens,
         )
         self.runner = OpencodeRunner(
             config.workspace,
@@ -54,7 +56,7 @@ class SelfEvolutionLoop:
             config.opencode_executable,
             config.timeout,
         )
-        self.ctx_monitor = ContextMonitor(config.context_threshold)
+        self.ctx_monitor = ContextMonitor(config.context_threshold, config.max_tokens)
         self.guard = WorkspaceGuard(config.workspace, config.protected_files)
         self.checkpoints = CheckpointManager(config.workspace)
         self.test_runner = OcTestRunner(config.workspace)
@@ -94,7 +96,7 @@ class SelfEvolutionLoop:
 
     def _run(self) -> Generator[Event, None, None]:
         yield _ev("info", "📸  Snapshotting codebase…")
-        self._pre_snapshot = snapshot_codebase(self.config.workspace)
+        self._pre_snapshot = self._cached_snapshot
 
         yield _ev("info", "🧪  Running test baseline…")
         self._baseline = self.test_runner.run()
@@ -144,6 +146,16 @@ class SelfEvolutionLoop:
             self._failures = 0
             self._iteration += 1
             self.ctx_monitor.update(self.runner.estimated_context_tokens)
+
+            # Emit context warning if approaching limit
+            if self.ctx_monitor.approaching_limit:
+                advice = self.ctx_monitor.get_reduction_advice()
+                yield _ev(
+                    "warn",
+                    f"⚠️ Context usage high: {advice['current_tokens']}/{advice['max_tokens']} tokens "
+                    f"({self.ctx_monitor.fraction*100:.0f}%). {advice['recommendation']}."
+                )
+
             yield _ev(
                 "info",
                 f"[iter {self._iteration}] opencode output ({len(output)} chars)",
@@ -232,6 +244,11 @@ class SelfEvolutionLoop:
         result = self.test_runner.run()
         self._last_result = result
         yield _ev("info", f"Tests: {result.summary()}")
+
+        # Emit token warnings from supervisor if any
+        for warning in self.supervisor.get_token_warnings():
+            yield _ev("warn", f"⚠️ Token warning: {warning}")
+        self.supervisor.clear_token_warnings()
 
         if self._baseline and result.is_regression_vs(self._baseline):
             yield _ev("warn", "⚠️  Regression — rolling back.")
@@ -349,6 +366,7 @@ class SelfEvolutionLoop:
             f"{'✅' if success else '❌'} Evolution {'completed' if success else 'failed'}.",
         )
 
+        # Reuse cached snapshot for the "before" state; only snapshot once for "after"
         post_snap = snapshot_codebase(self.config.workspace)
         changed = (
             self._pre_snapshot.changed_files(post_snap) if self._pre_snapshot else []
@@ -413,8 +431,7 @@ class SelfEvolutionLoop:
     # ------------------------------------------------------------------ #
 
     def _codebase_preamble(self) -> str:
-        snap = snapshot_codebase(self.config.workspace)
-        return "\n\n## Live codebase\n" + snap.digest_for_prompt(max_files=15)
+        return "\n\n## Live codebase\n" + self._cached_snapshot.digest_for_prompt(max_files=15)
 
     def _init_prompt(self) -> str:
         text = self.config.protocol_path.read_text(encoding="utf-8")

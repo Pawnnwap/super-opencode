@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import logging
 
+from .token_estimator import get_warning_thresholds, get_threshold_for_fraction
+
 logger = logging.getLogger(__name__)
 
 _DEFAULT_MAX = 128_000
@@ -14,18 +16,106 @@ class ContextMonitor:
         self.threshold = threshold
         self.max_tokens = max_tokens
         self._current = 0
+        self._warned = False
+        self._last_warning_threshold: float | None = None
 
     def update(self, tokens: int) -> None:
         self._current = tokens
         logger.debug("Context: ~%d / %d (%.1f%%)", tokens, self.max_tokens, self.fraction * 100)
 
+        # Graduated warning: emit warning at each threshold crossed
+        current_threshold = get_threshold_for_fraction(self.fraction)
+        if current_threshold is not None and current_threshold != self._last_warning_threshold:
+            self._last_warning_threshold = current_threshold
+            logger.warning(
+                "Context usage at %.0f%% threshold: %d / %d tokens (%.1f%%). %s",
+                current_threshold * 100,
+                tokens, self.max_tokens, self.fraction * 100,
+                self._get_advice_for_threshold(current_threshold),
+            )
+
+        # Legacy single-warning behavior (kept for backward compat)
+        if self.approaching_limit and not self._warned:
+            self._warned = True
+            logger.warning(
+                "Context usage approaching limit: %d / %d tokens (%.1f%%). "
+                "Consider reducing context size.",
+                tokens, self.max_tokens, self.fraction * 100,
+            )
+
+    def _get_advice_for_threshold(self, thresh: float) -> str:
+        if thresh >= 0.90:
+            return "CRITICAL: Context nearly full. Immediate compaction strongly recommended."
+        if thresh >= 0.80:
+            return "WARNING: Context high. Compaction recommended soon."
+        if thresh >= 0.70:
+            return "Context usage elevated. Monitor closely."
+        if thresh >= 0.60:
+            return "Context approaching compaction threshold. Plan for cleanup."
+        return "Context usage above 50%. Be mindful of token budget."
+
     @property
     def fraction(self) -> float:
+        if self.max_tokens <= 0:
+            return 1.0
         return self._current / self.max_tokens
 
     @property
     def should_compact(self) -> bool:
         return self.fraction >= self.threshold
 
+    @property
+    def approaching_limit(self) -> bool:
+        """Check if context is approaching the warning threshold (80%)."""
+        return self.fraction >= 0.80
+
+    @property
+    def warning_fraction(self) -> float:
+        """Return the fraction at which the primary warning is emitted."""
+        return 0.80
+
+    @property
+    def estimated_tokens(self) -> int:
+        """Return current estimated token count."""
+        return self._current
+
+    @property
+    def remaining_tokens(self) -> int:
+        """Return estimated remaining token capacity."""
+        return max(0, self.max_tokens - self._current)
+
+    @property
+    def is_critical(self) -> bool:
+        """Check if context is at a critical level (>= 90%)."""
+        return self.fraction >= 0.90
+
+    def should_reduce_context(self) -> bool:
+        """Check if context size should be reduced."""
+        return self.approaching_limit
+
+    def get_reduction_advice(self) -> dict:
+        """Provide advice on how to reduce context size."""
+        overage = max(0, self._current - int(self.max_tokens * self.threshold))
+        if self.fraction >= 0.90:
+            recommendation = "CRITICAL: Immediate context compaction required"
+        elif self.should_compact:
+            recommendation = "Context compaction recommended"
+        elif self.approaching_limit:
+            recommendation = "Context usage high — prepare for compaction"
+        else:
+            recommendation = "Context usage is within acceptable range"
+        return {
+            "current_tokens": self._current,
+            "max_tokens": self.max_tokens,
+            "overage_tokens": overage,
+            "should_compact": self.should_compact,
+            "approaching_limit": self.approaching_limit,
+            "is_critical": self.is_critical,
+            "fraction": self.fraction,
+            "recommendation": recommendation,
+        }
+
     def reset(self) -> None:
         self._current = 0
+        self._warned = False
+        self._last_warning_threshold = None

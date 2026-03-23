@@ -17,3 +17,4 @@ class SupervisorConfig:
     log_level: str = "INFO"
     protected_files: tuple[str, ...] = ()
     read_external_feedback: bool = False
+    max_tokens: int = 128_000
