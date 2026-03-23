@@ -458,6 +458,51 @@ def page_wizard():
                                 x for x in protected if x != pf
                             ]
                             st.rerun()
+
+        with st.expander("🚫 Ignore Patterns (.opencodeignore)", expanded=False):
+            from supervisor.ignore_patterns import IGNORE_FILE, read_ignore_file, write_ignore_file
+            st.caption(f"Files matching these patterns will be excluded from context retrieval")
+            
+            ws_path = Path(st.session_state.workspace) if st.session_state.workspace else None
+            if not ws_path or not ws_path.exists():
+                st.warning("Set a valid workspace path to edit .opencodeignore")
+            else:
+                current_ignore_content = ""
+                ignore_file_path = ws_path / IGNORE_FILE
+                if ignore_file_path.exists():
+                    try:
+                        current_ignore_content = ignore_file_path.read_text(encoding="utf-8")
+                    except Exception:
+                        pass
+                
+                new_ignore_content = st.text_area(
+                    "Ignore patterns",
+                    value=current_ignore_content,
+                    height=200,
+                    key="ignore_patterns_editor",
+                    placeholder=(
+                        "# Patterns to ignore (one per line)\n"
+                        "# Examples:\n"
+                        "# *.pyc           # ignore all .pyc files\n"
+                        "# debug*          # ignore files starting with debug\n"
+                        "# *test.py        # ignore files ending with test.py\n"
+                        "# build/          # ignore entire build directory\n"
+                        "# **/*.log        # ignore all .log files\n"
+                    ),
+                    label_visibility="collapsed",
+                )
+                
+                if new_ignore_content != current_ignore_content:
+                    if st.button("Save Ignore Patterns", key="save_ignore_patterns"):
+                        try:
+                            write_ignore_file(ws_path, new_ignore_content)
+                            st.success(f"Saved {IGNORE_FILE}")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Failed to save: {e}")
+                
+                if ignore_file_path.exists():
+                    st.caption(f"Found existing {IGNORE_FILE} with {len(current_ignore_content.splitlines())} patterns")
     
     # Auto-save settings to disk whenever the config panel is shown
     _save_settings()

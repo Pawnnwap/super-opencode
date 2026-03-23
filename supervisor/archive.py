@@ -20,7 +20,10 @@ import time
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from supervisor.ignore_patterns import IgnoreMatcher
 
 _ARCHIVE_DIR = "archive"
 _IGNORE_DIRS = {".git", "__pycache__", ".venv", "venv", ".checkpoints", "archive"}
@@ -216,12 +219,14 @@ class ArchiveManager:
                 deleted.append(archive.metadata.archive_id)
         return deleted
 
-    def _collect_source_files(self) -> dict[str, str]:
+    def _collect_source_files(self, ignore_matcher: "IgnoreMatcher | None" = None) -> dict[str, str]:
         result: dict[str, str] = {}
         for path in sorted(self.workspace.rglob("*")):
             if not path.is_file():
                 continue
             if any(part in _IGNORE_DIRS for part in path.relative_to(self.workspace).parts):
+                continue
+            if ignore_matcher and ignore_matcher.matches(path):
                 continue
             if path.suffix in _SOURCE_EXTS:
                 try:

@@ -19,6 +19,10 @@ import shutil
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from supervisor.ignore_patterns import IgnoreMatcher
 
 _CHECKPOINT_DIR = ".checkpoints"
 _IGNORE_DIRS    = {".git", "__pycache__", ".venv", "venv", ".checkpoints"}
@@ -118,11 +122,13 @@ class CheckpointManager:
     # Internals                                                            #
     # ------------------------------------------------------------------ #
 
-    def _source_files(self):
+    def _source_files(self, ignore_matcher: "IgnoreMatcher | None" = None):
         for path in sorted(self.workspace.rglob("*")):
             if not path.is_file():
                 continue
             if any(part in _IGNORE_DIRS or any(part.startswith(p) for p in _IGNORE_DIR_PREFIXES) for part in path.relative_to(self.workspace).parts):
+                continue
+            if ignore_matcher and ignore_matcher.matches(path):
                 continue
             if path.suffix in _SOURCE_EXTS:
                 yield path

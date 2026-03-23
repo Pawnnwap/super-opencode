@@ -16,12 +16,15 @@ import hashlib
 import textwrap
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-# Files/dirs to skip when snapshotting
+if TYPE_CHECKING:
+    from supervisor.ignore_patterns import IgnoreMatcher
+
 _IGNORE_DIRS  = {".git", "__pycache__", ".venv", "venv", "node_modules", ".mypy_cache", ".checkpoints"}
 _IGNORE_DIR_PREFIXES = (".",)
 _IGNORE_EXTS  = {".pyc", ".pyo", ".egg-info", ".DS_Store"}
-_MAX_FILE_CHARS = 6_000   # truncate individual files beyond this in the digest
+_MAX_FILE_CHARS = 6_000
 
 
 @dataclass
@@ -92,7 +95,7 @@ class CodebaseSnapshot:
 # Public factory                                                       #
 # ------------------------------------------------------------------ #
 
-def snapshot_codebase(root: Path) -> CodebaseSnapshot:
+def snapshot_codebase(root: Path, ignore_matcher: "IgnoreMatcher | None" = None) -> CodebaseSnapshot:
     """Walk *root* and build a CodebaseSnapshot."""
     snap = CodebaseSnapshot(root=root)
     for path in sorted(root.rglob("*")):
@@ -101,6 +104,8 @@ def snapshot_codebase(root: Path) -> CodebaseSnapshot:
         if any(part in _IGNORE_DIRS or any(part.startswith(p) for p in _IGNORE_DIR_PREFIXES) for part in path.parts):
             continue
         if path.suffix in _IGNORE_EXTS:
+            continue
+        if ignore_matcher and ignore_matcher.matches(path):
             continue
         _add_file(snap, path, root)
     return snap

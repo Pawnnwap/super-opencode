@@ -22,7 +22,10 @@ import shutil
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Generator
+from typing import TYPE_CHECKING, Generator
+
+if TYPE_CHECKING:
+    from supervisor.ignore_patterns import IgnoreMatcher
 
 _ARCHIVE_DIR = ".archive"
 _ARCHIVE_IGNORE_DIRS = {".git", ".venv", "venv", "node_modules", ".mypy_cache", "_deps", ". Dune", "__pycache__", ".checkpoints"}
@@ -69,7 +72,7 @@ class WorkspaceArchiver:
                 return subdir
         return "other"
 
-    def _should_archive(self, path: Path) -> bool:
+    def _should_archive(self, path: Path, ignore_matcher: "IgnoreMatcher | None" = None) -> bool:
         if not path.is_file():
             return False
         rel = path.relative_to(self.workspace)
@@ -79,6 +82,8 @@ class WorkspaceArchiver:
             for part in parts
         ):
             return False
+        if ignore_matcher and ignore_matcher.matches(path):
+            return False
         if path == self.archive_root:
             return False
         return True
@@ -87,6 +92,7 @@ class WorkspaceArchiver:
         self,
         label: str = "",
         files_to_archive: list[str] | None = None,
+        ignore_matcher: "IgnoreMatcher | None" = None,
     ) -> ArchiveResult:
         """
         Archive the current workspace content to a timestamped archive folder.
@@ -94,6 +100,7 @@ class WorkspaceArchiver:
         Args:
             label: Optional label for the archive
             files_to_archive: Specific files to archive (None = all eligible files)
+            ignore_matcher: Optional ignore matcher to filter files
 
         Returns:
             ArchiveResult with success status, archive path, and list of archived files
@@ -118,7 +125,7 @@ class WorkspaceArchiver:
             if files_to_archive is not None:
                 for file_path in files_to_archive:
                     src = self.workspace / file_path
-                    if src.exists() and src.is_file() and self._should_archive(src):
+                    if src.exists() and src.is_file() and self._should_archive(src, ignore_matcher):
                         rel = src.relative_to(self.workspace)
                         subdir = self._get_archive_subdir(rel.name)
                         dst = archive_path / subdir / str(rel).replace("/", "\\")
@@ -127,7 +134,7 @@ class WorkspaceArchiver:
                         archived.append(str(rel))
             else:
                 for src in sorted(self.workspace.rglob("*")):
-                    if self._should_archive(src):
+                    if self._should_archive(src, ignore_matcher):
                         rel = src.relative_to(self.workspace)
                         subdir = self._get_archive_subdir(rel.name)
                         dst = archive_path / subdir / str(rel).replace("/", "\\")

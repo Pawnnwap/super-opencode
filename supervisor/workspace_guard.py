@@ -4,19 +4,23 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Iterable
+from typing import TYPE_CHECKING, Iterable
+
+if TYPE_CHECKING:
+    from supervisor.ignore_patterns import IgnoreMatcher
 
 _PATH_RE = re.compile(r"""(?:^|\s)(/?(?:[\w.\-]+/)+[\w.\-]*)""")
 
 _PROTECTED_DIRS = {".opencode", ".checkpoints", "archive"}
 _PROTECTED_DIR_PREFIXES = (".",)
-_PROTECTED_FILES = {".opencoderc", ".opencode"}
+_PROTECTED_FILES = {".opencoderc", ".opencode", ".opencodeignore"}
 
 
 class WorkspaceGuard:
     def __init__(self, workspace: Path, protected_files: Iterable[str] = ()):
         self.workspace = workspace.resolve()
         self._protected_files: set[str] = set()
+        self._ignore_matcher: "IgnoreMatcher | None" = None
         for pf in protected_files:
             self._protected_files.add(Path(pf).as_posix())
 
@@ -239,3 +243,23 @@ class WorkspaceGuard:
         for pf in sorted(self._protected_files):
             lines.append(f"  - {pf}")
         return "\n".join(lines)
+
+    def set_ignore_matcher(self, matcher: "IgnoreMatcher") -> None:
+        """Set the ignore matcher for checking ignored file patterns."""
+        self._ignore_matcher = matcher
+
+    def is_ignored_path(self, path: str | Path) -> bool:
+        """Check if a path matches ignore patterns from .opencodeignore."""
+        if self._ignore_matcher is None:
+            return False
+        return self._ignore_matcher.matches(path)
+
+    def check_ignore_violations(self, paths: list[str]) -> list[str]:
+        """Check for paths that match ignore patterns and should not be modified."""
+        if self._ignore_matcher is None:
+            return []
+        violations = []
+        for path in paths:
+            if self._ignore_matcher.matches(path):
+                violations.append(f"Ignored path: {path}")
+        return violations
