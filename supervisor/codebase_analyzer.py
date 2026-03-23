@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 # Files/dirs to skip when snapshotting
-_IGNORE_DIRS  = {".git", "__pycache__", ".venv", "venv", "node_modules", ".mypy_cache"}
+_IGNORE_DIRS  = {".git", "__pycache__", ".venv", "venv", "node_modules", ".mypy_cache", ".checkpoints"}
 _IGNORE_DIR_PREFIXES = (".",)
 _IGNORE_EXTS  = {".pyc", ".pyo", ".egg-info", ".DS_Store"}
 _MAX_FILE_CHARS = 6_000   # truncate individual files beyond this in the digest

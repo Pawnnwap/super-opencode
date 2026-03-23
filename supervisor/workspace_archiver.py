@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Generator
 
 _ARCHIVE_DIR = ".archive"
-_ARCHIVE_IGNORE_DIRS = {".git", ".venv", "venv", "node_modules", ".mypy_cache", "_deps", ". Dune", "__pycache__"}
+_ARCHIVE_IGNORE_DIRS = {".git", ".venv", "venv", "node_modules", ".mypy_cache", "_deps", ". Dune", "__pycache__", ".checkpoints"}
 _ARCHIVE_IGNORE_PREFIXES = (".",)
 _ARCHIVE_SUBDIRS = {
     "code": {".py", ".md", ".toml", ".cfg", ".ini", ".yaml", ".yml", ".txt", ".rst"},
