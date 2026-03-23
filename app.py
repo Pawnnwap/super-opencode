@@ -1162,7 +1162,7 @@ def page_evolve():
 
         # ── live log ─────────────────────────────────────────────────── #
         st.markdown("---")
-        st.markdown("### 🖥️  Evolution Log")
+        st.markdown("### 🖥️  Live Run Evolution")
         _render_evo_log()
         _render_evo_step_progress()
 
@@ -1312,12 +1312,16 @@ def _render_evo_step_progress():
         last_progress = progress_events[-1]
         msg = last_progress.get("msg", "")
 
-        progress_col1, progress_col2 = st.columns([3, 1])
+        progress_col1, progress_col2, progress_col3 = st.columns([3, 1, 1])
         with progress_col1:
             st.caption(f"📊 {msg}")
         with progress_col2:
             step_count = len(step_events)
-            st.caption(f"🧭 {step_count} step(s) detected")
+            st.caption(f"🧭 {step_count} step(s)")
+        with progress_col3:
+            last_heartbeat = heartbeat_events[-1] if heartbeat_events else None
+            if last_heartbeat:
+                st.caption("🟢 active")
 
         progress_val = 0.0
         if progress_events:
@@ -1343,7 +1347,7 @@ def _render_evo_step_progress():
 
         if step_events:
             with st.expander("📍 Step History", expanded=False):
-                for ev in step_events[-8:]:
+                for ev in step_events[-5:]:
                     lvl = ev.get("level", "")
                     if lvl == "step":
                         st.caption(f"• {ev.get('msg', '')[:80]}")

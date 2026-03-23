@@ -170,6 +170,7 @@ class SelfEvolutionLoop:
                 self._last_step_time = time.time()
                 self._active_progress_steps = current_progress.current_step
                 self._timeout_extension_count = 0
+                yield from self._emit_heartbeat(current_progress)
 
             if self.ctx_monitor.should_compact:
                 yield from self._do_compaction()
@@ -199,9 +200,17 @@ class SelfEvolutionLoop:
                 self._step_history.append(event)
             elif lvl == "step_progress":
                 progress = self.runner.get_step_progress()
+                progress_event = {
+                    "current_step": progress.current_step,
+                    "total_steps_estimate": progress.total_steps_estimate,
+                    "percentage": progress.percentage,
+                    "phase": progress.phase.name.lower(),
+                    "completed_phases": list(progress.completed_phases),
+                }
                 yield _ev(
                     "step_progress",
                     f"Step progress: {progress.current_step}/{progress.total_steps_estimate} ({progress.percentage:.0f}%) - {progress.phase.name.lower()}",
+                    **progress_event
                 )
 
     def _should_extend_timeout(self, progress) -> bool:
@@ -230,10 +239,17 @@ class SelfEvolutionLoop:
         )
 
     def _emit_heartbeat(self, progress) -> Generator[Event, None, None]:
+        heartbeat_data = {
+            "current_step": progress.current_step,
+            "total_steps_estimate": progress.total_steps_estimate,
+            "percentage": progress.percentage,
+            "phase": progress.phase.name.lower(),
+        }
         yield _ev(
             "heartbeat",
             f"opencode active: step {progress.current_step}/{progress.total_steps_estimate} "
             f"({progress.phase.name.lower()}) — {progress.percentage:.0f}% complete",
+            **heartbeat_data
         )
 
     # ------------------------------------------------------------------ #
@@ -475,5 +491,7 @@ class SelfEvolutionLoop:
         )
 
 
-def _ev(level: str, msg: str) -> Event:
-    return {"level": level, "msg": msg}
+def _ev(level: str, msg: str, **kwargs) -> Event:
+    event = {"level": level, "msg": msg}
+    event.update(kwargs)
+    return event
