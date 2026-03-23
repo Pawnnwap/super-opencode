@@ -44,7 +44,8 @@ class SupervisorLoop:
 
         self.protocol = load_protocol(config.protocol_path)
         self.supervisor = LLMSupervisor(
-            self.protocol, config.workspace, config.supervisor_model
+            self.protocol, config.workspace, config.supervisor_model,
+            read_external_feedback=config.read_external_feedback,
         )
         self.runner = OpencodeRunner(
             config.workspace,

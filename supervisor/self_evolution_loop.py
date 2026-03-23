@@ -46,6 +46,7 @@ class SelfEvolutionLoop:
             config.workspace,
             config.supervisor_model,
             extra_system=self._codebase_preamble(),
+            read_external_feedback=config.read_external_feedback,
         )
         self.runner = OpencodeRunner(
             config.workspace,

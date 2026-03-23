@@ -16,3 +16,4 @@ class SupervisorConfig:
     timeout: int = 300
     log_level: str = "INFO"
     protected_files: tuple[str, ...] = ()
+    read_external_feedback: bool = False
