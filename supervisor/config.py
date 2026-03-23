@@ -18,3 +18,4 @@ class SupervisorConfig:
     protected_files: tuple[str, ...] = ()
     read_external_feedback: bool = False
     max_tokens: int = 128_000
+    max_protected_files_for_suggestions: int = 5

@@ -47,6 +47,7 @@ class SupervisorLoop:
             self.protocol, config.workspace, config.supervisor_model,
             read_external_feedback=config.read_external_feedback,
             max_tokens=config.max_tokens,
+            max_protected_files_for_suggestions=config.max_protected_files_for_suggestions,
         )
         self.runner = OpencodeRunner(
             config.workspace,
