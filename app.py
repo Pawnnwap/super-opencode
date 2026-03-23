@@ -401,24 +401,51 @@ def page_wizard():
             protected = st.session_state.get("protected_files", [])
             if not isinstance(protected, list):
                 protected = []
-            
-            display_text = "\n".join(protected) if protected else ""
-            edited = st.text_area(
-                "protected_files_edit",
-                key="protected_files_input",
-                value=display_text,
-                height=100,
-                placeholder="e.g.\nconfig.json\nrequirements.txt\nREADME.md",
-                label_visibility="collapsed",
+
+            workspace_path = (
+                Path(st.session_state.workspace) if st.session_state.workspace else None
             )
-            if edited != display_text:
-                new_protected = [
-                    line.strip() 
-                    for line in edited.split("\n") 
-                    if line.strip()
-                ]
+            all_files = []
+            if workspace_path and workspace_path.exists():
+                try:
+                    def is_in_dot_dir(path: Path, workspace: Path) -> bool:
+                        rel = path.relative_to(workspace)
+                        for part in rel.parts[:-1]:
+                            if part.startswith("."):
+                                return True
+                        return False
+
+                    def contains_debug_dir(path: Path, workspace: Path) -> bool:
+                        rel = path.relative_to(workspace)
+                        for part in rel.parts[:-1]:
+                            if "debug" in part.lower():
+                                return True
+                        return False
+
+                    all_files = sorted([
+                        str(f.relative_to(workspace_path)).replace("\\", "/")
+                        for f in workspace_path.rglob("*")
+                        if f.is_file() and not is_in_dot_dir(f, workspace_path) and not contains_debug_dir(f, workspace_path)
+                    ])
+                except Exception:
+                    pass
+
+            current_protected_set = set(protected)
+            available_files = [f for f in all_files if f not in current_protected_set]
+
+            st.markdown("**Add protected files:**")
+            selected_to_add = st.multiselect(
+                "Select files to protect",
+                options=available_files,
+                key="protected_files_multiselect",
+                label_visibility="collapsed",
+                placeholder="Choose files from workspace...",
+            )
+            if selected_to_add:
+                new_protected = list(set(protected) | set(selected_to_add))
                 st.session_state.protected_files = new_protected
-            
+                st.rerun()
+
             if protected:
                 st.success(f"{len(protected)} file(s) protected")
                 for pf in protected:
