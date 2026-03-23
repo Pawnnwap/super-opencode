@@ -48,6 +48,9 @@ class SupervisorLoop:
             read_external_feedback=config.read_external_feedback,
             max_tokens=config.max_tokens,
             max_protected_files_for_suggestions=config.max_protected_files_for_suggestions,
+            truncation_enabled=config.truncation_enabled,
+            max_history_turns=config.max_history_turns,
+            compact_intermediate_steps=config.compact_intermediate_steps,
         )
         self.runner = OpencodeRunner(
             config.workspace,
@@ -55,7 +58,7 @@ class SupervisorLoop:
             config.opencode_executable,
             config.timeout,
         )
-        self.ctx_monitor = ContextMonitor(config.context_threshold, config.max_tokens)
+        self.ctx_monitor = ContextMonitor(config.context_threshold, config.max_tokens, config.truncation_enabled)
         self.guard = WorkspaceGuard(config.workspace, config.protected_files)
         self.archiver = WorkspaceArchiver(config.workspace)
         self._step_detector = OpencodeStepDetector()
@@ -158,6 +161,7 @@ class SupervisorLoop:
                 yield from self._emit_heartbeat(current_progress)
 
             if self.ctx_monitor.should_compact:
+                self.supervisor.compact_history()
                 yield from self._do_compaction()
                 output, timed_out = self.runner.read_output()
                 continue

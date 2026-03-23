@@ -49,6 +49,9 @@ class SelfEvolutionLoop:
             extra_system=self._codebase_preamble(),
             read_external_feedback=config.read_external_feedback,
             max_tokens=config.max_tokens,
+            truncation_enabled=config.truncation_enabled,
+            max_history_turns=config.max_history_turns,
+            compact_intermediate_steps=config.compact_intermediate_steps,
         )
         self.runner = OpencodeRunner(
             config.workspace,
@@ -56,7 +59,7 @@ class SelfEvolutionLoop:
             config.opencode_executable,
             config.timeout,
         )
-        self.ctx_monitor = ContextMonitor(config.context_threshold, config.max_tokens)
+        self.ctx_monitor = ContextMonitor(config.context_threshold, config.max_tokens, config.truncation_enabled)
         self.guard = WorkspaceGuard(config.workspace, config.protected_files)
         self.checkpoints = CheckpointManager(config.workspace)
         self.test_runner = OcTestRunner(config.workspace)
@@ -173,6 +176,7 @@ class SelfEvolutionLoop:
                 yield from self._emit_heartbeat(current_progress)
 
             if self.ctx_monitor.should_compact:
+                self.supervisor.compact_history()
                 yield from self._do_compaction()
                 output, timed_out = self.runner.read_output()
                 continue

@@ -19,6 +19,8 @@ from .token_estimator import (
     should_truncate,
     truncate_prompt,
     truncate_with_fallback,
+    warn_if_exceeds_limit,
+    safe_truncate_request,
 )
 
 logger = logging.getLogger(__name__)
@@ -83,7 +85,7 @@ class LLMSupervisor:
     conversation history gives the supervisor persistent memory.
     """
 
-    _MAX_HISTORY_TURNS = 40
+    _INTERMEDIATE_STEP_MARKER = "_is_intermediate_step"
 
     def __init__(
         self,
@@ -94,6 +96,9 @@ class LLMSupervisor:
         read_external_feedback: bool = False,
         max_tokens: int = 128_000,
         max_protected_files_for_suggestions: int = 5,
+        truncation_enabled: bool = True,
+        max_history_turns: int = 40,
+        compact_intermediate_steps: bool = False,
     ):
         self._client = OpenAI()
         self._model = model
@@ -105,6 +110,9 @@ class LLMSupervisor:
         self._max_tokens = max_tokens
         self._token_warnings: list[str] = []
         self._max_protected_files_for_suggestions = max_protected_files_for_suggestions
+        self._truncation_enabled = truncation_enabled
+        self._max_history_turns = max_history_turns
+        self._compact_intermediate_steps = compact_intermediate_steps
 
     def read_protected_files(self) -> dict[str, str]:
         """Read all protected files and return their content as a dict mapping path to content."""
@@ -615,6 +623,111 @@ class LLMSupervisor:
         """Clear token warning messages."""
         self._token_warnings.clear()
 
+    def should_record_turn(self, content: str, role: str = "user") -> bool:
+        """Determine whether a turn should be added to history.
+        
+        When compact_intermediate_steps is enabled, this method filters out
+        intermediate steps from opencode output while keeping final outputs
+        and conclusions.
+        
+        Args:
+            content: The message content
+            role: The role of the message ('user' or 'assistant')
+            
+        Returns:
+            True if the turn should be recorded, False otherwise
+        """
+        if not self._compact_intermediate_steps:
+            return True
+        
+        if role != "user":
+            return True
+        
+        content_lower = content.lower()
+        
+        intermediate_indicators = [
+            "step ",
+            "planning",
+            "analyzing",
+            "considering",
+            "let me",
+            "i'll need to",
+            "creating",
+            "writing",
+            "modifying",
+            "running test",
+            "running tests",
+            "test result",
+            "progress:",
+            "phase:",
+            "moving to",
+            "now ",
+            "next ",
+        ]
+        
+        final_indicators = [
+            "all targets met",
+            "all targets are met",
+            "targets achieved",
+            "task complete",
+            "task is complete",
+            "objectives met",
+            "protocol satisfied",
+            "feedback:",
+            "recommendation:",
+        ]
+        
+        is_intermediate = any(
+            indicator in content_lower for indicator in intermediate_indicators
+        )
+        
+        is_final = any(
+            indicator in content_lower for indicator in final_indicators
+        )
+        
+        return is_final or not is_intermediate
+
+    def compact_history(self) -> None:
+        """Remove intermediate steps from history while preserving essential conversation flow.
+        
+        This method keeps the first message (initial prompt) and the last N messages
+        to preserve context, while removing intermediate steps in between.
+        When compact_intermediate_steps is enabled, it identifies and removes
+        intermediate step entries based on content analysis.
+        """
+        if not self._history or len(self._history) <= 2:
+            return
+        
+        if not self._compact_intermediate_steps:
+            return
+        
+        keep_count = min(self._max_history_turns, len(self._history) // 2)
+        
+        if keep_count < 1:
+            return
+        
+        preserved: list[dict] = []
+        
+        if self._history:
+            preserved.append(self._history[0])
+        
+        for msg in self._history[1:]:
+            role = msg.get("role", "")
+            content = msg.get("content", "")
+            
+            if role == "user" and self.should_record_turn(content, role):
+                preserved.append(msg)
+            elif role == "assistant":
+                preserved.append(msg)
+        
+        if len(preserved) > keep_count + 1:
+            if len(preserved) > 2:
+                core = preserved[:2]
+                tail = preserved[-keep_count:]
+                self._history = core + tail
+            else:
+                self._history = preserved[-min(keep_count * 2, len(preserved)):]
+
     def estimate_current_tokens(self) -> int:
         """Estimate total tokens for current conversation state."""
         conv_parts = [m["content"] for m in self._history]
@@ -625,45 +738,53 @@ class LLMSupervisor:
             "",
         ).total
 
-    def _chat(self, user_content: str) -> SupervisorVerdict:
-        self._history.append({"role": "user", "content": user_content})
+    def _chat(self, user_content: str, is_intermediate: bool = False) -> SupervisorVerdict:
+        should_record_user = (
+            not is_intermediate or 
+            not self._compact_intermediate_steps or 
+            self.should_record_turn(user_content, "user")
+        )
+        
+        if should_record_user:
+            self._history.append({"role": "user", "content": user_content})
+        elif self._compact_intermediate_steps:
+            pass
 
-        if len(self._history) > self._MAX_HISTORY_TURNS * 2:
-            self._history = self._history[:2] + self._history[4:]
+        if len(self._history) > self._max_history_turns * 2:
+            if self._compact_intermediate_steps:
+                self.compact_history()
+            else:
+                self._history = self._history[:2] + self._history[4:]
 
-        # Build conversation text for token estimation
         conv_parts = []
         for msg in self._history:
             if msg.get("content"):
                 conv_parts.append(msg["content"])
         conv_text = "\n".join(conv_parts)
 
-        # Estimate tokens
         estimate = estimate_request_tokens(
             self._system,
             conv_text,
             user_content,
         )
 
-        # Warn if approaching limit
-        if should_warn(estimate, self._max_tokens):
-            warning_msg = (
-                f"Estimated request tokens ({estimate.total}) approaching model maximum "
-                f"({self._max_tokens}). System: {estimate.system_prompt}, "
-                f"History: {estimate.conversation_history}, Input: {estimate.user_input}."
-            )
-            logger.warning(warning_msg)
-            self._token_warnings.append(warning_msg)
+        warning_msgs = warn_if_exceeds_limit(estimate, self._max_tokens)
+        for msg in warning_msgs:
+            self._token_warnings.append(msg)
 
-        # Truncate user content if needed
-        if should_truncate(estimate, self._max_tokens):
+        if self._truncation_enabled and should_truncate(estimate, self._max_tokens):
             user_content = truncate_with_fallback(
                 user_content,
                 self._max_tokens,
                 system_prompt=self._system,
                 conversation_history=conv_text,
             )
-            # Update the last history entry
+            trunc_warning = (
+                f"Prompt truncated to fit within token limit. "
+                f"Original: {estimate.total} tokens, Max available: {int(self._max_tokens * (1.0 - 0.25))} tokens"
+            )
+            logger.warning(trunc_warning)
+            self._token_warnings.append(trunc_warning)
             self._history[-1]["content"] = user_content
 
         response = self._client.chat.completions.create(

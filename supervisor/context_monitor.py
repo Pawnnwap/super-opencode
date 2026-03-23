@@ -12,35 +12,50 @@ _DEFAULT_MAX = 128_000
 
 
 class ContextMonitor:
-    def __init__(self, threshold: float = 0.60, max_tokens: int = _DEFAULT_MAX):
+    def __init__(self, threshold: float = 0.60, max_tokens: int = _DEFAULT_MAX, truncation_enabled: bool = True):
         self.threshold = threshold
         self.max_tokens = max_tokens
         self._current = 0
         self._warned = False
         self._last_warning_threshold: float | None = None
+        self._truncation_enabled = truncation_enabled
+        self._files_read: list[str] = []
+        self._prompt_head: str = ""
 
-    def update(self, tokens: int) -> None:
+    def update(self, tokens: int, files_read: list[str] | None = None, prompt_head: str | None = None) -> None:
         self._current = tokens
+        if files_read is not None:
+            self._files_read = files_read
+        if prompt_head is not None:
+            self._prompt_head = prompt_head[:100]
         logger.debug("Context: ~%d / %d (%.1f%%)", tokens, self.max_tokens, self.fraction * 100)
 
         # Graduated warning: emit warning at each threshold crossed
         current_threshold = get_threshold_for_fraction(self.fraction)
         if current_threshold is not None and current_threshold != self._last_warning_threshold:
             self._last_warning_threshold = current_threshold
+            file_info = f"Files: {', '.join(self._files_read)}" if self._files_read else "Files: none"
+            prompt_info = f"Prompt head: {self._prompt_head}" if self._prompt_head else "Prompt head: (empty)"
             logger.warning(
-                "Context usage at %.0f%% threshold: %d / %d tokens (%.1f%%). %s",
+                "Context usage at %.0f%% threshold: %d / %d tokens (%.1f%%). %s | %s | %s",
                 current_threshold * 100,
                 tokens, self.max_tokens, self.fraction * 100,
                 self._get_advice_for_threshold(current_threshold),
+                file_info,
+                prompt_info,
             )
 
         # Legacy single-warning behavior (kept for backward compat)
         if self.approaching_limit and not self._warned:
             self._warned = True
+            file_info = f"Files: {', '.join(self._files_read)}" if self._files_read else "Files: none"
+            prompt_info = f"Prompt head: {self._prompt_head}" if self._prompt_head else "Prompt head: (empty)"
             logger.warning(
                 "Context usage approaching limit: %d / %d tokens (%.1f%%). "
-                "Consider reducing context size.",
+                "Consider reducing context size. %s | %s",
                 tokens, self.max_tokens, self.fraction * 100,
+                file_info,
+                prompt_info,
             )
 
     def _get_advice_for_threshold(self, thresh: float) -> str:
@@ -119,3 +134,20 @@ class ContextMonitor:
         self._current = 0
         self._warned = False
         self._last_warning_threshold = None
+
+    @property
+    def truncation_enabled(self) -> bool:
+        """Return whether truncation is enabled."""
+        return self._truncation_enabled
+
+    def get_truncation_status(self) -> dict:
+        """Provide detailed truncation status information."""
+        available = int(self.max_tokens * 0.75)
+        return {
+            "truncation_enabled": self._truncation_enabled,
+            "current_tokens": self._current,
+            "max_tokens": self.max_tokens,
+            "available_tokens": available,
+            "would_need_truncation": self._current > available,
+            "fraction": self.fraction,
+        }
