@@ -143,38 +143,22 @@ class LLMSupervisor:
     def _read_protected_files_for_suggestions(self) -> dict[str, str]:
         """Read protected files not in dot-prefixed directories for suggestion generation.
         
-        This reads .opencoderc, .opencode (if file), and other user-defined protected files
-        at the workspace root, but excludes files inside .opencode/ directory and other
-        dot-prefixed directories.
+        This reads user-defined protected files at the workspace root,
+        but excludes .opencoderc, .opencode (file), and files inside .opencode/ directory
+        and other dot-prefixed directories.
         """
         protected_contents: dict[str, str] = {}
         workspace = self._workspace.resolve()
-
-        # Read .opencoderc if it exists at workspace root
-        opencoderc = workspace / ".opencoderc"
-        if opencoderc.is_file():
-            try:
-                rel = opencoderc.relative_to(workspace)
-                protected_contents[str(rel)] = opencoderc.read_text(encoding="utf-8")
-            except (OSError, UnicodeDecodeError):
-                pass
-
-        # Read .opencode file if it exists at workspace root (as a file, not directory)
-        opencode_file = workspace / ".opencode"
-        if opencode_file.is_file():
-            try:
-                rel = opencode_file.relative_to(workspace)
-                protected_contents[str(rel)] = opencode_file.read_text(encoding="utf-8")
-            except (OSError, UnicodeDecodeError):
-                pass
 
         # Read files in workspace root that are protected but not in .opencode/ directory
         # Also check for any other protected files in non-dot directories
         try:
             for entry in workspace.iterdir():
                 if entry.is_file():
-                    # Skip files in .opencode/ directory (already handled differently)
-                    # Skip dot-prefixed directories any content
+                    # Skip .opencoderc and .opencode files (these are excluded from suggestions)
+                    if entry.name in (".opencoderc", ".opencode"):
+                        continue
+                    # Skip dot-prefixed files
                     if entry.name.startswith("."):
                         continue
                     # Check if this file should be protected (by name-based convention)
