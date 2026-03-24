@@ -582,3 +582,36 @@ class OpencodeRunner:
         """Get archive statistics."""
         return self._archiver.get_archive_stats()
 
+    def get_files_read(self) -> list[str]:
+        """
+        Extract file references from opencode output.
+        Looks for patterns like file paths, file operations, and file references.
+        """
+        import re
+        
+        if not self._last_result or not self._last_result.output:
+            return []
+        
+        output = self._last_result.output
+        files: set[str] = set()
+        
+        # Patterns for file references in opencode output
+        file_patterns = [
+            # File paths with common extensions
+            re.compile(r'(?:^|\s)([a-zA-Z_][\w./\\-]*\.(?:py|js|ts|jsx|tsx|json|yaml|yml|toml|md|txt|rst|cfg|ini|sh|bat|ps1|html|css|xml))(?:\s|$)', re.MULTILINE),
+            # "file:" or "path:" prefixed paths
+            re.compile(r'(?:file|path):\s*([a-zA-Z_][\w./\\-]+)', re.IGNORECASE),
+            # File operations like "Reading file X" or "Creating file Y"
+            re.compile(r'(?:reading|creating|writing|modifying|editing|updating|opening)\s+(?:file\s+)?([a-zA-Z_][\w./\\-]+)', re.IGNORECASE),
+            # File paths in code blocks
+            re.compile(r'```[\w]*\s*\n\s*(?:#\s*)?([a-zA-Z_][\w./\\-]+\.(?:py|js|ts|json|yaml|yml|toml|md|txt))', re.MULTILINE),
+        ]
+        
+        for pattern in file_patterns:
+            for match in pattern.finditer(output):
+                file_path = match.group(1)
+                if file_path and len(file_path) > 2:  # Filter out very short matches
+                    files.add(file_path)
+        
+        return sorted(files)
+

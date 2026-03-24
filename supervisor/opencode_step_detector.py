@@ -199,8 +199,6 @@ class OpencodeStepDetector:
         return self._progress
 
     def detect_phase(self, text: str) -> StepPhase:
-        text_lower = text.lower()
-
         if self._matches_patterns(text, self.PLANNING_PATTERNS):
             return StepPhase.PLANNING
         if self._matches_patterns(text, self.CODING_PATTERNS):

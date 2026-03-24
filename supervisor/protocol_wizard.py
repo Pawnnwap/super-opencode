@@ -12,6 +12,7 @@ from __future__ import annotations
 from openai import OpenAI
 
 from .protocol import Protocol, parse_protocol_text
+from .protocol_analyzer import ProtocolAnalyzer, ProtocolAnalysis
 
 _WIZARD_SYSTEM = """\
 You are a technical project-management assistant.
@@ -107,3 +108,36 @@ class ProtocolWizard:
             temperature=0.3,
         )
         return response.choices[0].message.content.strip()
+
+    def analyze_sections(
+        self,
+        raw_input: str,
+        raw_target: str,
+        raw_restrictions: str,
+    ) -> ProtocolAnalysis | None:
+        """
+        Analyze raw protocol sections and return quality feedback.
+        Returns None if the text cannot be parsed into a valid protocol.
+        """
+        analyzer = ProtocolAnalyzer()
+        # Build a temporary protocol-like text for analysis
+        temp_text = (
+            f"## INPUT\n\n{raw_input}\n\n"
+            f"## TARGET\n\n{raw_target}\n\n"
+            f"## RESTRICTIONS\n\n{raw_restrictions}\n"
+        )
+        try:
+            return analyzer.analyze_text(temp_text)
+        except Exception:
+            return None
+
+    def analyze_refined(self, refined_md: str) -> ProtocolAnalysis | None:
+        """
+        Analyze a refined protocol markdown string.
+        Returns None if the text cannot be parsed.
+        """
+        analyzer = ProtocolAnalyzer()
+        try:
+            return analyzer.analyze_text(refined_md)
+        except Exception:
+            return None

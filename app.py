@@ -13,6 +13,7 @@ from pathlib import Path
 # ── supervisor package imports (all at top level — never lazy) ──────────── #
 from supervisor.config import SupervisorConfig
 from supervisor.protocol_wizard import ProtocolWizard
+from supervisor.protocol_analyzer import ProtocolAnalyzer, Severity
 from supervisor.loop import SupervisorLoop
 from supervisor.codebase_analyzer import snapshot_codebase
 from supervisor.meta_protocol_builder import MetaProtocolBuilder, write_meta_protocol
@@ -579,6 +580,15 @@ def page_wizard():
     )
     st.markdown("</div>", unsafe_allow_html=True)
 
+    # ── live quality analysis ─────────────────────────────────────────── #
+    if st.session_state.raw_input.strip() or st.session_state.raw_target.strip() or st.session_state.raw_restrictions.strip():
+        with st.expander("📊 Protocol Quality Preview", expanded=False):
+            _render_quality_analysis(
+                st.session_state.raw_input,
+                st.session_state.raw_target,
+                st.session_state.raw_restrictions,
+            )
+
     # ── refine button ──────────────────────────────────────────────────── #
     refine_clicked = st.button("✨  Refine with AI", type="primary")
 
@@ -629,6 +639,9 @@ def page_wizard():
             label_visibility="collapsed",
         )
 
+        with st.expander("📊 Protocol Quality Analysis", expanded=True):
+            _render_refined_quality_analysis(st.session_state.protocol_md)
+
         col_a, col_b, _ = st.columns([1, 1, 3])
         with col_a:
             if st.button("✅  Accept & Save", type="primary"):
@@ -638,6 +651,91 @@ def page_wizard():
             if st.button("🔄  Re-refine"):
                 st.session_state.wizard_step = 0
                 st.rerun()
+
+
+def _render_quality_analysis(raw_input: str, raw_target: str, raw_restrictions: str):
+    """Render real-time quality analysis of raw protocol sections."""
+    analyzer = ProtocolAnalyzer()
+    temp_text = (
+        f"## INPUT\n\n{raw_input}\n\n"
+        f"## TARGET\n\n{raw_target}\n\n"
+        f"## RESTRICTIONS\n\n{raw_restrictions}\n"
+    )
+    try:
+        analysis = analyzer.analyze_text(temp_text)
+    except Exception:
+        st.caption("Complete all three sections to see quality scores.")
+        return
+
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("Overall", f"{analysis.overall_score:.0%}")
+    with col2:
+        st.metric("INPUT", f"{analysis.input_score.overall:.0%}")
+    with col3:
+        st.metric("TARGET", f"{analysis.target_score.overall:.0%}")
+    with col4:
+        st.metric("RESTRICTIONS", f"{analysis.restrictions_score.overall:.0%}")
+
+    if analysis.issues:
+        st.caption(f"Found {len(analysis.issues)} issue(s)")
+        for issue in analysis.issues[:5]:
+            icon = {"error": "❌", "warning": "⚠️", "info": "ℹ️"}[issue.severity.value]
+            st.caption(f"{icon} [{issue.section}] {issue.message}")
+
+
+def _render_refined_quality_analysis(refined_md: str):
+    """Render quality analysis for a refined protocol markdown."""
+    analyzer = ProtocolAnalyzer()
+    try:
+        analysis = analyzer.analyze_text(refined_md)
+    except Exception as e:
+        st.warning(f"Cannot analyze protocol: {e}")
+        return
+
+    rating_colors = {
+        "excellent": "🟢",
+        "good": "🟡",
+        "fair": "🟠",
+        "poor": "🔴",
+    }
+    color = rating_colors.get(analysis.quality_rating, "⚪")
+
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("Overall", f"{analysis.overall_score:.0%}")
+    with col2:
+        st.metric("INPUT", f"{analysis.input_score.overall:.0%}")
+    with col3:
+        st.metric("TARGET", f"{analysis.target_score.overall:.0%}")
+    with col4:
+        st.metric("RESTRICTIONS", f"{analysis.restrictions_score.overall:.0%}")
+
+    st.caption(f"{color} Quality: {analysis.quality_rating}")
+
+    if analysis.issues:
+        errors = [i for i in analysis.issues if i.severity == Severity.ERROR]
+        warnings = [i for i in analysis.issues if i.severity == Severity.WARNING]
+        infos = [i for i in analysis.issues if i.severity == Severity.INFO]
+
+        if errors:
+            st.error(f"{len(errors)} error(s) found")
+            for issue in errors:
+                st.caption(f"❌ [{issue.section}] {issue.message}")
+                if issue.suggestion:
+                    st.caption(f"   → {issue.suggestion}")
+
+        if warnings:
+            st.warning(f"{len(warnings)} warning(s)")
+            for issue in warnings:
+                st.caption(f"⚠️ [{issue.section}] {issue.message}")
+
+        if infos:
+            with st.expander(f"{len(infos)} suggestion(s)"):
+                for issue in infos:
+                    st.caption(f"ℹ️ [{issue.section}] {issue.message}")
+                    if issue.suggestion:
+                        st.caption(f"   → {issue.suggestion}")
 
 
 def _save_protocol():

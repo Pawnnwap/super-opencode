@@ -154,9 +154,6 @@ class ArchiveManager:
             restored.append(str(rel))
         return restored
 
-    def restore_code_only(self, archive: Archive) -> list[str]:
-        return self.restore(archive)
-
     def list(self) -> list[Archive]:
         archives: list[Archive] = []
         for d in sorted(self._archive_root.iterdir(), key=lambda x: x.name):
@@ -255,17 +252,10 @@ class ProtectedPaths:
     def is_protected(cls, path: str | Path) -> bool:
         path_str = str(path).replace("\\", "/")
         parts = [p for p in path_str.split("/") if p]
-        
         parts_set = set(parts)
-        
         for protected in cls.PROTECTED_DIRS:
             if protected in parts_set:
                 return True
-        
-        for protected in cls.PROTECTED_FILES:
-            if protected in parts_set:
-                return True
-        
         return False
 
     @classmethod

@@ -138,7 +138,8 @@ class SupervisorLoop:
                 continue
 
             self._failures = 0
-            self.ctx_monitor.update(self.runner.estimated_context_tokens)
+            files_read = self.runner.get_files_read()
+            self.ctx_monitor.update(self.runner.estimated_context_tokens, files_read=files_read)
             
             # Emit context warning if approaching limit
             if self.ctx_monitor.approaching_limit:

@@ -141,7 +141,6 @@ class WorkspaceArchiver:
                         dst.parent.mkdir(parents=True, exist_ok=True)
                         shutil.copy2(src, dst)
                         archived.append(str(rel))
-                        archived.append(str(rel))
 
             metadata = {
                 "timestamp": ts,
@@ -234,37 +233,4 @@ class WorkspaceArchiver:
         }
 
 
-def _archive_dir_iterdir(archive_path: Path):
-    """Helper for restore_archive to iterate subdirectories."""
-    for item in archive_path.iterdir():
-        if item.is_dir():
-            yield item
 
-
-def archive_dir_iterdir(archive_path: Path):
-    """Helper for restore_archive to iterate subdirectories."""
-    return _archive_dir_iterdir(archive_path)
-
-
-import shutil as _shutil
-def restore_archive_files(archive_path: Path, workspace: Path) -> list[str]:
-    """
-    Restore files from an archive back to the workspace.
-    Returns list of restored file paths (relative to workspace).
-    """
-    restored: list[str] = []
-    if not archive_path.is_dir():
-        return restored
-
-    for subdir in archive_path.iterdir():
-        if not subdir.is_dir():
-            continue
-        for src in sorted(subdir.rglob("*")):
-            if not src.is_file():
-                continue
-            rel = src.relative_to(subdir)
-            dst = workspace / rel
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            _shutil.copy2(src, dst)
-            restored.append(str(rel))
-    return restored

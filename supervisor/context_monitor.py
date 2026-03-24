@@ -16,7 +16,6 @@ class ContextMonitor:
         self.threshold = threshold
         self.max_tokens = max_tokens
         self._current = 0
-        self._warned = False
         self._last_warning_threshold: float | None = None
         self._truncation_enabled = truncation_enabled
         self._files_read: list[str] = []
@@ -41,19 +40,6 @@ class ContextMonitor:
                 current_threshold * 100,
                 tokens, self.max_tokens, self.fraction * 100,
                 self._get_advice_for_threshold(current_threshold),
-                file_info,
-                prompt_info,
-            )
-
-        # Legacy single-warning behavior (kept for backward compat)
-        if self.approaching_limit and not self._warned:
-            self._warned = True
-            file_info = f"Files: {', '.join(self._files_read)}" if self._files_read else "Files: none"
-            prompt_info = f"Prompt head: {self._prompt_head}" if self._prompt_head else "Prompt head: (empty)"
-            logger.warning(
-                "Context usage approaching limit: %d / %d tokens (%.1f%%). "
-                "Consider reducing context size. %s | %s",
-                tokens, self.max_tokens, self.fraction * 100,
                 file_info,
                 prompt_info,
             )
@@ -132,7 +118,6 @@ class ContextMonitor:
 
     def reset(self) -> None:
         self._current = 0
-        self._warned = False
         self._last_warning_threshold = None
 
     @property

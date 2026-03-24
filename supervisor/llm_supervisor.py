@@ -11,16 +11,12 @@ from pathlib import Path
 from openai import OpenAI
 
 from .protocol import Protocol
-from .workspace_guard import _PROTECTED_DIRS, _PROTECTED_FILES
+from .protocol_analyzer import ProtocolAnalyzer, ProtocolAnalysis
 from .token_estimator import (
-    estimate_tokens,
     estimate_request_tokens,
-    should_warn,
     should_truncate,
-    truncate_prompt,
     truncate_with_fallback,
     warn_if_exceeds_limit,
-    safe_truncate_request,
 )
 
 logger = logging.getLogger(__name__)
@@ -151,64 +147,109 @@ class LLMSupervisor:
 
         return protected_contents
 
-    def _select_most_relevant_protected_files(
-        self, files: dict[str, str]
-    ) -> dict[str, str]:
-        """Select the most relevant protected files based on protocol target.
-        
-        Returns at most N files (default N=5) that are most relevant to the
-        current protocol target by analyzing file content relevance.
-        """
-        if not files:
-            return {}
-        
-        target_keywords = self._extract_keywords(self._protocol_target)
-        
-        if not target_keywords:
-            file_items = list(files.items())
-            return dict(file_items[:self._max_protected_files_for_suggestions])
-        
-        scored_files: list[tuple[str, str, int]] = []
-        for path, content in files.items():
-            content_lower = content.lower()
-            score = sum(1 for kw in target_keywords if kw.lower() in content_lower)
-            scored_files.append((path, content, score))
-        
-        scored_files.sort(key=lambda x: x[2], reverse=True)
-        
-        selected = scored_files[:self._max_protected_files_for_suggestions]
-        return {path: content for path, content, score in selected}
+    def _llm_select_files(
+        self, file_meta: dict[str, int], top_k: int
+    ) -> list[str]:
+        """Ask the LLM to pick the top-k most relevant files given path+size metadata.
 
-    def _read_protected_files_for_suggestions(self) -> dict[str, str]:
-        """Read protected files not in dot-prefixed directories for suggestion generation.
-        
-        This reads user-defined protected files at the workspace root,
-        but excludes .opencoderc, .opencode (file), and files inside .opencode/ directory
-        and other dot-prefixed directories.
-        
-        Limits the number of files to max_protected_files_for_suggestions (default 5)
-        based on relevance to protocol target.
+        Args:
+            file_meta: Mapping of relative path -> byte size for every candidate file.
+            top_k: Maximum number of files to return.
+
+        Returns:
+            List of relative path strings chosen by the LLM (length <= top_k).
+            Falls back to the first top_k sorted paths if the response cannot be parsed.
         """
-        protected_contents: dict[str, str] = {}
-        workspace = self._workspace.resolve()
+        import json as _json
+
+        if not file_meta:
+            return []
+
+        listing = "\n".join(
+            f"{path} ({size} bytes)" for path, size in sorted(file_meta.items())
+        )
+
+        prompt = (
+            f"You are selecting the {top_k} most relevant source files to read "
+            f"before generating code-improvement suggestions.\n\n"
+            f"## Protocol target\n{self._protocol_target}\n\n"
+            f"## Candidate files ({len(file_meta)} total)\n{listing}\n\n"
+            f"Return ONLY a JSON array of up to {top_k} file paths from the list above, "
+            f"ordered by relevance (most relevant first). "
+            f"Example: [\"src/main.py\", \"tests/test_core.py\"]\n"
+            f"Do not include any explanation or markdown — just the JSON array."
+        )
 
         try:
-            for entry in workspace.iterdir():
-                if entry.is_file():
-                    if entry.name in (".opencoderc", ".opencode"):
-                        continue
-                    if entry.name.startswith("."):
-                        continue
-                    if entry.name in _PROTECTED_FILES:
-                        try:
-                            rel = entry.relative_to(workspace)
-                            protected_contents[str(rel)] = entry.read_text(encoding="utf-8")
-                        except (OSError, UnicodeDecodeError):
-                            pass
-        except OSError:
-            pass
+            # Budget: each path can be up to ~100 chars (~25 tokens); add overhead for
+            # JSON brackets, commas, and whitespace. Minimum 128 to handle tiny top_k.
+            response_budget = max(128, top_k * 30)
+            response = self._client.chat.completions.create(
+                model=self._model,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=response_budget,
+                temperature=0.0,
+            )
+            raw = (response.choices[0].message.content or "").strip().strip("`")
+            if raw.lower().startswith("json"):
+                raw = raw[4:].lstrip()
+            selected: list[str] = _json.loads(raw)
+            if not isinstance(selected, list):
+                raise ValueError("LLM did not return a JSON array")
+            # Keep only paths that actually exist in file_meta
+            return [p for p in selected if p in file_meta][:top_k]
+        except Exception as exc:
+            logger.warning(
+                "LLM file selection failed (%s); falling back to first %d files.", exc, top_k
+            )
+            return sorted(file_meta)[:top_k]
 
-        return self._select_most_relevant_protected_files(protected_contents)
+    def _read_protected_files_for_suggestions(self) -> dict[str, str]:
+        """Walk the full workspace, let the LLM choose the top-k most relevant files,
+        then return their contents.
+
+        Dot-prefixed directories (.git, .opencode, etc.) and generated markdown
+        files are excluded from consideration. The number of files returned is
+        capped at self._max_protected_files_for_suggestions.
+        """
+        workspace = self._workspace.resolve()
+        top_k = self._max_protected_files_for_suggestions
+
+        # Collect candidate paths and their sizes — no content read yet.
+        file_meta: dict[str, int] = {}
+        try:
+            for path in workspace.rglob("*"):
+                if not path.is_file():
+                    continue
+                rel_parts = path.relative_to(workspace).parts
+                # Skip anything inside a dot-prefixed directory.
+                if any(part.startswith(".") for part in rel_parts):
+                    continue
+                # Skip files generated by opencode/supervisor.
+                if path.name in _OPENCODE_GENERATED_MD:
+                    continue
+                try:
+                    file_meta[str(path.relative_to(workspace))] = path.stat().st_size
+                except OSError:
+                    pass
+        except OSError as exc:
+            logger.warning("Could not walk workspace for file selection: %s", exc)
+
+        if not file_meta:
+            return {}
+
+        # Ask the LLM which files are most worth reading.
+        chosen_paths = self._llm_select_files(file_meta, top_k)
+
+        # Read only the chosen files.
+        result: dict[str, str] = {}
+        for rel_str in chosen_paths:
+            try:
+                result[rel_str] = (workspace / rel_str).read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError) as exc:
+                logger.warning("Could not read selected file %s: %s", rel_str, exc)
+
+        return result
 
     def _find_feedback_file(self) -> Path | None:
         """Find the latest modified markdown file not generated by opencode.
@@ -463,6 +504,32 @@ class LLMSupervisor:
             "If no suggestions are needed, output 'No suggestions at this time.'"
         )
         return self._chat(msg).raw
+
+    def analyze_protocol(
+        self,
+        protocol: Protocol,
+        use_llm: bool = False,
+    ) -> ProtocolAnalysis:
+        analyzer = ProtocolAnalyzer()
+        analysis = analyzer.analyze(protocol)
+
+        if use_llm:
+            msg = (
+                "Analyze the following protocol for an autonomous coding agent. "
+                "Evaluate its quality in terms of clarity, testability, and completeness. "
+                "Identify any vague targets, missing restrictions, or unclear inputs. "
+                "Provide specific, actionable suggestions for improvement.\n\n"
+                f"## INPUT\n{protocol.input_section}\n\n"
+                f"## TARGET\n{protocol.target_section}\n\n"
+                f"## RESTRICTIONS\n{protocol.restrictions_section}\n\n"
+                "Rate each section (INPUT, TARGET, RESTRICTIONS) on clarity, "
+                "testability, and completeness (0-100). "
+                "Then list specific issues and suggestions."
+            )
+            llm_feedback = self._chat(msg, is_intermediate=True)
+            # The LLM feedback is stored in history for context enrichment
+
+        return analysis
 
     def verify_protocol_alignment(
         self,
