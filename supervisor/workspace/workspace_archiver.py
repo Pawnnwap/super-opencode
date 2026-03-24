@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Generator
 
 if TYPE_CHECKING:
-    from supervisor.ignore_patterns import IgnoreMatcher
+    from supervisor.workspace.ignore_patterns import IgnoreMatcher
 
 _ARCHIVE_DIR = ".archive"
 _ARCHIVE_IGNORE_DIRS = {".git", ".venv", "venv", "node_modules", ".mypy_cache", "_deps", ". Dune", "__pycache__", ".checkpoints"}

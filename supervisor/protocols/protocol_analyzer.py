@@ -6,7 +6,7 @@ import re
 from dataclasses import dataclass, field
 from enum import Enum
 
-from .protocol import Protocol, parse_protocol_text
+from supervisor.protocols.protocol import Protocol, parse_protocol_text
 
 
 class Severity(str, Enum):

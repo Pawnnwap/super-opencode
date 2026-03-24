@@ -11,13 +11,13 @@ from pathlib import Path
 
 
 # ── supervisor package imports (all at top level — never lazy) ──────────── #
-from supervisor.config import SupervisorConfig
-from supervisor.protocol_wizard import ProtocolWizard
-from supervisor.protocol_analyzer import ProtocolAnalyzer, Severity
-from supervisor.loop import SupervisorLoop
-from supervisor.codebase_analyzer import snapshot_codebase
-from supervisor.meta_protocol_builder import MetaProtocolBuilder, write_meta_protocol
-from supervisor.self_evolution_loop import SelfEvolutionLoop
+from supervisor.utils.config import SupervisorConfig
+from supervisor.protocols.protocol_wizard import ProtocolWizard
+from supervisor.protocols.protocol_analyzer import ProtocolAnalyzer, Severity
+from supervisor.core.loop import SupervisorLoop
+from supervisor.analyzers.codebase_analyzer import snapshot_codebase
+from supervisor.protocols.meta_protocol_builder import MetaProtocolBuilder, write_meta_protocol
+from supervisor.core.self_evolution_loop import SelfEvolutionLoop
 
 import streamlit as st
 
@@ -461,7 +461,7 @@ def page_wizard():
                             st.rerun()
 
         with st.expander("🚫 Ignore Patterns (.opencodeignore)", expanded=False):
-            from supervisor.ignore_patterns import IGNORE_FILE, read_ignore_file, write_ignore_file
+            from supervisor.workspace.ignore_patterns import IGNORE_FILE, read_ignore_file, write_ignore_file
             st.caption(f"Files matching these patterns will be excluded from context retrieval")
             
             ws_path = Path(st.session_state.workspace) if st.session_state.workspace else None
@@ -1008,7 +1008,7 @@ def _render_token_warnings(events: list[dict], max_tokens: int) -> None:
     st.markdown("### ⚠️ Token Usage Warnings")
     seen = set()
     for ev in (token_events + context_events)[-5:]:
-        msg = ev.get("msg", "")[:200]
+        msg = ev.get("msg", "")
         if msg not in seen:
             seen.add(msg)
             st.warning(msg)
