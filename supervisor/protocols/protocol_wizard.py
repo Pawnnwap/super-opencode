@@ -65,14 +65,17 @@ class ProtocolWizard:
             f"### RESTRICTIONS (raw)\n{raw_restrictions}"
         )
 
-        response = self._client.chat.completions.create(
-            model=self._model,
-            messages=[
+        kwargs = {
+            "model": self._model,
+            "messages": [
                 {"role": "system", "content": _WIZARD_SYSTEM},
                 {"role": "user", "content": user_msg},
             ],
-            temperature=0.3,
-        )
+        }
+        if not self._model.startswith(("o1", "o3")):
+            kwargs["temperature"] = 0.3
+
+        response = self._client.chat.completions.create(**kwargs)
         refined_md = response.choices[0].message.content.strip()
         protocol = parse_protocol_text(refined_md)
         return refined_md, protocol
@@ -99,14 +102,17 @@ class ProtocolWizard:
             f"Return ONLY the body text for the {section_name} section "
             "(no heading, no preamble)."
         )
-        response = self._client.chat.completions.create(
-            model=self._model,
-            messages=[
+        kwargs = {
+            "model": self._model,
+            "messages": [
                 {"role": "system", "content": _WIZARD_SYSTEM},
                 {"role": "user", "content": user_msg},
             ],
-            temperature=0.3,
-        )
+        }
+        if not self._model.startswith(("o1", "o3")):
+            kwargs["temperature"] = 0.3
+
+        response = self._client.chat.completions.create(**kwargs)
         return response.choices[0].message.content.strip()
 
     def analyze_sections(

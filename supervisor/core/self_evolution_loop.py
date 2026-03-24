@@ -380,7 +380,7 @@ class SelfEvolutionLoop(BaseLoop):
             "All versions are automatically archived in the .archive/ directory.\n"
             "Do NOT delete or manually manage version files — the archive system handles this.\n"
             "Do NOT delete or modify the .opencode directory or its contents.\n"
-            f"{protected_files_desc}"
+            f"{protected_files_desc}\n"
             "Run tests after every logical change. Begin."
         )
 

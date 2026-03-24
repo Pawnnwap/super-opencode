@@ -65,14 +65,17 @@ class MetaProtocolBuilder:
             f"{digest}"
         )
 
-        response = self._client.chat.completions.create(
-            model=self._model,
-            messages=[
+        kwargs = {
+            "model": self._model,
+            "messages": [
                 {"role": "system", "content": _BUILDER_SYSTEM},
                 {"role": "user",   "content": user_msg},
             ],
-            temperature=0.2,
-        )
+        }
+        if not self._model.startswith(("o1", "o3")):
+            kwargs["temperature"] = 0.2
+
+        response = self._client.chat.completions.create(**kwargs)
         return response.choices[0].message.content.strip()
 
 

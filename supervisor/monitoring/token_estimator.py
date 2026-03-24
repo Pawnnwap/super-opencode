@@ -22,23 +22,23 @@ _WARNING_THRESHOLDS = [0.50, 0.60, 0.70, 0.80, 0.90]
 
 # tiktoken encoder (lazily loaded)
 _tiktoken_encoder = None
-_tiktoken_available = False
+_tiktoken_attempted = False
 
 
 def _get_tiktoken_encoder():
     """Lazily load tiktoken encoder for o200k_base encoding (GPT-4o)."""
-    global _tiktoken_encoder, _tiktoken_available
+    global _tiktoken_encoder, _tiktoken_attempted
     if _tiktoken_encoder is not None:
         return _tiktoken_encoder
-    if _tiktoken_available is False:
+    if _tiktoken_attempted:
         return None
+    
+    _tiktoken_attempted = True
     try:
         import tiktoken
         _tiktoken_encoder = tiktoken.get_encoding("o200k_base")
-        _tiktoken_available = True
         logger.info("tiktoken encoder loaded (o200k_base)")
     except Exception:
-        _tiktoken_available = False
         _tiktoken_encoder = None
         logger.debug("tiktoken not available, using char-based estimation")
     return _tiktoken_encoder

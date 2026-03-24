@@ -283,7 +283,7 @@ class SupervisorLoop(BaseLoop):
             "A .opencode/ folder has been created there to mark this as your project root.\n"
             "IMPORTANT: Never touch .checkpoints/ — that is reserved for the supervisor.\n"
             "The .archive/ directory preserves historical versions — do not modify it.\n"
-            f"{protected_files_desc}"
+            f"{protected_files_desc}\n"
             "Begin."
         )
 

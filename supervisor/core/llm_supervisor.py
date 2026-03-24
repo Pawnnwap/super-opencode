@@ -173,9 +173,29 @@ class LLMSupervisor:
         if not file_meta:
             return []
 
-        listing = "\n".join(
-            f"{path} ({size} bytes)" for path, size in sorted(file_meta.items())
-        )
+        # Budget: each path can be up to ~100 chars (~25 tokens); add overhead for
+        # JSON brackets, commas, and whitespace. Minimum 256 to be safe.
+        response_budget = max(256, top_k * 50)
+
+        # Ensure the prompt doesn't exceed max_tokens
+        # The prompt template without listing is about 150 tokens
+        available_tokens = max(1000, self._max_tokens - response_budget - 200)
+        
+        # Sort items to prioritize (maybe by size, or just alphabetical, we already sorted alphabetical)
+        sorted_items = sorted(file_meta.items())
+        
+        # Build listing iteratively to fit within available tokens
+        # Or we can just use estimate_tokens on the listing and truncate
+        listing_lines = []
+        for path, size in sorted_items:
+            listing_lines.append(f"{path} ({size} bytes)")
+            
+        listing = "\n".join(listing_lines)
+        
+        from supervisor.monitoring.token_estimator import estimate_tokens, truncate_prompt
+        if estimate_tokens(listing) > available_tokens:
+            # We must truncate the listing
+            listing = truncate_prompt(listing, available_tokens, preserve_end_ratio=0.0)
 
         prompt = (
             f"You are selecting the {top_k} most relevant source files to read "
@@ -189,23 +209,71 @@ class LLMSupervisor:
         )
 
         try:
-            # Budget: each path can be up to ~100 chars (~25 tokens); add overhead for
-            # JSON brackets, commas, and whitespace. Minimum 128 to handle tiny top_k.
-            response_budget = max(128, top_k * 30)
-            response = self._client.chat.completions.create(
-                model=self._model,
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=response_budget,
-                temperature=0.0,
-            )
-            raw = (response.choices[0].message.content or "").strip().strip("`")
-            if raw.lower().startswith("json"):
-                raw = raw[4:].lstrip()
-            selected: list[str] = _json.loads(raw)
-            if not isinstance(selected, list):
-                raise ValueError("LLM did not return a JSON array")
+            kwargs = {
+                "model": self._model,
+                "messages": [{"role": "user", "content": prompt}],
+            }
+            if self._model.startswith(("o1", "o3")):
+                kwargs["max_completion_tokens"] = response_budget
+            else:
+                kwargs["max_tokens"] = response_budget
+                kwargs["temperature"] = 0.0
+
+            response = self._client.chat.completions.create(**kwargs)
+            raw = (response.choices[0].message.content or "").strip()
+            
+            # Extract list of strings using regex if json fails or as an alternative
+            selected = []
+            try:
+                match = re.search(r'\[.*\]', raw, re.DOTALL)
+                if match:
+                    selected = _json.loads(match.group(0))
+                else:
+                    selected = _json.loads(raw)
+                if not isinstance(selected, list):
+                    selected = []
+            except Exception:
+                # Fallback to regex extraction of string literals
+                matches = re.findall(r'["\']([^"\']+)["\']', raw)
+                selected = [m for m in matches if m]
+                
+            if not selected:
+                raise ValueError("Could not extract any paths from LLM response")
+                
             # Keep only paths that actually exist in file_meta
-            return [p for p in selected if p in file_meta][:top_k]
+            real_paths = []
+            for p in selected:
+                p_str = str(p).strip()
+                if not p_str:
+                    continue
+                    
+                if p_str in file_meta:
+                    if p_str not in real_paths:
+                        real_paths.append(p_str)
+                    continue
+                    
+                # try suffix/prefix match
+                p_norm = p_str.replace("\\", "/").strip("/")
+                best_match = None
+                for candidate in file_meta:
+                    c_norm = candidate.replace("\\", "/").strip("/")
+                    if c_norm.endswith("/" + p_norm) or p_norm.endswith("/" + c_norm) or c_norm == p_norm:
+                        best_match = candidate
+                        break
+                
+                # try basename match if suffix match fails
+                if not best_match:
+                    p_name = p_norm.split("/")[-1]
+                    for candidate in file_meta:
+                        c_name = candidate.replace("\\", "/").strip("/").split("/")[-1]
+                        if c_name == p_name:
+                            best_match = candidate
+                            break
+                            
+                if best_match and best_match not in real_paths:
+                    real_paths.append(best_match)
+
+            return real_paths[:top_k]
         except Exception as exc:
             logger.warning(
                 "LLM file selection failed (%s); falling back to first %d files.",
@@ -365,7 +433,14 @@ class LLMSupervisor:
             f"{protected_context}"
             f"--- opencode output ---\n{opencode_output}\n--- end ---"
         )
-        return self._chat(msg)
+        history_msg = (
+            "opencode just produced the following output. "
+            "Evaluate it against the protocol.\n"
+            "If ALL targets are met say 'all targets met'.\n"
+            "Otherwise give clear, actionable feedback.\n\n"
+            f"--- opencode output ---\n{opencode_output}\n--- end ---"
+        )
+        return self._chat(msg, history_content=history_msg)
 
     def judge_with_step_context(
         self, opencode_output: str, step_context: StepContext
@@ -414,7 +489,20 @@ class LLMSupervisor:
             f"{opencode_output}\n--- end ---\n\n"
             "Focus your feedback on the current phase and remaining work."
         )
-        return self._chat(msg)
+        history_msg = (
+            "opencode just produced the following output. "
+            "Evaluate it against the protocol.\n"
+            "If ALL targets are met say 'all targets met'.\n"
+            "Otherwise give clear, actionable feedback.\n\n"
+            "--- Step Context ---\n"
+            f"Current step: {step_context.current_step}/{step_context.total_steps_estimate}\n"
+            f"Current phase: {step_context.phase}\n"
+            f"Completed phases: {phases_str}\n\n"
+            "--- opencode output ---\n"
+            f"{opencode_output}\n--- end ---\n\n"
+            "Focus your feedback on the current phase and remaining work."
+        )
+        return self._chat(msg, history_content=history_msg)
 
     def ask_for_compaction_instructions(self) -> SupervisorVerdict:
         msg = (
@@ -531,7 +619,21 @@ class LLMSupervisor:
             "Output ONLY the suggestions in a clear, actionable format. "
             "If no suggestions are needed, output 'No suggestions at this time.'"
         )
-        return self._chat(msg).raw
+        history_msg = (
+            "Based on the opencode output below and the current implementation status,\n"
+            "generate actionable suggestions for improving the code or approach.\n"
+            "Focus on:\n"
+            "1. Code quality improvements\n"
+            "2. Potential bugs or edge cases\n"
+            "3. Performance optimizations\n"
+            "4. Better patterns or practices\n"
+            "5. Missing tests or error handling\n\n"
+            f"--- Step Context ---\n{context_info}"
+            f"--- opencode output ---\n{opencode_output}\n--- end ---{summary_context}\n\n"
+            "Output ONLY the suggestions in a clear, actionable format. "
+            "If no suggestions are needed, output 'No suggestions at this time.'"
+        )
+        return self._chat(msg, history_content=history_msg).raw
 
     def analyze_protocol(
         self,
@@ -832,13 +934,15 @@ class LLMSupervisor:
         ).total
 
     def _chat(
-        self, user_content: str, is_intermediate: bool = False
+        self, user_content: str, is_intermediate: bool = False, history_content: str | None = None
     ) -> SupervisorVerdict:
         should_record_user = (
             not is_intermediate
             or not self._compact_intermediate_steps
             or self.should_record_turn(user_content, "user")
         )
+
+        record_content = history_content if history_content is not None else user_content
 
         conv_parts = []
         for msg in self._history:
@@ -891,7 +995,7 @@ class LLMSupervisor:
         reply = response.choices[0].message.content or ""
         
         if should_record_user:
-            self._history.append({"role": "user", "content": user_content})
+            self._history.append({"role": "user", "content": record_content})
         self._history.append({"role": "assistant", "content": reply})
 
         if len(self._history) > self._max_history_turns * 2:
