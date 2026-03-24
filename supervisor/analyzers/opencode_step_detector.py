@@ -271,16 +271,6 @@ class OpencodeStepDetector:
                 current_phase = detected_phase
                 self._last_phase = detected_phase
 
-            if current_phase != StepPhase.UNKNOWN and self._matches_patterns(
-                line, self.CODING_PATTERNS
-            ):
-                if (
-                    current_phase == StepPhase.UNKNOWN
-                    or current_phase == StepPhase.PLANNING
-                ):
-                    current_phase = StepPhase.CODING
-                    self._progress.phase = StepPhase.CODING
-
         self._progress.current_step = current_step
         self._progress.phase = current_phase
 

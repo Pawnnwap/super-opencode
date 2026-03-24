@@ -133,18 +133,7 @@ class SelfEvolutionLoop(BaseLoop):
 
             self._failures = 0
             self._iteration += 1
-            files_read = self.runner.get_files_read()
-            self.ctx_monitor.update(self.runner.estimated_context_tokens, files_read=files_read)
-
-            # Emit context warning if approaching limit
-            if self.ctx_monitor.approaching_limit:
-                advice = self.ctx_monitor.get_reduction_advice()
-                file_info = f"Files loaded: {', '.join(files_read)}" if files_read else "Files loaded: none"
-                yield _ev(
-                    "warn",
-                    f"⚠️ Context usage high: {advice['current_tokens']}/{advice['max_tokens']} tokens "
-                    f"({self.ctx_monitor.fraction*100:.0f}%). {advice['recommendation']}.\n\n{file_info}"
-                )
+            yield from self._update_context_monitor()
 
             yield _ev(
                 "info",
@@ -185,14 +174,7 @@ class SelfEvolutionLoop(BaseLoop):
         self._last_result = result
         yield _ev("info", f"Tests: {result.summary()}")
 
-        # Emit token warnings from supervisor if any
-        warnings = self.supervisor.get_token_warnings()
-        if warnings:
-            files_read = self.runner.get_files_read()
-            file_info = f"Files loaded: {', '.join(files_read)}" if files_read else "Files loaded: none"
-            for warning in warnings:
-                yield _ev("warn", f"⚠️ Token warning: {warning}\n\n{file_info}")
-            self.supervisor.clear_token_warnings()
+        yield from self._emit_token_warnings()
 
         if self._baseline and result.is_regression_vs(self._baseline):
             yield _ev("warn", "⚠️  Regression — rolling back.")

@@ -125,3 +125,25 @@ class BaseLoop:
         self.runner.send(msg)
         self.ctx_monitor.reset()
         yield _ev("info", "Compaction prompt with deletion permissions sent.")
+
+    def _update_context_monitor(self) -> Generator[Event, None, None]:
+        files_read = self.runner.get_files_read()
+        self.ctx_monitor.update(self.runner.estimated_context_tokens, files_read=files_read)
+        if self.ctx_monitor.approaching_limit:
+            advice = self.ctx_monitor.get_reduction_advice()
+            file_info = f"Files loaded: {', '.join(files_read)}" if files_read else "Files loaded: none"
+            yield _ev(
+                "warn",
+                f"⚠️ Context usage high: {advice['current_tokens']}/{advice['max_tokens']} tokens "
+                f"({self.ctx_monitor.fraction*100:.0f}%). {advice['recommendation']}.\n\n{file_info}"
+            )
+
+    def _emit_token_warnings(self) -> Generator[Event, None, None]:
+        warnings = self.supervisor.get_token_warnings()
+        if warnings:
+            files_read = self.runner.get_files_read()
+            file_info = f"Files loaded: {', '.join(files_read)}" if files_read else "Files loaded: none"
+            for warning in warnings:
+                yield _ev("warn", f"⚠️ Token warning: {warning}\n\n{file_info}")
+            self.supervisor.clear_token_warnings()
+

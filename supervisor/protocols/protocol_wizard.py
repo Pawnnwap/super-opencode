@@ -48,6 +48,20 @@ class ProtocolWizard:
     # One-shot refinement (used by the Streamlit form)                    #
     # ------------------------------------------------------------------ #
 
+    def _chat(self, user_msg: str) -> str:
+        kwargs = {
+            "model": self._model,
+            "messages": [
+                {"role": "system", "content": _WIZARD_SYSTEM},
+                {"role": "user", "content": user_msg},
+            ],
+        }
+        if not self._model.startswith(("o1", "o3")):
+            kwargs["temperature"] = 0.3
+
+        response = self._client.chat.completions.create(**kwargs)
+        return response.choices[0].message.content.strip()
+
     def refine(
         self,
         raw_input: str,
@@ -65,18 +79,7 @@ class ProtocolWizard:
             f"### RESTRICTIONS (raw)\n{raw_restrictions}"
         )
 
-        kwargs = {
-            "model": self._model,
-            "messages": [
-                {"role": "system", "content": _WIZARD_SYSTEM},
-                {"role": "user", "content": user_msg},
-            ],
-        }
-        if not self._model.startswith(("o1", "o3")):
-            kwargs["temperature"] = 0.3
-
-        response = self._client.chat.completions.create(**kwargs)
-        refined_md = response.choices[0].message.content.strip()
+        refined_md = self._chat(user_msg)
         protocol = parse_protocol_text(refined_md)
         return refined_md, protocol
 
@@ -102,18 +105,7 @@ class ProtocolWizard:
             f"Return ONLY the body text for the {section_name} section "
             "(no heading, no preamble)."
         )
-        kwargs = {
-            "model": self._model,
-            "messages": [
-                {"role": "system", "content": _WIZARD_SYSTEM},
-                {"role": "user", "content": user_msg},
-            ],
-        }
-        if not self._model.startswith(("o1", "o3")):
-            kwargs["temperature"] = 0.3
-
-        response = self._client.chat.completions.create(**kwargs)
-        return response.choices[0].message.content.strip()
+        return self._chat(user_msg)
 
     def analyze_sections(
         self,

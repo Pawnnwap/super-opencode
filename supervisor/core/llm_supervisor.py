@@ -409,7 +409,7 @@ class LLMSupervisor:
             logger.warning("Failed to read feedback file %s: %s", feedback_file, exc)
             return ""
 
-    def judge(self, opencode_output: str) -> SupervisorVerdict:
+    def _get_evaluation_context(self) -> tuple[str, str]:
         protected_files = self.read_protected_files()
         protected_context = ""
         if protected_files:
@@ -433,6 +433,10 @@ class LLMSupervisor:
                         f"{fb_content}\n"
                         "Use this external feedback as the primary evaluation input.\n\n"
                     )
+        return protected_context, feedback_context
+
+    def judge(self, opencode_output: str) -> SupervisorVerdict:
+        protected_context, feedback_context = self._get_evaluation_context()
 
         msg = (
             "opencode just produced the following output. "
@@ -455,29 +459,7 @@ class LLMSupervisor:
     def judge_with_step_context(
         self, opencode_output: str, step_context: StepContext
     ) -> SupervisorVerdict:
-        protected_files = self.read_protected_files()
-        protected_context = ""
-        if protected_files:
-            sections = []
-            for path, content in protected_files.items():
-                sections.append(f"--- {path} ---\n{content}\n--- end {path} ---")
-            protected_context = (
-                "\n\n## Current Protected Files State\n"
-                + "\n\n".join(sections)
-                + "\n\n"
-            )
-
-        feedback_context = ""
-        if self._read_external_feedback:
-            feedback_file = self._find_feedback_file()
-            if feedback_file is not None:
-                fb_content = self._read_feedback_content(feedback_file)
-                if fb_content:
-                    feedback_context = (
-                        f"\n\n## External Feedback (from {feedback_file.name})\n"
-                        f"{fb_content}\n"
-                        "Use this external feedback as the primary evaluation input.\n\n"
-                    )
+        protected_context, feedback_context = self._get_evaluation_context()
 
         phases_str = (
             ", ".join(step_context.completed_phases)
@@ -530,16 +512,7 @@ class LLMSupervisor:
         self, candidates: list[str], workspace: Path
     ) -> SupervisorVerdict:
         if not candidates:
-            msg = (
-                "The opencode agent's context window is nearly full. "
-                "Generate instructions for it to:\n"
-                "1. Keep only the latest version of every file.\n"
-                "2. Retain any foundational/fallback code it may reference.\n"
-                "3. Write summary.md to the workspace with: current status, "
-                "key decisions, remaining tasks and future directions.\n"
-                "Output ONLY the instruction text to send to opencode."
-            )
-            return self._chat(msg)
+            return self.ask_for_compaction_instructions()
 
         file_list = "\n".join(f"  - {f}" for f in candidates)
         msg = (

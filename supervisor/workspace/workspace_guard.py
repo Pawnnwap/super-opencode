@@ -86,6 +86,16 @@ class WorkspaceGuard:
             r'\.checkpoints',
             r'\barchive\b',
         ]
+        for protected_file in self._protected_files:
+            protected_patterns.append(rf'\b{re.escape(protected_file)}\b')
+            
+        action_patterns = [
+            r'delete', r'remove', r'unlink', r'rm\s',
+            r'move\s', r'mv\s', r'rename',
+            r'modify', r'edit', r'change',
+            r'overwrite', r'write',
+            r'chmod', r'attrib',
+        ]
         
         for pattern in protected_patterns:
             for match in re.finditer(pattern, message, re.IGNORECASE):
@@ -93,38 +103,10 @@ class WorkspaceGuard:
                 context_end = min(len(message), match.end() + 20)
                 context = message[context_start:context_end]
                 
-                action_patterns = [
-                    r'delete', r'remove', r'unlink', r'rm\s',
-                    r'move\s', r'mv\s', r'rename',
-                    r'modify', r'edit', r'change',
-                    r'overwrite', r'write',
-                    r'chmod', r'attrib',
-                ]
-                
                 for action in action_patterns:
                     if re.search(action, context, re.IGNORECASE):
+                        # Use the matched string as the label
                         violations.append(f"{match.group()}: {action.strip()}")
-                        break
-        
-        for protected_file in self._protected_files:
-            escaped = re.escape(protected_file)
-            pattern = rf'\b{escaped}\b'
-            for match in re.finditer(pattern, message, re.IGNORECASE):
-                context_start = max(0, match.start() - 20)
-                context_end = min(len(message), match.end() + 20)
-                context = message[context_start:context_end]
-                
-                action_patterns = [
-                    r'delete', r'remove', r'unlink', r'rm\s',
-                    r'move\s', r'mv\s', r'rename',
-                    r'modify', r'edit', r'change',
-                    r'overwrite', r'write',
-                    r'chmod', r'attrib',
-                ]
-                
-                for action in action_patterns:
-                    if re.search(action, context, re.IGNORECASE):
-                        violations.append(f"{protected_file}: {action.strip()}")
                         break
         
         return violations

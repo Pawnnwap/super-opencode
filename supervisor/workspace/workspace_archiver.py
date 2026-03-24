@@ -122,25 +122,23 @@ class WorkspaceArchiver:
 
             archived: list[str] = []
 
+            def _archive_file(src_path: Path) -> None:
+                rel = src_path.relative_to(self.workspace)
+                subdir = self._get_archive_subdir(rel.name)
+                dst = archive_path / subdir / rel
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src_path, dst)
+                archived.append(str(rel))
+
             if files_to_archive is not None:
                 for file_path in files_to_archive:
                     src = self.workspace / file_path
                     if src.exists() and src.is_file() and self._should_archive(src, ignore_matcher):
-                        rel = src.relative_to(self.workspace)
-                        subdir = self._get_archive_subdir(rel.name)
-                        dst = archive_path / subdir / str(rel).replace("/", "\\")
-                        dst.parent.mkdir(parents=True, exist_ok=True)
-                        shutil.copy2(src, dst)
-                        archived.append(str(rel))
+                        _archive_file(src)
             else:
                 for src in sorted(self.workspace.rglob("*")):
                     if self._should_archive(src, ignore_matcher):
-                        rel = src.relative_to(self.workspace)
-                        subdir = self._get_archive_subdir(rel.name)
-                        dst = archive_path / subdir / str(rel).replace("/", "\\")
-                        dst.parent.mkdir(parents=True, exist_ok=True)
-                        shutil.copy2(src, dst)
-                        archived.append(str(rel))
+                        _archive_file(src)
 
             metadata = {
                 "timestamp": ts,
