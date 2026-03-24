@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 
-from supervisor.monitoring.token_estimator import get_warning_thresholds, get_threshold_for_fraction
+from supervisor.monitoring.token_estimator import get_threshold_for_fraction
 
 logger = logging.getLogger(__name__)
 

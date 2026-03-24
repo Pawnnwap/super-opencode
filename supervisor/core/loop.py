@@ -20,7 +20,7 @@ from typing import Generator
 from supervisor.utils.config import SupervisorConfig
 from supervisor.monitoring.context_monitor import ContextMonitor
 from supervisor.core.llm_supervisor import LLMSupervisor, StepContext
-from supervisor.core.loop_base import BaseLoop, Event, _ev
+from supervisor.core.loop_base import BaseLoop, Event, _ev, LoopState
 from supervisor.runners.opencode_runner import OpencodeRunner
 from supervisor.analyzers.opencode_step_detector import OpencodeStepDetector, Step, StepProgress
 from supervisor.protocols.protocol import load_protocol
@@ -29,16 +29,9 @@ from supervisor.workspace.workspace_archiver import WorkspaceArchiver
 
 logger = logging.getLogger(__name__)
 
-class LoopState(Enum):
-    RUNNING = auto()
-    ENDED_SUCCESS = auto()
-    ENDED_FAILURE = auto()
-
-
 class SupervisorLoop(BaseLoop):
     def __init__(self, config: SupervisorConfig):
-        super().__init__()
-        self.config = config
+        super().__init__(config)
         _setup_logging(config.log_level)
 
         self.protocol = load_protocol(config.protocol_path)
@@ -51,24 +44,9 @@ class SupervisorLoop(BaseLoop):
             max_history_turns=config.max_history_turns,
             compact_intermediate_steps=config.compact_intermediate_steps,
         )
-        self.runner = OpencodeRunner(
-            config.workspace,
-            config.opencode_model,
-            config.opencode_executable,
-            config.timeout,
-        )
-        self.ctx_monitor = ContextMonitor(config.context_threshold, config.max_tokens, config.truncation_enabled)
-        self.guard = WorkspaceGuard(config.workspace, config.protected_files)
+        self._init_components()
         self.archiver = WorkspaceArchiver(config.workspace)
-        self._step_detector = OpencodeStepDetector()
         self._step_detector_initialized = False
-
-        self._failures = 0
-        self._state = LoopState.RUNNING
-        self._last_step_time: float = 0.0
-        self._active_progress_steps: int = 0
-        self._timeout_extension_count: int = 0
-        self._max_timeout_extensions: int = 3
 
     # ------------------------------------------------------------------ #
 
@@ -106,49 +84,7 @@ class SupervisorLoop(BaseLoop):
         self._last_step_time = time.time()
         output, timed_out = self.runner.read_output()
 
-        while self._state == LoopState.RUNNING:
-            current_progress = self.runner.get_step_progress()
-            
-            if timed_out or not output.strip():
-                if self._should_extend_timeout(current_progress):
-                    yield from self._handle_active_progress_timeout(current_progress)
-                    self._timeout_extension_count += 1
-                    output, timed_out = self.runner.read_output()
-                    continue
-                
-                diag = self.runner.last_diagnostic()
-                yield _ev("warn", f"opencode returned no output. Diagnostic:\n{diag}")
-                yield from self._handle_failure(output)
-                if self._state != LoopState.RUNNING:
-                    break
-                output, timed_out = self.runner.read_output()
-                continue
-
-            self._failures = 0
-            yield from self._update_context_monitor()
-
-            previous_step = self._active_progress_steps
-            yield from self._emit_step_events(output)
-            yield _ev("opencode_output", output)  # ← full output visible
-            
-            current_progress = self.runner.get_step_progress()
-            if current_progress.current_step > previous_step:
-                self._last_step_time = time.time()
-                self._active_progress_steps = current_progress.current_step
-                self._timeout_extension_count = 0
-                yield from self._emit_heartbeat(current_progress)
-
-            if self.ctx_monitor.should_compact:
-                self.supervisor.compact_history()
-                yield from self._do_compaction()
-                output, timed_out = self.runner.read_output()
-                continue
-
-            yield from self._do_judgement(output)
-            if self._state != LoopState.RUNNING:
-                break
-
-            output, timed_out = self.runner.read_output()
+        yield from self._run_loop(output, timed_out)
 
         self.runner.stop()
         if self._state == LoopState.ENDED_SUCCESS:
@@ -241,16 +177,6 @@ class SupervisorLoop(BaseLoop):
         )
         self.runner.start(self._restart_prompt())
 
-    def _forced_summary(self, last_output: str) -> Generator[Event, None, None]:
-        yield _ev("info", "Writing summary.md…")
-        report = self.supervisor.report_final_status(
-            reason="forced summarization",
-            opencode_output=last_output,
-            workspace=self.config.workspace,
-        )
-        self._write(report, "summary.md")
-        yield _ev("info", "summary.md written.")
-
     # ------------------------------------------------------------------ #
 
     def _init_prompt(self) -> str:
@@ -270,13 +196,7 @@ class SupervisorLoop(BaseLoop):
         )
 
     def _restart_prompt(self) -> str:
-        summary_path = self.config.workspace / "summary.md"
-        summary = (
-            summary_path.read_text(encoding="utf-8")
-            if summary_path.exists()
-            else "(none)"
-        )
-        text = self.config.protocol_path.read_text(encoding="utf-8")
+        summary, text = self._get_restart_context()
         return (
             "Resuming previous session. Context was cleared.\n\n"
             f"PROTOCOL:\n{text}\n\n"

@@ -76,16 +76,8 @@ class CheckpointManager:
         Overwrite workspace files with those from *cp*.
         Returns list of restored file paths (relative).
         """
-        restored: list[str] = []
-        for src in sorted(cp.path.rglob("*")):
-            if not src.is_file():
-                continue
-            rel = src.relative_to(cp.path)
-            dst = self.workspace / rel
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src, dst)
-            restored.append(str(rel))
-        return restored
+        from supervisor.utils.file_ops import copy_tree_to_workspace
+        return copy_tree_to_workspace(cp.path, self.workspace)
 
     def list(self) -> list[Checkpoint]:
         cps: list[Checkpoint] = []

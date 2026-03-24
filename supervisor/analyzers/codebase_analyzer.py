@@ -13,7 +13,6 @@ exactly what it is judging before it asks opencode to modify code.
 from __future__ import annotations
 
 import hashlib
-import textwrap
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING

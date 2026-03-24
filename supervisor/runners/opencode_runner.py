@@ -523,7 +523,7 @@ class OpencodeRunner:
         for path in workspace.rglob("*"):
             if should_ignore(path):
                 continue
-            if not path.suffix in source_exts and not path.name.endswith('.h'):
+            if path.suffix not in source_exts and not path.name.endswith('.h'):
                 continue
             try:
                 content = path.read_text(encoding="utf-8", errors="ignore")
@@ -542,7 +542,6 @@ class OpencodeRunner:
             if should_ignore(path):
                 continue
             rel_str = str(path.relative_to(workspace))
-            path_name = path.name
             
             is_pycache_dir = path.is_dir() and path.name == "__pycache__"
             if is_pycache_dir:

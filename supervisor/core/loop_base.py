@@ -1,9 +1,15 @@
 from __future__ import annotations
 
 import time
+from enum import Enum, auto
 from typing import Generator
 
 Event = dict
+
+class LoopState(Enum):
+    RUNNING = auto()
+    ENDED_SUCCESS = auto()
+    ENDED_FAILURE = auto()
 
 def _ev(level: str, msg: str, **kwargs) -> Event:
     event = {"level": level, "msg": msg}
@@ -11,10 +17,8 @@ def _ev(level: str, msg: str, **kwargs) -> Event:
     return event
 
 class BaseLoop:
-    def __init__(self):
-        # These should be initialized by subclasses, but we declare them here
-        # to ensure the common methods can use them.
-        self.config = None
+    def __init__(self, config=None):
+        self.config = config
         self.runner = None
         self.supervisor = None
         self.ctx_monitor = None
@@ -25,6 +29,28 @@ class BaseLoop:
         self._timeout_extension_count: int = 0
         self._max_timeout_extensions: int = 3
         self._step_history: list[dict] = []
+        self._state = LoopState.RUNNING
+        self._failures = 0
+
+    def _init_components(self):
+        from supervisor.runners.opencode_runner import OpencodeRunner
+        from supervisor.monitoring.context_monitor import ContextMonitor
+        from supervisor.workspace.workspace_guard import WorkspaceGuard
+        from supervisor.analyzers.opencode_step_detector import OpencodeStepDetector
+
+        self.runner = OpencodeRunner(
+            self.config.workspace,
+            self.config.opencode_model,
+            self.config.opencode_executable,
+            self.config.timeout,
+        )
+        self.ctx_monitor = ContextMonitor(
+            self.config.context_threshold, 
+            self.config.max_tokens, 
+            self.config.truncation_enabled
+        )
+        self.guard = WorkspaceGuard(self.config.workspace, self.config.protected_files)
+        self._step_detector = OpencodeStepDetector()
 
     def run_streaming(self) -> Generator[Event, None, None]:
         try:
@@ -39,6 +65,65 @@ class BaseLoop:
 
     def _run(self) -> Generator[Event, None, None]:
         raise NotImplementedError("Subclasses must implement _run()")
+
+    def _on_successful_output(self, output: str) -> Generator[Event, None, None]:
+        """Hook for subclasses to do something before context monitor updates."""
+        yield from []
+
+    def _handle_failure(self, output: str) -> Generator[Event, None, None]:
+        raise NotImplementedError()
+
+    def _do_judgement(self, output: str) -> Generator[Event, None, None]:
+        raise NotImplementedError()
+
+    def _run_loop(self, initial_output: str, initial_timed_out: bool) -> Generator[Event, None, None]:
+        output = initial_output
+        timed_out = initial_timed_out
+
+        while self._state == LoopState.RUNNING:
+            current_progress = self.runner.get_step_progress()
+            
+            if timed_out or not output.strip():
+                if self._should_extend_timeout(current_progress):
+                    yield from self._handle_active_progress_timeout(current_progress)
+                    self._timeout_extension_count += 1
+                    output, timed_out = self.runner.read_output()
+                    continue
+                
+                diag = self.runner.last_diagnostic()
+                yield _ev("warn", f"opencode returned no output. Diagnostic:\n{diag}")
+                yield from self._handle_failure(output)
+                if self._state != LoopState.RUNNING:
+                    break
+                output, timed_out = self.runner.read_output()
+                continue
+
+            self._failures = 0
+            yield from self._on_successful_output(output)
+            yield from self._update_context_monitor()
+
+            previous_step = self._active_progress_steps
+            yield from self._emit_step_events(output)
+            yield _ev("opencode_output", output)
+            
+            current_progress = self.runner.get_step_progress()
+            if current_progress.current_step > previous_step:
+                self._last_step_time = time.time()
+                self._active_progress_steps = current_progress.current_step
+                self._timeout_extension_count = 0
+                yield from self._emit_heartbeat(current_progress)
+
+            if self.ctx_monitor.should_compact:
+                self.supervisor.compact_history()
+                yield from self._do_compaction()
+                output, timed_out = self.runner.read_output()
+                continue
+
+            yield from self._do_judgement(output)
+            if self._state != LoopState.RUNNING:
+                break
+
+            output, timed_out = self.runner.read_output()
 
     def _should_extend_timeout(self, progress) -> bool:
         if self._timeout_extension_count >= self._max_timeout_extensions:
@@ -146,4 +231,24 @@ class BaseLoop:
             for warning in warnings:
                 yield _ev("warn", f"⚠️ Token warning: {warning}\n\n{file_info}")
             self.supervisor.clear_token_warnings()
+
+    def _forced_summary(self, last_output: str) -> Generator[Event, None, None]:
+        yield _ev("info", "Writing summary.md…")
+        report = self.supervisor.report_final_status(
+            reason="forced summarization",
+            opencode_output=last_output,
+            workspace=self.config.workspace,
+        )
+        (self.config.workspace / "summary.md").write_text(report, encoding="utf-8")
+        yield _ev("info", "summary.md written.")
+
+    def _get_restart_context(self) -> tuple[str, str]:
+        summary_path = self.config.workspace / "summary.md"
+        summary = (
+            summary_path.read_text(encoding="utf-8")
+            if summary_path.exists()
+            else "(none)"
+        )
+        text = self.config.protocol_path.read_text(encoding="utf-8")
+        return summary, text
 

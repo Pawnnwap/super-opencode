@@ -110,6 +110,8 @@ class LLMSupervisor:
         self._model = model
         self._workspace = workspace
         self._system = protocol.as_system_prompt(workspace)
+        if extra_system:
+            self._system += f"\n\n{extra_system}"
         self._protocol_target = protocol.target_section
         self._history: list[dict] = []
         self._read_external_feedback = read_external_feedback
@@ -639,7 +641,7 @@ class LLMSupervisor:
                 "testability, and completeness (0-100). "
                 "Then list specific issues and suggestions."
             )
-            llm_feedback = self._chat(msg, is_intermediate=True)
+            _ = self._chat(msg, is_intermediate=True)
             # The LLM feedback is stored in history for context enrichment
 
         return analysis

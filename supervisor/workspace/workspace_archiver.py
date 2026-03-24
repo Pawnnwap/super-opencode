@@ -22,7 +22,7 @@ import shutil
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Generator
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from supervisor.workspace.ignore_patterns import IgnoreMatcher
@@ -198,6 +198,7 @@ class WorkspaceArchiver:
         Restore files from an archive back to the workspace.
         Returns list of restored file paths.
         """
+        from supervisor.utils.file_ops import copy_tree_to_workspace
         restored: list[str] = []
         if not archive_path.is_dir():
             return restored
@@ -205,14 +206,7 @@ class WorkspaceArchiver:
         for subdir in archive_path.iterdir():
             if not subdir.is_dir():
                 continue
-            for src in sorted(subdir.rglob("*")):
-                if not src.is_file():
-                    continue
-                rel = src.relative_to(subdir)
-                dst = self.workspace / rel
-                dst.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(src, dst)
-                restored.append(str(rel))
+            restored.extend(copy_tree_to_workspace(subdir, self.workspace))
         return restored
 
     def get_archive_stats(self) -> dict:

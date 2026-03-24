@@ -311,7 +311,6 @@ with st.sidebar:
 
 def _apply_api_config():
     """Push API key and optional base URL into the environment for the SDK."""
-    import os
 
     os.environ["OPENAI_API_KEY"] = st.session_state.openai_key or "none"
     if st.session_state.base_url.strip():
@@ -608,7 +607,6 @@ def page_wizard():
         if missing:
             st.error(f"Please fill in: {', '.join(missing)}")
         else:
-            import os
 
             _apply_api_config()
 
@@ -866,18 +864,17 @@ def _start_run():
     st.session_state.log_events = []
 
     def _worker():
-        import time as time_module
         heartbeat_interval = 3.0
-        last_heartbeat = time_module.time()
+        last_heartbeat = time.time()
 
         loop = SupervisorLoop(config)
         for event in loop.run_streaming():
             if stop_event.is_set():
                 break
             shared["events"].append(event)
-            shared["last_event_time"] = time_module.time()
+            shared["last_event_time"] = time.time()
 
-            now = time_module.time()
+            now = time.time()
             if now - last_heartbeat >= heartbeat_interval:
                 shared["heartbeat"] += 1
                 shared["events"].append({
@@ -1163,7 +1160,6 @@ def page_evolve():
             st.session_state.evo_report = sh["report"]
 
     # ── infer repo root (where app.py lives) ─────────────────────────── #
-    import os
 
     repo_root = Path(__file__).parent.resolve()
     st.info(f"**Repo root (workspace):** `{repo_root}`")
@@ -1245,7 +1241,6 @@ def page_evolve():
             if not st.session_state.evo_goal.strip():
                 st.error("Please describe your evolution goal.")
             else:
-                import os
 
                 _apply_api_config()
 
@@ -1373,20 +1368,19 @@ def _start_evolution(repo_root: Path):
     st.session_state.evo_log_events = []
 
     def _worker():
-        import time as time_module
         heartbeat_interval = 3.0
-        last_heartbeat = time_module.time()
+        last_heartbeat = time.time()
 
         loop = SelfEvolutionLoop(config)
         for event in loop.run_streaming():
             if stop_event.is_set():
                 break
             shared["events"].append(event)
-            shared["last_event_time"] = time_module.time()
+            shared["last_event_time"] = time.time()
             if event.get("level") == "report":
                 shared["report"] = event["msg"]
 
-            now = time_module.time()
+            now = time.time()
             if now - last_heartbeat >= heartbeat_interval:
                 shared["heartbeat"] += 1
                 shared["events"].append({
