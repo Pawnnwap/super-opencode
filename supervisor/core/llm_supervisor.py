@@ -146,8 +146,16 @@ class LLMSupervisor:
         # Read all files in .opencode/ directory
         opencode_dir = workspace / ".opencode"
         if opencode_dir.is_dir():
-            for dirpath, _dirnames, filenames in os.walk(opencode_dir):
+            for dirpath, dirnames, filenames in os.walk(opencode_dir):
+                dirnames[:] = [
+                    d
+                    for d in dirnames
+                    if d not in _SKIP_DIRS
+                    and not any(d.startswith(p) for p in _SKIP_DIR_PREFIXES)
+                ]
                 for fname in filenames:
+                    if fname.endswith(".log"):
+                        continue
                     fpath = Path(dirpath) / fname
                     try:
                         rel = fpath.relative_to(workspace)
@@ -218,6 +226,8 @@ class LLMSupervisor:
             else:
                 kwargs["max_tokens"] = response_budget
                 kwargs["temperature"] = 0.0
+
+            self._log_prompt("LLM Select Files", kwargs["messages"])
 
             response = self._client.chat.completions.create(**kwargs)
             raw = (response.choices[0].message.content or "").strip()
@@ -933,6 +943,26 @@ class LLMSupervisor:
             "",
         ).total
 
+    def _log_prompt(self, title: str, messages: list[dict]) -> None:
+        """Write the raw prompt messages to a .log file for debugging."""
+        try:
+            log_dir = self._workspace / ".opencode"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            log_file = log_dir / "supervisor_prompts.log"
+            
+            with open(log_file, "a", encoding="utf-8") as f:
+                f.write(f"\n{'='*80}\n")
+                f.write(f"--- {title} ---\n")
+                import datetime
+                f.write(f"Timestamp: {datetime.datetime.now().isoformat()}\n")
+                f.write(f"{'='*80}\n\n")
+                for msg in messages:
+                    role = msg.get("role", "unknown").upper()
+                    content = msg.get("content", "")
+                    f.write(f"[{role}]\n{content}\n\n{'-'*40}\n\n")
+        except Exception as e:
+            logger.debug(f"Failed to log prompt: {e}")
+
     def _chat(
         self, user_content: str, is_intermediate: bool = False, history_content: str | None = None
     ) -> SupervisorVerdict:
@@ -987,6 +1017,8 @@ class LLMSupervisor:
         messages = [{"role": "system", "content": self._system}]
         messages.extend(self._history)
         messages.append({"role": "user", "content": user_content})
+
+        self._log_prompt("Supervisor Chat", messages)
 
         response = self._client.chat.completions.create(
             model=self._model,
