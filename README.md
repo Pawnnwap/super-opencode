@@ -12,9 +12,9 @@ debug and evolve its own source code.
 
 ## Prerequisites
 
-- Opencode
 - Python 3.11 or higher
-- An API key for OpenAI or any compatible provider (e.g., Ollama)
+- An API key for OpenAI or any compatible provider (e.g., NVIDIA NIM, Ollama)
+- opencode CLI installed (see installation below)
 
 ---
 
@@ -42,8 +42,8 @@ For UI configuration, use the path `C:\ProgramData\chocolatey\bin\opencode.exe`.
 ## Recommended Models
 
 ### Supervisor Model
-- With Nvidia nim: **nvidia/nemotron-3-super-120b-a12b** or **qwen/qwen3.5-397b-a17b**
-- With iflow: **qwen3-coder-plus**
+- With NVIDIA NIM: **nvidia/nemotron-3-super-120b-a12b** or **qwen/qwen3.5-397b-a17b**
+- With IFlow: **qwen3-coder-plus**
 
 ### opencode Model
 - **opencode/big-pickle**
@@ -105,20 +105,38 @@ The supervisor system runs the opencode agent in a controlled feedback loop:
 3. **Workspace safety** — The system blocks out-of-workspace path references to
    prevent unintended modifications
 4. **Checkpointing** — Every successful iteration is snapshotted to `.checkpoints/`
-5. **Self-evolution** — The system can analyze and improve its own codebase,
+5. **Workspace archiving** — Workspace state is preserved in `.archive/` before
+   each run and after each iteration
+6. **Self-evolution** — The system can analyze and improve its own codebase,
    running tests before and after each change with automatic rollback on regression
 
 ---
 
-## Pages
+## Streamlit UI Pages
 
 ### ① Protocol Wizard
 Fill in INPUT / TARGET / RESTRICTIONS in plain language → click
 **Refine with AI** → review the generated `protocol.md` → Accept & Save.
 
+The wizard includes:
+- **Configuration panel** — Set API key, base URL, workspace path, models,
+  max retries, context threshold, timeout, max tokens
+- **Protected Files** — Mark files that opencode cannot modify or delete
+- **.opencodeignore** — Configure ignore patterns for files excluded from
+  context retrieval
+- **Live quality analysis** — Real-time scoring of protocol clarity,
+  testability, and completeness as you type
+
 ### ② Live Run
 Start the supervisor loop against any project workspace. Live log streams
 in real time. Stop between steps at any time.
+
+Features:
+- Step-by-step progress tracking with phase detection
+- Token usage warnings with graduated thresholds (50%, 60%, 70%, 80%, 90%)
+- Verbose/compact log toggle
+- Context compaction with file cleanup suggestions
+- Heartbeat monitoring to detect stalled processes
 
 ### ③ Report
 Final supervisor report after a run, with download button.
@@ -132,7 +150,7 @@ Point the system at **its own source tree**.
    a precise protocol with accurate INPUT and testable TARGETs
 4. Review / edit, then **Launch Evolution**
 
-Self-evolution extras:
+Self-evolution features:
 
 | Feature | Detail |
 |---------|--------|
@@ -140,6 +158,7 @@ Self-evolution extras:
 | Per-iteration tests | Tests re-run after every supervisor judgement |
 | Regression guard | Tests worse → auto-rollback to last good checkpoint |
 | Checkpointing | Every non-regressing iteration is snapshotted to `.checkpoints/` |
+| Workspace archiving | Every iteration is archived to `.archive/` with metadata |
 | Evolution report | `evolution_report.md` — changed files, test delta, best checkpoint |
 
 ---
@@ -147,23 +166,82 @@ Self-evolution extras:
 ## Architecture
 
 ```
-app.py                          Streamlit UI  (4 pages)
+app.py                              Streamlit UI  (4 pages)
 supervisor/
-  config.py                     Frozen config dataclass
-  protocol.py                   Parse / validate protocol.md
-  protocol_wizard.py            OpenAI-SDK protocol refiner
-  llm_supervisor.py             OpenAI-SDK judge  (system prompt = protocol)
-  opencode_runner.py            Subprocess wrapper for the opencode CLI
-  context_monitor.py            Tracks context window usage
-  workspace_guard.py            Blocks out-of-workspace path references
-  loop.py                       Base state machine; yields Event dicts
-  codebase_analyzer.py          Snapshots source tree for LLM context
-  test_runner.py                Runs pytest / syntax check; structured results
-  checkpoint.py                 File-copy snapshot / restore / diff
-  meta_protocol_builder.py      Generates meta_protocol.md from goal + snapshot
-  self_evolution_loop.py        Extends loop with test gating + rollback
-pyproject.toml                  Makes `supervisor` an installable package
+  __init__.py                       Package exports
+
+  core/
+    loop.py                         SupervisorLoop — main supervised agent loop
+    loop_base.py                    BaseLoop — common state machine, event yielding
+    loop.py                         SupervisorLoop — main supervised agent loop
+    self_evolution_loop.py          SelfEvolutionLoop — self-modification with test gating
+    llm_supervisor.py               LLM judge that evaluates opencode output
+
+  analyzers/
+    codebase_analyzer.py            Snapshots source tree for LLM context
+    opencode_step_detector.py       Detects step progress in opencode output
+
+  protocols/
+    protocol.py                     Parse / validate protocol.md (INPUT, TARGET, RESTRICTIONS)
+    protocol_wizard.py              OpenAI-SDK protocol refiner
+    protocol_analyzer.py            Quality scoring (clarity, testability, completeness)
+    meta_protocol_builder.py        Generates meta_protocol.md from evolution goal + snapshot
+
+  runners/
+    opencode_runner.py              Subprocess wrapper for the opencode CLI
+    test_runner.py                  Runs pytest / syntax check; structured results
+
+  utils/
+    config.py                       Frozen SupervisorConfig dataclass
+    checkpoint.py                   File-copy snapshot / restore / diff
+    credentials_manager.py          Credential storage helpers
+
+  monitoring/
+    context_monitor.py              Tracks context window usage with graduated warnings
+    token_estimator.py              Token counting (tiktoken) and prompt truncation
+
+  workspace/
+    workspace_guard.py              Blocks out-of-workspace path references
+    workspace_archiver.py           Preserves workspace versions in .archive/
+    ignore_patterns.py              .opencodeignore parsing and pattern matching
+
+pyproject.toml                      Makes `supervisor` an installable package
 ```
+
+---
+
+## Protocol System
+
+A `protocol.md` file is the core contract between you and the supervisor.
+It must contain exactly three sections:
+
+```markdown
+## INPUT
+
+Describe what already exists — files, directories, entry points, current state.
+
+## TARGET
+
+List numbered, testable deliverables the agent must produce.
+Good: "All pytest tests in ./tests/ pass"
+Bad: "the code should work"
+
+## RESTRICTIONS
+
+Hard rules the agent must never violate.
+- Do not touch files outside ./src
+- No system package installs
+- Keep code under 300 lines
+```
+
+### Protocol Quality Analysis
+
+The system analyzes protocol quality across three dimensions:
+- **Clarity** — Avoids vague language, uses structured formatting
+- **Testability** — Contains measurable acceptance criteria
+- **Completeness** — Covers all necessary context and constraints
+
+Quality ratings: `excellent` (≥90%) → `good` (≥75%) → `fair` (≥50%) → `poor`
 
 ---
 
@@ -173,11 +251,99 @@ pyproject.toml                  Makes `supervisor` an installable package
 |---------|---------|-------------|
 | API Key | — | Your API key (OpenAI or any compatible provider) |
 | Base URL | *(blank = OpenAI)* | Override for local/proxy endpoints e.g. `http://localhost:11434/v1` |
+| Workspace path | — | Absolute path to the project directory |
 | Supervisor / wizard model | — | Any model string your provider accepts |
 | opencode model | *(opencode default)* | Forwarded to the opencode CLI |
 | Max retries | 3 | Consecutive failures before forced stop |
-| Context threshold | 60 % | Compaction fires at this fraction of estimated max |
-| Timeout | 300 s | Silence before opencode is deemed unresponsive |
+| Context threshold | 60% | Compaction fires at this fraction of estimated max |
+| Max tokens | 128,000 | Model context window size |
+| Timeout | 120 min | Silence before opencode is deemed unresponsive |
+| Protected files | *(empty)* | User-defined files that opencode cannot modify |
+
+### Advanced Configuration (SupervisorConfig)
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| truncation_enabled | True | Enable prompt truncation when approaching limits |
+| max_history_turns | 40 | Maximum conversation history turns before compaction |
+| compact_intermediate_steps | False | Compact intermediate step outputs |
+| max_protected_files_for_suggestions | 5 | Max protected files shown in suggestions |
+| read_external_feedback | False | Allow external feedback injection |
+
+---
+
+## Workspace Protection
+
+The supervisor enforces multiple layers of protection:
+
+### System-Protected Directories
+- `.opencode/` — Supervisor configuration (auto-created)
+- `.checkpoints/` — System checkpoints
+- `.archive/` — Version archives
+
+### User-Protected Files
+Mark specific files as read-only via the UI. These files are:
+- Excluded from opencode's write operations
+- Listed in every prompt sent to opencode
+- Validated before any modification attempt
+
+### .opencodeignore
+Configure a `.opencodeignore` file in your workspace root to exclude files
+from context retrieval. Supports:
+- Exact filename matches: `debug.py`
+- Prefix matches: `prefix*`
+- Suffix matches: `*_test.py`
+- Glob patterns: `**/*.pyc`
+- Directory patterns: `build/`
+
+---
+
+## Context Monitoring
+
+The supervisor tracks token usage with graduated warnings:
+
+| Threshold | Action |
+|-----------|--------|
+| 50% | Context usage noted |
+| 60% | Approaching compaction threshold |
+| 70% | Context elevated — monitor closely |
+| 80% | Warning — compaction recommended |
+| 90% | Critical — immediate compaction required |
+
+Token estimation uses `tiktoken` (o200k_base encoding) when available,
+falling back to character-based estimation (4 chars/token).
+
+Automatic compaction triggers at the configured `context_threshold`
+(default 60%), prompting opencode to clean up unnecessary files.
+
+---
+
+## Workspace Archiving
+
+Every run preserves workspace state in `.archive/`:
+- Archives are organized into `code/`, `results/`, `logs/`, `other/` subdirectories
+- Metadata is stored in `archive_metadata.json`
+- Archives are numbered with timestamps and a counter
+- The `.archive/` directory itself is protected from modification
+- Version files are never deleted — only archived
+
+---
+
+## Safety Features
+
+1. **Workspace boundary enforcement** — All path references are validated
+   against the workspace root
+2. **Protected path detection** — System directories and user-protected
+   files cannot be modified or deleted
+3. **Protocol alignment verification** — Each iteration is checked against
+   the protocol for compliance
+4. **Regression testing** — Self-evolution compares test results against
+   the baseline before accepting changes
+5. **Automatic rollback** — Bad changes are reverted to the last good
+   checkpoint
+6. **Heartbeat monitoring** — Detects stalled processes and extends
+   timeouts when progress is being made
+7. **Archive preservation** — Historical versions are preserved, never deleted
 
 ---
 
@@ -186,4 +352,3 @@ pyproject.toml                  Makes `supervisor` an installable package
 - [ ] Get rid of `pip install -e . --force-reinstall` so that every self evolution will be auto applied
 - [ ] Add multi agent cooperation/competition
 - [ ] Better timeout handling and process tracking
-
