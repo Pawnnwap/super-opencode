@@ -163,6 +163,7 @@ class OpencodeRunner:
         self._last_result: Optional[RunResult] = None
         self._chars_exchanged: int = 0
         self._alive: bool = False
+        self._process: Optional[subprocess.Popen] = None
         self._archiver = WorkspaceArchiver(workspace)
 
         if step_detector is not None:
@@ -206,6 +207,13 @@ class OpencodeRunner:
 
     def stop(self) -> None:
         self._alive = False
+        if self._process is not None:
+            # Force kill the process to ensure immediate termination
+            try:
+                self._process.kill()
+            except Exception:
+                # Ignore errors if the process has already terminated
+                pass
 
     @property
     def is_alive(self) -> bool:
@@ -253,7 +261,7 @@ class OpencodeRunner:
         )
 
         try:
-            result = subprocess.run(
+            self._process = subprocess.Popen(
                 cmd,
                 stdin=subprocess.DEVNULL,  # ← kills TUI / interactive prompts
                 stdout=subprocess.PIPE,
@@ -262,13 +270,42 @@ class OpencodeRunner:
                 encoding="utf-8",
                 errors="replace",
                 cwd=str(self.workspace),
-                timeout=self.timeout,
                 env={**os.environ, "NO_COLOR": "1", "TERM": "dumb"},
                 shell=use_shell,
             )
 
-            stdout = result.stdout or ""
-            stderr = result.stderr or ""
+            # Wait for process to complete with timeout
+            try:
+                stdout, stderr = self._process.communicate(timeout=self.timeout)
+                returncode = self._process.returncode
+            except subprocess.TimeoutExpired:
+                # Timeout occurred
+                stdout_val = self._process.stdout.read() if self._process.stdout else ""
+                stderr_val = self._process.stderr.read() if self._process.stderr else ""
+
+                stdout_val = (
+                    stdout_val.decode("utf-8", errors="replace")
+                    if isinstance(stdout_val, bytes)
+                    else (stdout_val or "")
+                )
+                stderr_val = (
+                    stderr_val.decode("utf-8", errors="replace")
+                    if isinstance(stderr_val, bytes)
+                    else (stderr_val or "")
+                )
+
+                self._last_result = RunResult(
+                    stdout=stdout_val,
+                    stderr=stderr_val,
+                    returncode=-1,
+                    timed_out=True,
+                )
+                logger.warning("opencode timed out after %ds", self.timeout)
+                self._chars_exchanged += len(prompt) + len(self._last_result.output)
+                return
+
+            stdout = stdout or ""
+            stderr = stderr or ""
 
             # Detect known fatal errors
             combined_lower = (stdout + stderr).lower()
@@ -287,27 +324,16 @@ class OpencodeRunner:
             self._last_result = RunResult(
                 stdout=stdout,
                 stderr=stderr,
-                returncode=result.returncode,
+                returncode=returncode,
             )
             logger.info(
                 "opencode exit=%d  stdout=%d  stderr=%d",
-                result.returncode,
+                returncode,
                 len(stdout),
                 len(stderr),
             )
             if stderr.strip():
                 logger.info("stderr: %s", stderr[:400])
-
-        except subprocess.TimeoutExpired as exc:
-            stdout_val = exc.stdout if isinstance(exc.stdout, str) else (exc.stdout.decode("utf-8", errors="replace") if exc.stdout else "")
-            stderr_val = exc.stderr if isinstance(exc.stderr, str) else (exc.stderr.decode("utf-8", errors="replace") if exc.stderr else "")
-            self._last_result = RunResult(
-                stdout=stdout_val,
-                stderr=stderr_val,
-                returncode=-1,
-                timed_out=True,
-            )
-            logger.warning("opencode timed out after %ds", self.timeout)
 
         except Exception as exc:
             self._last_result = RunResult(exception=str(exc), returncode=-1)
@@ -373,7 +399,11 @@ class OpencodeRunner:
         if not candidates:
             return
 
-        workspace_rel = self.workspace.relative_to(self.workspace) if self.workspace.is_absolute() else self.workspace
+        workspace_rel = (
+            self.workspace.relative_to(self.workspace)
+            if self.workspace.is_absolute()
+            else self.workspace
+        )
         inquiry = (
             f"You are working in workspace: {workspace_rel}\n\n"
             f"I have identified the following files that may be outdated or unused:\n"
@@ -393,10 +423,12 @@ class OpencodeRunner:
             "IMPORTANT: Never select protected paths (.opencode/, .checkpoints/, .archive/) "
             "for archiving.\n\n"
             "Respond ONLY with a JSON array of file paths to archive, nothing else. "
-            "Example: [\"file1.bak\", \"file2.tmp\"]"
+            'Example: ["file1.bak", "file2.tmp"]'
         )
 
-        logger.info("Sending cleanup inquiry to opencode for %d candidates", len(candidates))
+        logger.info(
+            "Sending cleanup inquiry to opencode for %d candidates", len(candidates)
+        )
         self.send(inquiry)
 
     def identify_cleanup_candidates(self) -> list[str]:
@@ -424,12 +456,30 @@ class OpencodeRunner:
         ]
 
         _SOURCE_EXTS = {
-            ".py", ".pyc", ".pyo", ".pyd",
-            ".md", ".txt", ".rst",
-            ".json", ".yaml", ".yml", ".toml", ".cfg", ".ini",
-            ".js", ".ts", ".jsx", ".tsx",
-            ".css", ".scss", ".html", ".xml",
-            ".sh", ".bat", ".ps1",
+            ".py",
+            ".pyc",
+            ".pyo",
+            ".pyd",
+            ".md",
+            ".txt",
+            ".rst",
+            ".json",
+            ".yaml",
+            ".yml",
+            ".toml",
+            ".cfg",
+            ".ini",
+            ".js",
+            ".ts",
+            ".jsx",
+            ".tsx",
+            ".css",
+            ".scss",
+            ".html",
+            ".xml",
+            ".sh",
+            ".bat",
+            ".ps1",
         }
 
         def should_ignore(path: Path) -> bool:
@@ -441,7 +491,14 @@ class OpencodeRunner:
                 return True
             if path == workspace / ".checkpoints":
                 return True
-            ignore_dirs = {".git", ".venv", "venv", "node_modules", ".mypy_cache", ".opencode"}
+            ignore_dirs = {
+                ".git",
+                ".venv",
+                "venv",
+                "node_modules",
+                ".mypy_cache",
+                ".opencode",
+            }
             if any(part in ignore_dirs for part in rel.parts):
                 return True
             return False
@@ -459,15 +516,21 @@ class OpencodeRunner:
             while changed:
                 changed = False
                 for pattern in _VERSION_PATTERNS:
-                    new_base = pattern.sub('', base)
+                    new_base = pattern.sub("", base)
                     if new_base != base:
                         base = new_base
                         changed = True
                         break
             return base
 
-        candidates.extend(self._identify_versioned_backups(workspace, should_ignore, is_versioned_backup, get_base_name))
-        candidates.extend(self._identify_orphaned_files(workspace, should_ignore, _SOURCE_EXTS))
+        candidates.extend(
+            self._identify_versioned_backups(
+                workspace, should_ignore, is_versioned_backup, get_base_name
+            )
+        )
+        candidates.extend(
+            self._identify_orphaned_files(workspace, should_ignore, _SOURCE_EXTS)
+        )
 
         if candidates:
             self.send_cleanup_inquiry(candidates)
@@ -512,28 +575,32 @@ class OpencodeRunner:
     ) -> list[str]:
         candidates: list[str] = []
         import re
+
         import_patterns = [
-            (re.compile(r'^(?:from|import)\s+([\w.]+)', re.MULTILINE), 'py'),
-            (re.compile(r'require\s*\(\s*["\']([^"\']+)["\']\s*\)', re.MULTILINE), 'js'),
-            (re.compile(r'import\s+.*?from\s+["\']([^"\']+)["\']', re.MULTILINE), 'js'),
-            (re.compile(r'#include\s*["<]([^">]+)[">]', re.MULTILINE), 'c'),
+            (re.compile(r"^(?:from|import)\s+([\w.]+)", re.MULTILINE), "py"),
+            (
+                re.compile(r'require\s*\(\s*["\']([^"\']+)["\']\s*\)', re.MULTILINE),
+                "js",
+            ),
+            (re.compile(r'import\s+.*?from\s+["\']([^"\']+)["\']', re.MULTILINE), "js"),
+            (re.compile(r'#include\s*["<]([^">]+)[">]', re.MULTILINE), "c"),
         ]
 
         referenced_paths: set[str] = set()
         for path in workspace.rglob("*"):
             if should_ignore(path):
                 continue
-            if path.suffix not in source_exts and not path.name.endswith('.h'):
+            if path.suffix not in source_exts and not path.name.endswith(".h"):
                 continue
             try:
                 content = path.read_text(encoding="utf-8", errors="ignore")
                 for pattern, ptype in import_patterns:
                     for match in pattern.finditer(content):
                         ref = match.group(1)
-                        if ptype == 'py':
-                            ref = ref.replace('.', '/')
-                            if not ref.endswith('.py'):
-                                ref += '.py'
+                        if ptype == "py":
+                            ref = ref.replace(".", "/")
+                            if not ref.endswith(".py"):
+                                ref += ".py"
                         referenced_paths.add(ref)
             except Exception:
                 pass
@@ -542,13 +609,17 @@ class OpencodeRunner:
             if should_ignore(path):
                 continue
             rel_str = str(path.relative_to(workspace))
-            
+
             is_pycache_dir = path.is_dir() and path.name == "__pycache__"
             if is_pycache_dir:
                 candidates.append(rel_str)
                 continue
 
-            is_cache_file = path.suffix in {".pyc", ".pyo", ".pyc.tmp"} or path.name.endswith('.pyc')
+            is_cache_file = path.suffix in {
+                ".pyc",
+                ".pyo",
+                ".pyc.tmp",
+            } or path.name.endswith(".pyc")
             if is_cache_file:
                 candidates.append(rel_str)
                 continue
@@ -587,30 +658,38 @@ class OpencodeRunner:
         Looks for patterns like file paths, file operations, and file references.
         """
         import re
-        
+
         if not self._last_result or not self._last_result.output:
             return []
-        
+
         output = self._last_result.output
         files: set[str] = set()
-        
+
         # Patterns for file references in opencode output
         file_patterns = [
             # File paths with common extensions
-            re.compile(r'(?:^|\s)([a-zA-Z_][\w./\\-]*\.(?:py|js|ts|jsx|tsx|json|yaml|yml|toml|md|txt|rst|cfg|ini|sh|bat|ps1|html|css|xml))(?:\s|$)', re.MULTILINE),
+            re.compile(
+                r"(?:^|\s)([a-zA-Z_][\w./\\-]*\.(?:py|js|ts|jsx|tsx|json|yaml|yml|toml|md|txt|rst|cfg|ini|sh|bat|ps1|html|css|xml))(?:\s|$)",
+                re.MULTILINE,
+            ),
             # "file:" or "path:" prefixed paths
-            re.compile(r'(?:file|path):\s*([a-zA-Z_][\w./\\-]+)', re.IGNORECASE),
+            re.compile(r"(?:file|path):\s*([a-zA-Z_][\w./\\-]+)", re.IGNORECASE),
             # File operations like "Reading file X" or "Creating file Y"
-            re.compile(r'(?:reading|creating|writing|modifying|editing|updating|opening)\s+(?:file\s+)?([a-zA-Z_][\w./\\-]+)', re.IGNORECASE),
+            re.compile(
+                r"(?:reading|creating|writing|modifying|editing|updating|opening)\s+(?:file\s+)?([a-zA-Z_][\w./\\-]+)",
+                re.IGNORECASE,
+            ),
             # File paths in code blocks
-            re.compile(r'```[\w]*\s*\n\s*(?:#\s*)?([a-zA-Z_][\w./\\-]+\.(?:py|js|ts|json|yaml|yml|toml|md|txt))', re.MULTILINE),
+            re.compile(
+                r"```[\w]*\s*\n\s*(?:#\s*)?([a-zA-Z_][\w./\\-]+\.(?:py|js|ts|json|yaml|yml|toml|md|txt))",
+                re.MULTILINE,
+            ),
         ]
-        
+
         for pattern in file_patterns:
             for match in pattern.finditer(output):
                 file_path = match.group(1)
                 if file_path and len(file_path) > 2:  # Filter out very short matches
                     files.add(file_path)
-        
-        return sorted(files)
 
+        return sorted(files)

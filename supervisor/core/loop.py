@@ -22,12 +22,17 @@ from supervisor.monitoring.context_monitor import ContextMonitor
 from supervisor.core.llm_supervisor import LLMSupervisor, StepContext
 from supervisor.core.loop_base import BaseLoop, Event, _ev, LoopState
 from supervisor.runners.opencode_runner import OpencodeRunner
-from supervisor.analyzers.opencode_step_detector import OpencodeStepDetector, Step, StepProgress
+from supervisor.analyzers.opencode_step_detector import (
+    OpencodeStepDetector,
+    Step,
+    StepProgress,
+)
 from supervisor.protocols.protocol import load_protocol
 from supervisor.workspace.workspace_guard import WorkspaceGuard
 from supervisor.workspace.workspace_archiver import WorkspaceArchiver
 
 logger = logging.getLogger(__name__)
+
 
 class SupervisorLoop(BaseLoop):
     def __init__(self, config: SupervisorConfig):
@@ -36,7 +41,9 @@ class SupervisorLoop(BaseLoop):
 
         self.protocol = load_protocol(config.protocol_path)
         self.supervisor = LLMSupervisor(
-            self.protocol, config.workspace, config.supervisor_model,
+            self.protocol,
+            config.workspace,
+            config.supervisor_model,
             read_external_feedback=config.read_external_feedback,
             max_tokens=config.max_tokens,
             max_protected_files_for_suggestions=config.max_protected_files_for_suggestions,
@@ -71,7 +78,10 @@ class SupervisorLoop(BaseLoop):
         yield _ev("info", "Archiving previous workspace state...")
         archive_result = self.archiver.archive_before_new_run()
         if archive_result.success:
-            yield _ev("info", f"Archived {len(archive_result.archived_files)} files to {archive_result.archive_path}")
+            yield _ev(
+                "info",
+                f"Archived {len(archive_result.archived_files)} files to {archive_result.archive_path}",
+            )
         else:
             yield _ev("warn", f"Archive warning: {archive_result.message}")
 
@@ -102,7 +112,7 @@ class SupervisorLoop(BaseLoop):
 
     def _do_judgement(self, output: str) -> Generator[Event, None, None]:
         yield _ev("info", "Supervisor judging…")
-        
+
         progress = self.runner.get_step_progress()
         step_context = StepContext(
             current_step=progress.current_step,
@@ -141,7 +151,7 @@ class SupervisorLoop(BaseLoop):
     def _handle_failure(self, last_output: str) -> Generator[Event, None, None]:
         self._failures += 1
         retries_remaining = max(0, self.config.max_retries - self._failures)
-        
+
         yield _ev(
             "warn",
             f"opencode returned empty/timeout (failure {self._failures}/{self.config.max_retries}, "
@@ -159,18 +169,31 @@ class SupervisorLoop(BaseLoop):
             yield _ev(
                 "error",
                 f"All {self.config.max_retries} {'retry' if self.config.max_retries == 1 else 'retries'} exhausted. "
-                f"Run terminated after {self._failures} failures.\n\n{report}"
+                f"Run terminated after {self._failures} failures.\n\n{report}",
             )
             self._state = LoopState.ENDED_FAILURE
             return
 
         yield _ev(
             "info",
-            f"Retrying with restart prompt… (attempt {self._failures}/{self.config.max_retries})"
+            f"Retrying with restart prompt… (attempt {self._failures}/{self.config.max_retries})",
         )
         self.runner.start(self._restart_prompt())
 
-    # ------------------------------------------------------------------ #
+    # Override run_streaming to update state when stopping the runner
+    def run_streaming(self) -> Generator[Event, None, None]:
+        try:
+            yield from self._run()
+        except KeyboardInterrupt:
+            self.runner.stop()
+            self._state = LoopState.ENDED_FAILURE
+            yield _ev("warn", "Interrupted by user.")
+        except Exception as exc:
+            import traceback
+
+            self.runner.stop()
+            self._state = LoopState.ENDED_FAILURE
+            yield _ev("error", f"Unhandled exception:\n{traceback.format_exc()}")
 
     def _init_prompt(self) -> str:
         text = self.config.protocol_path.read_text(encoding="utf-8")
@@ -200,6 +223,7 @@ class SupervisorLoop(BaseLoop):
 
     def _write(self, text: str, filename: str) -> None:
         (self.config.workspace / filename).write_text(text, encoding="utf-8")
+
 
 def _setup_logging(level: str) -> None:
     logging.basicConfig(
