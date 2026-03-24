@@ -15,7 +15,7 @@ from enum import Enum, auto
 from typing import Generator
 
 from supervisor.analyzers.codebase_analyzer import snapshot_codebase, CodebaseSnapshot
-from supervisor.utils.checkpoint import CheckpointManager, Checkpoint
+from pathlib import Path
 from supervisor.utils.config import SupervisorConfig
 from supervisor.monitoring.context_monitor import ContextMonitor
 from supervisor.core.llm_supervisor import LLMSupervisor, StepContext
@@ -28,6 +28,7 @@ from supervisor.workspace.workspace_archiver import WorkspaceArchiver, ArchiveRe
 from supervisor.workspace.workspace_guard import WorkspaceGuard
 
 logger = logging.getLogger(__name__)
+
 
 class SelfEvolutionLoop(BaseLoop):
     def __init__(self, config: SupervisorConfig):
@@ -46,13 +47,12 @@ class SelfEvolutionLoop(BaseLoop):
             compact_intermediate_steps=config.compact_intermediate_steps,
         )
         self._init_components()
-        self.checkpoints = CheckpointManager(config.workspace)
         self.test_runner = OcTestRunner(config.workspace)
         self.archiver = WorkspaceArchiver(config.workspace)
 
         self._baseline: RunTestResult | None = None
         self._last_result: RunTestResult | None = None
-        self._best_cp: Checkpoint | None = None
+        self._best_archive: Path | None = None
         self._iteration = 0
         self._pre_snapshot: CodebaseSnapshot | None = None
         self._current_archive_result: ArchiveResult | None = None
@@ -73,16 +73,11 @@ class SelfEvolutionLoop(BaseLoop):
                 f"Baseline has failures — evolution will try to fix them.\n{self._baseline.output[:600]}",
             )
 
-        yield _ev("info", "💾  Saving pre-evolution checkpoint…")
-        pre_cp = self.checkpoints.save("pre-evolution baseline")
-        self._best_cp = pre_cp
-        yield _ev("info", f"Checkpoint saved: {pre_cp}")
-
-        yield _ev("info", "📦  Creating initial archive…")
-        self._current_archive_result = self.archiver.archive_workspace(
-            label="pre-evolution",
-        )
-        yield _ev("info", f"Archive created: {self._current_archive_result.archive_path}")
+        yield _ev("info", "📦  Saving pre-evolution archive…")
+        pre_archive = self.archiver.archive_workspace(label="pre-evolution baseline")
+        self._best_archive = pre_archive.archive_path
+        self._current_archive_result = pre_archive
+        yield _ev("info", f"Archive saved: {pre_archive.archive_path}")
 
         yield _ev("info", "🚀  Starting opencode for self-evolution…")
         init_prompt = self._init_prompt()
@@ -129,18 +124,16 @@ class SelfEvolutionLoop(BaseLoop):
             self.runner.send(safe_rollback)
             return
 
-        cp = self.checkpoints.save(
-            f"iter-{self._iteration}-step-{progress.current_step}"
-        )
-        self._best_cp = cp
-        yield _ev("success", f"💾  Checkpoint: {cp} (step {progress.current_step})")
-
         archive_label = f"iter-{self._iteration}-step-{progress.current_step}"
         archive_result = self.archiver.archive_workspace(
             label=archive_label,
         )
+        self._best_archive = archive_result.archive_path
         self._current_archive_result = archive_result
-        yield _ev("success", f"📦  Archive saved: {archive_result.archive_path}")
+        yield _ev(
+            "success",
+            f"📦  Archive saved: {archive_result.archive_path} (step {progress.current_step})",
+        )
 
         test_info = f"Step {progress.current_step}/{progress.total_steps_estimate} | Phase: {progress.phase.name.lower()} | Tests: {result.summary()}"
         augmented = f"{output}\n\n--- evolution progress ---\n{test_info}\n\n--- test output ---\n{result.output[-400:]}"
@@ -160,7 +153,7 @@ class SelfEvolutionLoop(BaseLoop):
     def _handle_failure(self, last_output: str) -> Generator[Event, None, None]:
         self._failures += 1
         retries_remaining = max(0, self.config.max_retries - self._failures)
-        
+
         yield _ev(
             "warn",
             f"Empty/timeout (failure {self._failures}/{self.config.max_retries}, "
@@ -172,23 +165,24 @@ class SelfEvolutionLoop(BaseLoop):
             yield _ev(
                 "error",
                 f"All {self.config.max_retries} {'retry' if self.config.max_retries == 1 else 'retries'} exhausted. "
-                f"Self-evolution terminated after {self._failures} failures."
+                f"Self-evolution terminated after {self._failures} failures.",
             )
             self._state = LoopState.ENDED_FAILURE
             return
 
         yield _ev(
-            "info",
-            f"Retrying… (attempt {self._failures}/{self.config.max_retries})"
+            "info", f"Retrying… (attempt {self._failures}/{self.config.max_retries})"
         )
         self.runner.start(self._restart_prompt())
 
     def _rollback(self) -> Generator[Event, None, None]:
-        if self._best_cp:
-            restored = self.checkpoints.restore(self._best_cp)
-            yield _ev("info", f"Rolled back {len(restored)} files to: {self._best_cp}")
+        if self._best_archive:
+            restored = self.archiver.restore_archive(self._best_archive)
+            yield _ev(
+                "info", f"Rolled back {len(restored)} files from: {self._best_archive}"
+            )
         else:
-            yield _ev("warn", "No checkpoint to roll back to.")
+            yield _ev("warn", "No archive to roll back to.")
 
     def _evolution_summary(self) -> Generator[Event, None, None]:
         success = self._state == LoopState.ENDED_SUCCESS
@@ -231,8 +225,8 @@ class SelfEvolutionLoop(BaseLoop):
                 f"**Final:**    {self._last_result.summary()}",
                 f"**Delta:**    {self._last_result.delta(self._baseline)}",
             ]
-        if self._best_cp:
-            lines.append(f"\n**Best checkpoint:** {self._best_cp}")
+        if self._best_archive:
+            lines.append(f"\n**Best archive:** {self._best_archive}")
 
         yield _ev("info", "📦  Creating final archive…")
         final_archive_result = self.archiver.archive_workspace(
@@ -262,7 +256,9 @@ class SelfEvolutionLoop(BaseLoop):
     # ------------------------------------------------------------------ #
 
     def _codebase_preamble(self) -> str:
-        return "\n\n## Live codebase\n" + self._cached_snapshot.digest_for_prompt(max_files=15)
+        return "\n\n## Live codebase\n" + self._cached_snapshot.digest_for_prompt(
+            max_files=15
+        )
 
     def _init_prompt(self) -> str:
         text = self.config.protocol_path.read_text(encoding="utf-8")
