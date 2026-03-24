@@ -242,6 +242,23 @@ class BaseLoop:
         (self.config.workspace / "summary.md").write_text(report, encoding="utf-8")
         yield _ev("info", "summary.md written.")
 
+    def _sanitize_feedback(self, feedback: str) -> Generator[Event, None, str]:
+        safe_msg, violations = self.guard.sanitize_message(feedback)
+        if violations:
+            yield _ev("warn", f"Blocked out-of-workspace paths: {violations}")
+        return safe_msg
+
+    def _yield_suggestions(self, opencode_output: str, step_context=None) -> Generator[Event, None, None]:
+        suggestions, chosen_paths = self.supervisor.generate_suggestions(
+            opencode_output=opencode_output,
+            step_context=step_context,
+        )
+        if chosen_paths:
+            yield _ev("supervisor_read_files", "\n".join(f"• {p}" for p in chosen_paths))
+            
+        if suggestions and "no suggestions" not in suggestions.lower():
+            yield _ev("supervisor_suggestions", suggestions)
+
     def _get_restart_context(self) -> tuple[str, str]:
         summary_path = self.config.workspace / "summary.md"
         summary = (

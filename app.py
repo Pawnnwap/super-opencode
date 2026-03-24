@@ -98,6 +98,7 @@ button[kind="primary"]:hover, .stButton > button:hover {
 .log-opencode_prompt   { color: #79c0ff; white-space: pre-wrap; }
 .log-opencode_output   { color: #c9d1d9; white-space: pre-wrap; }
 .log-supervisor_response { color: #d2a8ff; white-space: pre-wrap; }
+.log-supervisor_read_files { color: #a5d6ff; white-space: pre-wrap; }
 .log-step              { color: #56d364; font-weight: 600; white-space: pre-wrap; }
 .log-phase_transition  { color: #f0883e; font-weight: 600; white-space: pre-wrap; }
 .log-step_progress     { color: #a5d6ff; white-space: pre-wrap; }
@@ -905,6 +906,7 @@ _BLOCK_META = {
     "opencode_prompt": ("hdr-oc-prompt", "▶ PROMPT → opencode"),
     "opencode_output": ("hdr-oc-output", "◀ OUTPUT ← opencode"),
     "supervisor_response": ("hdr-sv-response", "🧠 SUPERVISOR"),
+    "supervisor_read_files": ("hdr-sv-read", "📂 SUPERVISOR READ FILES"),
 }
 
 

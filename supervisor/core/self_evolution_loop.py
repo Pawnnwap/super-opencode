@@ -151,17 +151,11 @@ class SelfEvolutionLoop(BaseLoop):
             self._state = LoopState.ENDED_SUCCESS
             return
 
-        safe_msg, violations = self.guard.sanitize_message(verdict.feedback)
-        if violations:
-            yield _ev("warn", f"Blocked out-of-workspace paths: {violations}")
+        safe_msg = yield from self._sanitize_feedback(verdict.feedback)
         yield _ev("opencode_prompt", safe_msg)
         self.runner.send(safe_msg)
 
-        suggestions = self.supervisor.generate_suggestions(
-            opencode_output=augmented,
-        )
-        if suggestions and "no suggestions" not in suggestions.lower():
-            yield _ev("supervisor_suggestions", suggestions)
+        yield from self._yield_suggestions(augmented)
 
     def _handle_failure(self, last_output: str) -> Generator[Event, None, None]:
         self._failures += 1
