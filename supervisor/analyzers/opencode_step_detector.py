@@ -170,7 +170,7 @@ class OpencodeStepDetector:
         re.compile(
             r"(?:^|\n)\s*(?:moving to|now |next )?(?:step|phase)\s*(\d+)", re.IGNORECASE
         ),
-        re.compile(r"(?:^|\n)\s*(?:\[ ?\d+ ?/ ?\d+ ?\])", re.IGNORECASE),
+        re.compile(r"(?:^|\n)\s*(?:\[ ?(\d+) ?/ ?\d+ ?\])", re.IGNORECASE),
         re.compile(
             r"(?:^|\n)\s*(?:progress|advance|continue)\s*:?\s*(?:step|phase)?\s*(\d+)",
             re.IGNORECASE,
@@ -219,9 +219,11 @@ class OpencodeStepDetector:
     def detect_step_number(self, text: str) -> Optional[int]:
         for pattern in self.STEP_INDICATOR_PATTERNS:
             match = pattern.search(text)
-            if match and match.group(1):
+            if match:
                 try:
-                    return int(match.group(1))
+                    group_val = match.group(1)
+                    if group_val:
+                        return int(group_val)
                 except (ValueError, IndexError):
                     pass
         return None
