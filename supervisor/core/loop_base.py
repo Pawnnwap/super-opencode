@@ -6,15 +6,18 @@ from typing import Generator
 
 Event = dict
 
+
 class LoopState(Enum):
     RUNNING = auto()
     ENDED_SUCCESS = auto()
     ENDED_FAILURE = auto()
 
+
 def _ev(level: str, msg: str, **kwargs) -> Event:
     event = {"level": level, "msg": msg}
     event.update(kwargs)
     return event
+
 
 class BaseLoop:
     def __init__(self, config=None):
@@ -23,7 +26,7 @@ class BaseLoop:
         self.supervisor = None
         self.ctx_monitor = None
         self.guard = None
-        
+
         self._last_step_time: float = 0.0
         self._active_progress_steps: int = 0
         self._timeout_extension_count: int = 0
@@ -45,9 +48,9 @@ class BaseLoop:
             self.config.timeout,
         )
         self.ctx_monitor = ContextMonitor(
-            self.config.context_threshold, 
-            self.config.max_tokens, 
-            self.config.truncation_enabled
+            self.config.context_threshold,
+            self.config.max_tokens,
+            self.config.truncation_enabled,
         )
         self.guard = WorkspaceGuard(self.config.workspace, self.config.protected_files)
         self._step_detector = OpencodeStepDetector()
@@ -60,6 +63,7 @@ class BaseLoop:
             yield _ev("warn", "Interrupted by user.")
         except Exception as exc:
             import traceback
+
             self.runner.stop()
             yield _ev("error", f"Unhandled exception:\n{traceback.format_exc()}")
 
@@ -76,20 +80,22 @@ class BaseLoop:
     def _do_judgement(self, output: str) -> Generator[Event, None, None]:
         raise NotImplementedError()
 
-    def _run_loop(self, initial_output: str, initial_timed_out: bool) -> Generator[Event, None, None]:
+    def _run_loop(
+        self, initial_output: str, initial_timed_out: bool
+    ) -> Generator[Event, None, None]:
         output = initial_output
         timed_out = initial_timed_out
 
         while self._state == LoopState.RUNNING:
             current_progress = self.runner.get_step_progress()
-            
+
             if timed_out or not output.strip():
                 if self._should_extend_timeout(current_progress):
                     yield from self._handle_active_progress_timeout(current_progress)
                     self._timeout_extension_count += 1
                     output, timed_out = self.runner.read_output()
                     continue
-                
+
                 diag = self.runner.last_diagnostic()
                 yield _ev("warn", f"opencode returned no output. Diagnostic:\n{diag}")
                 yield from self._handle_failure(output)
@@ -105,7 +111,7 @@ class BaseLoop:
             previous_step = self._active_progress_steps
             yield from self._emit_step_events(output)
             yield _ev("opencode_output", output)
-            
+
             current_progress = self.runner.get_step_progress()
             if current_progress.current_step > previous_step:
                 self._last_step_time = time.time()
@@ -137,12 +143,14 @@ class BaseLoop:
             return time_since_last_step < (self.config.timeout * 0.8)
         return False
 
-    def _handle_active_progress_timeout(
-        self, progress
-    ) -> Generator[Event, None, None]:
+    def _handle_active_progress_timeout(self, progress) -> Generator[Event, None, None]:
         ext_count = self._timeout_extension_count + 1
         activity_state = self.runner.get_activity_state()
-        wait_msg = " (may be waiting for output)" if activity_state == "waiting_for_output" else ""
+        wait_msg = (
+            " (may be waiting for output)"
+            if activity_state == "waiting_for_output"
+            else ""
+        )
         yield _ev(
             "info",
             f"opencode is actively working (step {progress.current_step}, "
@@ -161,7 +169,7 @@ class BaseLoop:
             "heartbeat",
             f"opencode active: step {progress.current_step}/{progress.total_steps_estimate} "
             f"({progress.phase.name.lower()}) — {progress.percentage:.0f}% complete",
-            **heartbeat_data
+            **heartbeat_data,
         )
 
     def _emit_step_events(self, output: str) -> Generator[Event, None, None]:
@@ -191,7 +199,7 @@ class BaseLoop:
                 yield _ev(
                     "step_progress",
                     f"Step progress: {progress.current_step}/{progress.total_steps_estimate} ({progress.percentage:.0f}%) - {progress.phase.name.lower()}",
-                    **progress_event
+                    **progress_event,
                 )
 
     def _do_compaction(self) -> Generator[Event, None, None]:
@@ -200,7 +208,9 @@ class BaseLoop:
         )
         candidates = self.runner.identify_cleanup_candidates()
         if candidates:
-            yield _ev("info", f"Identified {len(candidates)} files for potential cleanup.")
+            yield _ev(
+                "info", f"Identified {len(candidates)} files for potential cleanup."
+            )
         deletion_permission = self.supervisor.ask_for_deletion_permission(
             candidates, self.config.workspace
         )
@@ -213,21 +223,31 @@ class BaseLoop:
 
     def _update_context_monitor(self) -> Generator[Event, None, None]:
         files_read = self.runner.get_files_read()
-        self.ctx_monitor.update(self.runner.estimated_context_tokens, files_read=files_read)
+        self.ctx_monitor.update(
+            self.runner.estimated_context_tokens, files_read=files_read
+        )
         if self.ctx_monitor.approaching_limit:
             advice = self.ctx_monitor.get_reduction_advice()
-            file_info = f"Files loaded: {', '.join(files_read)}" if files_read else "Files loaded: none"
+            file_info = (
+                f"Files loaded: {', '.join(files_read)}"
+                if files_read
+                else "Files loaded: none"
+            )
             yield _ev(
                 "warn",
                 f"⚠️ Context usage high: {advice['current_tokens']}/{advice['max_tokens']} tokens "
-                f"({self.ctx_monitor.fraction*100:.0f}%). {advice['recommendation']}.\n\n{file_info}"
+                f"({self.ctx_monitor.fraction * 100:.0f}%). {advice['recommendation']}.\n\n{file_info}",
             )
 
     def _emit_token_warnings(self) -> Generator[Event, None, None]:
         warnings = self.supervisor.get_token_warnings()
         if warnings:
             files_read = self.runner.get_files_read()
-            file_info = f"Files loaded: {', '.join(files_read)}" if files_read else "Files loaded: none"
+            file_info = (
+                f"Files loaded: {', '.join(files_read)}"
+                if files_read
+                else "Files loaded: none"
+            )
             for warning in warnings:
                 yield _ev("warn", f"⚠️ Token warning: {warning}\n\n{file_info}")
             self.supervisor.clear_token_warnings()
@@ -248,14 +268,18 @@ class BaseLoop:
             yield _ev("warn", f"Blocked out-of-workspace paths: {violations}")
         return safe_msg
 
-    def _yield_suggestions(self, opencode_output: str, step_context=None) -> Generator[Event, None, None]:
+    def _yield_suggestions(
+        self, opencode_output: str, step_context=None
+    ) -> Generator[Event, None, None]:
         suggestions, chosen_paths = self.supervisor.generate_suggestions(
             opencode_output=opencode_output,
             step_context=step_context,
         )
         if chosen_paths:
-            yield _ev("supervisor_read_files", "\n".join(f"• {p}" for p in chosen_paths))
-            
+            yield _ev(
+                "supervisor_read_files", "\n".join(f"• {p}" for p in chosen_paths)
+            )
+
         if suggestions and "no suggestions" not in suggestions.lower():
             yield _ev("supervisor_suggestions", suggestions)
 
@@ -269,3 +293,85 @@ class BaseLoop:
         text = self.config.protocol_path.read_text(encoding="utf-8")
         return summary, text
 
+    def _run_vulnerability_scan(self) -> str | None:
+        """Run vulnerability scan on workspace Python files, return formatted results or None."""
+        import os
+
+        from supervisor.workspace.ignore_patterns import IgnoreMatcher
+
+        workspace = self.config.workspace.resolve()
+
+        ignore_matcher = IgnoreMatcher(workspace)
+        ignore_matcher.load_from_workspace(workspace)
+
+        py_files = []
+        for root, dirs, files in os.walk(workspace):
+            rel_root = str(Path(root).resolve().relative_to(workspace))
+            if rel_root.startswith(".checkpoints") or "/.checkpoints" in rel_root:
+                continue
+            if rel_root.startswith(".archive") or "/.archive" in rel_root:
+                continue
+            if rel_root.startswith(".opencode") or "/.opencode" in rel_root:
+                continue
+            dirs[:] = [
+                d
+                for d in dirs
+                if not ignore_matcher.matches(
+                    f"{rel_root}/{d}" if rel_root != "." else d
+                )
+            ]
+            for f in files:
+                if f.endswith(".py"):
+                    fp = f"{rel_root}/{f}" if rel_root != "." else f
+                    if not ignore_matcher.matches(fp):
+                        py_files.append(fp)
+
+        if not py_files:
+            return None
+
+        from supervisor.vulnerability.python_scanner import scan
+
+        try:
+            findings = scan(
+                target=str(workspace),
+                min_severity="MEDIUM",
+                scan_deps=False,
+                print_output=False,
+            )
+        except Exception:
+            return None
+
+        def _should_include(finding) -> bool:
+            fpath = finding.file.replace("\\", "/")
+            try:
+                rel = str(Path(finding.file).resolve().relative_to(workspace))
+            except (ValueError, OSError):
+                rel = fpath
+            if rel.startswith(".checkpoints") or "/.checkpoints" in rel:
+                return False
+            if ignore_matcher.matches(rel):
+                return False
+            return True
+
+        findings = [f for f in findings if _should_include(f)]
+
+        if not findings:
+            return None
+
+        by_severity = {}
+        for f in findings:
+            by_severity.setdefault(f.severity, []).append(f)
+
+        lines = [
+            "\n\n--- vulnerability scan ---",
+            f"Found {len(findings)} issue(s) (MEDIUM+ severity, dependencies excluded):",
+        ]
+        for sev in ("CRITICAL", "HIGH", "MEDIUM"):
+            if sev in by_severity:
+                lines.append(f"\n{sev} ({len(by_severity[sev])}):")
+                for f in by_severity[sev]:
+                    lines.append(f"  - {f.file}:{f.line} [{f.tool}] {f.message}")
+                    if f.suggestion:
+                        lines.append(f"    Fix: {f.suggestion}")
+
+        return "\n".join(lines)

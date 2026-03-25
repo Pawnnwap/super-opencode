@@ -129,7 +129,9 @@ class SupervisorLoop(BaseLoop):
             self._state = LoopState.ENDED_SUCCESS
             return
 
-        safe_msg = yield from self._sanitize_feedback(verdict.feedback)
+        vuln_scan = self._run_vulnerability_scan()
+        feedback_text = verdict.feedback + (vuln_scan if vuln_scan else "")
+        safe_msg = yield from self._sanitize_feedback(feedback_text)
 
         alignment = self.supervisor.verify_protocol_alignment(output, self.protocol)
         if not alignment.aligned:
