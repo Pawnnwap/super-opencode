@@ -24,11 +24,26 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from supervisor.workspace.opencodeignore_handler import (
+    load_opencodeignore_patterns,
+    should_ignore,
+)
+
 if TYPE_CHECKING:
     from supervisor.workspace.ignore_patterns import IgnoreMatcher
 
 _ARCHIVE_DIR = ".archive"
-_ARCHIVE_IGNORE_DIRS = {".git", ".venv", "venv", "node_modules", ".mypy_cache", "_deps", ". Dune", "__pycache__", ".checkpoints"}
+_ARCHIVE_IGNORE_DIRS = {
+    ".git",
+    ".venv",
+    "venv",
+    "node_modules",
+    ".mypy_cache",
+    "_deps",
+    ". Dune",
+    "__pycache__",
+    ".checkpoints",
+}
 _ARCHIVE_IGNORE_PREFIXES = (".",)
 _ARCHIVE_SUBDIRS = {
     "code": {".py", ".md", ".toml", ".cfg", ".ini", ".yaml", ".yml", ".txt", ".rst"},
@@ -72,17 +87,25 @@ class WorkspaceArchiver:
                 return subdir
         return "other"
 
-    def _should_archive(self, path: Path, ignore_matcher: "IgnoreMatcher | None" = None) -> bool:
+    def _should_archive(
+        self,
+        path: Path,
+        ignore_matcher: "IgnoreMatcher | None" = None,
+        opencodeignore_patterns: list[str] | None = None,
+    ) -> bool:
         if not path.is_file():
             return False
         rel = path.relative_to(self.workspace)
         parts = rel.parts
         if any(
-            part in _ARCHIVE_IGNORE_DIRS or any(part.startswith(p) for p in _ARCHIVE_IGNORE_PREFIXES)
+            part in _ARCHIVE_IGNORE_DIRS
+            or any(part.startswith(p) for p in _ARCHIVE_IGNORE_PREFIXES)
             for part in parts
         ):
             return False
         if ignore_matcher and ignore_matcher.matches(path):
+            return False
+        if opencodeignore_patterns and should_ignore(rel, opencodeignore_patterns):
             return False
         if path == self.archive_root:
             return False
@@ -97,6 +120,8 @@ class WorkspaceArchiver:
         """
         Archive the current workspace content to a timestamped archive folder.
 
+        Automatically loads and applies .opencodeignore patterns from the workspace root.
+
         Args:
             label: Optional label for the archive
             files_to_archive: Specific files to archive (None = all eligible files)
@@ -109,9 +134,15 @@ class WorkspaceArchiver:
         self._save_counter()
 
         ts = int(time.time())
-        slug = label.lower().replace(" ", "_").replace("-", "_")[:30] if label else "workspace"
+        slug = (
+            label.lower().replace(" ", "_").replace("-", "_")[:30]
+            if label
+            else "workspace"
+        )
         archive_name = f"run_{ts}_{self._archive_counter:04d}_{slug}"
         archive_path = self.archive_root / archive_name
+
+        opencodeignore_patterns = load_opencodeignore_patterns(self.workspace)
 
         try:
             self.archive_root.mkdir(parents=True, exist_ok=True)
@@ -133,11 +164,19 @@ class WorkspaceArchiver:
             if files_to_archive is not None:
                 for file_path in files_to_archive:
                     src = self.workspace / file_path
-                    if src.exists() and src.is_file() and self._should_archive(src, ignore_matcher):
+                    if (
+                        src.exists()
+                        and src.is_file()
+                        and self._should_archive(
+                            src, ignore_matcher, opencodeignore_patterns
+                        )
+                    ):
                         _archive_file(src)
             else:
                 for src in sorted(self.workspace.rglob("*")):
-                    if self._should_archive(src, ignore_matcher):
+                    if self._should_archive(
+                        src, ignore_matcher, opencodeignore_patterns
+                    ):
                         _archive_file(src)
 
             metadata = {
@@ -187,7 +226,9 @@ class WorkspaceArchiver:
             metadata = {"name": archive_dir.name, "path": str(archive_dir)}
             if metadata_file.exists():
                 try:
-                    metadata.update(json.loads(metadata_file.read_text(encoding="utf-8")))
+                    metadata.update(
+                        json.loads(metadata_file.read_text(encoding="utf-8"))
+                    )
                 except (json.JSONDecodeError, OSError):
                     pass
             archives.append(metadata)
@@ -199,6 +240,7 @@ class WorkspaceArchiver:
         Returns list of restored file paths.
         """
         from supervisor.utils.file_ops import copy_tree_to_workspace
+
         restored: list[str] = []
         if not archive_path.is_dir():
             return restored
@@ -214,7 +256,12 @@ class WorkspaceArchiver:
         archives = self.list_archives()
         total_files = sum(len(a.get("archived_files", [])) for a in archives)
         total_size = sum(
-            sum(f.stat().st_size for f in (Path(a["path"]).rglob("*") if Path(a["path"]).exists() else []))
+            sum(
+                f.stat().st_size
+                for f in (
+                    Path(a["path"]).rglob("*") if Path(a["path"]).exists() else []
+                )
+            )
             for a in archives
         )
         return {
@@ -223,6 +270,3 @@ class WorkspaceArchiver:
             "total_size_bytes": total_size,
             "current_counter": self._archive_counter,
         }
-
-
-

@@ -25,9 +25,13 @@ class RunTestResult:
     failed: int
     errors: int
     duration_s: float
-    output: str                        # full pytest / check output
+    output: str  # full pytest / check output
     exit_code: int
     syntax_errors: list[str] = field(default_factory=list)
+
+    def __post_init__(self):
+        if self.syntax_errors is None:
+            self.syntax_errors = []
 
     @property
     def total(self) -> int:
@@ -47,21 +51,27 @@ class RunTestResult:
 
     def delta(self, baseline: "RunTestResult") -> str:
         """Human-readable diff vs a baseline."""
-        dp = self.passed  - baseline.passed
-        df = self.failed  - baseline.failed
-        de = self.errors  - baseline.errors
+        dp = self.passed - baseline.passed
+        df = self.failed - baseline.failed
+        de = self.errors - baseline.errors
         ds = len(self.syntax_errors) - len(baseline.syntax_errors)
         parts = []
-        if dp: parts.append(f"passed {dp:+d}")
-        if df: parts.append(f"failed {df:+d}")
-        if de: parts.append(f"errors {de:+d}")
-        if ds: parts.append(f"syntax_errors {ds:+d}")
+        if dp:
+            parts.append(f"passed {dp:+d}")
+        if df:
+            parts.append(f"failed {df:+d}")
+        if de:
+            parts.append(f"errors {de:+d}")
+        if ds:
+            parts.append(f"syntax_errors {ds:+d}")
         return ", ".join(parts) if parts else "no change"
 
     def is_regression_vs(self, baseline: "RunTestResult") -> bool:
         """Return True if this result is strictly worse than baseline."""
-        more_failures = (self.failed + self.errors) > (baseline.failed + baseline.errors)
-        new_syntax    = len(self.syntax_errors) > len(baseline.syntax_errors)
+        more_failures = (self.failed + self.errors) > (
+            baseline.failed + baseline.errors
+        )
+        new_syntax = len(self.syntax_errors) > len(baseline.syntax_errors)
         return more_failures or new_syntax
 
 
@@ -73,7 +83,7 @@ class OcTestRunner:
 
     def __init__(self, workspace: Path, test_dir: str = "tests"):
         self.workspace = workspace
-        self.test_dir  = workspace / test_dir
+        self.test_dir = workspace / test_dir
 
     # ------------------------------------------------------------------ #
     # Public                                                               #
@@ -98,7 +108,11 @@ class OcTestRunner:
         try:
             subprocess.run(
                 [sys.executable, "-m", "pytest", "--version"],
-                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=10,
             )
             return True
         except (subprocess.TimeoutExpired, FileNotFoundError):
@@ -106,21 +120,30 @@ class OcTestRunner:
 
     def _run_pytest(self, t0: float) -> RunTestResult:
         cmd = [
-            sys.executable, "-m", "pytest",
+            sys.executable,
+            "-m",
+            "pytest",
             str(self.test_dir) if self.test_dir.exists() else str(self.workspace),
-            "-v", "--tb=short", "--no-header",
+            "-v",
+            "--tb=short",
+            "--no-header",
             "-q",
         ]
         proc = subprocess.run(
             cmd,
-            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
             cwd=str(self.workspace),
             timeout=300,
         )
         output = proc.stdout + proc.stderr
         passed, failed, errors = _parse_pytest_summary(output)
         return RunTestResult(
-            passed=passed, failed=failed, errors=errors,
+            passed=passed,
+            failed=failed,
+            errors=errors,
             duration_s=time.monotonic() - t0,
             output=output,
             exit_code=proc.returncode,
@@ -134,7 +157,10 @@ class OcTestRunner:
         for py_file in sorted(self.workspace.rglob("*.py")):
             proc = subprocess.run(
                 [sys.executable, "-m", "py_compile", str(py_file)],
-                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
             )
             if proc.returncode != 0:
                 msg = f"{py_file.relative_to(self.workspace)}: {proc.stderr.strip()}"
@@ -144,7 +170,9 @@ class OcTestRunner:
                 output_lines.append(f"  ok: {py_file.relative_to(self.workspace)}")
 
         return RunTestResult(
-            passed=0, failed=0, errors=0,
+            passed=0,
+            failed=0,
+            errors=0,
             duration_s=time.monotonic() - t0,
             output="\n".join(output_lines),
             exit_code=1 if errors else 0,
@@ -156,16 +184,19 @@ class OcTestRunner:
 # Pytest output parser                                                #
 # ------------------------------------------------------------------ #
 
+
 def _parse_pytest_summary(output: str) -> tuple[int, int, int]:
     """Extract (passed, failed, errors) from pytest -q output."""
     import re
+
     passed = failed = errors = 0
     # Look for lines like: "3 passed, 1 failed, 2 errors in 0.42s"
-    pattern = re.compile(
-        r"(\d+)\s+passed|(\d+)\s+failed|(\d+)\s+error", re.IGNORECASE
-    )
+    pattern = re.compile(r"(\d+)\s+passed|(\d+)\s+failed|(\d+)\s+error", re.IGNORECASE)
     for m in pattern.finditer(output):
-        if m.group(1): passed  = int(m.group(1))
-        if m.group(2): failed  = int(m.group(2))
-        if m.group(3): errors  = int(m.group(3))
+        if m.group(1):
+            passed = int(m.group(1))
+        if m.group(2):
+            failed = int(m.group(2))
+        if m.group(3):
+            errors = int(m.group(3))
     return passed, failed, errors

@@ -240,7 +240,7 @@ defaults = {
     "opencode_executable": _load_opencode_path(),
     "max_retries": 3,
     "context_threshold": 60,
-    "max_tokens": 200000,
+    "max_tokens": 150000,
     "timeout": 120,
     "protected_files": [],
     # self-evolution page

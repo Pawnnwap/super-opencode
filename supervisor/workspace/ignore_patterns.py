@@ -8,6 +8,8 @@ from modification:
   - Suffix matches: "*_test.py" matches "anything_test.py"
   - Glob patterns: "**/*.pyc"
   - Directory patterns: "build/" (excludes entire directory)
+
+Also integrates .gitignore patterns when available.
 """
 
 from __future__ import annotations
@@ -18,6 +20,7 @@ from pathlib import Path
 from typing import Iterable
 
 IGNORE_FILE = ".opencodeignore"
+GITIGNORE_FILE = ".gitignore"
 
 _DEFAULT_PATTERNS = {
     ".git",
@@ -72,9 +75,9 @@ class IgnoreMatcher:
             line = line.strip()
             if not line or line.startswith("#"):
                 continue
-            
+
             pattern = IgnorePattern(pattern=line)
-            
+
             if line.endswith("/"):
                 pattern.is_directory = True
                 pattern.pattern = line.rstrip("/")
@@ -88,14 +91,14 @@ class IgnoreMatcher:
                     pattern.regex = self._glob_to_regex(line)
             elif "/" in line:
                 pattern.is_directory = True
-            
+
             self.patterns.append(pattern)
 
     def _glob_to_regex(self, glob_pattern: str) -> re.Pattern:
         """Convert glob pattern to regex."""
         if glob_pattern in self._regex_cache:
             return self._regex_cache[glob_pattern]
-        
+
         pattern = glob_pattern
         pattern = pattern.replace(".", r"\.")
         pattern = pattern.replace("**/", "(?:.*/)?")
@@ -103,7 +106,7 @@ class IgnoreMatcher:
         pattern = pattern.replace("*", "[^/]*")
         pattern = pattern.replace("?", ".")
         pattern = f"^{pattern}$"
-        
+
         regex = re.compile(pattern)
         self._regex_cache[glob_pattern] = regex
         return regex
@@ -111,13 +114,16 @@ class IgnoreMatcher:
     def matches(self, path: str | Path) -> bool:
         """Check if a path matches any ignore pattern."""
         path_str = str(path).replace("\\", "/")
-        
+
         path_obj = Path(path_str)
         filename = path_obj.name
-        
+
         for pattern in self.patterns:
             if pattern.is_directory:
-                if path_str.startswith(f"{pattern.pattern}/") or f"/{pattern.pattern}/" in path_str:
+                if (
+                    path_str.startswith(f"{pattern.pattern}/")
+                    or f"/{pattern.pattern}/" in path_str
+                ):
                     return True
                 if path_obj.name == pattern.pattern:
                     return True
@@ -134,7 +140,7 @@ class IgnoreMatcher:
             else:
                 if filename == pattern.pattern or path_str == pattern.pattern:
                     return True
-        
+
         return False
 
     def filter_paths(self, paths: Iterable[str | Path]) -> tuple[list[str], list[str]]:
@@ -204,3 +210,67 @@ def write_ignore_file(workspace: Path, content: str) -> Path:
     ignore_path = workspace / IGNORE_FILE
     ignore_path.write_text(content, encoding="utf-8")
     return ignore_path
+
+
+def load_gitignore_patterns(workspace: Path) -> list[str]:
+    """Load patterns from .gitignore file.
+
+    Args:
+        workspace: Path to the workspace root.
+
+    Returns:
+        List of pattern strings from .gitignore, or empty list if not found.
+    """
+    gitignore_path = workspace / GITIGNORE_FILE
+    if not gitignore_path.exists():
+        return []
+    try:
+        content = gitignore_path.read_text(encoding="utf-8")
+        patterns: list[str] = []
+        for line in content.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            patterns.append(line)
+        return patterns
+    except (OSError, UnicodeDecodeError):
+        return []
+
+
+def load_combined_ignore_matcher(workspace: Path) -> IgnoreMatcher:
+    """Create an IgnoreMatcher with patterns from both .gitignore and .opencodeignore.
+
+    Both sets of patterns are combined into a single matcher.
+    Patterns from .opencodeignore are added after .gitignore patterns.
+
+    Args:
+        workspace: Path to the workspace root.
+
+    Returns:
+        IgnoreMatcher with combined patterns.
+    """
+    matcher = IgnoreMatcher(workspace)
+
+    # Collect all lines from both files
+    all_lines: list[str] = []
+
+    # Load .gitignore patterns first
+    gitignore_path = workspace / GITIGNORE_FILE
+    if gitignore_path.exists():
+        try:
+            content = gitignore_path.read_text(encoding="utf-8")
+            all_lines.extend(content.splitlines())
+        except (OSError, UnicodeDecodeError):
+            pass
+
+    # Load .opencodeignore patterns (these are added on top)
+    opencodeignore_path = workspace / IGNORE_FILE
+    if opencodeignore_path.exists():
+        try:
+            content = opencodeignore_path.read_text(encoding="utf-8")
+            all_lines.extend(content.splitlines())
+        except (OSError, UnicodeDecodeError):
+            pass
+
+    matcher.parse_patterns(all_lines)
+    return matcher
