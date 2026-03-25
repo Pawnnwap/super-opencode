@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 from enum import Enum, auto
 from typing import Generator
+from pathlib import Path
 
 Event = dict
 
