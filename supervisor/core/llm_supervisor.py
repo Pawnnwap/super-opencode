@@ -18,6 +18,7 @@ from supervisor.monitoring.token_estimator import (
     truncate_with_fallback,
     warn_if_exceeds_limit,
 )
+from supervisor.workspace.ignore_patterns import IgnoreMatcher
 
 logger = logging.getLogger(__name__)
 
@@ -121,6 +122,8 @@ class LLMSupervisor:
         self._truncation_enabled = truncation_enabled
         self._max_history_turns = max_history_turns
         self._compact_intermediate_steps = compact_intermediate_steps
+        self._ignore_matcher = IgnoreMatcher(workspace)
+        self._ignore_matcher.load_from_workspace(workspace)
 
     def read_protected_files(self) -> dict[str, str]:
         """Read all protected files and return their content as a dict mapping path to content."""
@@ -167,6 +170,24 @@ class LLMSupervisor:
 
         return protected_contents
 
+    def _should_skip_file(self, path: str) -> bool:
+        """Check if a file path matches any pattern in .opencodeignore.
+
+        Args:
+            path: The relative path of the file to check.
+
+        Returns:
+            True if the file should be skipped, False otherwise.
+            Protected files (.opencoderc, .opencode/*) are never skipped.
+        """
+        protected_markers = (".opencoderc", ".opencode/")
+        if any(
+            path.startswith(pm) or path == pm.rstrip("/") for pm in protected_markers
+        ):
+            return False
+
+        return self._ignore_matcher.matches(path)
+
     def _llm_select_files(self, file_meta: dict[str, int], top_k: int) -> list[str]:
         """Ask the LLM to pick the top-k most relevant files given path+size metadata.
 
@@ -183,6 +204,15 @@ class LLMSupervisor:
         if not file_meta:
             return []
 
+        filtered_meta = {
+            path: size
+            for path, size in file_meta.items()
+            if not self._should_skip_file(path)
+        }
+
+        if not filtered_meta:
+            return []
+
         # Budget: each path can be up to ~100 chars (~25 tokens); add overhead for
         # JSON brackets, commas, and whitespace. Minimum 256 to be safe.
         response_budget = max(256, top_k * 50)
@@ -190,19 +220,23 @@ class LLMSupervisor:
         # Ensure the prompt doesn't exceed max_tokens
         # The prompt template without listing is about 150 tokens
         available_tokens = max(1000, self._max_tokens - response_budget - 200)
-        
+
         # Sort items to prioritize (maybe by size, or just alphabetical, we already sorted alphabetical)
-        sorted_items = sorted(file_meta.items())
-        
+        sorted_items = sorted(filtered_meta.items())
+
         # Build listing iteratively to fit within available tokens
         # Or we can just use estimate_tokens on the listing and truncate
         listing_lines = []
         for path, size in sorted_items:
             listing_lines.append(f"{path} ({size} bytes)")
-            
+
         listing = "\n".join(listing_lines)
-        
-        from supervisor.monitoring.token_estimator import estimate_tokens, truncate_prompt
+
+        from supervisor.monitoring.token_estimator import (
+            estimate_tokens,
+            truncate_prompt,
+        )
+
         if estimate_tokens(listing) > available_tokens:
             # We must truncate the listing
             listing = truncate_prompt(listing, available_tokens, preserve_end_ratio=0.0)
@@ -211,7 +245,7 @@ class LLMSupervisor:
             f"You are selecting the {top_k} most relevant source files to read "
             f"before generating code-improvement suggestions.\n\n"
             f"## Protocol target\n{self._protocol_target}\n\n"
-            f"## Candidate files ({len(file_meta)} total)\n{listing}\n\n"
+            f"## Candidate files ({len(filtered_meta)} total)\n{listing}\n\n"
             f"Return ONLY a JSON array of up to {top_k} file paths from the list above, "
             f"ordered by relevance (most relevant first). "
             f'Example: ["src/main.py", "tests/test_core.py"]\n'
@@ -233,11 +267,11 @@ class LLMSupervisor:
 
             response = self._client.chat.completions.create(**kwargs)
             raw = (response.choices[0].message.content or "").strip()
-            
+
             # Extract list of strings using regex if json fails or as an alternative
             selected = []
             try:
-                match = re.search(r'\[.*\]', raw, re.DOTALL)
+                match = re.search(r"\[.*\]", raw, re.DOTALL)
                 if match:
                     selected = _json.loads(match.group(0))
                 else:
@@ -248,40 +282,44 @@ class LLMSupervisor:
                 # Fallback to regex extraction of string literals
                 matches = re.findall(r'["\']([^"\']+)["\']', raw)
                 selected = [m for m in matches if m]
-                
+
             if not selected:
                 raise ValueError("Could not extract any paths from LLM response")
-                
-            # Keep only paths that actually exist in file_meta
+
+            # Keep only paths that actually exist in filtered_meta
             real_paths = []
             for p in selected:
                 p_str = str(p).strip()
                 if not p_str:
                     continue
-                    
-                if p_str in file_meta:
+
+                if p_str in filtered_meta:
                     if p_str not in real_paths:
                         real_paths.append(p_str)
                     continue
-                    
+
                 # try suffix/prefix match
                 p_norm = p_str.replace("\\", "/").strip("/")
                 best_match = None
-                for candidate in file_meta:
+                for candidate in filtered_meta:
                     c_norm = candidate.replace("\\", "/").strip("/")
-                    if c_norm.endswith("/" + p_norm) or p_norm.endswith("/" + c_norm) or c_norm == p_norm:
+                    if (
+                        c_norm.endswith("/" + p_norm)
+                        or p_norm.endswith("/" + c_norm)
+                        or c_norm == p_norm
+                    ):
                         best_match = candidate
                         break
-                
+
                 # try basename match if suffix match fails
                 if not best_match:
                     p_name = p_norm.split("/")[-1]
-                    for candidate in file_meta:
+                    for candidate in filtered_meta:
                         c_name = candidate.replace("\\", "/").strip("/").split("/")[-1]
                         if c_name == p_name:
                             best_match = candidate
                             break
-                            
+
                 if best_match and best_match not in real_paths:
                     real_paths.append(best_match)
 
@@ -292,7 +330,7 @@ class LLMSupervisor:
                 exc,
                 top_k,
             )
-            return sorted(file_meta)[:top_k]
+            return sorted(filtered_meta)[:top_k]
 
     def _read_protected_files_for_suggestions(self) -> tuple[dict[str, str], list[str]]:
         """Walk the full workspace, let the LLM choose the top-k most relevant files,
@@ -924,22 +962,26 @@ class LLMSupervisor:
             log_dir = self._workspace / ".opencode"
             log_dir.mkdir(parents=True, exist_ok=True)
             log_file = log_dir / "supervisor_prompts.log"
-            
+
             with open(log_file, "a", encoding="utf-8") as f:
-                f.write(f"\n{'='*80}\n")
+                f.write(f"\n{'=' * 80}\n")
                 f.write(f"--- {title} ---\n")
                 import datetime
+
                 f.write(f"Timestamp: {datetime.datetime.now().isoformat()}\n")
-                f.write(f"{'='*80}\n\n")
+                f.write(f"{'=' * 80}\n\n")
                 for msg in messages:
                     role = msg.get("role", "unknown").upper()
                     content = msg.get("content", "")
-                    f.write(f"[{role}]\n{content}\n\n{'-'*40}\n\n")
+                    f.write(f"[{role}]\n{content}\n\n{'-' * 40}\n\n")
         except Exception as e:
             logger.debug(f"Failed to log prompt: {e}")
 
     def _chat(
-        self, user_content: str, is_intermediate: bool = False, history_content: str | None = None
+        self,
+        user_content: str,
+        is_intermediate: bool = False,
+        history_content: str | None = None,
     ) -> SupervisorVerdict:
         should_record_user = (
             not is_intermediate
@@ -947,7 +989,9 @@ class LLMSupervisor:
             or self.should_record_turn(user_content, "user")
         )
 
-        record_content = history_content if history_content is not None else user_content
+        record_content = (
+            history_content if history_content is not None else user_content
+        )
 
         conv_parts = []
         for msg in self._history:
@@ -972,7 +1016,9 @@ class LLMSupervisor:
                 "HISTORY:\n%s\n"
                 "USER:\n%s\n"
                 "----------------------------------------",
-                self._system, conv_text, user_content
+                self._system,
+                conv_text,
+                user_content,
             )
 
         if self._truncation_enabled and should_truncate(estimate, self._max_tokens):
@@ -1000,7 +1046,7 @@ class LLMSupervisor:
             messages=messages,
         )
         reply = response.choices[0].message.content or ""
-        
+
         if should_record_user:
             self._history.append({"role": "user", "content": record_content})
         self._history.append({"role": "assistant", "content": reply})
