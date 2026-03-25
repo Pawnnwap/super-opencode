@@ -189,7 +189,6 @@ _PERSIST_KEYS = [
     "raw_restrictions",
     "evo_goal",
     "evo_extra_restrictions",
-    "protected_files",
 ]
 
 
@@ -246,6 +245,7 @@ defaults = {
     "max_tokens": 150000,
     "timeout": 120,
     "protected_files": [],
+    "_last_workspace": "",
     # self-evolution page
     "evo_goal": "",
     "evo_extra_restrictions": "",
@@ -352,6 +352,11 @@ def page_wizard():
                 value=st.session_state.workspace,
                 placeholder="/home/user/myproject",
             )
+            if st.session_state.workspace != st.session_state.get(
+                "_last_workspace", ""
+            ):
+                st.session_state.protected_files = []
+                st.session_state._last_workspace = st.session_state.workspace
             st.session_state.supervisor_model = st.text_input(
                 "Supervisor / wizard model",
                 key="cfg_supervisor_model",
