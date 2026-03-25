@@ -981,15 +981,23 @@ _BLOCK_META = {
 }
 
 
-def _render_events(events: list[dict], empty_msg: str, skip: set | None = None) -> None:
+def _render_events(
+    events: list[dict],
+    empty_msg: str,
+    skip: set | None = None,
+    show_verbose: bool = True,
+) -> None:
     skip = skip or set()
     verbose = st.session_state.get("verbose_log", True)
 
-    # Verbose toggle
-    st.session_state.verbose_log = st.toggle(
-        "Verbose log", value=verbose, key=f"vtoggle_{empty_msg[:8].replace(' ', '_')}"
-    )
-    verbose = st.session_state.verbose_log
+    if show_verbose:
+        # Verbose toggle
+        st.session_state.verbose_log = st.toggle(
+            "Verbose log",
+            value=verbose,
+            key=f"vtoggle_{empty_msg[:8].replace(' ', '_')}",
+        )
+        verbose = st.session_state.verbose_log
 
     if not events:
         st.markdown(
@@ -1461,7 +1469,12 @@ def _render_evo_log():
     placeholder = (
         "— waiting for evolution to start —" if state == "idle" else "— starting… —"
     )
-    _render_events(st.session_state.evo_log_events, placeholder, skip={"report"})
+    _render_events(
+        st.session_state.evo_log_events,
+        placeholder,
+        skip={"report"},
+        show_verbose=False,
+    )
     cp_events = [
         e
         for e in st.session_state.evo_log_events
