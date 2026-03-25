@@ -285,8 +285,7 @@ with st.sidebar:
     pages = {
         "wizard": "① Protocol Wizard",
         "run": "② Live Run",
-        "report": "③ Report",
-        "evolve": "④ Self-Evolution",
+        "evolve": "③ Self-Evolution",
     }
     for key, label in pages.items():
         active = st.session_state.page == key
@@ -855,6 +854,37 @@ def page_run():
     # Token warnings display
     _render_token_warnings(st.session_state.log_events, st.session_state.max_tokens)
 
+    # ── Report display after completed run ──────────────────────────────── #
+    if st.session_state.run_state in ("success", "failure"):
+        state = st.session_state.run_state
+        pill_map = {
+            "success": ("🟢", "All targets met — run completed successfully."),
+            "failure": ("🔴", "Run ended with failures."),
+        }
+        icon, label = pill_map.get(state, ("⚪", ""))
+        st.markdown("---")
+        st.markdown(f"### {icon} {label}")
+
+        if st.session_state.final_report:
+            st.markdown("#### Supervisor Report")
+            st.markdown(
+                f'<div class="proto-preview">{st.session_state.final_report}</div>',
+                unsafe_allow_html=True,
+            )
+            st.download_button(
+                "⬇  Download report",
+                data=st.session_state.final_report,
+                file_name="supervisor_report.md",
+                mime="text/markdown",
+            )
+
+        if st.session_state.protocol_md:
+            st.markdown("#### Protocol used")
+            st.markdown(
+                f'<div class="proto-preview">{st.session_state.protocol_md}</div>',
+                unsafe_allow_html=True,
+            )
+
     if st.session_state.run_state == "running":
         time.sleep(0.5)
         st.rerun()
@@ -1135,53 +1165,12 @@ def _render_step_progress():
 
 
 # ═══════════════════════════════════════════════════════════════════════════ #
-# PAGE 3 — Report                                                             #
-# ═══════════════════════════════════════════════════════════════════════════ #
-
-
-def page_report():
-    st.markdown("# Final Report")
-
-    state = st.session_state.run_state
-    pill_map = {
-        "idle": ("🔵", "No run has completed yet."),
-        "running": ("🟡", "Run is still in progress."),
-        "success": ("🟢", "All targets met — run completed successfully."),
-        "failure": ("🔴", "Run ended with failures."),
-    }
-    icon, label = pill_map.get(state, ("⚪", ""))
-    st.markdown(f"### {icon} {label}")
-
-    if state in ("success", "failure") and st.session_state.final_report:
-        st.markdown("---")
-        st.markdown("#### Supervisor Report")
-        st.markdown(
-            f'<div class="proto-preview">{st.session_state.final_report}</div>',
-            unsafe_allow_html=True,
-        )
-        st.download_button(
-            "⬇  Download report",
-            data=st.session_state.final_report,
-            file_name="supervisor_report.md",
-            mime="text/markdown",
-        )
-
-    if st.session_state.protocol_md:
-        st.markdown("---")
-        st.markdown("#### Protocol used")
-        st.markdown(
-            f'<div class="proto-preview">{st.session_state.protocol_md}</div>',
-            unsafe_allow_html=True,
-        )
-
-
-# ═══════════════════════════════════════════════════════════════════════════ #
-# PAGE 4 — Self-Evolution                                                     #
+# Self-Evolution                                                              #
 # ═══════════════════════════════════════════════════════════════════════════ #
 
 
 def page_evolve():
-    st.markdown("# ④ Self-Evolution")
+    st.markdown("# Self-Evolution")
     st.markdown(
         "Point the supervisor + opencode at **this codebase itself**. "
         "Describe what you want improved or debugged — the system will "
@@ -1556,11 +1545,12 @@ def _render_evo_step_progress():
 # ═══════════════════════════════════════════════════════════════════════════ #
 
 page = st.session_state.page
+if page == "report":
+    page = "run"
+    st.session_state.page = "run"
 if page == "wizard":
     page_wizard()
 elif page == "run":
     page_run()
-elif page == "report":
-    page_report()
 elif page == "evolve":
     page_evolve()
