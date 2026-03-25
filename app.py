@@ -21,6 +21,7 @@ from supervisor.protocols.meta_protocol_builder import (
     write_meta_protocol,
 )
 from supervisor.core.self_evolution_loop import SelfEvolutionLoop
+from supervisor.monitoring.token_estimator import estimate_tokens
 
 import streamlit as st
 
@@ -529,6 +530,89 @@ def page_wizard():
                     st.caption(
                         f"Found existing {IGNORE_FILE} with {len(current_ignore_content.splitlines())} patterns"
                     )
+
+                st.markdown("---")
+                suggest_disabled = not (
+                    st.session_state.workspace
+                    and Path(st.session_state.workspace).exists()
+                )
+                if st.button(
+                    "Suggest and Apply Ignore Patterns",
+                    key="btn_suggest_ignore",
+                    disabled=suggest_disabled,
+                ):
+                    try:
+                        ws = Path(st.session_state.workspace)
+                        all_entries = sorted(
+                            [
+                                str(p.relative_to(ws)).replace("\\", "/")
+                                for p in ws.rglob("*")
+                                if str(p.relative_to(ws)) != ".opencodeignore"
+                            ]
+                        )
+                        file_list_str = "\n".join(all_entries)
+                        truncation_note = ""
+                        token_count = estimate_tokens(file_list_str)
+                        if token_count > 100000:
+                            all_entries = all_entries[:1000]
+                            file_list_str = "\n".join(all_entries)
+                            truncation_note = (
+                                "Note: The file list was truncated to the first 1,000 entries "
+                                "due to token limits."
+                            )
+
+                        from openai import OpenAI
+
+                        client = OpenAI(
+                            api_key=st.session_state.openai_key,
+                            base_url=st.session_state.base_url or None,
+                        )
+                        model = st.session_state.supervisor_model or "gpt-4o"
+                        system_msg = (
+                            "You are an expert in writing .gitignore files. "
+                            "Given a list of files and directories in a workspace, "
+                            "generate a .opencodeignore file that ignores common build "
+                            "artifacts, dependency directories, cache files, and other "
+                            "files that should not be modified by an autonomous coding "
+                            "agent. The patterns should be in gitignore format. Only "
+                            "output the patterns, one per line. Do not include any "
+                            "explanations."
+                        )
+                        user_msg = (
+                            f"The workspace contains the following files and directories:\n\n"
+                            f"{file_list_str}\n\n"
+                            f"{truncation_note}\n\n"
+                            f"Generate a .opencodeignore file that ignores common build "
+                            f"artifacts, dependency directories, cache files, and other "
+                            f"files that should not be modified by an autonomous coding "
+                            f"agent. The patterns should be in gitignore format. Only "
+                            f"output the patterns, one per line. Do not include any "
+                            f"explanations."
+                        )
+                        response = client.chat.completions.create(
+                            model=model,
+                            messages=[
+                                {"role": "system", "content": system_msg},
+                                {"role": "user", "content": user_msg},
+                            ],
+                        )
+                        generated_patterns = response.choices[0].message.content.strip()
+
+                        st.text_area(
+                            "Generated .opencodeignore patterns",
+                            value=generated_patterns,
+                            height=300,
+                            key="generated_ignore_patterns",
+                            disabled=True,
+                        )
+                        ignore_file_path.write_text(
+                            generated_patterns, encoding="utf-8"
+                        )
+                        st.toast(
+                            "Ignore patterns generated and saved to .opencodeignore."
+                        )
+                    except Exception as e:
+                        st.error(f"Failed to generate ignore patterns: {e}")
 
     # Auto-save settings to disk whenever the config panel is shown
     _save_settings()
