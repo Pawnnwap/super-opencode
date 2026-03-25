@@ -16,7 +16,10 @@ from supervisor.protocols.protocol_wizard import ProtocolWizard
 from supervisor.protocols.protocol_analyzer import ProtocolAnalyzer, Severity
 from supervisor.core.loop import SupervisorLoop
 from supervisor.analyzers.codebase_analyzer import snapshot_codebase
-from supervisor.protocols.meta_protocol_builder import MetaProtocolBuilder, write_meta_protocol
+from supervisor.protocols.meta_protocol_builder import (
+    MetaProtocolBuilder,
+    write_meta_protocol,
+)
 from supervisor.core.self_evolution_loop import SelfEvolutionLoop
 
 import streamlit as st
@@ -409,6 +412,7 @@ def page_wizard():
             all_files = []
             if workspace_path and workspace_path.exists():
                 try:
+
                     def is_in_dot_dir(path: Path, workspace: Path) -> bool:
                         rel = path.relative_to(workspace)
                         for part in rel.parts[:-1]:
@@ -423,11 +427,15 @@ def page_wizard():
                                 return True
                         return False
 
-                    all_files = sorted([
-                        str(f.relative_to(workspace_path)).replace("\\", "/")
-                        for f in workspace_path.rglob("*")
-                        if f.is_file() and not is_in_dot_dir(f, workspace_path) and not contains_debug_dir(f, workspace_path)
-                    ])
+                    all_files = sorted(
+                        [
+                            str(f.relative_to(workspace_path)).replace("\\", "/")
+                            for f in workspace_path.rglob("*")
+                            if f.is_file()
+                            and not is_in_dot_dir(f, workspace_path)
+                            and not contains_debug_dir(f, workspace_path)
+                        ]
+                    )
                 except Exception:
                     pass
 
@@ -461,10 +469,19 @@ def page_wizard():
                             st.rerun()
 
         with st.expander("🚫 Ignore Patterns (.opencodeignore)", expanded=False):
-            from supervisor.workspace.ignore_patterns import IGNORE_FILE, read_ignore_file, write_ignore_file
-            st.caption(f"Files matching these patterns will be excluded from context retrieval")
-            
-            ws_path = Path(st.session_state.workspace) if st.session_state.workspace else None
+            from supervisor.workspace.ignore_patterns import (
+                IGNORE_FILE,
+                read_ignore_file,
+                write_ignore_file,
+            )
+
+            st.caption(
+                f"Files matching these patterns will be excluded from context retrieval"
+            )
+
+            ws_path = (
+                Path(st.session_state.workspace) if st.session_state.workspace else None
+            )
             if not ws_path or not ws_path.exists():
                 st.warning("Set a valid workspace path to edit .opencodeignore")
             else:
@@ -472,10 +489,12 @@ def page_wizard():
                 ignore_file_path = ws_path / IGNORE_FILE
                 if ignore_file_path.exists():
                     try:
-                        current_ignore_content = ignore_file_path.read_text(encoding="utf-8")
+                        current_ignore_content = ignore_file_path.read_text(
+                            encoding="utf-8"
+                        )
                     except Exception:
                         pass
-                
+
                 new_ignore_content = st.text_area(
                     "Ignore patterns",
                     value=current_ignore_content,
@@ -492,7 +511,7 @@ def page_wizard():
                     ),
                     label_visibility="collapsed",
                 )
-                
+
                 if new_ignore_content != current_ignore_content:
                     if st.button("Save Ignore Patterns", key="save_ignore_patterns"):
                         try:
@@ -501,10 +520,12 @@ def page_wizard():
                             st.rerun()
                         except Exception as e:
                             st.error(f"Failed to save: {e}")
-                
+
                 if ignore_file_path.exists():
-                    st.caption(f"Found existing {IGNORE_FILE} with {len(current_ignore_content.splitlines())} patterns")
-    
+                    st.caption(
+                        f"Found existing {IGNORE_FILE} with {len(current_ignore_content.splitlines())} patterns"
+                    )
+
     # Auto-save settings to disk whenever the config panel is shown
     _save_settings()
 
@@ -581,7 +602,11 @@ def page_wizard():
     st.markdown("</div>", unsafe_allow_html=True)
 
     # ── live quality analysis ─────────────────────────────────────────── #
-    if st.session_state.raw_input.strip() or st.session_state.raw_target.strip() or st.session_state.raw_restrictions.strip():
+    if (
+        st.session_state.raw_input.strip()
+        or st.session_state.raw_target.strip()
+        or st.session_state.raw_restrictions.strip()
+    ):
         with st.expander("📊 Protocol Quality Preview", expanded=False):
             _render_quality_analysis(
                 st.session_state.raw_input,
@@ -608,7 +633,6 @@ def page_wizard():
         if missing:
             st.error(f"Please fill in: {', '.join(missing)}")
         else:
-
             _apply_api_config()
 
             with st.spinner("Asking supervisor to refine your protocol…"):
@@ -766,14 +790,18 @@ def page_run():
     proto_path = workspace / "protocol.md"
     if not proto_path.exists():
         st.error(f"**protocol.md not found** in workspace: `{workspace}`")
-        st.info("Please complete the Protocol Wizard to generate a protocol.md file, or manually create one in your workspace.")
+        st.info(
+            "Please complete the Protocol Wizard to generate a protocol.md file, or manually create one in your workspace."
+        )
         return
 
     # Validate protocol.md content
     try:
         proto_content = proto_path.read_text(encoding="utf-8")
         if not proto_content.strip():
-            st.error("protocol.md exists but is empty. Please regenerate it via the Protocol Wizard.")
+            st.error(
+                "protocol.md exists but is empty. Please regenerate it via the Protocol Wizard."
+            )
             return
     except Exception as e:
         st.error(f"Error reading protocol.md: {e}")
@@ -855,7 +883,13 @@ def _start_run():
         max_tokens=int(st.session_state.max_tokens),
     )
 
-    shared = {"events": [], "state": "running", "report": "", "heartbeat": 0, "last_event_time": time.time()}
+    shared = {
+        "events": [],
+        "state": "running",
+        "report": "",
+        "heartbeat": 0,
+        "last_event_time": time.time(),
+    }
     stop_event = threading.Event()
     st.session_state.run_state = "running"
     st.session_state.final_report = ""
@@ -878,11 +912,13 @@ def _start_run():
             now = time.time()
             if now - last_heartbeat >= heartbeat_interval:
                 shared["heartbeat"] += 1
-                shared["events"].append({
-                    "level": "heartbeat",
-                    "msg": f"Heartbeat #{shared['heartbeat']} — supervisor still active",
-                    "count": shared["heartbeat"]
-                })
+                shared["events"].append(
+                    {
+                        "level": "heartbeat",
+                        "msg": f"Heartbeat #{shared['heartbeat']} — supervisor still active",
+                        "count": shared["heartbeat"],
+                    }
+                )
                 last_heartbeat = now
 
         if any(e["level"] == "success" for e in shared["events"]):
@@ -966,8 +1002,16 @@ def _render_log():
 
 def _render_token_warnings(events: list[dict], max_tokens: int) -> None:
     """Display token usage warnings and estimated usage from log events."""
-    token_events = [e for e in events if "token" in e.get("msg", "").lower() and e.get("level") == "warn"]
-    context_events = [e for e in events if "context usage" in e.get("msg", "").lower() and e.get("level") == "warn"]
+    token_events = [
+        e
+        for e in events
+        if "token" in e.get("msg", "").lower() and e.get("level") == "warn"
+    ]
+    context_events = [
+        e
+        for e in events
+        if "context usage" in e.get("msg", "").lower() and e.get("level") == "warn"
+    ]
 
     # Collect the latest token usage info from context warning events
     latest_fraction = 0.0
@@ -981,7 +1025,8 @@ def _render_token_warnings(events: list[dict], max_tokens: int) -> None:
             try:
                 # Try pattern: "X / Y tokens"
                 import re
-                match = re.search(r'(\d[\d,]*)\s*/\s*(\d[\d,]*)\s*tokens', msg)
+
+                match = re.search(r"(\d[\d,]*)\s*/\s*(\d[\d,]*)\s*tokens", msg)
                 if match:
                     current = int(match.group(1).replace(",", ""))
                     max_t = int(match.group(2).replace(",", ""))
@@ -995,10 +1040,12 @@ def _render_token_warnings(events: list[dict], max_tokens: int) -> None:
 
     # Always show token usage bar if we have data
     if found_usage:
-        color = "🔴" if latest_fraction > 0.9 else "🟡" if latest_fraction > 0.7 else "🟢"
+        color = (
+            "🔴" if latest_fraction > 0.9 else "🟡" if latest_fraction > 0.7 else "🟢"
+        )
         st.progress(
             min(latest_fraction, 1.0),
-            text=f"{color} {latest_current:,} / {max_tokens:,} tokens ({latest_fraction*100:.0f}%)",
+            text=f"{color} {latest_current:,} / {max_tokens:,} tokens ({latest_fraction * 100:.0f}%)",
         )
 
     if not token_events and not context_events:
@@ -1043,7 +1090,7 @@ def _render_step_progress():
     elif progress_events:
         last_progress = progress_events[-1]
         msg = last_progress.get("msg", "")
-        
+
         progress_col1, progress_col2, progress_col3 = st.columns([3, 1, 1])
         with progress_col1:
             st.caption(f"📊 {msg}")
@@ -1069,7 +1116,7 @@ def _render_step_progress():
                             pass
             else:
                 progress_val = ev.get("percentage", 0.0)
-        
+
         if progress_val > 0:
             progress_col1, progress_col2 = st.columns([4, 1])
             with progress_col1:
@@ -1243,7 +1290,6 @@ def page_evolve():
             if not st.session_state.evo_goal.strip():
                 st.error("Please describe your evolution goal.")
             else:
-
                 _apply_api_config()
 
                 with st.spinner("Scanning codebase and generating meta_protocol.md…"):
@@ -1267,15 +1313,16 @@ def page_evolve():
     # Step 1 — review meta_protocol + launch                             #
     # ─────────────────────────────────────────────────────────────────── #
     elif st.session_state.evo_wizard_step == 1:
-        st.markdown("### 📄 Generated `meta_protocol.md`")
-        st.caption("Review and edit, then click Launch.")
+        if st.session_state.evo_run_state != "running":
+            st.markdown("### 📄 Generated `meta_protocol.md`")
+            st.caption("Review and edit, then click Launch.")
 
-        edited = st.text_area(
-            "evo_proto_edit",
-            key="evo_meta_protocol_md",
-            height=340,
-            label_visibility="collapsed",
-        )
+            edited = st.text_area(
+                "evo_proto_edit",
+                key="evo_meta_protocol_md",
+                height=340,
+                label_visibility="collapsed",
+            )
 
         col_a, col_b, col_c, _ = st.columns([1, 1, 1, 2])
         with col_a:
@@ -1307,7 +1354,9 @@ def page_evolve():
         _render_evo_step_progress()
 
         # Token warnings display for evolution
-        _render_token_warnings(st.session_state.evo_log_events, st.session_state.max_tokens)
+        _render_token_warnings(
+            st.session_state.evo_log_events, st.session_state.max_tokens
+        )
 
         if st.session_state.evo_run_state == "running":
             time.sleep(0.5)
@@ -1360,7 +1409,13 @@ def _start_evolution(repo_root: Path):
         max_tokens=int(st.session_state.max_tokens),
     )
 
-    shared = {"events": [], "state": "running", "report": "", "heartbeat": 0, "last_event_time": time.time()}
+    shared = {
+        "events": [],
+        "state": "running",
+        "report": "",
+        "heartbeat": 0,
+        "last_event_time": time.time(),
+    }
     stop_event = threading.Event()
     st.session_state.evo_run_state = "running"
     st.session_state.evo_report = ""
@@ -1385,11 +1440,13 @@ def _start_evolution(repo_root: Path):
             now = time.time()
             if now - last_heartbeat >= heartbeat_interval:
                 shared["heartbeat"] += 1
-                shared["events"].append({
-                    "level": "heartbeat",
-                    "msg": f"Heartbeat #{shared['heartbeat']} — evolution still active",
-                    "count": shared["heartbeat"]
-                })
+                shared["events"].append(
+                    {
+                        "level": "heartbeat",
+                        "msg": f"Heartbeat #{shared['heartbeat']} — evolution still active",
+                        "count": shared["heartbeat"],
+                    }
+                )
                 last_heartbeat = now
 
         if any(e["level"] == "success" for e in shared["events"]):
@@ -1476,7 +1533,7 @@ def _render_evo_step_progress():
                             pass
             else:
                 progress_val = ev.get("percentage", 0.0)
-        
+
         if progress_val > 0:
             progress_col1, progress_col2 = st.columns([4, 1])
             with progress_col1:

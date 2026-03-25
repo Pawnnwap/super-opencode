@@ -271,7 +271,7 @@ class SelfEvolutionLoop(BaseLoop):
             else ""
         )
         ws = self.config.workspace.resolve()
-        protected_files_desc = self.guard.get_all_protected_files_description()
+        protected_files_desc = ""
         return (
             "You are modifying the codebase you live in. Read the protocol carefully.\n\n"
             f"PROTOCOL:\n{text}\n"
@@ -284,6 +284,7 @@ class SelfEvolutionLoop(BaseLoop):
             "Do NOT delete or manually manage version files — the archive system handles this.\n"
             "Do NOT delete or modify the .opencode directory or its contents.\n"
             f"{protected_files_desc}\n"
+            "Make your changes surgical and minimal.\n"
             "Run tests after every logical change. Begin."
         )
 
