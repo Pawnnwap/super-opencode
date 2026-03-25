@@ -123,11 +123,9 @@ python -m streamlit run app.py
 - 详细/紧凑日志切换
 - 上下文压缩与文件清理建议
 - 心跳监控以检测停滞进程
+- 运行完成后的最终监督报告，带下载按钮
 
-### ③ 报告
-运行后的最终监督报告，带有下载按钮。
-
-### ④ 自我演进
+### ③ 自我演进
 将系统指向**自己的源代码树**。
 
 1. 描述你想调试或改进的内容
@@ -151,7 +149,7 @@ python -m streamlit run app.py
 ## 架构
 
 ```
-app.py                              Streamlit UI  (4 个页面)
+app.py                              Streamlit UI  (3 个页面：向导、实时运行、自我演进)
 supervisor/
   __init__.py                       包导出
 
@@ -177,7 +175,7 @@ supervisor/
 
   utils/
     config.py                       不可变 SupervisorConfig 数据类
-    checkpoint.py                   文件复制快照 / 恢复 / 差异比较
+    file_ops.py                     文件操作工具
     credentials_manager.py          凭证存储助手
 
   monitoring/
@@ -187,7 +185,11 @@ supervisor/
   workspace/
     workspace_guard.py              阻止对工作区外路径的引用
     workspace_archiver.py           在 .archive/ 中保留工作区版本
+    opencodeignore_handler.py       .opencodeignore 文件管理
     ignore_patterns.py              .opencodeignore 解析和模式匹配
+
+  vulnerability/
+    python_scanner.py               Python 代码漏洞扫描器
 
 pyproject.toml                      使 `supervisor` 成为可安装包
 ```

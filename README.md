@@ -137,11 +137,9 @@ Features:
 - Verbose/compact log toggle
 - Context compaction with file cleanup suggestions
 - Heartbeat monitoring to detect stalled processes
+- Final supervisor report with download button (available after run completes)
 
-### ③ Report
-Final supervisor report after a run, with download button.
-
-### ④ Self-Evolution
+### ③ Self-Evolution
 Point the system at **its own source tree**.
 
 1. Describe what you want debugged or improved
@@ -166,14 +164,13 @@ Self-evolution features:
 ## Architecture
 
 ```
-app.py                              Streamlit UI  (4 pages)
+app.py                              Streamlit UI  (3 pages: Wizard, Live Run, Self-Evolution)
 supervisor/
   __init__.py                       Package exports
 
   core/
     loop.py                         SupervisorLoop — main supervised agent loop
     loop_base.py                    BaseLoop — common state machine, event yielding
-    loop.py                         SupervisorLoop — main supervised agent loop
     self_evolution_loop.py          SelfEvolutionLoop — self-modification with test gating
     llm_supervisor.py               LLM judge that evaluates opencode output
 
@@ -193,7 +190,7 @@ supervisor/
 
   utils/
     config.py                       Frozen SupervisorConfig dataclass
-    checkpoint.py                   File-copy snapshot / restore / diff
+    file_ops.py                     File operations utilities
     credentials_manager.py          Credential storage helpers
 
   monitoring/
@@ -203,7 +200,11 @@ supervisor/
   workspace/
     workspace_guard.py              Blocks out-of-workspace path references
     workspace_archiver.py           Preserves workspace versions in .archive/
+    opencodeignore_handler.py       .opencodeignore file management
     ignore_patterns.py              .opencodeignore parsing and pattern matching
+
+  vulnerability/
+    python_scanner.py               Python code vulnerability scanner
 
 pyproject.toml                      Makes `supervisor` an installable package
 ```

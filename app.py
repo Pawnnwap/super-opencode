@@ -304,7 +304,7 @@ with st.sidebar:
         st.markdown(f"**Self-evo** {evo_pill}", unsafe_allow_html=True)
 
     st.markdown("---")
-    st.caption("openai · streamlit · opencode")
+    st.caption("streamlit · opencode")
 
 
 # ═══════════════════════════════════════════════════════════════════════════ #
