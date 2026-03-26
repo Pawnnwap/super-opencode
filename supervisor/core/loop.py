@@ -51,9 +51,10 @@ class SupervisorLoop(BaseLoop):
             max_history_turns=config.max_history_turns,
             compact_intermediate_steps=config.compact_intermediate_steps,
         )
-        self._init_components()
+        self._init_components(agent="build")
         self.archiver = WorkspaceArchiver(config.workspace)
         self._step_detector_initialized = False
+        self._plan_context: str = ""   # populated by _run_plan_mode, carried into _init_prompt
 
     # ------------------------------------------------------------------ #
 
@@ -85,6 +86,11 @@ class SupervisorLoop(BaseLoop):
         else:
             yield _ev("warn", f"Archive warning: {archive_result.message}")
 
+        if self.config.plan_mode_rounds > 0:
+            yield from self._run_plan_mode()
+            if self._state != LoopState.RUNNING:
+                return
+
         yield _ev("info", "Running initial prompt with opencode…")
 
         init_prompt = self._init_prompt()
@@ -103,6 +109,132 @@ class SupervisorLoop(BaseLoop):
             yield _ev(
                 "error", "Run ended with failures. See failure_report.md in workspace."
             )
+
+    def _run_plan_mode(self) -> Generator[Event, None, None]:
+        """Run the plan phase for the configured number of rounds.
+
+        A dedicated ``OpencodeRunner`` with ``agent="plan"`` handles all plan
+        invocations so opencode stays in read-only mode.  After all rounds the
+        final supervisor feedback is stored in ``self._plan_context`` and
+        prepended to the build-mode initial prompt by ``_init_prompt()``, giving
+        opencode full context of the agreed plan when it starts writing code.
+
+        All supervisor↔opencode exchanges are emitted as ``log-plan_phase``
+        events so they appear as a distinct section in the UI event stream.
+        """
+        import time
+        from supervisor.runners.opencode_runner import OpencodeRunner
+
+        total = self.config.plan_mode_rounds
+        yield _ev(
+            "info",
+            f"[plan mode] Starting plan phase ({total} round{'s' if total != 1 else ''})…",
+        )
+
+        # Dedicated runner locked to the plan agent — the main self.runner
+        # stays untouched and will be used for build mode.
+        plan_runner = OpencodeRunner(
+            self.config.workspace,
+            self.config.opencode_model,
+            self.config.opencode_executable,
+            self.config.timeout,
+            agent="plan",
+        )
+
+        protocol_text = self.config.protocol_path.read_text(encoding="utf-8")
+        ws = self.config.workspace.resolve()
+        protected_files_desc = self.guard.get_all_protected_files_description()
+        plan_prompt = (
+            "@explore You are in PLAN MODE. Do NOT create, modify, or delete any files yet.\n\n"
+            "Read the protocol below carefully and produce a detailed implementation plan:\n"
+            "  1. Break the work into concrete, ordered steps.\n"
+            "  2. Identify dependencies between steps.\n"
+            "  3. Flag any ambiguities or risks in the requirements.\n"
+            "  4. Do NOT write or edit any source files during this phase.\n\n"
+            f"PROTOCOL:\n{protocol_text}\n\n"
+            f"Your project root (cwd) is: {ws}\n"
+            f"{protected_files_desc}\n"
+            "Output your plan now."
+        )
+
+        last_feedback: str = ""
+
+        for round_num in range(1, total + 1):
+            yield _ev(
+                "log-plan_phase",
+                f"[plan mode] Round {round_num}/{total} — sending prompt to opencode…",
+            )
+
+            # Round 1: full plan prompt.  Subsequent rounds: supervisor feedback only.
+            if last_feedback:
+                prompt = (
+                    f"[plan mode — round {round_num}/{total}]\n\n"
+                    "Supervisor feedback on your previous plan:\n"
+                    f"{last_feedback}\n\n"
+                    "Revise your plan accordingly. Remember: do NOT modify any files."
+                )
+            else:
+                prompt = plan_prompt
+
+            yield _ev("opencode_prompt", prompt)
+            plan_runner.reset_step_detector()
+            plan_runner.start(prompt)
+            output, timed_out = plan_runner.read_output()
+
+            if timed_out or not output.strip():
+                yield _ev(
+                    "warn",
+                    f"[plan mode] Round {round_num}/{total} produced no output — skipping.",
+                )
+                continue
+
+            yield _ev("opencode_output", output)
+            yield _ev(
+                "log-plan_phase",
+                f"[plan mode] Round {round_num}/{total} — supervisor evaluating plan…",
+            )
+
+            progress = plan_runner.get_step_progress()
+            step_context = StepContext(
+                current_step=progress.current_step,
+                total_steps_estimate=progress.total_steps_estimate,
+                phase="plan",
+                completed_phases=list(progress.completed_phases),
+            )
+            verdict = self.supervisor.judge_plan(
+                opencode_output=output,
+                plan_round=round_num,
+                total_plan_rounds=total,
+                step_context=step_context,
+            )
+
+            yield _ev("supervisor_response", verdict.raw)
+            yield _ev(
+                "log-plan_phase",
+                f"[plan mode] Round {round_num}/{total} complete — "
+                f"supervisor feedback ({len(verdict.feedback)} chars) recorded.",
+            )
+            yield from self._emit_token_warnings()
+
+            last_feedback = verdict.feedback
+
+        plan_runner.stop()
+
+        # Persist the final plan + supervisor feedback so _init_prompt() can
+        # inject it into the first build-mode prompt.  This is the only mechanism
+        # that carries plan context across the subprocess boundary.
+        if last_feedback:
+            self._plan_context = (
+                "## Agreed plan from plan phase\n\n"
+                f"{last_feedback}\n\n"
+                "Implement the above plan now. You may create and modify files freely."
+            )
+
+        yield _ev(
+            "info",
+            f"[plan mode] Plan phase complete after {total} round{'s' if total != 1 else ''}. "
+            "Transitioning to build mode…",
+        )
 
     def get_step_progress(self) -> StepProgress:
         return self.runner.get_step_progress()
@@ -201,8 +333,12 @@ class SupervisorLoop(BaseLoop):
         text = self.config.protocol_path.read_text(encoding="utf-8")
         ws = self.config.workspace.resolve()
         protected_files_desc = self.guard.get_all_protected_files_description()
+        plan_section = (
+            f"{self._plan_context}\n\n" if self._plan_context else ""
+        )
         return (
             f"Here is your protocol:\n\n{text}\n\n"
+            f"{plan_section}"
             f"Your project root (cwd) is: {ws}\n"
             "All files you create or modify MUST be inside this directory.\n"
             "Use relative paths from this directory for all file operations.\n"

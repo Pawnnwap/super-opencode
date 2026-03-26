@@ -1000,6 +1000,7 @@ def _start_run():
         timeout=int(st.session_state.timeout) * 60,
         protected_files=tuple(st.session_state.get("protected_files", [])),
         max_tokens=int(st.session_state.max_tokens),
+        plan_mode_rounds=1,
     )
 
     shared = {

@@ -22,3 +22,4 @@ class SupervisorConfig:
     truncation_enabled: bool = True
     max_history_turns: int = 40
     compact_intermediate_steps: bool = False
+    plan_mode_rounds: int = 0

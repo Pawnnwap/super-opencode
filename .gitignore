@@ -219,3 +219,6 @@ tests
 
 # Batch file
 *.bat
+
+# Windows nul file
+nul

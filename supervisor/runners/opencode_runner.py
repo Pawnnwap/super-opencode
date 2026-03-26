@@ -150,6 +150,7 @@ class OpencodeRunner:
         opencode_model: Optional[str] = None,
         opencode_executable: str = "",
         timeout: int = 300,
+        agent: str = "",
         step_detector: Optional[OpencodeStepDetector] = None,
         on_step: Optional[Callable[[Step], None]] = None,
         on_transition: Optional[Callable[[PhaseTransition], None]] = None,
@@ -159,6 +160,7 @@ class OpencodeRunner:
         self.opencode_model = opencode_model
         self.opencode_executable = opencode_executable
         self.timeout = timeout
+        self.agent = agent
 
         self._last_result: Optional[RunResult] = None
         self._chars_exchanged: int = 0
@@ -342,8 +344,14 @@ class OpencodeRunner:
         self._chars_exchanged += len(prompt) + len(self._last_result.output)
 
     def _build_cmd(self, exe: str, prompt: str) -> list[str]:
-        # opencode run "<prompt>" [--model <model>]
-        cmd = [exe, "run", prompt]
+        # opencode run [--agent <agent>] "<prompt>" [--model <model>]
+        cmd = [exe, "run"]
+
+        agent = str(self.agent or "").strip()
+        if agent:
+            cmd += ["--agent", agent]
+
+        cmd.append(prompt)
 
         # Resolve model: explicit UI field > .opencode_model file
         model = str(self.opencode_model or "").strip()

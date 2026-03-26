@@ -36,7 +36,7 @@ class BaseLoop:
         self._state = LoopState.RUNNING
         self._failures = 0
 
-    def _init_components(self):
+    def _init_components(self, agent: str = ""):
         from supervisor.runners.opencode_runner import OpencodeRunner
         from supervisor.monitoring.context_monitor import ContextMonitor
         from supervisor.workspace.workspace_guard import WorkspaceGuard
@@ -47,6 +47,7 @@ class BaseLoop:
             self.config.opencode_model,
             self.config.opencode_executable,
             self.config.timeout,
+            agent=agent,
         )
         self.ctx_monitor = ContextMonitor(
             self.config.context_threshold,

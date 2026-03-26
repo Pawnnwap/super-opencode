@@ -536,6 +536,81 @@ class LLMSupervisor:
         )
         return self._chat(msg, history_content=history_msg)
 
+    def judge_plan(
+        self,
+        opencode_output: str,
+        plan_round: int,
+        total_plan_rounds: int,
+        step_context: StepContext | None = None,
+    ) -> SupervisorVerdict:
+        """Evaluate opencode's plan output during the plan phase.
+
+        Unlike judge/judge_with_step_context this method explicitly tells the
+        supervisor that opencode is still *planning* — no code changes have been
+        made yet.  The verdict's ``feedback`` is used as the next prompt sent to
+        opencode; ``all_targets_met`` is intentionally never set True here so the
+        plan phase always runs for the configured number of rounds before handing
+        off to build mode.
+
+        Args:
+            opencode_output: The raw text produced by opencode in this round.
+            plan_round: 1-based index of the current plan round.
+            total_plan_rounds: Total number of plan rounds configured.
+            step_context: Optional step/phase context from the step detector.
+
+        Returns:
+            SupervisorVerdict with feedback to send back to opencode.
+        """
+        protected_context, feedback_context = self._get_evaluation_context()
+
+        context_info = ""
+        if step_context is not None:
+            phases_str = (
+                ", ".join(step_context.completed_phases)
+                if step_context.completed_phases
+                else "none"
+            )
+            context_info = (
+                "--- Step Context ---\n"
+                f"Current step: {step_context.current_step}/{step_context.total_steps_estimate}\n"
+                f"Current phase: {step_context.phase}\n"
+                f"Completed phases: {phases_str}\n\n"
+            )
+
+        msg = (
+            f"opencode is in PLAN MODE (round {plan_round}/{total_plan_rounds}). "
+            "No code changes have been made yet — this is a planning-only phase.\n\n"
+            "Review the plan below and provide actionable feedback to refine it. "
+            "Do NOT declare 'all targets met' during plan mode. "
+            "Focus on:\n"
+            "  1. Correctness and completeness of the proposed approach\n"
+            "  2. Potential edge cases or missing steps\n"
+            "  3. Alignment with protocol requirements\n"
+            "  4. Sequencing and dependency issues\n\n"
+            f"{context_info}"
+            f"{feedback_context}"
+            f"{protected_context}"
+            f"--- opencode plan output ---\n{opencode_output}\n--- end ---\n\n"
+            "Provide specific, concise feedback to improve the plan before implementation begins."
+        )
+        history_msg = (
+            f"opencode is in PLAN MODE (round {plan_round}/{total_plan_rounds}). "
+            "No code changes have been made yet.\n\n"
+            f"{context_info}"
+            f"--- opencode plan output ---\n{opencode_output}\n--- end ---\n\n"
+            "Provide specific, concise feedback to improve the plan before implementation begins."
+        )
+
+        verdict = self._chat(msg, history_content=history_msg)
+
+        # Plan mode never terminates early — override all_targets_met so the
+        # caller (SupervisorLoop._run_plan_mode) controls the round count.
+        return SupervisorVerdict(
+            raw=verdict.raw,
+            all_targets_met=False,
+            feedback=verdict.feedback,
+        )
+
     def ask_for_compaction_instructions(self) -> SupervisorVerdict:
         msg = (
             "The opencode agent's context window is nearly full. "
