@@ -185,6 +185,7 @@ _PERSIST_KEYS = [
     "context_threshold",
     "max_tokens",
     "timeout",
+    "plan_mode_rounds",
     "raw_input",
     "raw_target",
     "raw_restrictions",
@@ -245,6 +246,7 @@ defaults = {
     "context_threshold": 60,
     "max_tokens": 150000,
     "timeout": 120,
+    "plan_mode_rounds": 1,
     "protected_files": [],
     "_last_workspace": "",
     # self-evolution page
@@ -917,7 +919,18 @@ def page_run():
             f"**Max retries:** {st.session_state.max_retries} · "
             f"**Timeout:** {st.session_state.timeout} min · "
             f"**Compaction at:** {st.session_state.context_threshold}% · "
-            f"**Max tokens:** {st.session_state.max_tokens:,}"
+            f"**Max tokens:** {st.session_state.max_tokens:,} · "
+            f"**Plan mode rounds:** {st.session_state.plan_mode_rounds}"
+        )
+
+        # Add plan_mode_rounds input
+        st.session_state.plan_mode_rounds = st.number_input(
+            "Plan mode rounds",
+            min_value=0,
+            max_value=10,
+            value=int(st.session_state.plan_mode_rounds),
+            key="run_plan_mode_rounds",
+            help="Number of planning rounds before execution (0 = no planning, 1+ = planning enabled)",
         )
     with col2:
         state = st.session_state.run_state
@@ -1000,7 +1013,7 @@ def _start_run():
         timeout=int(st.session_state.timeout) * 60,
         protected_files=tuple(st.session_state.get("protected_files", [])),
         max_tokens=int(st.session_state.max_tokens),
-        plan_mode_rounds=1,
+        plan_mode_rounds=int(st.session_state.plan_mode_rounds),
     )
 
     shared = {
