@@ -27,7 +27,7 @@ def _should_skip_upgrade():
     return False
 
 def _auto_upgrade_opencode():
-    """Run choco upgrade opencode -a on Windows if not skipped."""
+    """Run choco upgrade opencode -y on Windows if not skipped."""
     if sys.platform != "win32":
         print("[opencode-upgrade] Skipping upgrade: not on Windows", file=sys.stderr)
         return
@@ -35,9 +35,9 @@ def _auto_upgrade_opencode():
         print("[opencode-upgrade] Skipping upgrade: disabled via config/env var", file=sys.stderr)
         return
     try:
-        print("[opencode-upgrade] Running: choco upgrade opencode -a", file=sys.stderr)
+        print("[opencode-upgrade] Running: choco upgrade opencode -y", file=sys.stderr)
         result = subprocess.run(
-            ["choco", "upgrade", "opencode", "-a"],
+            ["choco", "upgrade", "opencode", "-y"],
             capture_output=True,
             text=True,
             timeout=30,
@@ -316,6 +316,7 @@ defaults = {
     "evo_run_state": "idle",
     "evo_report": "",
     "evo_wizard_step": 0,
+    "self_evolution_verbose": False,
     "verbose_log": True,
     # internal state for live run
     "_run_heartbeat": 0,
@@ -1622,6 +1623,19 @@ def _start_evolution(repo_root: Path):
 
 
 def _render_evo_log():
+    st.session_state.self_evolution_verbose = st.checkbox(
+        "Verbose logging",
+        value=st.session_state.self_evolution_verbose,
+        key="evo_verbose_checkbox",
+    )
+
+    verbose = st.session_state.self_evolution_verbose
+
+    skip_levels = {"report"}
+    if not verbose:
+        skip_levels.add("opencode_prompt")
+        skip_levels.add("opencode_output")
+
     state = st.session_state.evo_run_state
     placeholder = (
         "— waiting for evolution to start —" if state == "idle" else "— starting… —"
@@ -1629,7 +1643,7 @@ def _render_evo_log():
     _render_events(
         st.session_state.evo_log_events,
         placeholder,
-        skip={"report"},
+        skip=skip_levels,
         show_verbose=False,
     )
     cp_events = [
