@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import os
+import platform
 import shutil
 import subprocess
 import sys
@@ -216,6 +217,71 @@ class OpencodeRunner:
             except Exception:
                 # Ignore errors if the process has already terminated
                 pass
+
+        # Kill any system processes containing "Chocolatey" (case-insensitive)
+        self._kill_chocolatey_processes()
+
+    def _kill_chocolatey_processes(self) -> None:
+        """Kill any system processes containing 'chocolatey' in their command line or name."""
+        import subprocess
+
+        try:
+            system = platform.system().lower()
+            if system == "windows":
+                # On Windows, use taskkill to kill processes containing "chocolatey"
+                # /F = force, /IM = image name, /FI = filter
+                # Note: taskkill /FI with COMMANDLINE is not supported on all Windows versions
+                # So we'll use a more compatible approach by listing processes and killing by PID
+                try:
+                    # Get list of processes with chocolatey in command line
+                    result = subprocess.run(
+                        ["tasklist", "/v", "/fo", "csv"],
+                        capture_output=True,
+                        text=True,
+                        timeout=10,
+                    )
+                    if result.returncode == 0:
+                        lines = result.stdout.strip().split("\n")
+                        for line in lines[1:]:  # Skip header
+                            if (
+                                '"chocolatey"' in line.lower()
+                                or "'chocolatey'" in line.lower()
+                            ):
+                                parts = line.split('","')
+                                if len(parts) > 1:
+                                    pid = parts[1].strip('"')
+                                    subprocess.run(
+                                        ["taskkill", "/F", "/PID", pid],
+                                        capture_output=True,
+                                        timeout=5,
+                                    )
+                except Exception:
+                    # Fallback: try to kill by process name if command line filtering fails
+                    subprocess.run(
+                        ["taskkill", "/F", "/IM", "chocolatey.exe"],
+                        capture_output=True,
+                        timeout=5,
+                    )
+            else:
+                # On Linux/macOS, use pkill with case-insensitive matching
+                # Note: -i flag may not be available on all systems, so we'll handle it gracefully
+                try:
+                    subprocess.run(
+                        ["pkill", "-f", "-i", "chocolatey"],
+                        capture_output=True,
+                        text=True,
+                        timeout=10,
+                    )
+                except Exception:
+                    # Fallback without -i flag
+                    subprocess.run(
+                        ["pkill", "-f", "chocolatey"],
+                        capture_output=True,
+                        text=True,
+                        timeout=10,
+                    )
+        except Exception as e:
+            logger.warning(f"Failed to kill chocolatey processes: {e}")
 
     @property
     def is_alive(self) -> bool:
