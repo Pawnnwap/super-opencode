@@ -5,10 +5,64 @@ Run with:  streamlit run app.py
 
 from __future__ import annotations
 
+import sys
+import os
+import subprocess
+import json
+from pathlib import Path
+
+_UPGRADE_SETTINGS_FILE = Path.home() / ".opencode_supervisor_settings.json"
+
+def _should_skip_upgrade():
+    """Check env var and config file to decide whether to skip upgrade."""
+    if os.environ.get("OPENCODE_SKIP_UPGRADE") == "1":
+        return True
+    try:
+        if _UPGRADE_SETTINGS_FILE.exists():
+            cfg = json.loads(_UPGRADE_SETTINGS_FILE.read_text(encoding="utf-8"))
+            if cfg.get("skip_upgrade"):
+                return True
+    except Exception:
+        pass
+    return False
+
+def _auto_upgrade_opencode():
+    """Run choco upgrade opencode -a on Windows if not skipped."""
+    if sys.platform != "win32":
+        print("[opencode-upgrade] Skipping upgrade: not on Windows", file=sys.stderr)
+        return
+    if _should_skip_upgrade():
+        print("[opencode-upgrade] Skipping upgrade: disabled via config/env var", file=sys.stderr)
+        return
+    try:
+        print("[opencode-upgrade] Running: choco upgrade opencode -a", file=sys.stderr)
+        result = subprocess.run(
+            ["choco", "upgrade", "opencode", "-a"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            shell=True,
+        )
+        if result.stdout:
+            print(f"[opencode-upgrade] stdout: {result.stdout.strip()}", file=sys.stderr)
+        if result.stderr:
+            print(f"[opencode-upgrade] stderr: {result.stderr.strip()}", file=sys.stderr)
+        if result.returncode == 0:
+            print("[opencode-upgrade] Upgrade completed successfully.", file=sys.stderr)
+        else:
+            print(f"[opencode-upgrade] Upgrade exited with code {result.returncode}. Continuing startup.", file=sys.stderr)
+    except subprocess.TimeoutExpired:
+        print("[opencode-upgrade] Upgrade timed out after 30 seconds. Continuing startup.", file=sys.stderr)
+    except FileNotFoundError:
+        print("[opencode-upgrade] 'choco' command not found. Continuing startup.", file=sys.stderr)
+    except Exception as e:
+        print(f"[opencode-upgrade] Unexpected error: {e}. Continuing startup.", file=sys.stderr)
+
+# ── End auto-upgrade block ──────────────────────────────────────────────── #
+
 import threading
 import time
 from pathlib import Path
-
 
 # ── supervisor package imports (all at top level — never lazy) ──────────── #
 from supervisor.utils.config import SupervisorConfig
@@ -32,6 +86,14 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+# ── Run upgrade exactly once per Streamlit session ───────────────────────── #
+# st.session_state persists across reruns (page switches, widget interactions)
+# but is reset when the browser tab is closed or the server restarts.
+# Using a flag here prevents the upgrade from firing on every script rerun.
+if not st.session_state.get("_upgrade_done"):
+    _auto_upgrade_opencode()
+    st.session_state["_upgrade_done"] = True
 
 # ── custom CSS  (dark terminal aesthetic) ────────────────────────────────── #
 st.markdown(
@@ -171,9 +233,6 @@ import os
 # ── Settings persistence ──────────────────────────────────────────────────── #
 _SETTINGS_FILE = Path.home() / ".opencode_supervisor_settings.json"
 
-# Keys that are persisted to disk (excludes runtime state and secrets in plaintext
-# — API key is stored because the user explicitly enters it here;
-#   they can clear it by deleting the settings file)
 _PERSIST_KEYS = [
     "openai_key",
     "base_url",
