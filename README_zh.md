@@ -72,6 +72,14 @@ pip install -e . --force-reinstall
 
 > **注意：** 需要 `pip install -e .`，以便 `supervisor` 包可以从任何位置导入 —— 包括当 Streamlit 从不同工作目录启动 `app.py` 时。
 
+或者，您可以直接从 `requirements.txt` 安装：
+
+```bash
+pip install -r requirements.txt
+```
+
+所有依赖均在 `pyproject.toml` 中定义：`openai`、`streamlit`、`tiktoken`、`pytest`、`cryptography`、`rich` 和 `psutil`。
+
 ---
 
 ## 运行应用程序
@@ -189,9 +197,14 @@ supervisor/
     ignore_patterns.py              .opencodeignore 解析和模式匹配
 
   vulnerability/
-    python_scanner.py               Python 代码漏洞扫描器
+    python_scanner.py               Python 代码漏洞扫描器（静态分析）
 
-pyproject.toml                      使 `supervisor` 成为可安装包
+  tests/                            测试套件（pytest）
+    runners/
+      test_opencode_runner.py       OpencodeRunner 测试
+
+pyproject.toml                      使 `supervisor` 成为可安装包（同时定义所有依赖）
+requirements.txt                    备用依赖列表，用于 pip install -r
 ```
 
 ---
@@ -255,6 +268,37 @@ pyproject.toml                      使 `supervisor` 成为可安装包
 | compact_intermediate_steps | False | 压缩中间步骤输出 |
 | max_protected_files_for_suggestions | 5 | 建议中显示的最大受保护文件数 |
 | read_external_feedback | False | 允许外部反馈注入 |
+| log_level | "INFO" | 日志详细程度（DEBUG、INFO、WARNING、ERROR） |
+| plan_mode_rounds | 0 | 执行前的规划轮数（0 = 禁用） |
+
+### 使用自定义模型
+
+在 ~/.config/opencode 目录下（~ 通常指 C 盘用户路径），创建 opencode.json 文件，内容如下：
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "iflow": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "iflow",
+      "options": {
+        "baseURL": "https://apis.iflow.cn/v1",
+        "apiKey": "YOUR-API-KEY"
+      },
+      "models": {
+        "qwen3-max": {
+          "name": "qwen3-max"
+        }
+      }
+    }
+  }
+}
+```
+
+- `provider.iflow.options.baseURL` — 自定义提供商的 API 端点
+- `provider.iflow.options.apiKey` — 用于身份验证的 API 密钥
+- `provider.iflow.models` — 此提供商可用的模型名称映射
 
 ---
 
@@ -311,6 +355,14 @@ Token 估算在可用时使用 `tiktoken`（o200k_base 编码），
 - 归档带有时间戳和计数器编号
 - `.archive/` 目录本身受保护，无法修改
 - 版本文件从不删除 —— 只归档
+
+---
+
+## 漏洞扫描
+
+`vulnerability/python_scanner.py` 模块对 Python 源文件执行静态分析，
+在代码被接受进入代码库之前检测常见的安全问题。在自我演进循环中调用，
+用于标记危险模式（例如不安全的 `eval`、硬编码密钥、shell 注入向量）。
 
 ---
 

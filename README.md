@@ -76,6 +76,15 @@ pip install -e . --force-reinstall
 > importable from anywhere — including when Streamlit launches `app.py` from
 > a different working directory.
 
+Alternatively, you can install from `requirements.txt` directly:
+
+```bash
+pip install -r requirements.txt
+```
+
+All dependencies are defined in `pyproject.toml`: `openai`, `streamlit`,
+`tiktoken`, `pytest`, `cryptography`, `rich`, and `psutil`.
+
 ---
 
 ## Running the Application
@@ -204,9 +213,14 @@ supervisor/
     ignore_patterns.py              .opencodeignore parsing and pattern matching
 
   vulnerability/
-    python_scanner.py               Python code vulnerability scanner
+    python_scanner.py               Python code vulnerability scanner (static analysis)
 
-pyproject.toml                      Makes `supervisor` an installable package
+  tests/                            Test suite (pytest)
+    runners/
+      test_opencode_runner.py       Tests for OpencodeRunner
+
+pyproject.toml                      Makes `supervisor` an installable package (also defines all deps)
+requirements.txt                    Alternative dependency list for pip install -r
 ```
 
 ---
@@ -270,6 +284,37 @@ Quality ratings: `excellent` (≥90%) → `good` (≥75%) → `fair` (≥50%) �
 | compact_intermediate_steps | False | Compact intermediate step outputs |
 | max_protected_files_for_suggestions | 5 | Max protected files shown in suggestions |
 | read_external_feedback | False | Allow external feedback injection |
+| log_level | "INFO" | Logging verbosity (DEBUG, INFO, WARNING, ERROR) |
+| plan_mode_rounds | 0 | Number of planning rounds before execution (0 = disabled) |
+
+### Configuring Custom Models
+
+under ~/.config/opencode (where ~ is mostly C disk user path), create opencode.json with below content:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "iflow": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "iflow",
+      "options": {
+        "baseURL": "https://apis.iflow.cn/v1",
+        "apiKey": "YOUR-API-KEY"
+      },
+      "models": {
+        "qwen3-max": {
+          "name": "qwen3-max"
+        }
+      }
+    }
+  }
+}
+```
+
+- `provider.iflow.options.baseURL` — the API endpoint for the custom provider
+- `provider.iflow.options.apiKey` — your API key for authentication
+- `provider.iflow.models` — a map of model names available from this provider
 
 ---
 
@@ -327,6 +372,15 @@ Every run preserves workspace state in `.archive/`:
 - Archives are numbered with timestamps and a counter
 - The `.archive/` directory itself is protected from modification
 - Version files are never deleted — only archived
+
+---
+
+## Vulnerability Scanning
+
+The `vulnerability/python_scanner.py` module performs static analysis on Python
+source files to detect common security issues before they are accepted into the
+codebase. It is invoked during the self-evolution loop to flag risky patterns
+(e.g., unsafe `eval`, hardcoded secrets, shell injection vectors).
 
 ---
 
