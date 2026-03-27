@@ -115,9 +115,8 @@ if not st.session_state.get("_upgrade_done"):
     _auto_upgrade_opencode()
     st.session_state["_upgrade_done"] = True
 
-# ── custom CSS  (dark terminal aesthetic) ────────────────────────────────── #
-st.markdown(
-    """
+# ── custom CSS constants ─────────────────────────────────────────────────── #
+CUSTOM_CSS = """
 <style>
 @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;600&family=Syne:wght@400;700;800&display=swap');
 
@@ -235,23 +234,134 @@ div[data-testid="stProgress"] > div > div > div {
     color: #c9d1d9;
 }
 
+/* expander content wrapper */
+.expander-content {
+    padding: 0.5rem 0;
+}
+
 div[data-testid="stExpander"] {
     border: 1px solid #21262d !important;
     background: #161b22 !important;
     border-radius: 8px !important;
 }
 </style>
-""",
-    unsafe_allow_html=True,
-)
+"""
+
+# ── custom CSS  (dark terminal aesthetic) ────────────────────────────────── #
+st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
+
+
+# ── UI helper functions ──────────────────────────────────────────────────── #
+def render_expander_section(title, content_func):
+    """Render a standardized expander section with consistent styling."""
+    with st.expander(title, expanded=False):
+        st.markdown("<div class='expander-content'>", unsafe_allow_html=True)
+        content_func()
+        st.markdown("</div>", unsafe_allow_html=True)
+
+
+def render_file_block(title, body, language="python"):
+    """Render a file block with title and code content."""
+    st.markdown(f"### {title}")
+    st.code(body, language=language)
+
 
 # ── session state defaults ────────────────────────────────────────────────── #
 
 import json
 import os
 
+
+# ── Helper functions for custom model configuration ───────────────────────── #
+def _find_opencode_config_dir() -> Path | None:
+    """Find a directory containing .config/opencode under user's home."""
+    home = Path.home()
+    # Fix 3: use os.path.join instead of / operator for string path concatenation
+    config_dir = Path(os.path.join(str(home), ".config", "opencode"))
+    if config_dir.exists() and config_dir.is_dir():
+        return config_dir
+
+    # On Windows, also check AppData/Local equivalent
+    if sys.platform == "win32":
+        config_dir_win = Path(os.path.join(str(home), "AppData", "Local", "opencode"))
+        if config_dir_win.exists() and config_dir_win.is_dir():
+            return config_dir_win
+
+    # Try to create the standard location
+    config_dir.mkdir(parents=True, exist_ok=True)
+    return config_dir
+
+
+def _get_opencode_config_file(config_dir: Path) -> Path:
+    """Get the opencode.json file, creating it if it doesn't exist."""
+    opencode_json = Path(os.path.join(str(config_dir), "opencode.json"))
+    config_json = Path(os.path.join(str(config_dir), "config.json"))
+
+    # Prefer opencode.json if it exists
+    if opencode_json.exists():
+        return opencode_json
+
+    # Fall back to config.json if it exists
+    if config_json.exists():
+        return config_json
+
+    # Create empty opencode.json with correct structure
+    default_content = {"$schema": "https://opencode.ai/config.json", "provider": {}}
+    opencode_json.write_text(json.dumps(default_content, indent=2), encoding="utf-8")
+    return opencode_json
+
+
+def _add_custom_provider_to_config(
+    config_file: Path,
+    service_name: str,
+    base_url: str,
+    api_key: str,
+    model_names: list[str],
+):
+    """Add a new provider entry to the opencode config file."""
+    try:
+        content = json.loads(config_file.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, FileNotFoundError):
+        content = {"$schema": "https://opencode.ai/config.json", "provider": {}}
+
+    if "provider" not in content:
+        content["provider"] = {}
+
+    # Build models dict from provided model names
+    models_dict = {name.strip(): {} for name in model_names if name.strip()}
+
+    # Create the new provider entry using the correct structure
+    new_provider = {
+        "npm": "@ai-sdk/openai-compatible",
+        "options": {"baseURL": base_url, "apiKey": api_key},
+        "models": models_dict,
+    }
+
+    content["provider"][service_name] = new_provider
+
+    config_file.write_text(json.dumps(content, indent=2), encoding="utf-8")
+
+
+def _get_all_models_from_config(config_file: Path) -> list[str]:
+    """Get all model names from the opencode config file."""
+    try:
+        content = json.loads(config_file.read_text(encoding="utf-8"))
+        models = []
+        if "provider" in content:
+            for provider_name, provider_data in content["provider"].items():
+                if "models" in provider_data:
+                    for model_name in provider_data["models"].keys():
+                        # Format as provider/model
+                        models.append(f"{provider_name}/{model_name}")
+        return sorted(models)
+    except (json.JSONDecodeError, FileNotFoundError, KeyError):
+        return []
+
+
 # ── Settings persistence ──────────────────────────────────────────────────── #
-_SETTINGS_FILE = Path.home() / ".opencode_supervisor_settings.json"
+_SETTINGS_FILE = Path(
+    os.path.join(str(Path.home()), ".opencode_supervisor_settings.json")
+)
 
 _PERSIST_KEYS = [
     "openai_key",
@@ -386,6 +496,90 @@ with st.sidebar:
         evo_pill = pill_map.get(evo_state, "")
         st.markdown(f"**Self-evo** {evo_pill}", unsafe_allow_html=True)
 
+    # ── Add Custom Model for Opencode (sidebar, wizard page only) ───────── #
+    if st.session_state.page == "wizard":
+        st.markdown("---")
+        st.markdown("### 🤖 Add Custom Model for Opencode")
+
+        # Initialize session state for custom model form
+        if "show_custom_model_form" not in st.session_state:
+            st.session_state.show_custom_model_form = False
+
+        if st.button("➕ Add Custom Model for Opencode", key="btn_add_custom_model"):
+            st.session_state.show_custom_model_form = True
+
+        if st.session_state.show_custom_model_form:
+            st.markdown("**Custom Service Configuration**")
+
+            service_name = st.text_input(
+                "Service name",
+                key="custom_service_name",
+                placeholder="my-custom-service",
+                help="Prefix with slash when using, e.g. /my-service",
+            )
+
+            base_url = st.text_input(
+                "Base URL",
+                key="custom_base_url",
+                placeholder="https://api.example.com/v1",
+            )
+
+            api_key = st.text_input(
+                "API key", key="custom_api_key", type="password", placeholder="sk-..."
+            )
+
+            # Fix 2: Add model names input
+            st.markdown("**Model names** *(one per line)*")
+            model_names_input = st.text_area(
+                "Model names",
+                key="custom_model_names",
+                height=100,
+                placeholder="qwen3-coder-plus\nqwen3-max\nkimi-k2-0905",
+                label_visibility="collapsed",
+                help="Enter one model name per line. These will be added under the provider's models key.",
+            )
+
+            if st.button("💾 Save Service", key="btn_save_custom_service"):
+                model_names = [
+                    m.strip() for m in model_names_input.splitlines() if m.strip()
+                ]
+                if (
+                    not service_name.strip()
+                    or not base_url.strip()
+                    or not api_key.strip()
+                ):
+                    st.error("Please fill in service name, base URL, and API key.")
+                elif not model_names:
+                    st.error("Please enter at least one model name.")
+                else:
+                    try:
+                        config_dir = _find_opencode_config_dir()
+                        if config_dir is None:
+                            st.error(
+                                "Could not find or create opencode config directory."
+                            )
+                        else:
+                            config_file = _get_opencode_config_file(config_dir)
+                            _add_custom_provider_to_config(
+                                config_file,
+                                service_name.strip(),
+                                base_url.strip(),
+                                api_key.strip(),
+                                model_names,
+                            )
+                            st.success("✅ Service saved successfully!")
+                            st.info(
+                                f"Models can now be referenced as `{service_name.strip()}/<model-name>`"
+                            )
+                            st.session_state.show_custom_model_form = False
+                            # Clear the form inputs
+                            st.session_state.custom_service_name = ""
+                            st.session_state.custom_base_url = ""
+                            st.session_state.custom_api_key = ""
+                            st.session_state.custom_model_names = ""
+                    except Exception as e:
+                        st.error(f"Failed to save service: {e}")
+
     st.markdown("---")
     st.caption("streamlit · opencode")
 
@@ -447,11 +641,29 @@ def page_wizard():
                 placeholder="e.g. gpt-4o, claude-3-5-sonnet, mistral-large",
             )
         with col2:
+            # Fix 1: Show existing models dropdown right below opencode model input
+            config_dir = _find_opencode_config_dir()
+            all_models: list[str] = []
+            if config_dir:
+                config_file = _get_opencode_config_file(config_dir)
+                all_models = _get_all_models_from_config(config_file)
+
             st.session_state.opencode_model = st.text_input(
                 "opencode model (leave blank = opencode default)",
                 key="cfg_opencode_model",
                 value=st.session_state.opencode_model,
             )
+            if all_models:
+                selected_model = st.selectbox(
+                    "Or pick a configured model",
+                    options=[""] + all_models,
+                    key="cfg_opencode_model_select",
+                    help="Select a model from your opencode config to populate the field above",
+                )
+                if selected_model and selected_model != st.session_state.opencode_model:
+                    st.session_state.opencode_model = selected_model
+                    st.rerun()
+
             st.session_state.opencode_executable = st.text_input(
                 "opencode executable (leave blank to auto-detect)",
                 key="cfg_opencode_exe",
@@ -777,12 +989,15 @@ def page_wizard():
         or st.session_state.raw_target.strip()
         or st.session_state.raw_restrictions.strip()
     ):
-        with st.expander("📊 Protocol Quality Preview", expanded=False):
+
+        def _quality_preview_content():
             _render_quality_analysis(
                 st.session_state.raw_input,
                 st.session_state.raw_target,
                 st.session_state.raw_restrictions,
             )
+
+        render_expander_section("📊 Protocol Quality Preview", _quality_preview_content)
 
     # ── refine button ──────────────────────────────────────────────────── #
     refine_clicked = st.button("✨  Refine with AI", type="primary")
@@ -832,8 +1047,12 @@ def page_wizard():
             label_visibility="collapsed",
         )
 
-        with st.expander("📊 Protocol Quality Analysis", expanded=True):
+        def _quality_analysis_content():
             _render_refined_quality_analysis(st.session_state.protocol_md)
+
+        render_expander_section(
+            "📊 Protocol Quality Analysis", _quality_analysis_content
+        )
 
         col_a, col_b, _ = st.columns([1, 1, 3])
         with col_a:
@@ -924,11 +1143,14 @@ def _render_refined_quality_analysis(refined_md: str):
                 st.caption(f"⚠️ [{issue.section}] {issue.message}")
 
         if infos:
-            with st.expander(f"{len(infos)} suggestion(s)"):
+
+            def _suggestions_content():
                 for issue in infos:
                     st.caption(f"ℹ️ [{issue.section}] {issue.message}")
                     if issue.suggestion:
                         st.caption(f"   → {issue.suggestion}")
+
+            render_expander_section(f"{len(infos)} suggestion(s)", _suggestions_content)
 
 
 def _save_protocol():
@@ -1306,8 +1528,11 @@ def _render_step_progress():
         if progress_events:
             last_progress = progress_events[-1]
             msg = last_progress.get("msg", "")
-            with st.expander("📊 Progress"):
+
+            def _progress_content():
                 st.caption(msg)
+
+            render_expander_section("📊 Progress", _progress_content)
     elif progress_events:
         last_progress = progress_events[-1]
         msg = last_progress.get("msg", "")
@@ -1700,8 +1925,11 @@ def _render_evo_step_progress():
         if progress_events:
             last_progress = progress_events[-1]
             msg = last_progress.get("msg", "")
-            with st.expander("📊 Progress"):
+
+            def _evo_progress_content():
                 st.caption(msg)
+
+            render_expander_section("📊 Progress", _evo_progress_content)
     elif progress_events:
         last_progress = progress_events[-1]
         msg = last_progress.get("msg", "")
@@ -1740,13 +1968,16 @@ def _render_evo_step_progress():
                 pass
 
         if step_events:
-            with st.expander("📍 Step History", expanded=False):
+
+            def _evo_step_history_content():
                 for ev in step_events[-5:]:
                     lvl = ev.get("level", "")
                     if lvl == "step":
                         st.caption(f"• {ev.get('msg', '')[:80]}")
                     elif lvl == "phase_transition":
                         st.caption(f"⚡ {ev.get('msg', '')}")
+
+            render_expander_section("📍 Step History", _evo_step_history_content)
 
 
 # ═══════════════════════════════════════════════════════════════════════════ #

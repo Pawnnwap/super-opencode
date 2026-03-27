@@ -220,5 +220,8 @@ tests
 # Batch file
 *.bat
 
-# Windows nul file
+# super-opencode
+.archive
+.opencode
+.ruff_cache
 nul

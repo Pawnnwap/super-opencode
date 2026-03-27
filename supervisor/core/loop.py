@@ -30,6 +30,7 @@ from supervisor.analyzers.opencode_step_detector import (
 from supervisor.protocols.protocol import load_protocol
 from supervisor.workspace.workspace_guard import WorkspaceGuard
 from supervisor.workspace.workspace_archiver import WorkspaceArchiver
+from supervisor.utils.gitignore_utils import update_gitignore_files
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +39,13 @@ class SupervisorLoop(BaseLoop):
     def __init__(self, config: SupervisorConfig):
         super().__init__(config)
         _setup_logging(config.log_level)
+
+        # Update .gitignore files before any other operations
+        modified_gitignores = update_gitignore_files(config.workspace)
+        if modified_gitignores:
+            logger.info(
+                f"Modified {len(modified_gitignores)} .gitignore file(s): {[str(p) for p in modified_gitignores]}"
+            )
 
         self.protocol = load_protocol(config.protocol_path)
         self.supervisor = LLMSupervisor(
@@ -54,7 +62,9 @@ class SupervisorLoop(BaseLoop):
         self._init_components(agent="build")
         self.archiver = WorkspaceArchiver(config.workspace)
         self._step_detector_initialized = False
-        self._plan_context: str = ""   # populated by _run_plan_mode, carried into _init_prompt
+        self._plan_context: str = (
+            ""  # populated by _run_plan_mode, carried into _init_prompt
+        )
 
     # ------------------------------------------------------------------ #
 
@@ -333,9 +343,7 @@ class SupervisorLoop(BaseLoop):
         text = self.config.protocol_path.read_text(encoding="utf-8")
         ws = self.config.workspace.resolve()
         protected_files_desc = self.guard.get_all_protected_files_description()
-        plan_section = (
-            f"{self._plan_context}\n\n" if self._plan_context else ""
-        )
+        plan_section = f"{self._plan_context}\n\n" if self._plan_context else ""
         return (
             f"Here is your protocol:\n\n{text}\n\n"
             f"{plan_section}"

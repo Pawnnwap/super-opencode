@@ -26,6 +26,7 @@ from supervisor.protocols.protocol import load_protocol
 from supervisor.runners.test_runner import RunTestResult, OcTestRunner
 from supervisor.workspace.workspace_archiver import WorkspaceArchiver, ArchiveResult
 from supervisor.workspace.workspace_guard import WorkspaceGuard
+from supervisor.utils.gitignore_utils import update_gitignore_files
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +34,14 @@ logger = logging.getLogger(__name__)
 class SelfEvolutionLoop(BaseLoop):
     def __init__(self, config: SupervisorConfig):
         super().__init__(config)
+
+        # Update .gitignore files before any other operations
+        modified_gitignores = update_gitignore_files(config.workspace)
+        if modified_gitignores:
+            logger.info(
+                f"Modified {len(modified_gitignores)} .gitignore file(s): {[str(p) for p in modified_gitignores]}"
+            )
+
         self.protocol = load_protocol(config.protocol_path)
         self._cached_snapshot = snapshot_codebase(self.config.workspace)
         self.supervisor = LLMSupervisor(

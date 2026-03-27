@@ -23,9 +23,9 @@ class TestOpencodeRunner(unittest.TestCase):
         # Call stop method
         self.runner.stop()
 
-        # Verify that subprocess.run was called with tasklist first
+        # Verify that subprocess.run was called with tasklist first (without /v for speed)
         mock_run.assert_any_call(
-            ["tasklist", "/v", "/fo", "csv"], capture_output=True, text=True, timeout=10
+            ["tasklist", "/fo", "csv"], capture_output=True, text=True, timeout=2
         )
 
     @patch("supervisor.runners.opencode_runner.subprocess.run")
@@ -42,7 +42,7 @@ class TestOpencodeRunner(unittest.TestCase):
             ["pkill", "-f", "-i", "chocolatey"],
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=2,
         )
 
     @patch("supervisor.runners.opencode_runner.subprocess.run")

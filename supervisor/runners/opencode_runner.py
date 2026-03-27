@@ -193,7 +193,9 @@ class OpencodeRunner:
     def start(self, initial_prompt: str) -> None:
         if not initial_prompt.strip():
             logger.warning("Empty prompt provided to opencode. Skipping run.")
-            self._last_result = RunResult(exception="Empty prompt provided. Skipping run.")
+            self._last_result = RunResult(
+                exception="Empty prompt provided. Skipping run."
+            )
             return
         self._alive = True
         self._prepare_workspace()
@@ -225,36 +227,102 @@ class OpencodeRunner:
         self._kill_chocolatey_processes()
 
     def _kill_chocolatey_processes(self) -> None:
-        """Kill processes that have 'chocolatey' in their executable path."""
+        """Kill processes that have 'chocolatey', 'choco', or 'opencode' in their names or command lines."""
         try:
             system = platform.system()
             if system == "Windows":
-                # Use tasklist to find processes
-                result = subprocess.run(
-                    ["tasklist", "/v", "/fo", "csv"],
-                    capture_output=True, text=True, timeout=10
-                )
-                for line in result.stdout.splitlines():
-                    if "chocolatey" in line.lower():
-                        # Extract PID from CSV line
-                        parts = line.split(",")
+                # Primary method: Use simple tasklist without verbose output (faster)
+                try:
+                    result = subprocess.run(
+                        ["tasklist", "/fo", "csv"],
+                        capture_output=True,
+                        text=True,
+                        timeout=2,
+                    )
+                    found_processes = False
+                    for line in result.stdout.splitlines()[1:]:  # Skip header
+                        if line.strip():
+                            parts = line.split('","')
+                            if len(parts) >= 1:
+                                process_name = parts[0].strip('"').lower()
+                                if any(
+                                    keyword in process_name
+                                    for keyword in ["chocolatey", "choco", "opencode"]
+                                ):
+                                    if len(parts) >= 2:
+                                        pid = parts[1].strip('"')
+                                        try:
+                                            subprocess.run(
+                                                ["taskkill", "/PID", pid, "/F"],
+                                                capture_output=True,
+                                                text=True,
+                                                timeout=2,
+                                            )
+                                            found_processes = True
+                                        except Exception as e:
+                                            logger.warning(
+                                                "Error killing process %s: %s", pid, e
+                                            )
+
+                    if not found_processes:
+                        logger.debug("No chocolatey/opencode processes found to kill")
+                    return
+                except subprocess.TimeoutExpired:
+                    logger.debug(
+                        "Primary process scan timed out, using fallback method"
+                    )
+                except Exception as e:
+                    logger.warning("Primary process scan failed: %s", e)
+
+                # Fallback method: If primary method fails or times out, try basic process names
+                try:
+                    result = subprocess.run(
+                        ["tasklist"], capture_output=True, text=True, timeout=2
+                    )
+                    found_processes = False
+                    for line in result.stdout.splitlines()[3:]:  # Skip header lines
+                        parts = line.split()
                         if len(parts) >= 2:
-                            pid = parts[1].strip('"')
-                            try:
-                                subprocess.run(
-                                    ["taskkill", "/PID", pid, "/F"],
-                                    capture_output=True, text=True, timeout=5
-                                )
-                            except Exception as e:
-                                logger.warning("Error killing chocolatey process %s: %s", pid, e)
+                            process_name = parts[0].lower()
+                            if any(
+                                keyword in process_name
+                                for keyword in ["chocolatey", "choco", "opencode"]
+                            ):
+                                pid = parts[1]
+                                try:
+                                    subprocess.run(
+                                        ["taskkill", "/PID", pid, "/F"],
+                                        capture_output=True,
+                                        text=True,
+                                        timeout=2,
+                                    )
+                                    found_processes = True
+                                except Exception as e:
+                                    logger.warning(
+                                        "Error killing process %s: %s", pid, e
+                                    )
+
+                    if not found_processes:
+                        logger.debug(
+                            "No chocolatey/opencode processes found with fallback method"
+                        )
+                except Exception as e:
+                    logger.warning("Fallback process scan failed: %s", e)
             else:
                 # Unix-like systems
-                subprocess.run(
-                    ["pkill", "-f", "-i", "chocolatey"],
-                    capture_output=True, text=True, timeout=10
-                )
+                try:
+                    subprocess.run(
+                        ["pkill", "-f", "-i", "chocolatey"],
+                        capture_output=True,
+                        text=True,
+                        timeout=2,
+                    )
+                except subprocess.TimeoutExpired:
+                    logger.debug("Unix pkill command timed out")
+                except Exception as e:
+                    logger.warning("Unix pkill failed: %s", e)
         except Exception as e:
-            logger.warning("Error killing chocolatey processes: %s", e)
+            logger.warning("Error in chocolatey process killing: %s", e)
 
     @property
     def is_alive(self) -> bool:

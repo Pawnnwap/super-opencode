@@ -36,7 +36,7 @@ Rules for a good self-evolution protocol:
 - RESTRICTIONS must include at minimum:
     * Do not delete or rename core modules without migrating all imports.
     * Every change must leave the codebase in a runnable state.
-    * Do not modify .checkpoints/ or any checkpoint files.
+    * Do not modify .archives/ or any archive files.
     * Preserve backward compatibility of the SupervisorLoop.run_streaming() API.
 - Output ONLY the protocol.md content — no preamble, no code fences.
 """

@@ -271,34 +271,22 @@ requirements.txt                    备用依赖列表，用于 pip install -r
 | log_level | "INFO" | 日志详细程度（DEBUG、INFO、WARNING、ERROR） |
 | plan_mode_rounds | 0 | 执行前的规划轮数（0 = 禁用） |
 
-### 使用自定义模型
+### 添加自定义模型
 
-在 ~/.config/opencode 目录下（~ 通常指 C 盘用户路径），创建 opencode.json 文件，内容如下：
+Streamlit UI 提供了内置表单来配置自定义模型，无需手动编辑文件：
 
-```json
-{
-  "$schema": "https://opencode.ai/config.json",
-  "provider": {
-    "iflow": {
-      "npm": "@ai-sdk/openai-compatible",
-      "name": "iflow",
-      "options": {
-        "baseURL": "https://apis.iflow.cn/v1",
-        "apiKey": "YOUR-API-KEY"
-      },
-      "models": {
-        "qwen3-max": {
-          "name": "qwen3-max"
-        }
-      }
-    }
-  }
-}
-```
+1. 在 **协议向导** 页面中，向下滚动侧边栏找到 **"Add Custom Model for Opencode"**
+2. 点击 **"➕ Add Custom Model for Opencode"** 打开配置表单
+3. 填写以下信息：
+   - **Service name**: 您提供商的唯一标识符（例如："my-custom-service"）
+   - **Base URL**: 您自定义提供商的 API 端点（例如："https://api.example.com/v1"）
+   - **API key**: 您提供商的身份验证密钥
+   - **Model names**: 每行一个模型名称（例如："qwen3-coder-plus"、"qwen3-max"）
+4. 点击 **"💾 Save Service"** 自动配置 opencode
 
-- `provider.iflow.options.baseURL` — 自定义提供商的 API 端点
-- `provider.iflow.options.apiKey` — 用于身份验证的 API 密钥
-- `provider.iflow.models` — 此提供商可用的模型名称映射
+系统将自动在适当位置创建和管理 opencode 配置文件（在类 Unix 系统上为 `~/.config/opencode/opencode.json`，在 Windows 上为 `%APPDATA%\opencode\opencode.json`）。
+
+保存后，您可以直接从协议向导配置面板的下拉菜单中选择您的自定义模型，或使用格式 `service-name/model-name` 引用它们（例如：`my-custom-service/qwen3-max`）。
 
 ---
 
