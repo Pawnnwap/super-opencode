@@ -458,6 +458,9 @@ defaults = {
     "_run_heartbeat": 0,
     # internal state for self-evolution
     "_evo_heartbeat": 0,
+    # connectivity test flags
+    "opencode_test_passed": False,
+    "supervisor_test_passed": False,
 }
 for k, v in defaults.items():
     if k not in st.session_state:
@@ -486,16 +489,32 @@ with st.sidebar:
         "run": "② Live Run",
         "evolve": "③ Self-Evolution",
     }
+    tests_passed = (
+        st.session_state.opencode_test_passed and st.session_state.supervisor_test_passed
+    )
     for key, label in pages.items():
+        locked = key != "wizard" and not tests_passed
         active = st.session_state.page == key
-        if st.button(
-            label,
-            key=f"nav_{key}",
-            use_container_width=True,
-            type="primary" if active else "secondary",
-        ):
-            st.session_state.page = key
-            st.rerun()
+        if locked:
+            if st.button(
+                f"🔒 {label}",
+                key=f"nav_{key}",
+                use_container_width=True,
+                disabled=True,
+            ):
+                pass
+        else:
+            if st.button(
+                label,
+                key=f"nav_{key}",
+                use_container_width=True,
+                type="primary" if active else "secondary",
+            ):
+                st.session_state.page = key
+                st.rerun()
+
+    if not tests_passed:
+        st.caption("🔒 Run & Self-Evolution locked — pass connectivity tests first.")
 
     evo_state = st.session_state.evo_run_state
     if evo_state != "idle":
@@ -603,6 +622,71 @@ def _apply_api_config():
         os.environ["OPENAI_BASE_URL"] = st.session_state.base_url.strip()
     elif "OPENAI_BASE_URL" in os.environ:
         del os.environ["OPENAI_BASE_URL"]
+
+
+# ═══════════════════════════════════════════════════════════════════════════ #
+# Connectivity tests                                                          #
+# ═══════════════════════════════════════════════════════════════════════════ #
+
+
+def test_opencode():
+    """Send 'hi' to opencode via CLI with a 30-second timeout."""
+    from supervisor.runners.opencode_runner import OpencodeRunner, find_opencode
+
+    workspace = Path(st.session_state.workspace) if st.session_state.workspace else Path.cwd()
+    try:
+        exe = find_opencode(st.session_state.opencode_executable or "")
+    except FileNotFoundError as e:
+        return False, str(e)
+
+    runner = OpencodeRunner(
+        workspace=workspace,
+        opencode_model=st.session_state.opencode_model or None,
+        opencode_executable=exe,
+        timeout=30,
+    )
+    try:
+        runner.start("hi")
+        output, timed_out = runner.read_output(timeout=30)
+        if timed_out:
+            return False, "opencode timed out after 30 seconds."
+        if runner._last_result and runner._last_result.ok:
+            return True, "opencode responded successfully."
+        diag = runner.last_diagnostic() if runner._last_result else "(no result)"
+        return False, f"opencode returned an error.\n{diag}"
+    except Exception as exc:
+        return False, f"opencode test failed: {exc}"
+    finally:
+        try:
+            runner.stop()
+        except Exception:
+            pass
+
+
+def test_supervisor():
+    """Send 'hi' to the supervisor LLM with a 30-second timeout."""
+    from openai import OpenAI
+
+    if not st.session_state.openai_key:
+        return False, "API key is not set."
+    model = st.session_state.supervisor_model or "gpt-4o"
+    try:
+        client = OpenAI(
+            api_key=st.session_state.openai_key,
+            base_url=st.session_state.base_url or None,
+            timeout=30.0,
+        )
+        resp = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": "hi"}],
+            max_tokens=16,
+        )
+        text = resp.choices[0].message.content or ""
+        if text.strip():
+            return True, f"Supervisor responded: {text.strip()[:120]}"
+        return False, "Supervisor returned an empty response."
+    except Exception as exc:
+        return False, f"Supervisor test failed: {exc}"
 
 
 def page_wizard():
@@ -920,7 +1004,70 @@ def page_wizard():
     # Auto-save settings to disk whenever the config panel is shown
     _save_settings()
 
+    # ── connectivity tests ────────────────────────────────────────────────── #
     st.markdown("---")
+    st.markdown("### 🔌 Connectivity Tests")
+
+    both_passed = (
+        st.session_state.opencode_test_passed and st.session_state.supervisor_test_passed
+    )
+    if both_passed:
+        st.success("✅ Both opencode and supervisor connectivity tests passed.")
+    else:
+        st.info("Run the tests below to verify opencode and supervisor are reachable.")
+
+    col_t1, col_t2, col_t3 = st.columns(3)
+
+    with col_t1:
+        if st.button("▶  Run Tests", type="primary", key="btn_run_tests"):
+            if not st.session_state.workspace:
+                st.error("Set a workspace path before running tests.")
+            else:
+                with st.spinner("Testing opencode…"):
+                    ok, msg = test_opencode()
+                if ok:
+                    st.session_state.opencode_test_passed = True
+                    st.success(f"✅ Test opencode: {msg}")
+                else:
+                    st.session_state.opencode_test_passed = False
+                    st.error(f"❌ Test opencode: {msg}")
+
+                with st.spinner("Testing supervisor…"):
+                    ok2, msg2 = test_supervisor()
+                if ok2:
+                    st.session_state.supervisor_test_passed = True
+                    st.success(f"✅ Test Supervisor: {msg2}")
+                else:
+                    st.session_state.supervisor_test_passed = False
+                    st.error(f"❌ Test Supervisor: {msg2}")
+
+    with col_t2:
+        if st.button("🧪 Test opencode", key="btn_test_opencode"):
+            if not st.session_state.workspace:
+                st.error("Set a workspace path before testing.")
+            else:
+                with st.spinner("Testing opencode…"):
+                    ok, msg = test_opencode()
+                if ok:
+                    st.session_state.opencode_test_passed = True
+                    st.success(f"✅ {msg}")
+                else:
+                    st.session_state.opencode_test_passed = False
+                    st.error(f"❌ {msg}")
+
+    with col_t3:
+        if st.button("🧪 Test Supervisor", key="btn_test_supervisor"):
+            if not st.session_state.openai_key:
+                st.error("Set an API key before testing.")
+            else:
+                with st.spinner("Testing supervisor…"):
+                    ok, msg = test_supervisor()
+                if ok:
+                    st.session_state.supervisor_test_passed = True
+                    st.success(f"✅ {msg}")
+                else:
+                    st.session_state.supervisor_test_passed = False
+                    st.error(f"❌ {msg}")
 
     # ── existing protocol.md detection ───────────────────────────────────── #
     workspace_path = (
@@ -1997,9 +2144,18 @@ page = st.session_state.page
 if page == "report":
     page = "run"
     st.session_state.page = "run"
+_tests_ok = st.session_state.opencode_test_passed and st.session_state.supervisor_test_passed
 if page == "wizard":
     page_wizard()
 elif page == "run":
-    page_run()
+    if not _tests_ok:
+        st.warning("🔒 Live Run is locked. Pass connectivity tests on the Protocol Wizard page first.")
+        page_wizard()
+    else:
+        page_run()
 elif page == "evolve":
-    page_evolve()
+    if not _tests_ok:
+        st.warning("🔒 Self-Evolution is locked. Pass connectivity tests on the Protocol Wizard page first.")
+        page_wizard()
+    else:
+        page_evolve()
