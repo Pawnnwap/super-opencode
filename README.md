@@ -20,6 +20,18 @@ debug and evolve its own source code.
 
 ## Windows Installation
 
+### Installing Chocolatey
+
+If you don't have Chocolatey installed, run the following command in an **Administrator** PowerShell:
+
+```powershell
+Set-ExecutionPolicy Bypass -Scope Process -Force; [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072; iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
+```
+
+For more details, see the [Chocolatey installation page](https://chocolatey.org/install).
+
+### Installing opencode
+
 To install opencode on Windows using Chocolatey:
 
 ```bash

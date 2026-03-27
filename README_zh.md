@@ -18,6 +18,18 @@ Streamlit UI + 模块化 Python 后端，运行一个 `opencode` 代理于监督
 
 ## Windows 安装
 
+### 安装 Chocolatey
+
+如果尚未安装 Chocolatey，请在**管理员** PowerShell 中运行以下命令：
+
+```powershell
+Set-ExecutionPolicy Bypass -Scope Process -Force; [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072; iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
+```
+
+更多详情请参阅 [Chocolatey 安装页面](https://chocolatey.org/install)。
+
+### 安装 opencode
+
 使用 Chocolatey 在 Windows 上安装 opencode：
 
 ```bash
