@@ -143,8 +143,12 @@ def find_opencode(explicit: str = "") -> str:
         ]
 
     for candidate in candidates:
-        if _is_executable(candidate):
-            return str(candidate)
+        try:
+            if _is_executable(candidate):
+                return str(candidate)
+        except OSError:
+            pass
+        continue
 
     # ── 4. User-local directories (all platforms) ────────────────────────────
     home = Path.home()
@@ -155,9 +159,13 @@ def find_opencode(explicit: str = "") -> str:
             choco_root / "bin",  # already defined above
         ]
         for directory in user_dirs:
-            candidate = directory / "opencode.exe"
-            if _is_executable(candidate):
-                return str(candidate)
+            try:
+                candidate = directory / "opencode.exe"
+                if _is_executable(candidate):
+                    return str(candidate)
+            except OSError:
+                pass
+            continue
     else:
         user_dirs = [
             home / ".local" / "bin",
@@ -171,9 +179,13 @@ def find_opencode(explicit: str = "") -> str:
         ]
         for directory in user_dirs:
             for name in _NAMES:
-                candidate = directory / name
-                if _is_executable(candidate):
-                    return str(candidate)
+                try:
+                    candidate = directory / name
+                    if _is_executable(candidate):
+                        return str(candidate)
+                except OSError:
+                    pass
+            continue
 
     # ── 5. Sentinel file ─────────────────────────────────────────────────────
     if _DOT_PATH_FILE.exists():
