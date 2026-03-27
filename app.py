@@ -29,7 +29,7 @@ def _should_skip_upgrade():
 
 
 def _auto_upgrade_opencode():
-    """Run choco upgrade opencode -y on Windows if not skipped."""
+    """Run choco upgrade opencode -y on Windows with admin privileges."""
     if sys.platform != "win32":
         print("[opencode-upgrade] Skipping upgrade: not on Windows", file=sys.stderr)
         return
@@ -40,16 +40,22 @@ def _auto_upgrade_opencode():
         )
         return
     try:
-        print("[opencode-upgrade] Running: choco upgrade opencode -y", file=sys.stderr)
+        print(
+            "[opencode-upgrade] Running: choco upgrade opencode -y (with admin elevation)",
+            file=sys.stderr,
+        )
         proc = subprocess.Popen(
-            ["choco", "upgrade", "opencode", "-y"],
+            [
+                "powershell",
+                "-Command",
+                "Start-Process choco -ArgumentList 'upgrade','opencode','-y' -Verb RunAs -Wait",
+            ],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            shell=True,
         )
-        stdout, stderr = proc.communicate(input="Y\n", timeout=30)
+        stdout, stderr = proc.communicate(timeout=120)
         if stdout:
             print(f"[opencode-upgrade] stdout: {stdout.strip()}", file=sys.stderr)
         if stderr:
@@ -63,12 +69,12 @@ def _auto_upgrade_opencode():
             )
     except subprocess.TimeoutExpired:
         print(
-            "[opencode-upgrade] Upgrade timed out after 30 seconds. Continuing startup.",
+            "[opencode-upgrade] Upgrade timed out after 120 seconds. Continuing startup.",
             file=sys.stderr,
         )
     except FileNotFoundError:
         print(
-            "[opencode-upgrade] 'choco' command not found. Continuing startup.",
+            "[opencode-upgrade] 'powershell' command not found. Continuing startup.",
             file=sys.stderr,
         )
     except Exception as e:
@@ -600,11 +606,19 @@ def _apply_api_config():
 
 
 def page_wizard():
+    from supervisor.runners.opencode_runner import find_opencode
+
     st.markdown("# Protocol Wizard")
     st.markdown(
         "Fill in each section in plain language. The supervisor LLM will refine "
         "them into a clean, unambiguous `protocol.md`."
     )
+
+    try:
+        opencode_path = find_opencode()
+    except FileNotFoundError as e:
+        st.error(str(e))
+        st.stop()
 
     # ── config panel ──────────────────────────────────────────────────── #
     with st.expander("⚙️  Configuration", expanded=st.session_state.wizard_step == 0):
@@ -664,12 +678,7 @@ def page_wizard():
                     st.session_state.opencode_model = selected_model
                     st.rerun()
 
-            st.session_state.opencode_executable = st.text_input(
-                "opencode executable (leave blank to auto-detect)",
-                key="cfg_opencode_exe",
-                value=str(st.session_state.opencode_executable),
-                placeholder=r"e.g. C:\Users\you\AppData\Roaming\npm\opencode.cmd",
-            )
+            
             st.session_state.max_retries = st.number_input(
                 "Max retries",
                 key="cfg_max_retries",

@@ -55,30 +55,38 @@ def find_opencode(explicit: str = "") -> str:
     if explicit.strip():
         return explicit.strip()
 
-    if _DOT_PATH_FILE.exists():
-        val = _DOT_PATH_FILE.read_text(encoding="utf-8").strip()
-        if val:
-            return val
+    if sys.platform == "win32":
+        chocolatey_bin_dirs = [
+            Path("C:/ProgramData/chocolatey/bin"),
+            Path("C:/ProgramData/chocolatey/lib/opencode/tools"),
+        ]
+        for choco_dir in chocolatey_bin_dirs:
+            if choco_dir.exists():
+                for name in ["opencode.exe", "opencode.cmd", "opencode.bat", "opencode"]:
+                    candidate = choco_dir / name
+                    if candidate.exists():
+                        return str(candidate)
+
+        raise FileNotFoundError(
+            "opencode.exe not found in Chocolatey installation paths.\n"
+            "Please run the following command with administrator privileges:\n\n"
+            "    choco upgrade opencode\n\n"
+            "This will install opencode to the Chocolatey bin directory."
+        )
 
     for name in _NAMES:
         found = shutil.which(name)
         if found:
             return found
 
-    if sys.platform == "win32":
-        for d in _WINDOWS_EXTRA_DIRS:
-            if not d.exists():
-                continue
-            for name in _NAMES:
-                c = d / name
-                if c.exists():
-                    return str(c)
+    if _DOT_PATH_FILE.exists():
+        val = _DOT_PATH_FILE.read_text(encoding="utf-8").strip()
+        if val:
+            return val
 
     raise FileNotFoundError(
         "Cannot find the opencode executable.\n"
-        "Run  python diagnose_opencode.py  to auto-detect it,\n"
-        "or paste the full path into the 'opencode executable' field in the UI.\n"
-        r"Common Windows location: C:\Users\<you>\AppData\Local\opencode\opencode.exe"
+        "Ensure opencode is installed and available in your PATH."
     )
 
 
