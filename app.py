@@ -9,6 +9,7 @@ import sys
 import os
 import subprocess
 import json
+import concurrent.futures
 from pathlib import Path
 
 _UPGRADE_SETTINGS_FILE = Path.home() / ".opencode_supervisor_settings.json"
@@ -629,8 +630,17 @@ def _apply_api_config():
 # ═══════════════════════════════════════════════════════════════════════════ #
 
 
+def _run_with_timeout(fn, seconds=30):
+    """Run fn() in a thread; raise TimeoutError if it exceeds `seconds`."""
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(fn)
+        try:
+            return future.result(timeout=seconds)
+        except concurrent.futures.TimeoutError:
+            raise TimeoutError(f"Timed out after {seconds}s")
+
+
 def test_opencode():
-    """Send 'hi' to opencode via CLI with a 30-second timeout."""
     from supervisor.runners.opencode_runner import OpencodeRunner, find_opencode
 
     workspace = Path(st.session_state.workspace) if st.session_state.workspace else Path.cwd()
@@ -645,7 +655,8 @@ def test_opencode():
         opencode_executable=exe,
         timeout=30,
     )
-    try:
+
+    def _inner():
         runner.start("hi")
         output, timed_out = runner.read_output(timeout=30)
         if timed_out:
@@ -654,6 +665,11 @@ def test_opencode():
             return True, "opencode responded successfully."
         diag = runner.last_diagnostic() if runner._last_result else "(no result)"
         return False, f"opencode returned an error.\n{diag}"
+
+    try:
+        return _run_with_timeout(_inner, seconds=30)
+    except TimeoutError:
+        return False, "opencode timed out after 30 seconds."
     except Exception as exc:
         return False, f"opencode test failed: {exc}"
     finally:
@@ -664,18 +680,19 @@ def test_opencode():
 
 
 def test_supervisor():
-    """Send 'hi' to the supervisor LLM with a 30-second timeout."""
     from openai import OpenAI
 
     if not st.session_state.openai_key:
         return False, "API key is not set."
+
     model = st.session_state.supervisor_model or "gpt-4o"
-    try:
-        client = OpenAI(
-            api_key=st.session_state.openai_key,
-            base_url=st.session_state.base_url or None,
-            timeout=30.0,
-        )
+    client = OpenAI(
+        api_key=st.session_state.openai_key,
+        base_url=st.session_state.base_url or None,
+        timeout=30.0,          # connection + read timeout on the socket
+    )
+
+    def _inner():
         resp = client.chat.completions.create(
             model=model,
             messages=[{"role": "user", "content": "hi"}],
@@ -685,6 +702,11 @@ def test_supervisor():
         if text.strip():
             return True, f"Supervisor responded: {text.strip()[:120]}"
         return False, "Supervisor returned an empty response."
+
+    try:
+        return _run_with_timeout(_inner, seconds=30)
+    except TimeoutError:
+        return False, "Supervisor timed out after 30 seconds."
     except Exception as exc:
         return False, f"Supervisor test failed: {exc}"
 
