@@ -13,6 +13,7 @@ from pathlib import Path
 
 _UPGRADE_SETTINGS_FILE = Path.home() / ".opencode_supervisor_settings.json"
 
+
 def _should_skip_upgrade():
     """Check env var and config file to decide whether to skip upgrade."""
     if os.environ.get("OPENCODE_SKIP_UPGRADE") == "1":
@@ -26,37 +27,56 @@ def _should_skip_upgrade():
         pass
     return False
 
+
 def _auto_upgrade_opencode():
     """Run choco upgrade opencode -y on Windows if not skipped."""
     if sys.platform != "win32":
         print("[opencode-upgrade] Skipping upgrade: not on Windows", file=sys.stderr)
         return
     if _should_skip_upgrade():
-        print("[opencode-upgrade] Skipping upgrade: disabled via config/env var", file=sys.stderr)
+        print(
+            "[opencode-upgrade] Skipping upgrade: disabled via config/env var",
+            file=sys.stderr,
+        )
         return
     try:
         print("[opencode-upgrade] Running: choco upgrade opencode -y", file=sys.stderr)
-        result = subprocess.run(
+        proc = subprocess.Popen(
             ["choco", "upgrade", "opencode", "-y"],
-            capture_output=True,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=30,
             shell=True,
         )
-        if result.stdout:
-            print(f"[opencode-upgrade] stdout: {result.stdout.strip()}", file=sys.stderr)
-        if result.stderr:
-            print(f"[opencode-upgrade] stderr: {result.stderr.strip()}", file=sys.stderr)
-        if result.returncode == 0:
+        stdout, stderr = proc.communicate(input="Y\n", timeout=30)
+        if stdout:
+            print(f"[opencode-upgrade] stdout: {stdout.strip()}", file=sys.stderr)
+        if stderr:
+            print(f"[opencode-upgrade] stderr: {stderr.strip()}", file=sys.stderr)
+        if proc.returncode == 0:
             print("[opencode-upgrade] Upgrade completed successfully.", file=sys.stderr)
         else:
-            print(f"[opencode-upgrade] Upgrade exited with code {result.returncode}. Continuing startup.", file=sys.stderr)
+            print(
+                f"[opencode-upgrade] Upgrade exited with code {proc.returncode}. Continuing startup.",
+                file=sys.stderr,
+            )
     except subprocess.TimeoutExpired:
-        print("[opencode-upgrade] Upgrade timed out after 30 seconds. Continuing startup.", file=sys.stderr)
+        print(
+            "[opencode-upgrade] Upgrade timed out after 30 seconds. Continuing startup.",
+            file=sys.stderr,
+        )
     except FileNotFoundError:
-        print("[opencode-upgrade] 'choco' command not found. Continuing startup.", file=sys.stderr)
+        print(
+            "[opencode-upgrade] 'choco' command not found. Continuing startup.",
+            file=sys.stderr,
+        )
     except Exception as e:
-        print(f"[opencode-upgrade] Unexpected error: {e}. Continuing startup.", file=sys.stderr)
+        print(
+            f"[opencode-upgrade] Unexpected error: {e}. Continuing startup.",
+            file=sys.stderr,
+        )
+
 
 # ── End auto-upgrade block ──────────────────────────────────────────────── #
 
