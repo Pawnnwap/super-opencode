@@ -51,44 +51,203 @@ _DOT_MODEL_FILE = Path(__file__).parent.parent / ".opencode_model"
 
 
 def find_opencode(explicit: str = "") -> str:
-    explicit = str(explicit) if explicit is not None else ""
-    if explicit.strip():
-        return explicit.strip()
+    """
+    Locate the opencode executable.
 
-    if sys.platform == "win32":
-        chocolatey_bin_dirs = [
-            Path("C:/ProgramData/chocolatey/bin"),
-            Path("C:/ProgramData/chocolatey/lib/opencode/tools"),
-        ]
-        for choco_dir in chocolatey_bin_dirs:
-            if choco_dir.exists():
-                for name in ["opencode.exe", "opencode.cmd", "opencode.bat", "opencode"]:
-                    candidate = choco_dir / name
-                    if candidate.exists():
-                        return str(candidate)
+    Search order:
+      1. Explicit path provided by the caller (validated).
+      2. shutil.which over _NAMES (respects current PATH).
+      3. Well-known install locations per platform.
+      4. User-local install directories.
+      5. Sentinel file written by diagnose_opencode.py.
+      6. Windows only: live PATH reload from registry.
 
+    Raises FileNotFoundError with actionable instructions if nothing is found.
+    """
+    explicit = str(explicit).strip() if explicit is not None else ""
+
+    # ── helpers ─────────────────────────────────────────────────────────────
+    def _is_executable(p: Path) -> bool:
+        if sys.platform == "win32":
+            return p.suffix.lower() == ".exe" and p.is_file()
+        return p.is_file() and os.access(p, os.X_OK)
+
+    def _which_names(path_override: str | None = None) -> str | None:
+        kwargs = {"path": path_override} if path_override else {}
+        for name in _NAMES:
+            found = shutil.which(name, **kwargs)
+            if found:
+                p = Path(found)
+                if _is_executable(p):
+                    return str(p)
+        return None
+
+    # ── 1. Explicit hint ─────────────────────────────────────────────────────
+    if explicit:
+        p = Path(explicit)
+        if _is_executable(p):
+            return str(p)
+        if sys.platform == "win32":
+            raise FileNotFoundError(
+                f"opencode not found at the specified path: {explicit!r}\n"
+                "Only .exe files are accepted on Windows.\n"
+                "Please verify the path in the Configuration panel."
+            )
         raise FileNotFoundError(
-            "opencode.exe not found in Chocolatey installation paths.\n"
-            "Please run the following command with administrator privileges:\n\n"
-            "    choco upgrade opencode\n\n"
-            "This will install opencode to the Chocolatey bin directory."
+            f"opencode not found at the specified path: {explicit!r}\n"
+            "Please verify the path in the Configuration panel."
         )
 
-    for name in _NAMES:
-        found = shutil.which(name)
-        if found:
-            return found
+    # ── 2. shutil.which ──────────────────────────────────────────────────────
+    found = _which_names()
+    if found:
+        return found
 
+    # ── 3. Well-known install locations ─────────────────────────────────────
+    candidates: list[Path] = []
+
+    if sys.platform == "win32":
+        choco_root = Path(os.environ.get("ChocolateyInstall", r"C:\ProgramData\chocolatey"))
+        candidates += [
+            choco_root / "bin" / "opencode.exe",
+            choco_root / "lib" / "opencode" / "tools" / "opencode.exe",
+            Path(os.environ.get("LOCALAPPDATA", "")) / "Chocolatey" / "bin" / "opencode.exe",
+            # Scoop
+            Path(os.environ.get("USERPROFILE", "")) / "scoop" / "shims" / "opencode.exe",
+            Path(os.environ.get("SCOOP", "")) / "shims" / "opencode.exe",
+            # winget / direct installer
+            Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "opencode" / "opencode.exe",
+            Path(os.environ.get("PROGRAMFILES", r"C:\Program Files")) / "opencode" / "opencode.exe",
+            Path(os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)")) / "opencode" / "opencode.exe",
+        ]
+
+    elif sys.platform == "darwin":
+        candidates += [
+            Path("/opt/homebrew/bin/opencode"),
+            Path("/usr/local/bin/opencode"),
+            Path("/opt/local/bin/opencode"),
+            Path("/usr/local/lib/node_modules/.bin/opencode"),
+            Path("/opt/homebrew/lib/node_modules/.bin/opencode"),
+        ]
+
+    else:  # Linux / BSD / other POSIX
+        candidates += [
+            Path("/usr/local/bin/opencode"),
+            Path("/usr/bin/opencode"),
+            Path("/snap/bin/opencode"),
+            Path("/var/lib/flatpak/exports/bin/opencode"),
+            Path(os.environ.get("FLATPAK_USER_BASE", Path.home() / ".local/share/flatpak"))
+            / "exports/bin/opencode",
+            Path("/usr/local/lib/node_modules/.bin/opencode"),
+            Path("/usr/lib/node_modules/.bin/opencode"),
+        ]
+
+    for candidate in candidates:
+        if _is_executable(candidate):
+            return str(candidate)
+
+    # ── 4. User-local directories (all platforms) ────────────────────────────
+    home = Path.home()
+    if sys.platform == "win32":
+        user_dirs = [
+            home / "AppData" / "Local" / "Programs" / "opencode",
+            home / "AppData" / "Local" / "opencode",
+            choco_root / "bin",  # already defined above
+        ]
+        for directory in user_dirs:
+            candidate = directory / "opencode.exe"
+            if _is_executable(candidate):
+                return str(candidate)
+    else:
+        user_dirs = [
+            home / ".local" / "bin",
+            home / "bin",
+            home / ".cargo" / "bin",
+            home / "go" / "bin",
+            home / ".npm-global" / "bin",
+            home / ".yarn" / "bin",
+            home / ".volta" / "bin",
+            home / ".bun" / "bin",
+        ]
+        for directory in user_dirs:
+            for name in _NAMES:
+                candidate = directory / name
+                if _is_executable(candidate):
+                    return str(candidate)
+
+    # ── 5. Sentinel file ─────────────────────────────────────────────────────
     if _DOT_PATH_FILE.exists():
         val = _DOT_PATH_FILE.read_text(encoding="utf-8").strip()
         if val:
-            return val
+            p = Path(val)
+            if _is_executable(p):
+                return str(p)
 
-    raise FileNotFoundError(
-        "Cannot find the opencode executable.\n"
-        "Ensure opencode is installed and available in your PATH."
-    )
+    # ── 6. Windows: live PATH reload from registry ───────────────────────────
+    if sys.platform == "win32":
+        reloaded = _reload_path_from_registry()
+        if reloaded:
+            found = _which_names(path_override=reloaded)
+            if found:
+                return found
 
+        raise FileNotFoundError(
+            "opencode.exe not found.\n\n"
+            "Tried: Chocolatey, Scoop, winget, and common install paths.\n\n"
+            "To fix:\n"
+            "  • Run (as Administrator):  choco install opencode\n"
+            "  • Or set the full path to opencode.exe manually in the Configuration panel,\n"
+            f"    e.g. {choco_root}\\bin\\opencode.exe\n"
+            "  • Then restart the Streamlit app so it picks up the updated PATH."
+        )
+
+    elif sys.platform == "darwin":
+        raise FileNotFoundError(
+            "opencode executable not found.\n\n"
+            "Tried: Homebrew, MacPorts, npm global, and common install paths.\n\n"
+            "To fix:\n"
+            "  • Run:  brew install opencode\n"
+            "  • Or set the full path manually in the Configuration panel."
+        )
+
+    else:
+        raise FileNotFoundError(
+            "opencode executable not found.\n\n"
+            "Tried: /usr/local/bin, /usr/bin, snap, flatpak, npm global, and ~/.local/bin.\n\n"
+            "To fix:\n"
+            "  • Install via your package manager or npm\n"
+            "  • Or set the full path manually in the Configuration panel."
+        )
+
+
+def _reload_path_from_registry() -> str | None:
+    """
+    Windows only: read system and user PATH directly from the registry.
+    Finds executables installed after the current process started.
+    """
+    if sys.platform != "win32":
+        return None
+    try:
+        import winreg
+
+        path_parts: list[str] = []
+        with winreg.OpenKey(
+            winreg.HKEY_LOCAL_MACHINE,
+            r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment",
+        ) as key:
+            sys_path, _ = winreg.QueryValueEx(key, "Path")
+            path_parts.append(os.path.expandvars(sys_path))
+
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Environment") as key:
+            try:
+                user_path, _ = winreg.QueryValueEx(key, "Path")
+                path_parts.append(os.path.expandvars(user_path))
+            except FileNotFoundError:
+                pass
+
+        return os.pathsep.join(path_parts)
+    except Exception:
+        return None
 
 # ── Result container ─────────────────────────────────────────────────────── #
 
