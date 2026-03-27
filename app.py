@@ -10,7 +10,11 @@ import os
 import subprocess
 import json
 import concurrent.futures
+import threading
+import time
 from pathlib import Path
+from openai import OpenAI
+
 
 _UPGRADE_SETTINGS_FILE = Path.home() / ".opencode_supervisor_settings.json"
 
@@ -86,10 +90,6 @@ def _auto_upgrade_opencode():
 
 
 # ── End auto-upgrade block ──────────────────────────────────────────────── #
-
-import threading
-import time
-from pathlib import Path
 
 # ── supervisor package imports (all at top level — never lazy) ──────────── #
 from supervisor.utils.config import SupervisorConfig
@@ -349,20 +349,24 @@ def _add_custom_provider_to_config(
     config_file.write_text(json.dumps(content, indent=2), encoding="utf-8")
 
 
-def _get_all_models_from_config(config_file: Path) -> list[str]:
-    """Get all model names from the opencode config file."""
+def _fetch_opencode_models(exe: str = "opencode") -> list[str]:
+    """Run 'opencode models' and return the list of model identifiers."""
     try:
-        content = json.loads(config_file.read_text(encoding="utf-8"))
-        models = []
-        if "provider" in content:
-            for provider_name, provider_data in content["provider"].items():
-                if "models" in provider_data:
-                    for model_name in provider_data["models"].keys():
-                        # Format as provider/model
-                        models.append(f"{provider_name}/{model_name}")
-        return sorted(models)
-    except (json.JSONDecodeError, FileNotFoundError, KeyError):
-        return []
+        proc = subprocess.run(
+            [exe, "models"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        if proc.returncode == 0:
+            return [
+                line.strip()
+                for line in proc.stdout.strip().splitlines()
+                if line.strip()
+            ]
+    except Exception:
+        pass
+    return []
 
 
 # ── Settings persistence ──────────────────────────────────────────────────── #
@@ -462,11 +466,16 @@ defaults = {
     # connectivity test flags
     "opencode_test_passed": False,
     "supervisor_test_passed": False,
+    "opencode_models": [],
 }
 for k, v in defaults.items():
     if k not in st.session_state:
         # Use persisted value if available, else default
         st.session_state[k] = _persisted.get(k, v)
+
+# ── Fetch opencode models once per session ──────────────────────────────── #
+if not st.session_state["opencode_models"]:
+    st.session_state["opencode_models"] = _fetch_opencode_models()
 
 # ── sidebar navigation ────────────────────────────────────────────────────── #
 with st.sidebar:
@@ -680,8 +689,6 @@ def test_opencode():
 
 
 def test_supervisor():
-    from openai import OpenAI
-
     if not st.session_state.openai_key:
         return False, "API key is not set."
 
@@ -761,28 +768,36 @@ def page_wizard():
                 placeholder="e.g. gpt-4o, claude-3-5-sonnet, mistral-large",
             )
         with col2:
-            # Fix 1: Show existing models dropdown right below opencode model input
-            config_dir = _find_opencode_config_dir()
-            all_models: list[str] = []
-            if config_dir:
-                config_file = _get_opencode_config_file(config_dir)
-                all_models = _get_all_models_from_config(config_file)
-
-            st.session_state.opencode_model = st.text_input(
-                "opencode model (leave blank = opencode default)",
-                key="cfg_opencode_model",
-                value=st.session_state.opencode_model,
-            )
-            if all_models:
-                selected_model = st.selectbox(
-                    "Or pick a configured model",
-                    options=[""] + all_models,
+            # Dynamic model list from 'opencode models' command
+            models = st.session_state.get("opencode_models", [])
+            if models:
+                # Determine default index
+                current = st.session_state.get("opencode_model", "")
+                default_idx = models.index(current) if current in models else 0
+                selected = st.selectbox(
+                    "Model",
+                    options=models,
+                    index=default_idx,
                     key="cfg_opencode_model_select",
-                    help="Select a model from your opencode config to populate the field above",
+                    help="Models returned by 'opencode models'",
                 )
-                if selected_model and selected_model != st.session_state.opencode_model:
-                    st.session_state.opencode_model = selected_model
-                    st.rerun()
+                st.session_state.opencode_model = selected
+            else:
+                st.warning("No models returned by 'opencode models'.")
+                st.session_state.opencode_model = st.text_input(
+                    "opencode model",
+                    key="cfg_opencode_model_fallback",
+                    value=st.session_state.opencode_model,
+                )
+
+            def _refresh_models():
+                st.session_state["opencode_models"] = _fetch_opencode_models()
+
+            st.button(
+                "🔄 Refresh models",
+                key="btn_refresh_models",
+                on_click=_refresh_models,
+            )
 
             
             st.session_state.max_retries = st.number_input(
@@ -969,8 +984,6 @@ def page_wizard():
                                 "Note: The file list was truncated to the first 1,000 entries "
                                 "due to token limits."
                             )
-
-                        from openai import OpenAI
 
                         client = OpenAI(
                             api_key=st.session_state.openai_key,
