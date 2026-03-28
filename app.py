@@ -692,7 +692,6 @@ def test_supervisor():
         resp = client.chat.completions.create(
             model=model,
             messages=[{"role": "user", "content": "hi"}],
-            max_tokens=16,
         )
         text = resp.choices[0].message.content or ""
         if text.strip():
