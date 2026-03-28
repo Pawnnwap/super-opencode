@@ -412,17 +412,6 @@ def _save_settings() -> None:
     except Exception:
         pass
 
-
-def _load_opencode_path() -> str:
-    """Auto-load the opencode executable path written by diagnose_opencode.py."""
-    p = Path(__file__).parent / ".opencode_path"
-    if p.exists():
-        val = p.read_text(encoding="utf-8").strip()
-        if val:
-            return val
-    return ""
-
-
 # Load persisted settings first — used as defaults below
 _persisted = _load_settings()
 
@@ -441,7 +430,7 @@ defaults = {
     "workspace": "",
     "supervisor_model": "",
     "opencode_model": "",
-    "opencode_executable": _load_opencode_path(),
+    "opencode_executable": "",
     "max_retries": 3,
     "context_threshold": 60,
     "max_tokens": 150000,
