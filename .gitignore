@@ -225,3 +225,4 @@ tests
 .opencode
 .ruff_cache
 nul
+test_*.py
