@@ -1,9 +1,20 @@
 from __future__ import annotations
 
+import logging
 import time
 from enum import Enum, auto
 from typing import Generator
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
+try:
+    from supervisor.vulnerability.python_scanner import scan as _vuln_scan
+
+    logger.info("Vulnerability scanner imported successfully")
+except ImportError:
+    logger.warning("Python vulnerability scanner not available")
+    _vuln_scan = None
 
 Event = dict
 
@@ -295,13 +306,18 @@ class BaseLoop:
         text = self.config.protocol_path.read_text(encoding="utf-8")
         return summary, text
 
-    def _run_vulnerability_scan(self) -> str | None:
+    def scan_for_vulnerabilities(self) -> str | None:
         """Run vulnerability scan on workspace Python files, return formatted results or None."""
         import os
+
+        if _vuln_scan is None:
+            logger.debug("Vulnerability scanner not available, skipping scan")
+            return None
 
         from supervisor.workspace.ignore_patterns import IgnoreMatcher
 
         workspace = self.config.workspace.resolve()
+        logger.info("Starting vulnerability scan on workspace: %s", workspace)
 
         ignore_matcher = IgnoreMatcher(workspace)
         ignore_matcher.load_from_workspace(workspace)
@@ -309,16 +325,18 @@ class BaseLoop:
         py_files = []
         for root, dirs, files in os.walk(workspace):
             rel_root = str(Path(root).resolve().relative_to(workspace))
-            if rel_root.startswith(".checkpoints") or "/.checkpoints" in rel_root:
+
+            # Skip hidden directories (those starting with ".") entirely
+            if any(part.startswith(".") for part in Path(rel_root).parts):
+                dirs[:] = []
                 continue
-            if rel_root.startswith(".archive") or "/.archive" in rel_root:
-                continue
-            if rel_root.startswith(".opencode") or "/.opencode" in rel_root:
-                continue
+
+            # Filter out directories matching ignore patterns (e.g. .gitignore rules)
             dirs[:] = [
                 d
                 for d in dirs
-                if not ignore_matcher.matches(
+                if not d.startswith(".")  # prune hidden subdirs before descent
+                and not ignore_matcher.matches(
                     f"{rel_root}/{d}" if rel_root != "." else d
                 )
             ]
@@ -329,18 +347,23 @@ class BaseLoop:
                         py_files.append(fp)
 
         if not py_files:
+            logger.info(
+                "No Python files found in workspace, skipping vulnerability scan"
+            )
             return None
 
-        from supervisor.vulnerability.python_scanner import scan
-
+        logger.info("Found %d Python file(s) to scan", len(py_files))
         try:
-            findings = scan(
+            findings = _vuln_scan(
                 target=str(workspace),
                 min_severity="MEDIUM",
+                autofix_first=True,
                 scan_deps=False,
                 print_output=False,
             )
+            logger.info("Vulnerability scan returned %d finding(s)", len(findings))
         except Exception:
+            logger.exception("Vulnerability scan failed with exception")
             return None
 
         def _should_include(finding) -> bool:
@@ -349,15 +372,19 @@ class BaseLoop:
                 rel = str(Path(finding.file).resolve().relative_to(workspace))
             except (ValueError, OSError):
                 rel = fpath
-            if rel.startswith(".checkpoints") or "/.checkpoints" in rel:
+            # Skip findings in any hidden directory (starting with ".")
+            if any(part.startswith(".") for part in Path(rel).parts):
                 return False
+            # Skip findings matching ignore patterns (protected files, etc.)
             if ignore_matcher.matches(rel):
                 return False
             return True
 
         findings = [f for f in findings if _should_include(f)]
+        logger.debug("After filtering: %d finding(s) remain", len(findings))
 
         if not findings:
+            logger.info("No relevant vulnerability findings after filtering")
             return None
 
         by_severity = {}
@@ -376,4 +403,6 @@ class BaseLoop:
                     if f.suggestion:
                         lines.append(f"    Fix: {f.suggestion}")
 
-        return "\n".join(lines)
+        result = "\n".join(lines)
+        logger.info("Vulnerability scan results formatted: %d issue(s)", len(findings))
+        return result

@@ -271,7 +271,7 @@ class SupervisorLoop(BaseLoop):
             self._state = LoopState.ENDED_SUCCESS
             return
 
-        vuln_scan = self._run_vulnerability_scan()
+        vuln_scan = self.scan_for_vulnerabilities()
         feedback_text = verdict.feedback + (vuln_scan if vuln_scan else "")
         safe_msg = yield from self._sanitize_feedback(feedback_text)
 
