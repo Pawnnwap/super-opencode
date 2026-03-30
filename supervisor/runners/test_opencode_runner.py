@@ -3,8 +3,7 @@ Tests for the OpencodeRunner class.
 """
 
 import unittest
-from unittest.mock import patch, MagicMock
-import sys
+from unittest.mock import MagicMock, patch
 
 from supervisor.runners.opencode_runner import OpencodeRunner
 

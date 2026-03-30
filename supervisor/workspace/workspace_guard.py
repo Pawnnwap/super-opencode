@@ -57,10 +57,10 @@ class WorkspaceGuard:
         path_obj = Path(path)
         parts = path_obj.parts
         path_str = str(path)
-        
+
         if self.is_user_protected_file(path):
             return True
-        
+
         for protected in _PROTECTED_DIRS:
             if protected in parts:
                 return True
@@ -68,19 +68,19 @@ class WorkspaceGuard:
         for part in parts:
             if any(part.startswith(p) for p in _PROTECTED_DIR_PREFIXES):
                 return True
-        
+
         for protected in _PROTECTED_FILES:
             if path_str == protected or path_str.startswith(f"{protected}/") or path_str.startswith(f"{protected}\\"):
                 return True
             if path_obj.name == protected:
                 return True
-        
+
         return False
 
     def check_protected_violations(self, message: str) -> list[str]:
         """Check message for attempts to access or modify protected paths."""
         violations: list[str] = []
-        
+
         protected_patterns = [
             r'\.opencode',
             r'\.checkpoints',
@@ -88,7 +88,7 @@ class WorkspaceGuard:
         ]
         for protected_file in self._protected_files:
             protected_patterns.append(rf'\b{re.escape(protected_file)}\b')
-            
+
         action_patterns = [
             r'delete', r'remove', r'unlink', r'rm\s',
             r'move\s', r'mv\s', r'rename',
@@ -96,19 +96,19 @@ class WorkspaceGuard:
             r'overwrite', r'write',
             r'chmod', r'attrib',
         ]
-        
+
         for pattern in protected_patterns:
             for match in re.finditer(pattern, message, re.IGNORECASE):
                 context_start = max(0, match.start() - 20)
                 context_end = min(len(message), match.end() + 20)
                 context = message[context_start:context_end]
-                
+
                 for action in action_patterns:
                     if re.search(action, context, re.IGNORECASE):
                         # Use the matched string as the label
                         violations.append(f"{match.group()}: {action.strip()}")
                         break
-        
+
         return violations
 
     def sanitize_with_protection(self, message: str) -> tuple[str, list[str], list[str]]:
@@ -118,7 +118,7 @@ class WorkspaceGuard:
         """
         sanitized, ws_violations = self.sanitize_message(message)
         protected_violations = self.check_protected_violations(message)
-        
+
         if protected_violations or self._protected_files:
             protection_warning = (
                 "\n\n[CRITICAL PROTECTION] The following paths are protected and must NOT be "
@@ -132,7 +132,7 @@ class WorkspaceGuard:
                 for pf in sorted(self._protected_files):
                     protection_warning += f"  - {pf}\n"
             sanitized += protection_warning
-        
+
         return sanitized, ws_violations, protected_violations
 
     def get_protected_dirs(self) -> set[str]:

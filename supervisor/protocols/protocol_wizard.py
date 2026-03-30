@@ -12,7 +12,8 @@ from __future__ import annotations
 from openai import OpenAI
 
 from supervisor.protocols.protocol import Protocol, parse_protocol_text
-from supervisor.protocols.protocol_analyzer import ProtocolAnalyzer, ProtocolAnalysis
+from supervisor.protocols.protocol_analyzer import (ProtocolAnalysis,
+                                                    ProtocolAnalyzer)
 
 _WIZARD_SYSTEM = """\
 You are a technical project-management assistant.

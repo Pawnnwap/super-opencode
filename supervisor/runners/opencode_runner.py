@@ -14,19 +14,16 @@ from __future__ import annotations
 import logging
 import os
 import platform
-import shutil
 import subprocess
 import sys
 from pathlib import Path
 from typing import Callable, Generator, Optional
 
-from supervisor.analyzers.opencode_step_detector import (
-    OpencodeStepDetector,
-    Step,
-    PhaseTransition,
-    StepProgress,
-)
-from supervisor.workspace.workspace_archiver import WorkspaceArchiver, ArchiveResult
+from supervisor.analyzers.opencode_step_detector import (OpencodeStepDetector,
+                                                         PhaseTransition, Step,
+                                                         StepProgress)
+from supervisor.workspace.workspace_archiver import (ArchiveResult,
+                                                     WorkspaceArchiver)
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +44,7 @@ _WINDOWS_EXTRA_DIRS = [
 ]
 
 _DOT_MODEL_FILE = Path(__file__).parent.parent / ".opencode_model"
+
 
 def find_opencode(explicit: str = "") -> str:
     """

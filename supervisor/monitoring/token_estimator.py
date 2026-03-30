@@ -31,7 +31,7 @@ def _get_tiktoken_encoder():
         return _tiktoken_encoder
     if _tiktoken_attempted:
         return None
-    
+
     _tiktoken_attempted = True
     try:
         import tiktoken
@@ -148,7 +148,7 @@ def truncate_prompt(
 
     marker = (
         f"\n\n[... TRUNCATED: ~{estimated - keep_tokens} tokens removed "
-        f"(preserving {preserve_end_ratio*100:.0f}% from end) ...]\n\n"
+        f"(preserving {preserve_end_ratio * 100:.0f}% from end) ...]\n\n"
     )
 
     truncated = start_text + marker + end_text
@@ -211,12 +211,12 @@ def truncate_with_fallback(
 def warn_if_exceeds_limit(estimate: TokenEstimate, max_tokens: int) -> list[str]:
     """
     Log warnings when estimated tokens exceed various thresholds.
-    
+
     Returns a list of warning messages that were logged.
     """
     warnings = []
     available = int(max_tokens * (1.0 - _RESPONSE_MARGIN))
-    
+
     if estimate.total > available:
         msg = (
             f"Prompt exceeds max tokens: {estimate.total} > {available} "
@@ -232,7 +232,7 @@ def warn_if_exceeds_limit(estimate: TokenEstimate, max_tokens: int) -> list[str]
         )
         logger.warning(msg)
         warnings.append(msg)
-    
+
     return warnings
 
 
@@ -245,48 +245,48 @@ def safe_truncate_request(
 ) -> tuple[str, str, str, list[str]]:
     """
     Safely handle token estimation, warning, and optional truncation.
-    
+
     Args:
         system_prompt: The system prompt text
         conversation_history: The conversation history text
         user_input: The user input text
         max_tokens: Maximum allowed tokens
         truncation_enabled: Whether to apply truncation (default True)
-    
+
     Returns:
         Tuple of (truncated_system, truncated_history, truncated_user, warning_messages)
     """
     estimate = estimate_request_tokens(system_prompt, conversation_history, user_input)
     warning_msgs = warn_if_exceeds_limit(estimate, max_tokens)
-    
+
     truncated_sys = system_prompt
     truncated_hist = conversation_history
     truncated_user = user_input
-    
+
     if truncation_enabled and should_truncate(estimate, max_tokens):
         available = int(max_tokens * (1.0 - _RESPONSE_MARGIN))
         sys_tokens = estimate_tokens(system_prompt)
-        
+
         # Budget for history + user input
         budget = available - sys_tokens
-        
+
         if budget > 0:
             hist_tokens = estimate_tokens(conversation_history)
             user_tokens = estimate_tokens(user_input)
-            
+
             if hist_tokens + user_tokens > budget:
                 # Allocate 30% to history, 70% to user
                 hist_budget = int(budget * 0.3)
                 user_budget = budget - hist_budget
-                
+
                 if hist_tokens > hist_budget:
                     truncated_hist = truncate_prompt(conversation_history, hist_budget, preserve_end_ratio=0.5)
-                
+
                 if user_tokens > user_budget:
                     truncated_user = truncate_prompt(user_input, user_budget)
                     warning_msgs.append(
                         f"User input truncated from ~{user_tokens} to ~{estimate_tokens(truncated_user)} tokens"
                     )
                     logger.warning(warning_msgs[-1])
-    
+
     return truncated_sys, truncated_hist, truncated_user, warning_msgs

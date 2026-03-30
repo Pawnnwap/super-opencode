@@ -20,9 +20,9 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from supervisor.workspace.ignore_patterns import IgnoreMatcher
 
-_IGNORE_DIRS  = {".git", "__pycache__", ".venv", "venv", "node_modules", ".mypy_cache", ".checkpoints"}
+_IGNORE_DIRS = {".git", "__pycache__", ".venv", "venv", "node_modules", ".mypy_cache", ".checkpoints"}
 _IGNORE_DIR_PREFIXES = (".",)
-_IGNORE_EXTS  = {".pyc", ".pyo", ".egg-info", ".DS_Store"}
+_IGNORE_EXTS = {".pyc", ".pyo", ".egg-info", ".DS_Store"}
 _MAX_FILE_CHARS = 6_000
 
 
@@ -49,7 +49,7 @@ class CodebaseSnapshot:
         paths = sorted(f.rel_path for f in self.files)
         for p in paths:
             depth = p.count("/")
-            name  = p.rsplit("/", 1)[-1] if "/" in p else p
+            name = p.rsplit("/", 1)[-1] if "/" in p else p
             lines.append("  " * depth + f"└─ {name}")
         return "\n".join(lines)
 
@@ -113,7 +113,7 @@ def snapshot_codebase(root: Path, ignore_matcher: "IgnoreMatcher | None" = None)
 def _add_file(snap: CodebaseSnapshot, path: Path, root: Path) -> None:
     try:
         raw = path.read_bytes()
-        sha  = hashlib.sha256(raw).hexdigest()[:12]
+        sha = hashlib.sha256(raw).hexdigest()[:12]
         try:
             text = raw.decode("utf-8")
         except UnicodeDecodeError:

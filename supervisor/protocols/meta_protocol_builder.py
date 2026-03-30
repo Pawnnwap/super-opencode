@@ -45,7 +45,7 @@ Rules for a good self-evolution protocol:
 class MetaProtocolBuilder:
     def __init__(self, model: str = "gpt-4o"):
         self._client = OpenAI()
-        self._model  = model
+        self._model = model
 
     def build(
         self,
@@ -69,7 +69,7 @@ class MetaProtocolBuilder:
             "model": self._model,
             "messages": [
                 {"role": "system", "content": _BUILDER_SYSTEM},
-                {"role": "user",   "content": user_msg},
+                {"role": "user", "content": user_msg},
             ],
         }
         if not self._model.startswith(("o1", "o3")):

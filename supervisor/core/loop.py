@@ -14,23 +14,15 @@ from __future__ import annotations
 
 import logging
 import sys
-from enum import Enum, auto
 from typing import Generator
 
-from supervisor.utils.config import SupervisorConfig
-from supervisor.monitoring.context_monitor import ContextMonitor
+from supervisor.analyzers.opencode_step_detector import StepProgress
 from supervisor.core.llm_supervisor import LLMSupervisor, StepContext
-from supervisor.core.loop_base import BaseLoop, Event, _ev, LoopState
-from supervisor.runners.opencode_runner import OpencodeRunner
-from supervisor.analyzers.opencode_step_detector import (
-    OpencodeStepDetector,
-    Step,
-    StepProgress,
-)
+from supervisor.core.loop_base import BaseLoop, Event, LoopState, _ev
 from supervisor.protocols.protocol import load_protocol
-from supervisor.workspace.workspace_guard import WorkspaceGuard
-from supervisor.workspace.workspace_archiver import WorkspaceArchiver
+from supervisor.utils.config import SupervisorConfig
 from supervisor.utils.gitignore_utils import update_gitignore_files
+from supervisor.workspace.workspace_archiver import WorkspaceArchiver
 
 logger = logging.getLogger(__name__)
 
@@ -132,7 +124,6 @@ class SupervisorLoop(BaseLoop):
         All supervisor↔opencode exchanges are emitted as ``log-plan_phase``
         events so they appear as a distinct section in the UI event stream.
         """
-        import time
         from supervisor.runners.opencode_runner import OpencodeRunner
 
         total = self.config.plan_mode_rounds

@@ -5,16 +5,27 @@ Run with:  streamlit run app.py
 
 from __future__ import annotations
 
-import sys
+import concurrent.futures
+import json
 import os
 import subprocess
-import json
-import concurrent.futures
+import sys
 import threading
 import time
 from pathlib import Path
+
+import streamlit as st
 from openai import OpenAI
 
+from supervisor.analyzers.codebase_analyzer import snapshot_codebase
+from supervisor.core.loop import SupervisorLoop
+from supervisor.core.self_evolution_loop import SelfEvolutionLoop
+from supervisor.monitoring.token_estimator import estimate_tokens
+from supervisor.protocols.meta_protocol_builder import (MetaProtocolBuilder,
+                                                        write_meta_protocol)
+from supervisor.protocols.protocol_analyzer import ProtocolAnalyzer, Severity
+from supervisor.protocols.protocol_wizard import ProtocolWizard
+from supervisor.utils.config import SupervisorConfig
 
 _UPGRADE_SETTINGS_FILE = Path.home() / ".opencode_supervisor_settings.json"
 
@@ -91,20 +102,8 @@ def _auto_upgrade_opencode():
 
 # ── End auto-upgrade block ──────────────────────────────────────────────── #
 
-# ── supervisor package imports (all at top level — never lazy) ──────────── #
-from supervisor.utils.config import SupervisorConfig
-from supervisor.protocols.protocol_wizard import ProtocolWizard
-from supervisor.protocols.protocol_analyzer import ProtocolAnalyzer, Severity
-from supervisor.core.loop import SupervisorLoop
-from supervisor.analyzers.codebase_analyzer import snapshot_codebase
-from supervisor.protocols.meta_protocol_builder import (
-    MetaProtocolBuilder,
-    write_meta_protocol,
-)
-from supervisor.core.self_evolution_loop import SelfEvolutionLoop
-from supervisor.monitoring.token_estimator import estimate_tokens
 
-import streamlit as st
+# ── supervisor package imports (all at top level — never lazy) ──────────── #
 
 # ── page config ──────────────────────────────────────────────────────────── #
 st.set_page_config(
@@ -275,9 +274,6 @@ def render_file_block(title, body, language="python"):
 
 # ── session state defaults ────────────────────────────────────────────────── #
 
-import json
-import os
-
 
 # ── Helper functions for custom model configuration ───────────────────────── #
 def _find_opencode_config_dir() -> Path | None:
@@ -411,6 +407,7 @@ def _save_settings() -> None:
         _SETTINGS_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
     except Exception:
         pass
+
 
 # Load persisted settings first — used as defaults below
 _persisted = _load_settings()
@@ -639,7 +636,8 @@ def _run_with_timeout(fn, seconds=30):
 
 
 def test_opencode():
-    from supervisor.runners.opencode_runner import OpencodeRunner, find_opencode
+    from supervisor.runners.opencode_runner import (OpencodeRunner,
+                                                    find_opencode)
 
     workspace = Path(st.session_state.workspace) if st.session_state.workspace else Path.cwd()
     try:
@@ -716,7 +714,7 @@ def page_wizard():
     )
 
     try:
-        opencode_path = find_opencode()
+        find_opencode()
     except FileNotFoundError as e:
         st.error(str(e))
         st.stop()
@@ -787,7 +785,6 @@ def page_wizard():
                 on_click=_refresh_models,
             )
 
-            
             st.session_state.max_retries = st.number_input(
                 "Max retries",
                 key="cfg_max_retries",
@@ -887,10 +884,7 @@ def page_wizard():
 
         with st.expander("🚫 Ignore Patterns (.opencodeignore)", expanded=False):
             from supervisor.workspace.ignore_patterns import (
-                IGNORE_FILE,
-                read_ignore_file,
-                write_ignore_file,
-            )
+                IGNORE_FILE, write_ignore_file)
 
             st.caption(
                 f"Files matching these patterns will be excluded from context retrieval"
@@ -1378,7 +1372,6 @@ def page_run():
         st.error(f"Error reading protocol.md: {e}")
         return
 
-    shared_state_changed = False
     if "_run_shared" in st.session_state:
         sh = st.session_state._run_shared
         st.session_state.log_events = list(sh["events"])
@@ -1386,7 +1379,6 @@ def page_run():
         current_heartbeat = st.session_state.get("_run_heartbeat", 0)
         if current_heartbeat != heartbeat:
             st.session_state._run_heartbeat = heartbeat
-            shared_state_changed = True
         if sh["state"] != "running":
             st.session_state.run_state = sh["state"]
             st.session_state.final_report = sh["report"]
@@ -1779,7 +1771,6 @@ def page_evolve():
         )
         return
 
-    evo_state_changed = False
     if "_evo_shared" in st.session_state:
         sh = st.session_state._evo_shared
         st.session_state.evo_log_events = list(sh["events"])
@@ -1787,7 +1778,6 @@ def page_evolve():
         current_heartbeat = st.session_state.get("_evo_heartbeat", 0)
         if current_heartbeat != heartbeat:
             st.session_state._evo_heartbeat = heartbeat
-            evo_state_changed = True
         if sh["state"] != "running":
             st.session_state.evo_run_state = sh["state"]
             st.session_state.evo_report = sh["report"]

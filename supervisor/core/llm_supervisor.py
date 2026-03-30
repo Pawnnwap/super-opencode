@@ -10,14 +10,13 @@ from pathlib import Path
 
 from openai import OpenAI
 
+from supervisor.monitoring.token_estimator import (estimate_request_tokens,
+                                                   should_truncate,
+                                                   truncate_with_fallback,
+                                                   warn_if_exceeds_limit)
 from supervisor.protocols.protocol import Protocol
-from supervisor.protocols.protocol_analyzer import ProtocolAnalyzer, ProtocolAnalysis
-from supervisor.monitoring.token_estimator import (
-    estimate_request_tokens,
-    should_truncate,
-    truncate_with_fallback,
-    warn_if_exceeds_limit,
-)
+from supervisor.protocols.protocol_analyzer import (ProtocolAnalysis,
+                                                    ProtocolAnalyzer)
 from supervisor.workspace.ignore_patterns import IgnoreMatcher
 
 logger = logging.getLogger(__name__)
@@ -232,10 +231,8 @@ class LLMSupervisor:
 
         listing = "\n".join(listing_lines)
 
-        from supervisor.monitoring.token_estimator import (
-            estimate_tokens,
-            truncate_prompt,
-        )
+        from supervisor.monitoring.token_estimator import (estimate_tokens,
+                                                           truncate_prompt)
 
         if estimate_tokens(listing) > available_tokens:
             # We must truncate the listing
@@ -1019,7 +1016,7 @@ class LLMSupervisor:
                 tail = preserved[-keep_count:]
                 self._history = core + tail
             else:
-                self._history = preserved[-min(keep_count * 2, len(preserved)) :]
+                self._history = preserved[-min(keep_count * 2, len(preserved)):]
 
     def estimate_current_tokens(self) -> int:
         """Estimate total tokens for current conversation state."""

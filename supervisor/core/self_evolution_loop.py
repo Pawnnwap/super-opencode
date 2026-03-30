@@ -11,22 +11,19 @@ from __future__ import annotations
 
 import logging
 import time
-from enum import Enum, auto
+from pathlib import Path
 from typing import Generator
 
-from supervisor.analyzers.codebase_analyzer import snapshot_codebase, CodebaseSnapshot
-from pathlib import Path
-from supervisor.utils.config import SupervisorConfig
-from supervisor.monitoring.context_monitor import ContextMonitor
-from supervisor.core.llm_supervisor import LLMSupervisor, StepContext
-from supervisor.core.loop_base import BaseLoop, Event, _ev, LoopState
-from supervisor.runners.opencode_runner import OpencodeRunner
-from supervisor.analyzers.opencode_step_detector import OpencodeStepDetector
+from supervisor.analyzers.codebase_analyzer import (CodebaseSnapshot,
+                                                    snapshot_codebase)
+from supervisor.core.llm_supervisor import LLMSupervisor
+from supervisor.core.loop_base import BaseLoop, Event, LoopState, _ev
 from supervisor.protocols.protocol import load_protocol
-from supervisor.runners.test_runner import RunTestResult, OcTestRunner
-from supervisor.workspace.workspace_archiver import WorkspaceArchiver, ArchiveResult
-from supervisor.workspace.workspace_guard import WorkspaceGuard
+from supervisor.runners.test_runner import OcTestRunner, RunTestResult
+from supervisor.utils.config import SupervisorConfig
 from supervisor.utils.gitignore_utils import update_gitignore_files
+from supervisor.workspace.workspace_archiver import (ArchiveResult,
+                                                     WorkspaceArchiver)
 
 logger = logging.getLogger(__name__)
 

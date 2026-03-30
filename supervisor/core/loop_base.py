@@ -3,8 +3,8 @@ from __future__ import annotations
 import logging
 import time
 from enum import Enum, auto
-from typing import Generator
 from pathlib import Path
+from typing import Generator
 
 logger = logging.getLogger(__name__)
 
@@ -48,10 +48,11 @@ class BaseLoop:
         self._failures = 0
 
     def _init_components(self, agent: str = ""):
-        from supervisor.runners.opencode_runner import OpencodeRunner
+        from supervisor.analyzers.opencode_step_detector import \
+            OpencodeStepDetector
         from supervisor.monitoring.context_monitor import ContextMonitor
+        from supervisor.runners.opencode_runner import OpencodeRunner
         from supervisor.workspace.workspace_guard import WorkspaceGuard
-        from supervisor.analyzers.opencode_step_detector import OpencodeStepDetector
 
         self.runner = OpencodeRunner(
             self.config.workspace,
@@ -74,7 +75,7 @@ class BaseLoop:
         except KeyboardInterrupt:
             self.runner.stop()
             yield _ev("warn", "Interrupted by user.")
-        except Exception as exc:
+        except Exception:
             import traceback
 
             self.runner.stop()
