@@ -357,7 +357,7 @@ class BaseLoop:
         try:
             findings = _vuln_scan(
                 target=str(workspace),
-                min_severity="MEDIUM",
+                min_severity="HIGH",
                 autofix_first=True,
                 scan_deps=False,
                 print_output=False,
