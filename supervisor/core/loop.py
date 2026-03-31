@@ -57,6 +57,8 @@ class SupervisorLoop(BaseLoop):
         self._plan_context: str = (
             ""  # populated by _run_plan_mode, carried into _init_prompt
         )
+        self._last_plan: str = ""
+        self._last_supervisor_feedback: str = ""
 
     # ------------------------------------------------------------------ #
 
@@ -159,6 +161,7 @@ class SupervisorLoop(BaseLoop):
         )
 
         last_feedback: str = ""
+        last_plan_output: str = ""
 
         for round_num in range(1, total + 1):
             yield _ev(
@@ -179,6 +182,8 @@ class SupervisorLoop(BaseLoop):
 
             yield _ev("opencode_prompt", prompt)
             plan_runner.reset_step_detector()
+            if round_num > 1:
+                plan_runner.enable_continuation(True)
             plan_runner.start(prompt)
             output, timed_out = plan_runner.read_output()
 
@@ -188,6 +193,8 @@ class SupervisorLoop(BaseLoop):
                     f"[plan mode] Round {round_num}/{total} produced no output — skipping.",
                 )
                 continue
+
+            last_plan_output = output
 
             yield _ev("opencode_output", output)
             yield _ev(
@@ -230,6 +237,8 @@ class SupervisorLoop(BaseLoop):
                 f"{last_feedback}\n\n"
                 "Implement the above plan now. You may create and modify files freely."
             )
+            self._last_plan = last_plan_output
+            self._last_supervisor_feedback = last_feedback
 
         yield _ev(
             "info",
@@ -335,9 +344,18 @@ class SupervisorLoop(BaseLoop):
         ws = self.config.workspace.resolve()
         protected_files_desc = self.guard.get_all_protected_files_description()
         plan_section = f"{self._plan_context}\n\n" if self._plan_context else ""
+        plan_output_section = ""
+        if self._last_plan and self._plan_context:
+            plan_output_section = (
+                "## Last Plan Output from Plan Mode\n\n"
+                f"{self._last_plan}\n\n"
+                "## Last Supervisor Feedback on Plan\n\n"
+                f"{self._last_supervisor_feedback}\n\n"
+            )
         return (
             f"Here is your protocol:\n\n{text}\n\n"
             f"{plan_section}"
+            f"{plan_output_section}"
             f"Your project root (cwd) is: {ws}\n"
             "All files you create or modify MUST be inside this directory.\n"
             "Use relative paths from this directory for all file operations.\n"
