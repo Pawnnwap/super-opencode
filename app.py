@@ -21,8 +21,10 @@ from supervisor.analyzers.codebase_analyzer import snapshot_codebase
 from supervisor.core.loop import SupervisorLoop
 from supervisor.core.self_evolution_loop import SelfEvolutionLoop
 from supervisor.monitoring.token_estimator import estimate_tokens
-from supervisor.protocols.meta_protocol_builder import (MetaProtocolBuilder,
-                                                        write_meta_protocol)
+from supervisor.protocols.meta_protocol_builder import (
+    MetaProtocolBuilder,
+    write_meta_protocol,
+)
 from supervisor.protocols.protocol_analyzer import ProtocolAnalyzer, Severity
 from supervisor.protocols.protocol_wizard import ProtocolWizard
 from supervisor.utils.config import SupervisorConfig
@@ -486,7 +488,8 @@ with st.sidebar:
         "evolve": "③ Self-Evolution",
     }
     tests_passed = (
-        st.session_state.opencode_test_passed and st.session_state.supervisor_test_passed
+        st.session_state.opencode_test_passed
+        and st.session_state.supervisor_test_passed
     )
     for key, label in pages.items():
         locked = key != "wizard" and not tests_passed
@@ -636,10 +639,10 @@ def _run_with_timeout(fn, seconds=30):
 
 
 def test_opencode():
-    from supervisor.runners.opencode_runner import (OpencodeRunner,
-                                                    find_opencode)
+    import tempfile
+    from supervisor.runners.opencode_runner import OpencodeRunner, find_opencode
 
-    workspace = Path(st.session_state.workspace) if st.session_state.workspace else Path.cwd()
+    workspace = Path(tempfile.gettempdir()) / "opencode_test_dummy"
     try:
         exe = find_opencode(st.session_state.opencode_executable or "")
     except FileNotFoundError as e:
@@ -683,7 +686,7 @@ def test_supervisor():
     client = OpenAI(
         api_key=st.session_state.openai_key,
         base_url=st.session_state.base_url or None,
-        timeout=30.0,          # connection + read timeout on the socket
+        timeout=30.0,  # connection + read timeout on the socket
     )
 
     def _inner():
@@ -884,7 +887,9 @@ def page_wizard():
 
         with st.expander("🚫 Ignore Patterns (.opencodeignore)", expanded=False):
             from supervisor.workspace.ignore_patterns import (
-                IGNORE_FILE, write_ignore_file)
+                IGNORE_FILE,
+                write_ignore_file,
+            )
 
             st.caption(
                 f"Files matching these patterns will be excluded from context retrieval"
@@ -1026,7 +1031,8 @@ def page_wizard():
     st.markdown("### 🔌 Connectivity Tests")
 
     both_passed = (
-        st.session_state.opencode_test_passed and st.session_state.supervisor_test_passed
+        st.session_state.opencode_test_passed
+        and st.session_state.supervisor_test_passed
     )
     if both_passed:
         st.success("✅ Both opencode and supervisor connectivity tests passed.")
@@ -2157,18 +2163,24 @@ page = st.session_state.page
 if page == "report":
     page = "run"
     st.session_state.page = "run"
-_tests_ok = st.session_state.opencode_test_passed and st.session_state.supervisor_test_passed
+_tests_ok = (
+    st.session_state.opencode_test_passed and st.session_state.supervisor_test_passed
+)
 if page == "wizard":
     page_wizard()
 elif page == "run":
     if not _tests_ok:
-        st.warning("🔒 Live Run is locked. Pass connectivity tests on the Protocol Wizard page first.")
+        st.warning(
+            "🔒 Live Run is locked. Pass connectivity tests on the Protocol Wizard page first."
+        )
         page_wizard()
     else:
         page_run()
 elif page == "evolve":
     if not _tests_ok:
-        st.warning("🔒 Self-Evolution is locked. Pass connectivity tests on the Protocol Wizard page first.")
+        st.warning(
+            "🔒 Self-Evolution is locked. Pass connectivity tests on the Protocol Wizard page first."
+        )
         page_wizard()
     else:
         page_evolve()
