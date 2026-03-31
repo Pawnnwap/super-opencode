@@ -12,7 +12,12 @@ _DEFAULT_MAX = 128_000
 
 
 class ContextMonitor:
-    def __init__(self, threshold: float = 0.60, max_tokens: int = _DEFAULT_MAX, truncation_enabled: bool = True):
+    def __init__(
+        self,
+        threshold: float = 0.60,
+        max_tokens: int = _DEFAULT_MAX,
+        truncation_enabled: bool = True,
+    ):
         self.threshold = threshold
         self.max_tokens = max_tokens
         self._current = 0
@@ -21,24 +26,44 @@ class ContextMonitor:
         self._files_read: list[str] = []
         self._prompt_head: str = ""
 
-    def update(self, tokens: int, files_read: list[str] | None = None, prompt_head: str | None = None) -> None:
+    def update(
+        self,
+        tokens: int,
+        files_read: list[str] | None = None,
+        prompt_head: str | None = None,
+    ) -> None:
         self._current = tokens
         if files_read is not None:
             self._files_read = files_read
         if prompt_head is not None:
             self._prompt_head = prompt_head[:100]
-        logger.debug("Context: ~%d / %d (%.1f%%)", tokens, self.max_tokens, self.fraction * 100)
+        logger.debug(
+            "Context: ~%d / %d (%.1f%%)", tokens, self.max_tokens, self.fraction * 100
+        )
 
         # Graduated warning: emit warning at each threshold crossed
         current_threshold = get_threshold_for_fraction(self.fraction)
-        if current_threshold is not None and current_threshold != self._last_warning_threshold:
+        if (
+            current_threshold is not None
+            and current_threshold != self._last_warning_threshold
+        ):
             self._last_warning_threshold = current_threshold
-            file_info = f"Files: {', '.join(self._files_read)}" if self._files_read else "Files: none"
-            prompt_info = f"Prompt head: {self._prompt_head}" if self._prompt_head else "Prompt head: (empty)"
+            file_info = (
+                f"Files: {', '.join(self._files_read)}"
+                if self._files_read
+                else "Files: none"
+            )
+            prompt_info = (
+                f"Prompt head: {self._prompt_head}"
+                if self._prompt_head
+                else "Prompt head: (empty)"
+            )
             logger.warning(
                 "Context usage at %.0f%% threshold: %d / %d tokens (%.1f%%). %s | %s | %s",
                 current_threshold * 100,
-                tokens, self.max_tokens, self.fraction * 100,
+                tokens,
+                self.max_tokens,
+                self.fraction * 100,
                 self._get_advice_for_threshold(current_threshold),
                 file_info,
                 prompt_info,
@@ -64,6 +89,16 @@ class ContextMonitor:
     @property
     def should_compact(self) -> bool:
         return self.fraction >= self.threshold
+
+    @property
+    def can_continue_session(self) -> bool:
+        """Check if context is low enough to safely continue the opencode session.
+
+        Returns True when context usage is below 50% of the max tokens.
+        When context exceeds this level, a new session should be started
+        with a summary.md to preserve context.
+        """
+        return self.fraction < 0.50
 
     @property
     def approaching_limit(self) -> bool:

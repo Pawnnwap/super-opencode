@@ -48,8 +48,7 @@ class BaseLoop:
         self._failures = 0
 
     def _init_components(self, agent: str = ""):
-        from supervisor.analyzers.opencode_step_detector import \
-            OpencodeStepDetector
+        from supervisor.analyzers.opencode_step_detector import OpencodeStepDetector
         from supervisor.monitoring.context_monitor import ContextMonitor
         from supervisor.runners.opencode_runner import OpencodeRunner
         from supervisor.workspace.workspace_guard import WorkspaceGuard
@@ -143,7 +142,37 @@ class BaseLoop:
             if self._state != LoopState.RUNNING:
                 break
 
+            yield from self._handle_session_continuity()
+
             output, timed_out = self.runner.read_output()
+
+    def _handle_session_continuity(self) -> Generator[Event, None, None]:
+        """Decide whether to continue the current opencode session or restart.
+
+        When context is below the continuation threshold, enable --continue
+        to maintain session continuity. When context exceeds the threshold,
+        write summary.md and start a fresh session.
+        """
+        if self.ctx_monitor.can_continue_session:
+            if self.runner.is_continuation_enabled() or self.runner._session_active:
+                self.runner.enable_continuation(True)
+                yield _ev("info", "Continuing opencode session (--continue).")
+            else:
+                self.runner.mark_session_active()
+        else:
+            yield _ev(
+                "info",
+                "Context limit approaching — writing summary.md and restarting session.",
+            )
+            yield from self._forced_summary("")
+            self.runner.stop()
+            self.runner.reset_session()
+            self.runner.reset_context_counter()
+            self.ctx_monitor.reset()
+            restart_prompt = self._get_restart_prompt_for_continuation()
+            yield _ev("opencode_prompt", restart_prompt)
+            self.runner.start(restart_prompt)
+            self.runner.mark_session_active()
 
     def _should_extend_timeout(self, progress) -> bool:
         if self._timeout_extension_count >= self._max_timeout_extensions:
@@ -306,6 +335,23 @@ class BaseLoop:
         )
         text = self.config.protocol_path.read_text(encoding="utf-8")
         return summary, text
+
+    def _get_restart_prompt_for_continuation(self) -> str:
+        """Build a prompt for restarting opencode after context limit is reached.
+
+        Reads the summary.md that was just written and combines it with the
+        protocol to give opencode full context in a fresh session.
+        """
+        summary, protocol_text = self._get_restart_context()
+        ws = self.config.workspace.resolve()
+        return (
+            f"Context was reset due to token limits. Here is a summary of progress so far:\n\n"
+            f"{summary}\n\n"
+            f"PROTOCOL:\n{protocol_text}\n\n"
+            f"Your project root (cwd) is: {ws}\n"
+            "Continue from where the summary left off. "
+            "All files you create or modify MUST be inside this directory."
+        )
 
     def scan_for_vulnerabilities(self) -> str | None:
         """Run vulnerability scan on workspace Python files, return formatted results or None."""

@@ -19,11 +19,13 @@ import sys
 from pathlib import Path
 from typing import Callable, Generator, Optional
 
-from supervisor.analyzers.opencode_step_detector import (OpencodeStepDetector,
-                                                         PhaseTransition, Step,
-                                                         StepProgress)
-from supervisor.workspace.workspace_archiver import (ArchiveResult,
-                                                     WorkspaceArchiver)
+from supervisor.analyzers.opencode_step_detector import (
+    OpencodeStepDetector,
+    PhaseTransition,
+    Step,
+    StepProgress,
+)
+from supervisor.workspace.workspace_archiver import ArchiveResult, WorkspaceArchiver
 
 logger = logging.getLogger(__name__)
 
@@ -55,10 +57,7 @@ def find_opencode(explicit: str = "") -> str:
     """
     try:
         result = subprocess.run(
-            ["where", "opencode"],
-            capture_output=True,
-            text=True,
-            check=True
+            ["where", "opencode"], capture_output=True, text=True, check=True
         )
         for line in result.stdout.splitlines():
             if "chocolatey\\bin" in line.lower():
@@ -75,6 +74,7 @@ def find_opencode(explicit: str = "") -> str:
         "  • Run (as Administrator):  choco install opencode\n"
         "  • Then restart the Streamlit app so it picks up the updated PATH."
     )
+
 
 # ── Result container ─────────────────────────────────────────────────────── #
 
@@ -137,6 +137,7 @@ class OpencodeRunner:
     """
     One send()/start() call = one  opencode run "<prompt>"  subprocess.
     stdin is always DEVNULL so opencode never tries to open a TUI or wait for input.
+    Supports --continue flag for session continuity when context allows.
     """
 
     def __init__(
@@ -162,6 +163,8 @@ class OpencodeRunner:
         self._alive: bool = False
         self._process: Optional[subprocess.Popen] = None
         self._archiver = WorkspaceArchiver(workspace)
+        self._session_active: bool = False
+        self._use_continue: bool = False
 
         if step_detector is not None:
             self._step_detector = step_detector
@@ -210,6 +213,7 @@ class OpencodeRunner:
 
     def stop(self) -> None:
         self._alive = False
+        self._session_active = False
         if self._process is not None:
             # Force kill the process to ensure immediate termination
             try:
@@ -444,13 +448,41 @@ class OpencodeRunner:
 
         self._chars_exchanged += len(prompt) + len(self._last_result.output)
 
+    def enable_continuation(self, enabled: bool = True) -> None:
+        """Enable or disable --continue flag for the next run.
+
+        When enabled, opencode will continue the previous session instead
+        of starting a fresh one. Use this when context is below limits.
+        """
+        self._use_continue = enabled
+
+    def is_continuation_enabled(self) -> bool:
+        """Check if --continue flag is currently enabled."""
+        return self._use_continue
+
+    def mark_session_active(self) -> None:
+        """Mark that a session has been started and can be continued."""
+        self._session_active = True
+
+    def reset_session(self) -> None:
+        """Reset session state after a context restart."""
+        self._session_active = False
+        self._use_continue = False
+
+    def reset_context_counter(self) -> None:
+        """Reset the context token counter (e.g. after compaction or restart)."""
+        self._chars_exchanged = 0
+
     def _build_cmd(self, exe: str, prompt: str) -> list[str]:
-        # opencode run [--agent <agent>] "<prompt>" [--model <model>]
+        # opencode run [--agent <agent>] [--continue] "<prompt>" [--model <model>]
         cmd = [exe, "run"]
 
         agent = str(self.agent or "").strip()
         if agent:
             cmd += ["--agent", agent]
+
+        if self._use_continue:
+            cmd.append("--continue")
 
         cmd.append(prompt)
 
