@@ -1,21 +1,21 @@
 """
-hashline.py  –  MCP server exposing `hashed_read` and `hashed_edit`
+hashline.py  –  MCP server exposing `hashline_read` and `hashline_edit`
 ================================================================================
 
-Exposes two custom tools (server name = "hashed", so opencode sees):
+Exposes two custom tools (server name = "hashline", so opencode sees):
 
-    hashed_read(path, start_line?, end_line?, hash_algo?)
-    hashed_edit(path, edits, dry_run?)
+    hashline_read(path, start_line?, end_line?, hash_algo?)
+    hashline_edit(path, edits, dry_run?)
 
-── hashed_read ──────────────────────────────────────────────────────────────
-Reads a file and returns its content with LINE#ID annotations:
+── hashline_read ──────────────────────────────────────────────────────────────
+Adds LINE#ID annotations to each line of the file.
 
     42#VK| def process(data):
     43#XJ|     return transform(data)
 
 Use instead of the built-in `read` whenever you intend to edit afterwards.
 
-── hashed_edit ──────────────────────────────────────────────────────────────
+── hashline_edit ──────────────────────────────────────────────────────────────
 Validates LINE#ID references and writes the edited file to disk atomically.
 Rejects the entire operation (nothing written) if any ID is stale, and
 returns the corrected IDs so opencode can retry immediately.
@@ -96,10 +96,10 @@ def _parse_ref(ref: str) -> tuple[int, str]:
 
 
 # ---------------------------------------------------------------------------
-# hashed_read logic
+# hashline_read logic
 # ---------------------------------------------------------------------------
 
-def _hashed_read(
+def _hashline_read(
     path: str | Path,
     start_line: int | None = None,
     end_line: int | None = None,
@@ -135,7 +135,7 @@ def _hashed_read(
 
 
 # ---------------------------------------------------------------------------
-# hashed_edit logic
+# hashline_edit logic
 # ---------------------------------------------------------------------------
 
 class _MismatchError(Exception):
@@ -157,7 +157,7 @@ class _MismatchError(Exception):
         return "\n".join(lines)
 
 
-def _hashed_edit(
+def _hashline_edit(
     path: str | Path,
     edits: list[dict[str, Any]],
     *,
@@ -258,7 +258,7 @@ def _hashed_edit(
     # ── 3. Atomic write via temp file + os.replace ────────────────────────────
     if not dry_run:
         dir_ = resolved.parent
-        fd, tmp_path = tempfile.mkstemp(dir=dir_, prefix=".hashed_edit_tmp_")
+        fd, tmp_path = tempfile.mkstemp(dir=dir_, prefix=".hashline_edit_tmp_")
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
                 fh.write(new_content)
@@ -277,12 +277,12 @@ def _hashed_edit(
 # MCP server
 # ---------------------------------------------------------------------------
 
-server = Server("hashed")
+server = Server("hashline")
 
 
 # ── Tool schemas ─────────────────────────────────────────────────────────────
 
-HASHED_READ_TOOL = Tool(
+HASHLINE_READ_TOOL = Tool(
     name="read",
     description=(
         "Read a file and return its content with LINE#ID hash annotations.\n\n"
@@ -290,7 +290,7 @@ HASHED_READ_TOOL = Tool(
         "    42#VK| def process(data):\n"
         "    43#XJ|     return transform(data)\n\n"
         "Always use this tool instead of built-in `read` when you plan to edit "
-        "the file afterwards.  Pass the LINE#IDs directly to `hashed_edit`.\n\n"
+        "the file afterwards.  Pass the LINE#IDs directly to `hashline_edit`.\n\n"
         "IDs go stale the moment the file changes — re-read after every write."
     ),
     inputSchema={
@@ -321,11 +321,11 @@ HASHED_READ_TOOL = Tool(
     },
 )
 
-HASHED_EDIT_TOOL = Tool(
+HASHLINE_EDIT_TOOL = Tool(
     name="edit",
     description=(
         "Apply hash-validated edits to a file.\n\n"
-        "Every edit references a LINE#ID obtained from `hashed_read`.  All IDs "
+        "Every edit references a LINE#ID obtained from `hashline_read`.  All IDs "
         "are validated before a single byte is written.  If any ID is stale the "
         "entire operation is rejected and you receive the corrected IDs — simply "
         "retry with the updated references.\n\n"
@@ -391,7 +391,7 @@ HASHED_EDIT_TOOL = Tool(
 
 @server.list_tools()
 async def list_tools() -> list[Tool]:
-    return [HASHED_READ_TOOL, HASHED_EDIT_TOOL]
+    return [HASHLINE_READ_TOOL, HASHLINE_EDIT_TOOL]
 
 
 # ── Tool execution ────────────────────────────────────────────────────────────
@@ -399,7 +399,7 @@ async def list_tools() -> list[Tool]:
 @server.call_tool()
 async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
 
-    # ── hashed_read ───────────────────────────────────────────────────────────
+    # ── hashline_read ───────────────────────────────────────────────────────────
     if name == "read":
         path  = arguments.get("path")
         start = arguments.get("start_line")
@@ -412,7 +412,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             return [TextContent(type="text", text=f"Error: unsupported hash_algo '{algo}'")]
 
         try:
-            result = _hashed_read(path, start_line=start, end_line=end, algo=algo)
+            result = _hashline_read(path, start_line=start, end_line=end, algo=algo)
         except (FileNotFoundError, IsADirectoryError, ValueError) as exc:
             return [TextContent(type="text", text=f"Error: {exc}")]
 
@@ -427,7 +427,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         text = f"File: {result['path']}\n{range_note}\n\n{result['content']}"
         return [TextContent(type="text", text=text)]
 
-    # ── hashed_edit ───────────────────────────────────────────────────────────
+    # ── hashline_edit ───────────────────────────────────────────────────────────  
     elif name == "edit":
         path    = arguments.get("path")
         edits   = arguments.get("edits")
@@ -439,7 +439,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             return [TextContent(type="text", text="Error: 'edits' must be a non-empty list")]
 
         try:
-            new_content = _hashed_edit(path, edits, dry_run=dry_run)
+            new_content = _hashline_edit(path, edits, dry_run=dry_run)
         except _MismatchError as exc:
             # Structured feedback — the LLM can retry with the corrected IDs
             return [TextContent(type="text", text=f"HashlineMismatch:\n{exc}")]
