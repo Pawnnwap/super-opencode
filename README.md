@@ -8,6 +8,10 @@ Streamlit UI + modular Python backend that runs an `opencode` agent in a
 supervised feedback loop — and can turn that same loop on **itself** to
 debug and evolve its own source code.
 
+Features an MCP-based hash-anchored file editing system, plan mode for
+deliberative reasoning before execution, multi-tool vulnerability scanning,
+and automatic context management with graduated warnings.
+
 ---
 
 ## Prerequisites
@@ -154,6 +158,7 @@ in real time. Stop between steps at any time.
 
 Features:
 - Step-by-step progress tracking with phase detection
+- Plan mode — configurable planning rounds before execution (set `plan_mode_rounds` in sidebar)
 - Token usage warnings with graduated thresholds (50%, 60%, 70%, 80%, 90%)
 - Verbose/compact log toggle
 - Context compaction with file cleanup suggestions
@@ -213,6 +218,11 @@ supervisor/
     config.py                       Frozen SupervisorConfig dataclass
     file_ops.py                     File operations utilities
     credentials_manager.py          Credential storage helpers
+    gitignore_utils.py              Automatic .gitignore update helpers
+
+  prompts/
+    __init__.py                     Package exports for prompt templates
+    templates.py                    All prompt templates (init, judge, hashline instructions)
 
   monitoring/
     context_monitor.py              Tracks context window usage with graduated warnings
@@ -233,6 +243,8 @@ supervisor/
 
 pyproject.toml                      Makes `supervisor` an installable package (also defines all deps)
 requirements.txt                    Alternative dependency list for pip install -r
+mcp_server/
+  hashline.py                       MCP server for hash-anchored file editing (hashline_read, hashline_edit)
 ```
 
 ---
@@ -375,12 +387,52 @@ Every run preserves workspace state in `.archive/`:
 
 ---
 
+## Hash-Anchored File Editing
+
+The system includes an MCP server (`mcp_server/hashline.py`) that provides
+hash-anchored file editing tools. Every line read from a file is annotated with
+a `LINE#ID` hash (e.g., `42#VK| def process(data):`) that encodes both the
+line number and content. This enables:
+
+- **Safe concurrent edits** — the MCP server validates all LINE#IDs before
+  writing; if any ID is stale (because another edit changed the file), the
+  entire operation is rejected and corrected IDs are returned
+- **Atomic writes** — edits are applied via temp file + `os.replace` so the
+  file is never left in a partial state
+- **Edit operations**: `replace`, `replace_range`, `delete`, `append`,
+  `prepend` — all addressed by hash-anchored positions
+- **Dry-run mode** — validate IDs without writing to disk
+
+The hashline MCP server is automatically configured in opencode's
+`opencode.json` on startup, so opencode receives hash-anchored editing
+instructions as part of its system prompt.
+
+## Plan Mode
+
+When `plan_mode_rounds` > 0, the supervisor runs a dedicated planning phase
+before execution:
+
+1. A read-only opencode instance analyzes the protocol and workspace
+2. The LLM supervisor evaluates the plan (never marks targets as met during
+   planning, so the phase always runs the configured number of rounds)
+3. The final plan and supervisor feedback are stored and prepended to the
+   build-mode initial prompt, giving opencode a clear roadmap before it
+   starts writing code
+
+Configure planning rounds in the Live Run sidebar. Default is 0 (disabled).
+
+---
+
 ## Vulnerability Scanning
 
-The `vulnerability/python_scanner.py` module performs static analysis on Python
-source files to detect common security issues before they are accepted into the
-codebase. It is invoked during the self-evolution loop to flag risky patterns
-(e.g., unsafe `eval`, hardcoded secrets, shell injection vectors).
+The `vulnerability/python_scanner.py` module performs comprehensive static
+analysis on Python source files using 9 integrated tools: **Bandit**,
+**Pylint**, **pyflakes**, **Semgrep**, **pip-audit**, **Ruff**, **Vulture**,
+**deadcode**, and **pyscn**. It detects security issues, code quality problems,
+dead code, dependency CVEs, and clone detection. Auto-fix is available via
+autoflake, isort, autopep8, pyupgrade, and ruff. The scanner is invoked during
+the self-evolution loop and after each supervisor judgement to flag risky
+patterns before they are accepted into the codebase.
 
 ---
 

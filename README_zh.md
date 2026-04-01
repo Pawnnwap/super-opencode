@@ -6,6 +6,9 @@
 
 Streamlit UI + 模块化 Python 后端，运行一个 `opencode` 代理于监督反馈循环中 —— 并能将同一个循环作用于**自身**来调试和改进其源代码。
 
+基于 MCP 的哈希锚定文件编辑系统、执行前的计划模式、多工具漏洞扫描，
+以及带分级警告的自动上下文管理。
+
 ---
 
 ## 前置要求
@@ -139,6 +142,7 @@ python -m streamlit run app.py
 
 功能特性：
 - 逐步进度跟踪，带阶段检测
+- 计划模式 — 执行前可配置规划轮数（在侧边栏设置 `plan_mode_rounds`）
 - 分级阈值的 token 使用警告（50%、60%、70%、80%、90%）
 - 详细/紧凑日志切换
 - 上下文压缩与文件清理建议
@@ -197,6 +201,11 @@ supervisor/
     config.py                       不可变 SupervisorConfig 数据类
     file_ops.py                     文件操作工具
     credentials_manager.py          凭证存储助手
+    gitignore_utils.py              自动 .gitignore 更新助手
+
+  prompts/
+    __init__.py                     提示模板包导出
+    templates.py                    所有提示模板（初始化、评判、哈希行指令）
 
   monitoring/
     context_monitor.py              跟踪上下文窗口使用情况，分级警告
@@ -217,6 +226,8 @@ supervisor/
 
 pyproject.toml                      使 `supervisor` 成为可安装包（同时定义所有依赖）
 requirements.txt                    备用依赖列表，用于 pip install -r
+mcp_server/
+  hashline.py                       哈希锚定文件编辑的 MCP 服务器（hashline_read, hashline_edit）
 ```
 
 ---
@@ -360,9 +371,46 @@ Token 估算在可用时使用 `tiktoken`（o200k_base 编码），
 
 ## 漏洞扫描
 
-`vulnerability/python_scanner.py` 模块对 Python 源文件执行静态分析，
-在代码被接受进入代码库之前检测常见的安全问题。在自我演进循环中调用，
-用于标记危险模式（例如不安全的 `eval`、硬编码密钥、shell 注入向量）。
+`vulnerability/python_scanner.py` 模块使用 9 个集成工具对 Python 源文件
+执行全面的静态分析：**Bandit**、**Pylint**、**pyflakes**、**Semgrep**、
+**pip-audit**、**Ruff**、**Vulture**、**deadcode** 和 **pyscn**。
+它检测安全问题、代码质量缺陷、死代码、依赖 CVE 和克隆检测。
+自动修复可通过 autoflake、isort、autopep8、pyupgrade 和 ruff 实现。
+扫描器在自我演进循环中和每次监督判断后调用，在接受代码进入代码库之前
+标记危险模式。
+
+---
+
+## 哈希锚定文件编辑
+
+系统包含一个 MCP 服务器（`mcp_server/hashline.py`），提供哈希锚定的
+文件编辑工具。从文件读取的每一行都会标注 `LINE#ID` 哈希
+（例如 `42#VK| def process(data):`），编码行号和内容。这使得：
+
+- **安全的并发编辑** — MCP 服务器在写入前验证所有 LINE#ID；如果任何
+  ID 过时（因为另一个编辑更改了文件），整个操作会被拒绝并返回修正后的 ID
+- **原子写入** — 编辑通过临时文件 + `os.replace` 应用，文件永远不会
+  处于部分状态
+- **编辑操作**：`replace`、`replace_range`、`delete`、`append`、
+  `prepend` — 全部通过哈希锚定位置寻址
+- **干运行模式** — 验证 ID 而不写入磁盘
+
+哈希锚定 MCP 服务器在启动时自动配置到 opencode 的 `opencode.json` 中，
+因此 opencode 在系统提示中接收哈希锚定编辑指令。
+
+---
+
+## 计划模式
+
+当 `plan_mode_rounds` > 0 时，监督器在执行前运行专用的规划阶段：
+
+1. 只读 opencode 实例分析协议和工作区
+2. LLM 监督器评估计划（规划期间永远不会将目标标记为已完成，
+   因此该阶段始终运行配置的轮数）
+3. 最终计划和监督器反馈被存储并前置到构建模式的初始提示中，
+   在 opencode 开始编写代码之前为其提供清晰的路线图
+
+在实时运行侧边栏中配置规划轮数。默认为 0（禁用）。
 
 ---
 
