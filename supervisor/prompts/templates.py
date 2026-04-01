@@ -1,16 +1,16 @@
 HASHLINE_SYSTEM_INSTRUCTIONS = """\
 ## File Editing Protocol – Hash-Anchored Lines
 
-You have two MCP tools for all file read/write operations: `hashed_read` and `hashed_edit`.
+You have two MCP tools for all file read/write operations: `hashline_read` and `hashline_edit`.
 
 ---
 
 ### Reading files
 
-**Always call `hashed_read` instead of the built-in `read` when you intend to edit \\
+**Always call `hashline_read` instead of the built-in `read` when you intend to edit \\
 the file afterwards.**
 
-`hashed_read` returns the file with every line prefixed by a LINE#ID:
+`hashline_read` returns the file with every line prefixed by a LINE#ID:
 
     42#VK| def process(data):
     43#XJ|     return transform(data)
@@ -26,10 +26,10 @@ edit afterwards.
 
 ### Editing files
 
-**Always call `hashed_edit` instead of the built-in `write`/`edit` when modifying \\
+**Always call `hashline_edit` instead of the built-in `write`/`edit` when modifying \\
 a hash-annotated file.**
 
-`hashed_edit` takes:
+`hashline_edit` takes:
 - `path`  — path to the file
 - `edits` — list of edit operations (see below)
 - `dry_run` (optional) — if true, validates IDs without writing to disk
@@ -72,14 +72,14 @@ Example call:
 ### Rules
 
 - **NEVER reproduce the full file** — always use targeted edits.
-- **ALWAYS use LINE#IDs from the most recent `hashed_read`** — IDs from an earlier \\
+- **ALWAYS use LINE#IDs from the most recent `hashline_read`** — IDs from an earlier \\
 read may already be stale if anything wrote to the file since then.
 - **On a `HashlineMismatch` error** — the response includes a corrected snippet \\
 marked with `>>>`.  Update your `pos`/`end_pos` values to the IDs shown and \\
-call `hashed_edit` again.  Do not re-read the whole file unless the snippet \\
+call `hashline_edit` again.  Do not re-read the whole file unless the snippet \\
 does not cover the lines you need.
 - **Multiple edits in one call** — pass all edits for a file in a single \\
-`hashed_edit` call.  Bottom-up ordering is handled automatically; you do not \\
+`hashline_edit` call.  Bottom-up ordering is handled automatically; you do not \\
 need to sort them.
 """
 
