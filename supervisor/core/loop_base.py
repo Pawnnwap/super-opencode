@@ -83,6 +83,37 @@ class BaseLoop:
     def _run(self) -> Generator[Event, None, None]:
         raise NotImplementedError("Subclasses must implement _run()")
 
+    def _apply_protection(self) -> Generator[Event, None, None]:
+        yield _ev("info", "🔒  Setting read-only protection on critical files…")
+        protected_dirs = [
+            str(self.config.workspace / d)
+            for d in self.guard.get_protected_dirs()
+            if (self.config.workspace / d).exists()
+        ]
+        protected_files = [
+            str(self.config.workspace / f)
+            for f in self.guard.get_user_protected_files()
+            if (self.config.workspace / f).exists()
+        ]
+        self._all_protected = protected_dirs + protected_files
+        if self._all_protected:
+            protected = self.guard.set_readonly_protection(self._all_protected)
+            yield _ev("info", f"Read-only protection set on {len(protected)} paths")
+        else:
+            yield _ev("info", "No protected paths found to lock")
+
+    def _remove_protection(self) -> Generator[Event, None, None]:
+        yield _ev("info", "🔓  Removing read-only protection from critical files…")
+        if hasattr(self, '_all_protected') and self._all_protected:
+            unprotected = self.guard.remove_readonly_protection(self._all_protected)
+            yield _ev(
+                "info",
+                f"Read-only protection removed from {len(unprotected)} paths",
+            )
+            self._all_protected = []
+        else:
+            yield _ev("info", "No protected paths to unlock")
+
     def _on_successful_output(self, output: str) -> Generator[Event, None, None]:
         """Hook for subclasses to do something before context monitor updates."""
         yield from []

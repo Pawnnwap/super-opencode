@@ -14,16 +14,14 @@ import time
 from pathlib import Path
 from typing import Generator
 
-from supervisor.analyzers.codebase_analyzer import (CodebaseSnapshot,
-                                                    snapshot_codebase)
+from supervisor.analyzers.codebase_analyzer import CodebaseSnapshot, snapshot_codebase
 from supervisor.core.llm_supervisor import LLMSupervisor
 from supervisor.core.loop_base import BaseLoop, Event, LoopState, _ev
 from supervisor.protocols.protocol import load_protocol
 from supervisor.runners.test_runner import OcTestRunner, RunTestResult
 from supervisor.utils.config import SupervisorConfig
 from supervisor.utils.gitignore_utils import update_gitignore_files
-from supervisor.workspace.workspace_archiver import (ArchiveResult,
-                                                     WorkspaceArchiver)
+from supervisor.workspace.workspace_archiver import ArchiveResult, WorkspaceArchiver
 
 logger = logging.getLogger(__name__)
 
@@ -85,17 +83,22 @@ class SelfEvolutionLoop(BaseLoop):
         self._current_archive_result = pre_archive
         yield _ev("info", f"Archive saved: {pre_archive.archive_path}")
 
-        yield _ev("info", "🚀  Starting opencode for self-evolution…")
-        init_prompt = self._init_prompt()
-        yield _ev("opencode_prompt", init_prompt)
-        self.runner.start(init_prompt)
-        self._last_step_time = time.time()
-        output, timed_out = self.runner.read_output()
+        yield from self._apply_protection()
 
-        yield from self._run_loop(output, timed_out)
+        try:
+            yield _ev("info", "🚀  Starting opencode for self-evolution…")
+            init_prompt = self._init_prompt()
+            yield _ev("opencode_prompt", init_prompt)
+            self.runner.start(init_prompt)
+            self._last_step_time = time.time()
+            output, timed_out = self.runner.read_output()
 
-        self.runner.stop()
-        yield from self._evolution_summary()
+            yield from self._run_loop(output, timed_out)
+        finally:
+            yield from self._remove_protection()
+
+            self.runner.stop()
+            yield from self._evolution_summary()
 
     # ------------------------------------------------------------------ #
 

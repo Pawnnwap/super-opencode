@@ -95,18 +95,23 @@ class SupervisorLoop(BaseLoop):
             if self._state != LoopState.RUNNING:
                 return
 
-        yield _ev("info", "Running initial prompt with opencode…")
+        yield from self._apply_protection()
 
-        init_prompt = self._init_prompt()
-        yield _ev("opencode_prompt", init_prompt)  # ← full prompt visible
-        self.runner.reset_step_detector()
-        self.runner.start(init_prompt)
-        self._last_step_time = time.time()
-        output, timed_out = self.runner.read_output()
+        try:
+            yield _ev("info", "Running initial prompt with opencode…")
 
-        yield from self._run_loop(output, timed_out)
+            init_prompt = self._init_prompt()
+            yield _ev("opencode_prompt", init_prompt)  # ← full prompt visible
+            self.runner.reset_step_detector()
+            self.runner.start(init_prompt)
+            self._last_step_time = time.time()
+            output, timed_out = self.runner.read_output()
 
-        self.runner.stop()
+            yield from self._run_loop(output, timed_out)
+        finally:
+            yield from self._remove_protection()
+            self.runner.stop()
+
         if self._state == LoopState.ENDED_SUCCESS:
             yield _ev("success", "All targets met — run finished successfully.")
         else:

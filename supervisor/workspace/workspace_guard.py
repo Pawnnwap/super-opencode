@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import os
 import re
+import stat
+import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING, Iterable
 
@@ -11,7 +14,7 @@ if TYPE_CHECKING:
 
 _PATH_RE = re.compile(r"""(?:^|\s)(/?(?:[\w.\-]+/)+[\w.\-]*)""")
 
-_PROTECTED_DIRS = {".opencode", ".checkpoints", "archive"}
+_PROTECTED_DIRS = {".opencode", ".checkpoints", ".archive", "archive"}
 _PROTECTED_DIR_PREFIXES = (".",)
 _PROTECTED_FILES = {".opencoderc", ".opencode", ".opencodeignore"}
 
@@ -70,7 +73,11 @@ class WorkspaceGuard:
                 return True
 
         for protected in _PROTECTED_FILES:
-            if path_str == protected or path_str.startswith(f"{protected}/") or path_str.startswith(f"{protected}\\"):
+            if (
+                path_str == protected
+                or path_str.startswith(f"{protected}/")
+                or path_str.startswith(f"{protected}\\")
+            ):
                 return True
             if path_obj.name == protected:
                 return True
@@ -82,19 +89,28 @@ class WorkspaceGuard:
         violations: list[str] = []
 
         protected_patterns = [
-            r'\.opencode',
-            r'\.checkpoints',
-            r'\barchive\b',
+            r"\.opencode",
+            r"\.checkpoints",
+            r"\.archive\b",
+            r"\barchive\b",
         ]
         for protected_file in self._protected_files:
-            protected_patterns.append(rf'\b{re.escape(protected_file)}\b')
+            protected_patterns.append(rf"\b{re.escape(protected_file)}\b")
 
         action_patterns = [
-            r'delete', r'remove', r'unlink', r'rm\s',
-            r'move\s', r'mv\s', r'rename',
-            r'modify', r'edit', r'change',
-            r'overwrite', r'write',
-            r'chmod', r'attrib',
+            r"delete",
+            r"remove",
+            r"unlink",
+            r"rm\s",
+            r"move\s",
+            r"mv\s",
+            r"rename",
+            r"modify",
+            r"edit",
+            r"change",
+            r"overwrite",
+            r"chmod",
+            r"attrib",
         ]
 
         for pattern in protected_patterns:
@@ -111,7 +127,9 @@ class WorkspaceGuard:
 
         return violations
 
-    def sanitize_with_protection(self, message: str) -> tuple[str, list[str], list[str]]:
+    def sanitize_with_protection(
+        self, message: str
+    ) -> tuple[str, list[str], list[str]]:
         """
         Full sanitization: workspace bounds + protected paths.
         Returns (sanitized_msg, workspace_violations, protected_violations).
@@ -150,7 +168,9 @@ class WorkspaceGuard:
                 allowed.append(path)
         return allowed, protected
 
-    def validate_no_protected_operations(self, paths: list[str]) -> tuple[bool, list[str]]:
+    def validate_no_protected_operations(
+        self, paths: list[str]
+    ) -> tuple[bool, list[str]]:
         """
         Validate that a list of file paths does not include protected paths.
         Returns (is_valid, list_of_violations).
@@ -221,7 +241,9 @@ class WorkspaceGuard:
         """Return a formatted string describing all protected files for prompts."""
         if not self._protected_files:
             return ""
-        lines = ["\n\n[USER PROTECTED FILES] The following files are protected and must NOT be modified or deleted:"]
+        lines = [
+            "\n\n[USER PROTECTED FILES] The following files are protected and must NOT be modified or deleted:"
+        ]
         for pf in sorted(self._protected_files):
             lines.append(f"  - {pf}")
         return "\n".join(lines)
@@ -245,3 +267,101 @@ class WorkspaceGuard:
             if self._ignore_matcher.matches(path):
                 violations.append(f"Ignored path: {path}")
         return violations
+
+    def set_readonly_protection(self, paths: list[str]) -> list[str]:
+        """
+        Set read-only attributes recursively on the given paths.
+        Handles platform differences (Windows vs Unix).
+        Does not follow symbolic links outside the workspace.
+        Returns list of paths that were successfully protected.
+        """
+        protected = []
+        for path_str in paths:
+            path = Path(path_str)
+            if not path.exists():
+                continue
+            try:
+                if path.is_symlink():
+                    link_target = path.resolve()
+                    try:
+                        link_target.relative_to(self.workspace)
+                    except ValueError:
+                        continue
+                    self._set_file_readonly(path_str)
+                    protected.append(path_str)
+                elif path.is_dir():
+                    for item in path.rglob("*"):
+                        if item.is_symlink():
+                            try:
+                                item.resolve().relative_to(self.workspace)
+                            except ValueError:
+                                continue
+                        try:
+                            if item.is_file():
+                                self._set_file_readonly(str(item))
+                        except (OSError, PermissionError):
+                            pass
+                    protected.append(path_str)
+                else:
+                    self._set_file_readonly(path_str)
+                    protected.append(path_str)
+            except (OSError, PermissionError, ValueError):
+                continue
+        return protected
+
+    def remove_readonly_protection(self, paths: list[str]) -> list[str]:
+        """
+        Remove read-only attributes recursively on the given paths.
+        Handles platform differences (Windows vs Unix).
+        Does not follow symbolic links outside the workspace.
+        Returns list of paths that were successfully unprotected.
+        """
+        unprotected = []
+        for path_str in paths:
+            path = Path(path_str)
+            if not path.exists():
+                continue
+            try:
+                if path.is_symlink():
+                    link_target = path.resolve()
+                    try:
+                        link_target.relative_to(self.workspace)
+                    except ValueError:
+                        continue
+                    self._remove_file_readonly(path_str)
+                    unprotected.append(path_str)
+                elif path.is_dir():
+                    for item in path.rglob("*"):
+                        if item.is_symlink():
+                            try:
+                                item.resolve().relative_to(self.workspace)
+                            except ValueError:
+                                continue
+                        try:
+                            if item.is_file():
+                                self._remove_file_readonly(str(item))
+                        except (OSError, PermissionError):
+                            pass
+                    unprotected.append(path_str)
+                else:
+                    self._remove_file_readonly(path_str)
+                    unprotected.append(path_str)
+            except (OSError, PermissionError, ValueError):
+                continue
+        return unprotected
+
+    @staticmethod
+    def _set_file_readonly(path_str: str) -> None:
+        if os.name == "nt":
+            subprocess.run(["attrib", "+r", path_str], check=False, capture_output=True)
+        else:
+            current = os.stat(path_str).st_mode
+            os.chmod(path_str, current & ~stat.S_IWUSR & ~stat.S_IWGRP & ~stat.S_IWOTH)
+
+    @staticmethod
+    def _remove_file_readonly(path_str: str) -> None:
+        if os.name == "nt":
+            subprocess.run(["attrib", "-r", path_str], check=False, capture_output=True)
+        else:
+            current = os.stat(path_str).st_mode
+            os.chmod(path_str, current | stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH)
