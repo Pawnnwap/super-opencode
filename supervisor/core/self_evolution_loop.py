@@ -1,5 +1,5 @@
 """
-supervisor/self_evolution_loop.py
+supervisor/core/self_evolution_loop.py
 
 Self-evolution loop using the CLI-based opencode runner.
 Each turn: opencode -p "<prompt>" runs, exits, output is captured.
@@ -109,14 +109,11 @@ class SelfEvolutionLoop(BaseLoop):
             f"[iter {self._iteration}] opencode output ({len(output)} chars)",
         )
 
-    def _do_judgement(self, output: str) -> Generator[Event, None, None]:
-        progress = self.runner.get_step_progress()
+    def _pre_judge(self, output: str, progress) -> Generator[Event, None, tuple[str | None, bool]]:
         yield _ev("info", f"🧪  Running tests (step {progress.current_step})…")
         result = self.test_runner.run()
         self._last_result = result
         yield _ev("info", f"Tests: {result.summary()}")
-
-        yield from self._emit_token_warnings()
 
         if self._baseline and result.is_regression_vs(self._baseline):
             yield _ev("warn", "⚠️  Regression — rolling back.")
@@ -131,7 +128,7 @@ class SelfEvolutionLoop(BaseLoop):
             safe_rollback, _ = self.guard.sanitize_message(msg)
             yield _ev("opencode_prompt", safe_rollback)
             self.runner.send(safe_rollback)
-            return
+            return None, True
 
         archive_label = f"iter-{self._iteration}-step-{progress.current_step}"
         archive_result = self.archiver.archive_workspace(
@@ -146,21 +143,10 @@ class SelfEvolutionLoop(BaseLoop):
 
         test_info = f"Step {progress.current_step}/{progress.total_steps_estimate} | Phase: {progress.phase.name.lower()} | Tests: {result.summary()}"
         augmented = f"{output}\n\n--- evolution progress ---\n{test_info}\n\n--- test output ---\n{result.output[-400:]}"
-        verdict = self.supervisor.judge(augmented)
-        yield _ev("supervisor_response", verdict.raw)
+        return augmented, False
 
-        if verdict.all_targets_met:
-            self._state = LoopState.ENDED_SUCCESS
-            return
-
-        vuln_scan = self.scan_for_vulnerabilities()
-        safe_msg = yield from self._sanitize_feedback(
-            verdict.feedback + (vuln_scan if vuln_scan else "")
-        )
-        yield _ev("opencode_prompt", safe_msg)
-        self.runner.send(safe_msg)
-
-        yield from self._yield_suggestions(augmented)
+    def _get_verdict(self, output: str, progress) -> "SupervisorVerdict":
+        return self.supervisor.judge(output)
 
     def _handle_failure(self, last_output: str) -> Generator[Event, None, None]:
         self._failures += 1
@@ -273,6 +259,8 @@ class SelfEvolutionLoop(BaseLoop):
         )
 
     def _init_prompt(self) -> str:
+        from supervisor.prompts import HASHLINE_SYSTEM_INSTRUCTIONS, SELF_EVOLUTION_INIT_PROMPT_TEMPLATE
+
         text = self.config.protocol_path.read_text(encoding="utf-8")
         baseline_note = (
             f"\nCurrent test baseline: {self._baseline.summary()}\n"
@@ -281,20 +269,12 @@ class SelfEvolutionLoop(BaseLoop):
         )
         ws = self.config.workspace.resolve()
         protected_files_desc = ""
-        return (
-            "You are modifying the codebase you live in. Read the protocol carefully.\n\n"
-            f"PROTOCOL:\n{text}\n"
-            f"{baseline_note}"
-            f"\nYour project root (cwd) is: {ws}\n"
-            "All files you create or modify MUST be inside this directory.\n"
-            "Use relative paths from this directory for all file operations.\n"
-            "Never touch .checkpoints/ — that is reserved for the supervisor.\n"
-            "All versions are automatically archived in the .archive/ directory.\n"
-            "Do NOT delete or manually manage version files — the archive system handles this.\n"
-            "Do NOT delete or modify the .opencode directory or its contents.\n"
-            f"{protected_files_desc}\n"
-            "Make your changes surgical and minimal.\n"
-            "Run tests after every logical change. Begin."
+        return SELF_EVOLUTION_INIT_PROMPT_TEMPLATE.format(
+            hashline_instructions=HASHLINE_SYSTEM_INSTRUCTIONS,
+            protocol_text=text,
+            baseline_note=baseline_note,
+            workspace=ws,
+            protected_files_desc=protected_files_desc,
         )
 
     def _restart_prompt(self) -> str:

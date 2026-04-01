@@ -1,5 +1,5 @@
 """
-supervisor/loop.py — main orchestration loop.
+supervisor/core/loop.py — main orchestration loop.   
 
 With the CLI-based runner, each turn is:
   1. opencode -p "<prompt>" runs and exits  (done inside runner.start / runner.send)
@@ -257,29 +257,11 @@ class SupervisorLoop(BaseLoop):
     def get_step_summary(self) -> dict:
         return self.runner.get_step_summary()
 
-    def _do_judgement(self, output: str) -> Generator[Event, None, None]:
-        yield _ev("info", "Supervisor judging…")
+    def _get_verdict(self, output: str, progress) -> "SupervisorVerdict":
+        step_context = self._get_step_context(progress)
+        return self.supervisor.judge_with_step_context(output, step_context)
 
-        progress = self.runner.get_step_progress()
-        step_context = StepContext(
-            current_step=progress.current_step,
-            total_steps_estimate=progress.total_steps_estimate,
-            phase=progress.phase.name.lower(),
-            completed_phases=list(progress.completed_phases),
-        )
-        verdict = self.supervisor.judge_with_step_context(output, step_context)
-        yield _ev("supervisor_response", verdict.raw)  # ← full supervisor reply
-
-        yield from self._emit_token_warnings()
-
-        if verdict.all_targets_met:
-            self._state = LoopState.ENDED_SUCCESS
-            return
-
-        vuln_scan = self.scan_for_vulnerabilities()
-        feedback_text = verdict.feedback + (vuln_scan if vuln_scan else "")
-        safe_msg = yield from self._sanitize_feedback(feedback_text)
-
+    def _post_judge_feedback(self, safe_msg: str, output: str) -> Generator[Event, None, str]:
         alignment = self.supervisor.verify_protocol_alignment(output, self.protocol)
         if not alignment.aligned:
             logger.warning(
@@ -291,11 +273,7 @@ class SupervisorLoop(BaseLoop):
                 f"Protocol alignment issues found: {len(alignment.violations)} violation(s)",
             )
             safe_msg = alignment.reinforcement_message + safe_msg
-
-        yield _ev("opencode_prompt", safe_msg)  # ← full feedback sent to opencode
-        self.runner.send(safe_msg)
-
-        yield from self._yield_suggestions(output, step_context)
+        return safe_msg
 
     def _handle_failure(self, last_output: str) -> Generator[Event, None, None]:
         self._failures += 1
@@ -345,6 +323,8 @@ class SupervisorLoop(BaseLoop):
             yield _ev("error", f"Unhandled exception:\n{traceback.format_exc()}")
 
     def _init_prompt(self) -> str:
+        from supervisor.prompts import HASHLINE_SYSTEM_INSTRUCTIONS, INIT_PROMPT_TEMPLATE
+
         text = self.config.protocol_path.read_text(encoding="utf-8")
         ws = self.config.workspace.resolve()
         protected_files_desc = self.guard.get_all_protected_files_description()
@@ -357,18 +337,13 @@ class SupervisorLoop(BaseLoop):
                 "## Last Supervisor Feedback on Plan\n\n"
                 f"{self._last_supervisor_feedback}\n\n"
             )
-        return (
-            f"Here is your protocol:\n\n{text}\n\n"
-            f"{plan_section}"
-            f"{plan_output_section}"
-            f"Your project root (cwd) is: {ws}\n"
-            "All files you create or modify MUST be inside this directory.\n"
-            "Use relative paths from this directory for all file operations.\n"
-            "A .opencode/ folder has been created there to mark this as your project root.\n"
-            "IMPORTANT: Never touch .checkpoints/ — that is reserved for the supervisor.\n"
-            "The .archive/ directory preserves historical versions — do not modify it.\n"
-            f"{protected_files_desc}\n"
-            "Begin."
+        return INIT_PROMPT_TEMPLATE.format(
+            hashline_instructions=HASHLINE_SYSTEM_INSTRUCTIONS,
+            protocol_text=text,
+            plan_section=plan_section,
+            plan_output_section=plan_output_section,
+            workspace=ws,
+            protected_files_desc=protected_files_desc,
         )
 
     def _restart_prompt(self) -> str:

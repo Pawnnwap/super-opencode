@@ -238,15 +238,12 @@ class LLMSupervisor:
             # We must truncate the listing
             listing = truncate_prompt(listing, available_tokens, preserve_end_ratio=0.0)
 
-        prompt = (
-            f"You are selecting the {top_k} most relevant source files to read "
-            f"before generating code-improvement suggestions.\n\n"
-            f"## Protocol target\n{self._protocol_target}\n\n"
-            f"## Candidate files ({len(filtered_meta)} total)\n{listing}\n\n"
-            f"Return ONLY a JSON array of up to {top_k} file paths from the list above, "
-            f"ordered by relevance (most relevant first). "
-            f'Example: ["src/main.py", "tests/test_core.py"]\n'
-            f"Do not include any explanation or markdown — just the JSON array."
+        from supervisor.prompts import FILE_SELECTION_PROMPT
+        prompt = FILE_SELECTION_PROMPT.format(
+            top_k=top_k,
+            protocol_target=self._protocol_target,
+            total_candidates=len(filtered_meta),
+            listing=listing,
         )
 
         try:
@@ -496,6 +493,8 @@ class LLMSupervisor:
     def judge_with_step_context(
         self, opencode_output: str, step_context: StepContext
     ) -> SupervisorVerdict:
+        from supervisor.prompts import JUDGE_STEP_PROMPT
+        
         protected_context, feedback_context = self._get_evaluation_context()
 
         phases_str = (
@@ -503,33 +502,23 @@ class LLMSupervisor:
             if step_context.completed_phases
             else "none"
         )
-        msg = (
-            "opencode just produced the following output. "
-            "Evaluate it against the protocol.\n"
-            "If ALL targets are met say 'all targets met'.\n"
-            "Otherwise give clear, actionable feedback.\n\n"
-            "--- Step Context ---\n"
-            f"Current step: {step_context.current_step}/{step_context.total_steps_estimate}\n"
-            f"Current phase: {step_context.phase}\n"
-            f"Completed phases: {phases_str}\n\n"
-            f"{feedback_context}"
-            f"{protected_context}"
-            "--- opencode output ---\n"
-            f"{opencode_output}\n--- end ---\n\n"
-            "Focus your feedback on the current phase and remaining work."
+        msg = JUDGE_STEP_PROMPT.format(
+            current_step=step_context.current_step,
+            total_steps=step_context.total_steps_estimate,
+            phase=step_context.phase,
+            completed_phases=phases_str,
+            feedback_context=feedback_context,
+            protected_context=protected_context,
+            opencode_output=opencode_output,
         )
-        history_msg = (
-            "opencode just produced the following output. "
-            "Evaluate it against the protocol.\n"
-            "If ALL targets are met say 'all targets met'.\n"
-            "Otherwise give clear, actionable feedback.\n\n"
-            "--- Step Context ---\n"
-            f"Current step: {step_context.current_step}/{step_context.total_steps_estimate}\n"
-            f"Current phase: {step_context.phase}\n"
-            f"Completed phases: {phases_str}\n\n"
-            "--- opencode output ---\n"
-            f"{opencode_output}\n--- end ---\n\n"
-            "Focus your feedback on the current phase and remaining work."
+        history_msg = JUDGE_STEP_PROMPT.format(
+            current_step=step_context.current_step,
+            total_steps=step_context.total_steps_estimate,
+            phase=step_context.phase,
+            completed_phases=phases_str,
+            feedback_context="",
+            protected_context="",
+            opencode_output=opencode_output,
         )
         return self._chat(msg, history_content=history_msg)
 
@@ -558,6 +547,8 @@ class LLMSupervisor:
         Returns:
             SupervisorVerdict with feedback to send back to opencode.
         """
+        from supervisor.prompts import JUDGE_PLAN_PROMPT
+
         protected_context, feedback_context = self._get_evaluation_context()
 
         context_info = ""
@@ -574,28 +565,22 @@ class LLMSupervisor:
                 f"Completed phases: {phases_str}\n\n"
             )
 
-        msg = (
-            f"opencode is in PLAN MODE (round {plan_round}/{total_plan_rounds}). "
-            "No code changes have been made yet — this is a planning-only phase.\n\n"
-            "Review the plan below and provide actionable feedback to refine it. "
-            "Do NOT declare 'all targets met' during plan mode. "
-            "Focus on:\n"
-            "  1. Correctness and completeness of the proposed approach\n"
-            "  2. Potential edge cases or missing steps\n"
-            "  3. Alignment with protocol requirements\n"
-            "  4. Sequencing and dependency issues\n\n"
-            f"{context_info}"
-            f"{feedback_context}"
-            f"{protected_context}"
-            f"--- opencode plan output ---\n{opencode_output}\n--- end ---\n\n"
-            "Provide specific, concise feedback to improve the plan before implementation begins."
+        msg = JUDGE_PLAN_PROMPT.format(
+            context_info=context_info,
+            feedback_context=feedback_context,
+            protected_context=protected_context,
+            plan_round=plan_round,
+            total_plan_rounds=total_plan_rounds,
+            opencode_output=opencode_output,
         )
-        history_msg = (
-            f"opencode is in PLAN MODE (round {plan_round}/{total_plan_rounds}). "
-            "No code changes have been made yet.\n\n"
-            f"{context_info}"
-            f"--- opencode plan output ---\n{opencode_output}\n--- end ---\n\n"
-            "Provide specific, concise feedback to improve the plan before implementation begins."
+        
+        history_msg = JUDGE_PLAN_PROMPT.format(
+            context_info=context_info,
+            feedback_context="",
+            protected_context="",
+            plan_round=plan_round,
+            total_plan_rounds=total_plan_rounds,
+            opencode_output=opencode_output,
         )
 
         verdict = self._chat(msg, history_content=history_msg)
@@ -609,16 +594,8 @@ class LLMSupervisor:
         )
 
     def ask_for_compaction_instructions(self) -> SupervisorVerdict:
-        msg = (
-            "The opencode agent's context window is nearly full. "
-            "Generate instructions for it to:\n"
-            "1. Keep only the latest version of every file.\n"
-            "2. Retain any foundational/fallback code it may reference.\n"
-            "3. Write summary.md to the workspace with: current status, "
-            "key decisions, remaining tasks and future directions.\n"
-            "Output ONLY the instruction text to send to opencode."
-        )
-        return self._chat(msg)
+        from supervisor.prompts import COMPACTION_INSTRUCTIONS_PROMPT
+        return self._chat(COMPACTION_INSTRUCTIONS_PROMPT)
 
     def ask_for_deletion_permission(
         self, candidates: list[str], workspace: Path
@@ -627,26 +604,8 @@ class LLMSupervisor:
             return self.ask_for_compaction_instructions()
 
         file_list = "\n".join(f"  - {f}" for f in candidates)
-        msg = (
-            "The opencode agent's context window is nearly full. "
-            "Before compacting the context, you MUST address the following cleanup:\n\n"
-            "## DELETION PERMISSION\n\n"
-            "The supervisor has identified the following files as outdated, unused, or safe to delete:\n\n"
-            f"{file_list}\n\n"
-            "You are granted permission to DELETE these files ONLY if:\n"
-            "1. The file is confirmed outdated (e.g., backup files, old versions, temp files)\n"
-            "2. The file is unused by any current code\n"
-            "3. The file is not a core module or essential configuration\n\n"
-            "Generate instructions for the agent to:\n"
-            "1. Review the file list above and DELETE only the confirmed outdated/unused files\n"
-            "2. Keep all core modules and essential files\n"
-            "3. Keep only the latest version of every file\n"
-            "4. Retain any foundational/fallback code it may reference\n"
-            "5. Write summary.md to the workspace with: current status, "
-            "key decisions, remaining tasks and future directions\n\n"
-            "Output ONLY the instruction text to send to opencode, "
-            "including explicit permission to delete the listed files."
-        )
+        from supervisor.prompts import DELETION_PERMISSION_PROMPT
+        msg = DELETION_PERMISSION_PROMPT.format(file_list=file_list)
         return self._chat(msg)
 
     def report_final_status(
@@ -882,28 +841,13 @@ class LLMSupervisor:
         if not violations:
             return ""
 
-        lines = [
-            "\n--- PROTOCOL VIOLATION DETECTED ---\n",
-            "The following protocol violations were detected in your output:\n",
-        ]
-
+        violations_text = ""
         for i, v in enumerate(violations, 1):
-            lines.append(f"{i}. [{v.section}] {v.description}")
-            lines.append(f"   Correction: {v.suggestion}\n")
+            violations_text += f"{i}. [{v.section}] {v.description}\n"
+            violations_text += f"   Correction: {v.suggestion}\n\n"
 
-        lines.extend(
-            [
-                "Please review the protocol sections above and correct your approach.\n",
-                "Reminder:\n",
-                "  - INPUT section describes the task context you must understand\n",
-                "  - TARGET section lists the objectives you must achieve\n",
-                "  - RESTRICTIONS section defines boundaries you must not cross\n",
-                "Re-read these sections and adjust your actions accordingly.\n",
-                "--- END VIOLATION NOTICE ---\n",
-            ]
-        )
-
-        return "".join(lines)
+        from supervisor.prompts import PROTOCOL_VIOLATION_TEMPLATE
+        return PROTOCOL_VIOLATION_TEMPLATE.format(violations=violations_text)
 
     # ------------------------------------------------------------------ #
 

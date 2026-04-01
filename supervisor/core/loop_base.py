@@ -121,8 +121,56 @@ class BaseLoop:
     def _handle_failure(self, output: str) -> Generator[Event, None, None]:
         raise NotImplementedError()
 
-    def _do_judgement(self, output: str) -> Generator[Event, None, None]:
+    def _get_step_context(self, progress) -> "StepContext":
+        from supervisor.core.llm_supervisor import StepContext
+
+        return StepContext(
+            current_step=progress.current_step,
+            total_steps_estimate=progress.total_steps_estimate,
+            phase=progress.phase.name.lower(),
+            completed_phases=list(progress.completed_phases),
+        )
+
+    def _pre_judge(self, output: str, progress) -> Generator[Event, None, tuple[str | None, bool]]:
+        """Hook before judging. Returns (augmented_output, abort_turn)."""
+        yield _ev("info", "Supervisor judging…")
+        return output, False
+
+    def _get_verdict(self, output: str, progress) -> "SupervisorVerdict":
         raise NotImplementedError()
+
+    def _post_judge_feedback(self, safe_msg: str, output: str) -> Generator[Event, None, str]:
+        """Hook to append alignment warnings etc."""
+        return safe_msg
+        
+    def _do_judgement(self, output: str) -> Generator[Event, None, None]:
+        progress = self.runner.get_step_progress()
+        
+        augmented_output, abort = yield from self._pre_judge(output, progress)
+        if abort:
+            return
+            
+        actual_output = augmented_output if augmented_output is not None else output
+        
+        verdict = self._get_verdict(actual_output, progress)
+        yield _ev("supervisor_response", verdict.raw)
+        
+        yield from self._emit_token_warnings()
+
+        if verdict.all_targets_met:
+            self._state = LoopState.ENDED_SUCCESS
+            return
+
+        vuln_scan = self.scan_for_vulnerabilities()
+        feedback_text = verdict.feedback + (vuln_scan if vuln_scan else "")
+        safe_msg = yield from self._sanitize_feedback(feedback_text)
+        
+        safe_msg = yield from self._post_judge_feedback(safe_msg, actual_output)
+
+        yield _ev("opencode_prompt", safe_msg)
+        self.runner.send(safe_msg)
+
+        yield from self._yield_suggestions(actual_output, self._get_step_context(progress))
 
     def _run_loop(
         self, initial_output: str, initial_timed_out: bool
@@ -373,15 +421,14 @@ class BaseLoop:
         Reads the summary.md that was just written and combines it with the
         protocol to give opencode full context in a fresh session.
         """
+        from supervisor.prompts import RESTART_PROMPT_TEMPLATE
+
         summary, protocol_text = self._get_restart_context()
         ws = self.config.workspace.resolve()
-        return (
-            f"Context was reset due to token limits. Here is a summary of progress so far:\n\n"
-            f"{summary}\n\n"
-            f"PROTOCOL:\n{protocol_text}\n\n"
-            f"Your project root (cwd) is: {ws}\n"
-            "Continue from where the summary left off. "
-            "All files you create or modify MUST be inside this directory."
+        return RESTART_PROMPT_TEMPLATE.format(
+            summary=summary,
+            protocol_text=protocol_text,
+            workspace=ws,
         )
 
     def scan_for_vulnerabilities(self) -> str | None:

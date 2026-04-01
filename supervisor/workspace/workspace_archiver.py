@@ -76,6 +76,17 @@ class WorkspaceArchiver:
     def _save_counter(self) -> None:
         self.archive_root.mkdir(parents=True, exist_ok=True)
         counter_file = self.archive_root / ".archive_counter"
+        if counter_file.exists():
+            import os, stat
+            try:
+                if os.name == "nt":
+                    import subprocess
+                    subprocess.run(["attrib", "-r", str(counter_file)], check=False, capture_output=True)
+                else:
+                    current = os.stat(counter_file).st_mode
+                    os.chmod(counter_file, current | stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH)
+            except Exception:
+                pass
         counter_file.write_text(str(self._archive_counter), encoding="utf-8")
 
     def _get_archive_subdir(self, filename: str) -> str:

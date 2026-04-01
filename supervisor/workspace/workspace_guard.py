@@ -298,12 +298,14 @@ class WorkspaceGuard:
                                 continue
                         try:
                             if item.is_file():
-                                self._set_file_readonly(str(item))
+                                if item.name != ".archive_counter":
+                                    self._set_file_readonly(str(item))
                         except (OSError, PermissionError):
                             pass
                     protected.append(path_str)
                 else:
-                    self._set_file_readonly(path_str)
+                    if path.name != ".archive_counter":
+                        self._set_file_readonly(path_str)
                     protected.append(path_str)
             except (OSError, PermissionError, ValueError):
                 continue

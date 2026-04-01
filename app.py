@@ -304,16 +304,40 @@ def _get_opencode_config_file(config_dir: Path) -> Path:
 
     # Prefer opencode.json if it exists
     if opencode_json.exists():
-        return opencode_json
+        target_file = opencode_json
+    elif config_json.exists():
+        target_file = config_json
+    else:
+        # Create empty opencode.json with correct structure
+        default_content = {"$schema": "https://opencode.ai/config.json", "provider": {}}
+        opencode_json.write_text(json.dumps(default_content, indent=2), encoding="utf-8")
+        target_file = opencode_json
 
-    # Fall back to config.json if it exists
-    if config_json.exists():
-        return config_json
+    # Inject MCP session
+    try:
+        content = json.loads(target_file.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, FileNotFoundError):
+        content = {"$schema": "https://opencode.ai/config.json", "provider": {}}
 
-    # Create empty opencode.json with correct structure
-    default_content = {"$schema": "https://opencode.ai/config.json", "provider": {}}
-    opencode_json.write_text(json.dumps(default_content, indent=2), encoding="utf-8")
-    return opencode_json
+    if "mcp" not in content:
+        content["mcp"] = {}
+
+    hashline_path = str(Path(__file__).parent.resolve() / "mcp_server" / "hashline.py")
+    hashline_path = hashline_path.replace("\\", "/")
+
+    mcp_hashline_config = {
+        "type": "local",
+        "command": ["python", hashline_path],
+        "enabled": True,
+        "environment": {}
+    }
+
+    # Only write to file if the configuration is not already present
+    if content["mcp"].get("hashline") != mcp_hashline_config:
+        content["mcp"]["hashline"] = mcp_hashline_config
+        target_file.write_text(json.dumps(content, indent=2), encoding="utf-8")
+
+    return target_file
 
 
 def _add_custom_provider_to_config(
@@ -365,6 +389,14 @@ def _fetch_opencode_models(exe: str = "opencode") -> list[str]:
     except Exception:
         pass
     return []
+
+
+# ── Ensure MCP Config is injected on startup ──────────────────────────────── #
+if not st.session_state.get("_mcp_config_done"):
+    _mcp_dir = _find_opencode_config_dir()
+    if _mcp_dir:
+        _get_opencode_config_file(_mcp_dir)
+    st.session_state["_mcp_config_done"] = True
 
 
 # ── Settings persistence ──────────────────────────────────────────────────── #
