@@ -1,52 +1,49 @@
 HASHLINE_SYSTEM_INSTRUCTIONS = """\
 ## File Editing Protocol – Hash-Anchored Lines
 
-You have two MCP tools for all file read/write operations: `hashline_read` and `hashline_edit`.
+You have two MCP tools for all file read/write operations:
+`hashline_read` and `hashline_edit`.
 
 ---
 
 ### Reading files
 
-**Always call `hashline_read` instead of the built-in `read` when you intend to edit \\
-the file afterwards.**
+**Always call `hashline_read` instead of the built-in `read` when you intend
+to edit the file afterwards.**
 
 `hashline_read` returns the file with every line prefixed by a LINE#ID:
 
-    42#VK| def process(data):
-    43#XJ|     return transform(data)
+    42#VKB| def process(data):
+    43#XJZ|     return transform(data)
 
-The LINE#ID format is  `LINE_NO#HASH`  where the 2-character hash encodes both \\
-the line number and its content.  Any edit to the line — or any line above it — \\
-changes the ID.  IDs are only valid against the current state of the file.
+The LINE#ID format is `LINE_NO#HASH` where the 3-character hash encodes both
+the line number and its content. IDs go stale the moment anything writes to
+the file — always use IDs from the most recent `hashline_read`.
 
-You may use the built-in `read` for purely exploratory reads where you will NOT \\
-edit afterwards.
+You may use the built-in `read` for purely exploratory reads where you will
+NOT edit afterwards.
 
 ---
 
 ### Editing files
 
-**Always call `hashline_edit` instead of the built-in `write`/`edit` when modifying \\
-a hash-annotated file.**
+**Always call `hashline_edit` instead of the built-in `write`/`edit` when
+modifying a hash-annotated file.**
 
-`hashline_edit` takes:
-- `path`  — path to the file
-- `edits` — list of edit operations (see below)
-- `dry_run` (optional) — if true, validates IDs without writing to disk
-
-All LINE#IDs in the edit list are validated before a single byte is written.  \\
-If every ID is valid the file is written atomically.  If any ID is stale the \\
-entire operation is rejected and nothing is written.
+All LINE#IDs are validated in a single pass before a single byte is written.
+If every ID is valid the file is written atomically and you receive a unified
+diff confirming the change. If any ID is stale the entire operation is
+rejected and nothing is written.
 
 #### Edit operations
 
-| op        | required fields              | effect                                      |
-|-----------|------------------------------|---------------------------------------------|
-| `replace` | `pos`                        | replace the line at `pos` with `lines`      |
-| `replace` | `pos` + `end_pos`            | replace the line range `pos`..`end_pos` with `lines` |
-| `delete`  | `pos`                        | remove the line at `pos`                    |
-| `append`  | `pos`                        | insert `lines` immediately AFTER `pos`      |
-| `prepend` | `pos`                        | insert `lines` immediately BEFORE `pos`     |
+| op        | required fields   | effect                                            |
+|-----------|-------------------|---------------------------------------------------|
+| `replace` | `pos`             | replace the line at `pos` with `lines`            |
+| `replace` | `pos` + `end_pos` | replace lines `pos` through `end_pos` with `lines`|
+| `delete`  | `pos`             | remove the line at `pos`                          |
+| `append`  | `pos`             | insert `lines` immediately AFTER `pos`            |
+| `prepend` | `pos`             | insert `lines` immediately BEFORE `pos`           |
 
 Example call:
 ```json
@@ -55,12 +52,12 @@ Example call:
   "edits": [
     {
       "op": "replace",
-      "pos": "42#VK",
+      "pos": "42#VKB",
       "lines": ["def process(data: dict):"]
     },
     {
       "op": "append",
-      "pos": "43#XJ",
+      "pos": "43#XJZ",
       "lines": ["    # validate after transform", "    assert result is not None"]
     }
   ]
@@ -71,16 +68,20 @@ Example call:
 
 ### Rules
 
-- **NEVER reproduce the full file** — always use targeted edits.
-- **ALWAYS use LINE#IDs from the most recent `hashline_read`** — IDs from an earlier \\
-read may already be stale if anything wrote to the file since then.
-- **On a `HashlineMismatch` error** — the response includes a corrected snippet \\
-marked with `>>>`.  Update your `pos`/`end_pos` values to the IDs shown and \\
-call `hashline_edit` again.  Do not re-read the whole file unless the snippet \\
-does not cover the lines you need.
-- **Multiple edits in one call** — pass all edits for a file in a single \\
-`hashline_edit` call.  Bottom-up ordering is handled automatically; you do not \\
-need to sort them.
+1. **Never reproduce the full file** — always use targeted edits.
+2. **Always use IDs from the most recent `hashline_read`** — earlier IDs may
+   be stale if anything wrote to the file since then.
+3. **On a stale-ID error** — the JSON response contains `retry_edits`: your
+   original edits with all refs already corrected. Call `hashline_edit` again
+   with `retry_edits` as the `edits` value. Only re-read the file if you need
+   lines not covered by the returned `snippet`.
+4. **Batch edits per file** — pass all edits for a file in a single
+   `hashline_edit` call. Bottom-up ordering is handled automatically.
+5. **Overlapping edits are rejected** — if two edits target the same line
+   range, split them into sequential calls (re-reading between calls).
+
+> **dry_run** — pass `"dry_run": true` to validate IDs without writing to
+> disk. Useful for preflight checks on large or sensitive edits.
 """
 
 INIT_PROMPT_TEMPLATE = """\
