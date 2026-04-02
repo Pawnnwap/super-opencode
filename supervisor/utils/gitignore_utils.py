@@ -12,6 +12,8 @@ GITIGNORE_LINES = """# super-opencode
 .opencode
 .ruff_cache
 nul
+test_*.py
+.job_store
 """
 
 

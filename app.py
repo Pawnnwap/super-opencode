@@ -505,6 +505,20 @@ with st.sidebar:
         st.session_state.opencode_test_passed
         and st.session_state.supervisor_test_passed
     )
+
+    run_job_id = st.query_params.get("run_job_id")
+    evo_job_id = st.query_params.get("evo_job_id")
+    
+    is_running = False
+    for jid in job_manager.store.list_jobs():
+        status = job_manager.get_job_status(jid)
+        if status and status.get("state") == "RUNNING":
+            is_running = True
+            break
+
+    if is_running:
+        tests_passed = True
+
     for key, label in pages.items():
         locked = key != "wizard" and not tests_passed
         active = st.session_state.page == key
@@ -1368,6 +1382,16 @@ def page_run():
 
     # Check for existing job in query params
     job_id = st.query_params.get("run_job_id")
+    
+    if not job_id:
+        for jid in job_manager.store.list_jobs():
+            status = job_manager.get_job_status(jid)
+            if status and status.get("type") == "run" and status.get("state") == "RUNNING":
+                job_id = jid
+                st.query_params["run_job_id"] = job_id
+                st.rerun()
+                return
+
     if job_id:
         _show_run_status_screen(job_id)
     else:
@@ -1464,13 +1488,6 @@ def _show_run_status_screen(job_id: str):
         if st.button("🔄 Refresh", use_container_width=True):
             st.rerun()
 
-    # Progress and details
-    if state == "RUNNING":
-        st.info("🏃 Job is running in background. You can safely close this tab or refresh.")
-        # Auto-refresh loop
-        time.sleep(2)
-        st.rerun()
-
     # Layout for logs and info
     col_main, col_side = st.columns([2, 1])
     
@@ -1497,6 +1514,12 @@ def _show_run_status_screen(job_id: str):
                     file_name=f"report_{job_id}.md",
                     mime="text/markdown"
                 )
+
+    # Auto-refresh loop must be at the end so UI renders first
+    if state == "RUNNING":
+        st.info("🏃 Job is running in background. You can safely close this tab or refresh.")
+        time.sleep(2)
+        st.rerun()
 
 def _render_token_usage_bar(logs: list[dict], max_tokens: int):
     """Simplified token usage bar for the status screen."""
@@ -1638,6 +1661,7 @@ def _render_events(
         )
         return
 
+    st.caption(f"Debug: Got {len(events)} events to render.")
     lines_html: list[str] = []
 
     for ev in events[-600:]:
@@ -1682,6 +1706,16 @@ def page_evolve():
     
     # Check for existing job in query params
     job_id = st.query_params.get("evo_job_id")
+    
+    if not job_id:
+        for jid in job_manager.store.list_jobs():
+            status = job_manager.get_job_status(jid)
+            if status and status.get("type") == "evolve" and status.get("state") == "RUNNING":
+                job_id = jid
+                st.query_params["evo_job_id"] = job_id
+                st.rerun()
+                return
+
     if job_id:
         _show_evo_status_screen(job_id)
     else:
@@ -1805,11 +1839,6 @@ def _show_evo_status_screen(job_id: str):
         if st.button("🔄 Refresh", use_container_width=True):
             st.rerun()
 
-    if state == "RUNNING":
-        st.info("🧬 Evolution in progress...")
-        time.sleep(2)
-        st.rerun()
-
     col_main, col_side = st.columns([2, 1])
     with col_main:
         _render_step_progress(status.get("logs", []), state, is_evolution=True)
@@ -1829,6 +1858,11 @@ def _show_evo_status_screen(job_id: str):
                 st.markdown(status["report"])
                 st.download_button("⬇ Download", data=status["report"], file_name=f"evo_report_{job_id}.md")
 
+    if state == "RUNNING":
+        st.info("🧬 Evolution in progress...")
+        time.sleep(2)
+        st.rerun()
+
 # Router
 # ═══════════════════════════════════════════════════════════════════════════ #
 
@@ -1839,6 +1873,20 @@ if page == "report":
 _tests_ok = (
     st.session_state.opencode_test_passed and st.session_state.supervisor_test_passed
 )
+
+run_job_id = st.query_params.get("run_job_id")
+evo_job_id = st.query_params.get("evo_job_id")
+
+is_running = False
+for jid in job_manager.store.list_jobs():
+    status = job_manager.get_job_status(jid)
+    if status and status.get("state") == "RUNNING":
+        is_running = True
+        break
+
+if is_running:
+    _tests_ok = True
+
 if page == "wizard":
     page_wizard()
 elif page == "run":
