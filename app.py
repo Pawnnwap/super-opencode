@@ -628,13 +628,29 @@ with st.sidebar:
 
 
 def _run_with_timeout(fn, seconds=30):
-    """Run fn() in a thread; raise TimeoutError if it exceeds `seconds`."""
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(fn)
+    """Run fn() in a daemon thread; raise TimeoutError if it exceeds `seconds`."""
+    import threading
+    
+    result = []
+    error = []
+
+    def worker():
         try:
-            return future.result(timeout=seconds)
-        except concurrent.futures.TimeoutError:
-            raise TimeoutError(f"Timed out after {seconds}s")
+            result.append(fn())
+        except Exception as e:
+            error.append(e)
+
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+    t.join(timeout=seconds)
+
+    if t.is_alive():
+        raise TimeoutError(f"Timed out after {seconds}s")
+    
+    if error:
+        raise error[0]
+        
+    return result[0]
 
 
 def test_opencode():
@@ -642,6 +658,8 @@ def test_opencode():
     from supervisor.runners.opencode_runner import OpencodeRunner, find_opencode
 
     workspace = Path(tempfile.gettempdir()) / "opencode_test_dummy"
+    workspace.mkdir(exist_ok=True) # Ensure dummy dir exists
+
     try:
         exe = find_opencode(st.session_state.opencode_executable or "")
     except FileNotFoundError as e:
@@ -656,18 +674,20 @@ def test_opencode():
 
     def _inner():
         runner.start("hi")
-        output, timed_out = runner.read_output(timeout=30)
+        # Ensure we don't hang indefinitely reading output
+        output, timed_out = runner.read_output(timeout=25)
         if timed_out:
-            return False, "opencode timed out after 30 seconds."
+            return False, "opencode timed out reading output."
         if runner._last_result and runner._last_result.ok:
             return True, "opencode responded successfully."
         diag = runner.last_diagnostic() if runner._last_result else "(no result)"
         return False, f"opencode returned an error.\n{diag}"
 
     try:
+        # Give the wrapper a slightly longer timeout than the internal read timeout
         return _run_with_timeout(_inner, seconds=30)
     except TimeoutError:
-        return False, "opencode timed out after 30 seconds."
+        return False, "opencode test timed out."
     except Exception as exc:
         return False, f"opencode test failed: {exc}"
     finally:
@@ -685,7 +705,7 @@ def test_supervisor():
     client = OpenAI(
         api_key=st.session_state.openai_key,
         base_url=st.session_state.base_url or None,
-        timeout=30.0,  # connection + read timeout on the socket
+        timeout=25.0,  # connection + read timeout on the socket
     )
 
     def _inner():
@@ -701,7 +721,7 @@ def test_supervisor():
     try:
         return _run_with_timeout(_inner, seconds=30)
     except TimeoutError:
-        return False, "Supervisor timed out after 30 seconds."
+        return False, "Supervisor test timed out."
     except Exception as exc:
         return False, f"Supervisor test failed: {exc}"
 
