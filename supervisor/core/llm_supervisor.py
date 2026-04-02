@@ -1057,11 +1057,50 @@ class LLMSupervisor:
 
         self._log_prompt("Supervisor Chat", messages)
 
-        response = self._client.chat.completions.create(
-            model=self._model,
-            messages=messages,
-        )
-        reply = response.choices[0].message.content or ""
+        return self._chat_with_retry(messages, record_content, should_record_user)
+
+    def _chat_with_retry(
+        self,
+        messages: list[dict],
+        record_content: str,
+        should_record_user: bool,
+    ) -> SupervisorVerdict:
+        from openai import InternalServerError
+
+        max_retries = 5
+        attempt = 0
+        working_messages = list(messages)
+
+        while attempt <= max_retries:
+            try:
+                response = self._client.chat.completions.create(
+                    model=self._model,
+                    messages=working_messages,
+                )
+                reply = response.choices[0].message.content or ""
+                break
+            except InternalServerError as exc:
+                code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
+                body = str(exc)
+                if code != 511 and "max tokens" not in body.lower():
+                    raise
+                if attempt >= max_retries:
+                    logger.error(
+                        "Prompt still exceeds token limit after %d truncation attempts",
+                        max_retries,
+                    )
+                    raise
+
+                old_count = len(working_messages)
+                working_messages = self._truncate_older_turns(working_messages)
+                new_count = len(working_messages)
+                removed = old_count - new_count
+                attempt += 1
+                logger.warning(
+                    "Token-limit retry %d/%d: removed %d older message(s), "
+                    "now %d messages in request",
+                    attempt, max_retries, removed, new_count,
+                )
 
         if should_record_user:
             self._history.append({"role": "user", "content": record_content})
@@ -1075,3 +1114,22 @@ class LLMSupervisor:
 
         all_met = any(p in reply.lower() for p in _DONE_PHRASES)
         return SupervisorVerdict(raw=reply, all_targets_met=all_met, feedback=reply)
+
+    @staticmethod
+    def _truncate_older_turns(messages: list[dict]) -> list[dict]:
+        if len(messages) <= 2:
+            return messages
+
+        result = [messages[0]]
+        remaining = messages[1:]
+
+        skip = 0
+        if remaining and remaining[0].get("role") == "user":
+            skip = 1
+            if len(remaining) > 1 and remaining[1].get("role") == "assistant":
+                skip = 2
+        elif remaining and remaining[0].get("role") == "assistant":
+            skip = 1
+
+        result.extend(remaining[skip:])
+        return result
