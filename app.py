@@ -17,6 +17,8 @@ from pathlib import Path
 import streamlit as st
 from openai import OpenAI
 
+from services.job_manager import JobManager
+from services.settings import load_settings, save_settings, apply_api_config
 from supervisor.analyzers.codebase_analyzer import snapshot_codebase
 from supervisor.core.loop import SupervisorLoop
 from supervisor.core.self_evolution_loop import SelfEvolutionLoop
@@ -106,6 +108,12 @@ def _auto_upgrade_opencode():
 
 
 # ── supervisor package imports (all at top level — never lazy) ──────────── #
+
+# ── Job Manager instance ────────────────────────────────────────────────── #
+# This instance handles long-running jobs in background threads and
+# persists status to disk to handle browser refreshes/disconnections.
+job_manager = JobManager(".job_store")
+
 
 # ── page config ──────────────────────────────────────────────────────────── #
 st.set_page_config(
@@ -399,52 +407,8 @@ if not st.session_state.get("_mcp_config_done"):
     st.session_state["_mcp_config_done"] = True
 
 
-# ── Settings persistence ──────────────────────────────────────────────────── #
-_SETTINGS_FILE = Path(
-    os.path.join(str(Path.home()), ".opencode_supervisor_settings.json")
-)
-
-_PERSIST_KEYS = [
-    "openai_key",
-    "base_url",
-    "workspace",
-    "supervisor_model",
-    "opencode_model",
-    "opencode_executable",
-    "max_retries",
-    "context_threshold",
-    "max_tokens",
-    "timeout",
-    "plan_mode_rounds",
-    "raw_input",
-    "raw_target",
-    "raw_restrictions",
-    "evo_goal",
-    "evo_extra_restrictions",
-]
-
-
-def _load_settings() -> dict:
-    """Load persisted settings from disk. Returns {} if file missing or corrupt."""
-    try:
-        if _SETTINGS_FILE.exists():
-            return json.loads(_SETTINGS_FILE.read_text(encoding="utf-8"))
-    except Exception:
-        pass
-    return {}
-
-
-def _save_settings() -> None:
-    """Write current session_state values for persisted keys to disk."""
-    data = {k: st.session_state.get(k, "") for k in _PERSIST_KEYS}
-    try:
-        _SETTINGS_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
-    except Exception:
-        pass
-
-
 # Load persisted settings first — used as defaults below
-_persisted = _load_settings()
+_persisted = load_settings()
 
 defaults = {
     "page": "wizard",
@@ -503,15 +467,33 @@ with st.sidebar:
     st.markdown("---")
 
     pill_map = {
-        "idle": '<span class="pill pill-idle">idle</span>',
-        "running": '<span class="pill pill-running">running</span>',
-        "success": '<span class="pill pill-success">done ✓</span>',
-        "failure": '<span class="pill pill-failure">failed ✗</span>',
+        "PENDING": '<span class="pill pill-idle">queued…</span>',
+        "RUNNING": '<span class="pill pill-running">running</span>',
+        "SUCCESS": '<span class="pill pill-success">done ✓</span>',
+        "FAILED": '<span class="pill pill-failure">failed ✗</span>',
+        "CANCELLED": '<span class="pill pill-failure">cancelled ⏹</span>',
     }
-    st.markdown(
-        f"**Status** {pill_map.get(st.session_state.run_state, '')}",
-        unsafe_allow_html=True,
-    )
+
+    # Retrieve current job IDs from query params
+    run_job_id = st.query_params.get("run_job_id")
+    evo_job_id = st.query_params.get("evo_job_id")
+
+    if run_job_id:
+        status = job_manager.get_job_status(run_job_id)
+        if status:
+            st.markdown(
+                f"**Live Run** {pill_map.get(status['state'], '')}",
+                unsafe_allow_html=True,
+            )
+
+    if evo_job_id:
+        status = job_manager.get_job_status(evo_job_id)
+        if status:
+            st.markdown(
+                f"**Self-evo** {pill_map.get(status['state'], '')}",
+                unsafe_allow_html=True,
+            )
+
     st.markdown("---")
 
     pages = {
@@ -546,11 +528,6 @@ with st.sidebar:
 
     if not tests_passed:
         st.caption("🔒 Run & Self-Evolution locked — pass connectivity tests first.")
-
-    evo_state = st.session_state.evo_run_state
-    if evo_state != "idle":
-        evo_pill = pill_map.get(evo_state, "")
-        st.markdown(f"**Self-evo** {evo_pill}", unsafe_allow_html=True)
 
     # ── Add Custom Model for Opencode (sidebar, wizard page only) ───────── #
     if st.session_state.page == "wizard":
@@ -643,16 +620,6 @@ with st.sidebar:
 # ═══════════════════════════════════════════════════════════════════════════ #
 # PAGE 1 — Protocol Wizard                                                    #
 # ═══════════════════════════════════════════════════════════════════════════ #
-
-
-def _apply_api_config():
-    """Push API key and optional base URL into the environment for the SDK."""
-
-    os.environ["OPENAI_API_KEY"] = st.session_state.openai_key or "none"
-    if st.session_state.base_url.strip():
-        os.environ["OPENAI_BASE_URL"] = st.session_state.base_url.strip()
-    elif "OPENAI_BASE_URL" in os.environ:
-        del os.environ["OPENAI_BASE_URL"]
 
 
 # ═══════════════════════════════════════════════════════════════════════════ #
@@ -1056,7 +1023,7 @@ def page_wizard():
                         st.error(f"Failed to generate ignore patterns: {e}")
 
     # Auto-save settings to disk whenever the config panel is shown
-    _save_settings()
+    save_settings()
 
     # ── connectivity tests ────────────────────────────────────────────────── #
     st.markdown("---")
@@ -1229,7 +1196,7 @@ def page_wizard():
         if missing:
             st.error(f"Please fill in: {', '.join(missing)}")
         else:
-            _apply_api_config()
+            apply_api_config()
 
             with st.spinner("Asking supervisor to refine your protocol…"):
                 wizard = ProtocolWizard(model=st.session_state.supervisor_model)
@@ -1376,10 +1343,17 @@ def _save_protocol():
 # PAGE 2 — Live Run                                                           #
 # ═══════════════════════════════════════════════════════════════════════════ #
 
-
 def page_run():
     st.markdown("# Live Run")
 
+    # Check for existing job in query params
+    job_id = st.query_params.get("run_job_id")
+    if job_id:
+        _show_run_status_screen(job_id)
+    else:
+        _show_run_setup_screen()
+
+def _show_run_setup_screen():
     # Pre-flight check
     workspace = Path(st.session_state.workspace) if st.session_state.workspace else None
     if not workspace:
@@ -1393,126 +1367,39 @@ def page_run():
     proto_path = workspace / "protocol.md"
     if not proto_path.exists():
         st.error(f"**protocol.md not found** in workspace: `{workspace}`")
-        st.info(
-            "Please complete the Protocol Wizard to generate a protocol.md file, or manually create one in your workspace."
-        )
+        st.info("Please complete the Protocol Wizard to generate a protocol.md file.")
         return
 
-    # Validate protocol.md content
-    try:
-        proto_content = proto_path.read_text(encoding="utf-8")
-        if not proto_content.strip():
-            st.error(
-                "protocol.md exists but is empty. Please regenerate it via the Protocol Wizard."
-            )
-            return
-    except Exception as e:
-        st.error(f"Error reading protocol.md: {e}")
-        return
-
-    if "_run_shared" in st.session_state:
-        sh = st.session_state._run_shared
-        st.session_state.log_events = list(sh["events"])
-        heartbeat = sh.get("heartbeat", 0)
-        current_heartbeat = st.session_state.get("_run_heartbeat", 0)
-        if current_heartbeat != heartbeat:
-            st.session_state._run_heartbeat = heartbeat
-        if sh["state"] != "running":
-            st.session_state.run_state = sh["state"]
-            st.session_state.final_report = sh["report"]
+    st.markdown(
+        f"**Workspace:** `{workspace}`  \n"
+        f"**Protocol:** `{proto_path}`  \n"
+        f"**Supervisor model:** `{st.session_state.supervisor_model}`"
+    )
 
     col1, col2 = st.columns([2, 1])
     with col1:
-        st.markdown(
-            f"**Workspace:** `{workspace}`  \n"
-            f"**Protocol:** `{proto_path}`  \n"
-            f"**Supervisor model:** `{st.session_state.supervisor_model}`  \n"
-            f"**Max retries:** {st.session_state.max_retries} · "
-            f"**Timeout:** {st.session_state.timeout} min · "
-            f"**Compaction at:** {st.session_state.context_threshold}% · "
-            f"**Max tokens:** {st.session_state.max_tokens:,} · "
-            f"**Plan mode rounds:** {st.session_state.plan_mode_rounds}"
-        )
-
-        # Add plan_mode_rounds input
-        st.session_state.plan_mode_rounds = st.number_input(
+        plan_rounds = st.number_input(
             "Plan mode rounds",
             min_value=0,
             max_value=10,
             value=int(st.session_state.plan_mode_rounds),
-            key="run_plan_mode_rounds",
-            help="Number of planning rounds before execution (0 = no planning, 1+ = planning enabled)",
+            key="run_plan_mode_rounds_setup",
+            help="Number of planning rounds before execution",
         )
     with col2:
-        state = st.session_state.run_state
-        can_start = state in ("idle", "success", "failure")
-        can_stop = state == "running"
-
-        if st.button("▶  Start Run", type="primary", disabled=not can_start):
-            _start_run()
+        if st.button("▶  Start Live Run", type="primary", use_container_width=True):
+            st.session_state.plan_mode_rounds = plan_rounds
+            job_id = _enqueue_run_job()
+            st.query_params["run_job_id"] = job_id
             st.rerun()
 
-        if st.button("⏹  Stop", disabled=not can_stop):
-            if "_run_stop" in st.session_state:
-                st.session_state._run_stop.set()
-            st.session_state.run_state = "idle"
-            st.warning(
-                "Stop requested — the background thread will finish its current step."
-            )
-
-    st.markdown("---")
-    st.markdown("### 🖥️  Live Log")
-    _render_log()
-
-    # Token warnings display
-    _render_token_warnings(st.session_state.log_events, st.session_state.max_tokens)
-
-    # ── Report display after completed run ──────────────────────────────── #
-    if st.session_state.run_state in ("success", "failure"):
-        state = st.session_state.run_state
-        pill_map = {
-            "success": ("🟢", "All targets met — run completed successfully."),
-            "failure": ("🔴", "Run ended with failures."),
-        }
-        icon, label = pill_map.get(state, ("⚪", ""))
-        st.markdown("---")
-        st.markdown(f"### {icon} {label}")
-
-        if st.session_state.final_report:
-            st.markdown("#### Supervisor Report")
-            st.markdown(
-                f'<div class="proto-preview">{st.session_state.final_report}</div>',
-                unsafe_allow_html=True,
-            )
-            st.download_button(
-                "⬇  Download report",
-                data=st.session_state.final_report,
-                file_name="supervisor_report.md",
-                mime="text/markdown",
-            )
-
-        if st.session_state.protocol_md:
-            st.markdown("#### Protocol used")
-            st.markdown(
-                f'<div class="proto-preview">{st.session_state.protocol_md}</div>',
-                unsafe_allow_html=True,
-            )
-
-    if st.session_state.run_state == "running":
-        time.sleep(0.5)
-        st.rerun()
-
-
-def _start_run():
-    _save_settings()
-    _apply_api_config()
-
+def _enqueue_run_job() -> str:
+    save_settings()
+    apply_api_config()
+    
     workspace = Path(st.session_state.workspace)
     proto_path = workspace / "protocol.md"
-
-    if not proto_path.exists():
-        _save_protocol()
-
+    
     config = SupervisorConfig(
         protocol_path=proto_path,
         workspace=workspace,
@@ -1526,56 +1413,94 @@ def _start_run():
         max_tokens=int(st.session_state.max_tokens),
         plan_mode_rounds=int(st.session_state.plan_mode_rounds),
     )
+    
+    return job_manager.enqueue_job("run", config)
 
-    shared = {
-        "events": [],
-        "state": "running",
-        "report": "",
-        "heartbeat": 0,
-        "last_event_time": time.time(),
-    }
-    stop_event = threading.Event()
-    st.session_state.run_state = "running"
-    st.session_state.final_report = ""
-    st.session_state._run_shared = shared
-    st.session_state._run_stop = stop_event
-    st.session_state._run_heartbeat = 0
-    st.session_state.log_events = []
+def _show_run_status_screen(job_id: str):
+    status = job_manager.get_job_status(job_id)
+    if not status:
+        st.error(f"Job {job_id} not found.")
+        if st.button("Back to Setup"):
+            del st.query_params["run_job_id"]
+            st.rerun()
+        return
 
-    def _worker():
-        heartbeat_interval = 3.0
-        last_heartbeat = time.time()
-
-        loop = SupervisorLoop(config)
-        for event in loop.run_streaming():
-            if stop_event.is_set():
-                break
-            shared["events"].append(event)
-            shared["last_event_time"] = time.time()
-
-            now = time.time()
-            if now - last_heartbeat >= heartbeat_interval:
-                shared["heartbeat"] += 1
-                shared["events"].append(
-                    {
-                        "level": "heartbeat",
-                        "msg": f"Heartbeat #{shared['heartbeat']} — supervisor still active",
-                        "count": shared["heartbeat"],
-                    }
-                )
-                last_heartbeat = now
-
-        if any(e["level"] == "success" for e in shared["events"]):
-            shared["state"] = "success"
+    state = status["state"]
+    
+    # Header with status and control buttons
+    col_h1, col_h2, col_h3 = st.columns([3, 1, 1])
+    with col_h1:
+        st.markdown(f"### Job: `{job_id}`")
+    with col_h2:
+        if state == "RUNNING":
+            if st.button("⏹ Stop", use_container_width=True):
+                job_manager.cancel_job(job_id)
+                st.rerun()
         else:
-            shared["state"] = "failure"
+            if st.button("🗑 Clear", use_container_width=True):
+                del st.query_params["run_job_id"]
+                st.rerun()
+    with col_h3:
+        if st.button("🔄 Refresh", use_container_width=True):
+            st.rerun()
 
-        for p in (workspace / "failure_report.md", workspace / "summary.md"):
-            if p.exists():
-                shared["report"] = p.read_text(encoding="utf-8")
-                break
+    # Progress and details
+    if state == "RUNNING":
+        st.info("🏃 Job is running in background. You can safely close this tab or refresh.")
+        # Auto-refresh loop
+        time.sleep(2)
+        st.rerun()
 
-    threading.Thread(target=_worker, daemon=True).start()
+    # Layout for logs and info
+    col_main, col_side = st.columns([2, 1])
+    
+    with col_main:
+        st.markdown("#### 🖥️ Live Log")
+        _render_events(status.get("logs", []), "— waiting for logs —", show_verbose=True)
+        
+    with col_side:
+        st.markdown("#### ℹ️ Details")
+        st.markdown(f"**State:** {state}")
+        st.markdown(f"**Started:** {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(status.get('updated_at', 0)))}")
+        
+        # Token usage if available
+        _render_token_usage_bar(status.get("logs", []), int(st.session_state.max_tokens))
+
+        if status.get("report"):
+            st.markdown("#### 📊 Report")
+            with st.expander("View Report", expanded=True):
+                st.markdown(status["report"])
+                st.download_button(
+                    "⬇ Download",
+                    data=status["report"],
+                    file_name=f"report_{job_id}.md",
+                    mime="text/markdown"
+                )
+
+def _render_token_usage_bar(logs: list[dict], max_tokens: int):
+    """Simplified token usage bar for the status screen."""
+    import re
+    latest_current = 0
+    latest_fraction = 0.0
+    found = False
+    
+    for ev in logs:
+        msg = ev.get("msg", "")
+        if "context usage" in msg.lower():
+            match = re.search(r"(\d[\d,]*)\s*/\s*(\d[\d,]*)\s*tokens", msg)
+            if match:
+                current = int(match.group(1).replace(",", ""))
+                max_t = int(match.group(2).replace(",", ""))
+                fraction = current / max_t if max_t > 0 else 0
+                if fraction >= latest_fraction:
+                    latest_fraction = fraction
+                    latest_current = current
+                    found = True
+                    
+    if found:
+        color = "🔴" if latest_fraction > 0.9 else "🟡" if latest_fraction > 0.7 else "🟢"
+        st.progress(min(latest_fraction, 1.0), text=f"{color} {latest_current:,} / {max_tokens:,} tokens")
+
 
 
 def _esc(t: str) -> str:
@@ -1648,366 +1573,99 @@ def _render_events(
     st.markdown(f'<div class="log-box">{body}</div>', unsafe_allow_html=True)
 
 
-def _render_log():
-    _render_events(st.session_state.log_events, "— waiting for run to start —")
-
-
-def _render_token_warnings(events: list[dict], max_tokens: int) -> None:
-    """Display token usage warnings and estimated usage from log events."""
-    token_events = [
-        e
-        for e in events
-        if "token" in e.get("msg", "").lower() and e.get("level") == "warn"
-    ]
-    context_events = [
-        e
-        for e in events
-        if "context usage" in e.get("msg", "").lower() and e.get("level") == "warn"
-    ]
-
-    # Collect the latest token usage info from context warning events
-    latest_fraction = 0.0
-    latest_current = 0
-    found_usage = False
-
-    for ev in events:
-        msg = ev.get("msg", "")
-        # Parse "Context usage high: X/Y tokens" or "Context usage at NN% threshold: X / Y tokens"
-        if "context usage" in msg.lower() and ("tokens" in msg.lower()):
-            try:
-                # Try pattern: "X / Y tokens"
-                import re
-
-                match = re.search(r"(\d[\d,]*)\s*/\s*(\d[\d,]*)\s*tokens", msg)
-                if match:
-                    current = int(match.group(1).replace(",", ""))
-                    max_t = int(match.group(2).replace(",", ""))
-                    fraction = current / max_t if max_t > 0 else 0
-                    if fraction >= latest_fraction:
-                        latest_fraction = fraction
-                        latest_current = current
-                        found_usage = True
-            except (ValueError, IndexError):
-                pass
-
-    # Always show token usage bar if we have data
-    if found_usage:
-        color = (
-            "🔴" if latest_fraction > 0.9 else "🟡" if latest_fraction > 0.7 else "🟢"
-        )
-        st.progress(
-            min(latest_fraction, 1.0),
-            text=f"{color} {latest_current:,} / {max_tokens:,} tokens ({latest_fraction * 100:.0f}%)",
-        )
-
-    if not token_events and not context_events:
-        return
-
-    st.markdown("### ⚠️ Token Usage Warnings")
-    seen = set()
-    for ev in (token_events + context_events)[-5:]:
-        msg = ev.get("msg", "")
-        if msg not in seen:
-            seen.add(msg)
-            st.warning(msg)
-
-
-def _render_step_progress():
-    step_events = [
-        e
-        for e in st.session_state.log_events
-        if e.get("level") in ("step", "phase_transition")
-    ]
-    progress_events = [
-        e for e in st.session_state.log_events if e.get("level") == "step_progress"
-    ]
-    heartbeat_events = [
-        e for e in st.session_state.log_events if e.get("level") == "heartbeat"
-    ]
-
-    if st.session_state.run_state == "running":
-        heartbeat_count = len(heartbeat_events)
-        status_col1, status_col2, status_col3 = st.columns([3, 1, 1])
-        with status_col1:
-            st.markdown("🟢 **Background process active**")
-        with status_col2:
-            st.caption(f"💓 {heartbeat_count} heartbeat(s)")
-        with status_col3:
-            st.caption(f"🧭 {len(step_events)} step(s)")
-        if progress_events:
-            last_progress = progress_events[-1]
-            msg = last_progress.get("msg", "")
-
-            def _progress_content():
-                st.caption(msg)
-
-            render_expander_section("📊 Progress", _progress_content)
-    elif progress_events:
-        last_progress = progress_events[-1]
-        msg = last_progress.get("msg", "")
-
-        progress_col1, progress_col2, progress_col3 = st.columns([3, 1, 1])
-        with progress_col1:
-            st.caption(f"📊 {msg}")
-        with progress_col2:
-            step_count = len(step_events)
-            st.caption(f"🧭 {step_count} step(s)")
-        with progress_col3:
-            last_heartbeat = heartbeat_events[-1] if heartbeat_events else None
-            if last_heartbeat:
-                st.caption("🟢 active")
-
-        progress_val = 0.0
-        if progress_events:
-            ev = progress_events[-1]
-            if "percentage" not in ev:
-                parts = ev.get("msg", "").split()
-                for i, p in enumerate(parts):
-                    if p.replace("%", "").replace(".", "").isdigit():
-                        try:
-                            progress_val = float(p.replace("%", ""))
-                            break
-                        except ValueError:
-                            pass
-            else:
-                progress_val = ev.get("percentage", 0.0)
-
-        if progress_val > 0:
-            progress_col1, progress_col2 = st.columns([4, 1])
-            with progress_col1:
-                st.progress(progress_val / 100.0, text=f"{progress_val:.0f}% complete")
-            with progress_col2:
-                pass
-
-        if step_events:
-            with st.expander("📍 Step History", expanded=False):
-                for ev in step_events[-5:]:
-                    lvl = ev.get("level", "")
-                    if lvl == "step":
-                        st.caption(f"• {ev.get('msg', '')[:80]}")
-                    elif lvl == "phase_transition":
-                        st.caption(f"⚡ {ev.get('msg', '')}")
 
 
 # ═══════════════════════════════════════════════════════════════════════════ #
 # Self-Evolution                                                              #
 # ═══════════════════════════════════════════════════════════════════════════ #
 
-
 def page_evolve():
     st.markdown("# Self-Evolution")
+    
+    # Check for existing job in query params
+    job_id = st.query_params.get("evo_job_id")
+    if job_id:
+        _show_evo_status_screen(job_id)
+    else:
+        _show_evo_setup_screen()
+
+def _show_evo_setup_screen():
     st.markdown(
         "Point the supervisor + opencode at **this codebase itself**. "
         "Describe what you want improved or debugged — the system will "
         "auto-generate a `meta_protocol.md` from the live source tree, "
-        "then run the full supervisor loop with checkpointing and rollback."
+        "then run the full supervisor loop."
     )
 
     if not st.session_state.openai_key:
-        st.warning(
-            "Enter your OpenAI API key in the Protocol Wizard config panel first."
-        )
+        st.warning("Enter your OpenAI API key in the Protocol Wizard config panel first.")
         return
-
-    if "_evo_shared" in st.session_state:
-        sh = st.session_state._evo_shared
-        st.session_state.evo_log_events = list(sh["events"])
-        heartbeat = sh.get("heartbeat", 0)
-        current_heartbeat = st.session_state.get("_evo_heartbeat", 0)
-        if current_heartbeat != heartbeat:
-            st.session_state._evo_heartbeat = heartbeat
-        if sh["state"] != "running":
-            st.session_state.evo_run_state = sh["state"]
-            st.session_state.evo_report = sh["report"]
-
-    # ── infer repo root (where app.py lives) ─────────────────────────── #
 
     repo_root = Path(__file__).parent.resolve()
     st.info(f"**Repo root (workspace):** `{repo_root}`")
 
-    st.markdown("---")
-
-    # ── existing meta_protocol.md detection ──────────────────────────────── #
-    existing_meta = repo_root / "meta_protocol.md"
-    if existing_meta.exists() and st.session_state.evo_wizard_step == 0:
-        existing_meta_text = existing_meta.read_text(encoding="utf-8")
-        st.info("📄 An existing `meta_protocol.md` was found in the repo.")
-        col_rm, col_rn, _ = st.columns([1, 1, 3])
-        with col_rm:
-            if st.button(
-                "♻️  Use existing meta_protocol.md", type="primary", key="btn_reuse_meta"
-            ):
-                st.session_state.evo_meta_protocol_md = existing_meta_text
-                st.session_state.evo_wizard_step = 1
-                st.rerun()
-        with col_rn:
-            if st.button("✏️  Generate new one", key="btn_regen_meta"):
-                pass  # fall through to the form
-        with st.expander("Preview existing meta_protocol.md"):
-            st.code(existing_meta_text[:1500], language="markdown")
-        st.markdown("---")
-
-    # ─────────────────────────────────────────────────────────────────── #
-    # Step 0 — define the evolution goal                                  #
-    # ─────────────────────────────────────────────────────────────────── #
+    # Step 0 — define the evolution goal
     if st.session_state.evo_wizard_step == 0:
         st.markdown("### 🎯 What do you want to evolve?")
-
+        
         st.markdown('<div class="card">', unsafe_allow_html=True)
-        st.markdown(
-            "**Evolution goal** — describe the improvement, bug to fix, or feature to add"
-        )
-        st.text_area(
-            "evo_goal_input",
-            key="evo_goal",
-            height=130,
-            placeholder=(
-                "e.g.\n"
-                "Fix the context-estimation in opencode_runner.py — it currently uses a "
-                "char/token ratio which is too rough. Replace it with tiktoken.\n\n"
-                "Also add a proper logging handler so all supervisor events are written "
-                "to evolution.log in the workspace."
-            ),
-            label_visibility="collapsed",
-        )
+        st.markdown("**Evolution goal**")
+        st.text_area("evo_goal_input", key="evo_goal", height=130, label_visibility="collapsed")
         st.markdown("</div>", unsafe_allow_html=True)
 
         st.markdown('<div class="card">', unsafe_allow_html=True)
-        st.markdown(
-            "**Extra restrictions** *(optional)* — anything the agent must not touch"
-        )
-        st.text_area(
-            "evo_restrictions_input",
-            key="evo_extra_restrictions",
-            height=80,
-            placeholder="e.g. Do not change the Streamlit UI layout. Do not add new dependencies.",
-            label_visibility="collapsed",
-        )
+        st.markdown("**Extra restrictions**")
+        st.text_area("evo_restrictions_input", key="evo_extra_restrictions", height=80, label_visibility="collapsed")
         st.markdown("</div>", unsafe_allow_html=True)
 
         col_gen, col_snap, _ = st.columns([1, 1, 3])
         with col_gen:
-            gen_clicked = st.button("🧠  Generate meta_protocol.md", type="primary")
+            if st.button("🧠 Generate meta_protocol.md", type="primary"):
+                _generate_meta_protocol(repo_root)
         with col_snap:
-            snap_clicked = st.button("🔍  Preview codebase snapshot")
-
-        if snap_clicked:
-            with st.spinner("Scanning codebase…"):
-                snap = snapshot_codebase(repo_root)
-            st.markdown(f"**{len(snap.files)} files found**")
-            with st.expander("File tree"):
-                st.code(snap.tree())
-
-        if gen_clicked:
-            if not st.session_state.evo_goal.strip():
-                st.error("Please describe your evolution goal.")
-            else:
-                _apply_api_config()
-
-                with st.spinner("Scanning codebase and generating meta_protocol.md…"):
+            if st.button("🔍 Preview snapshot"):
+                with st.spinner("Scanning..."):
                     snap = snapshot_codebase(repo_root)
-                    builder = MetaProtocolBuilder(
-                        model=st.session_state.supervisor_model
-                    )
-                    try:
-                        meta_md = builder.build(
-                            evolution_goal=st.session_state.evo_goal,
-                            snapshot=snap,
-                            extra_restrictions=st.session_state.evo_extra_restrictions,
-                        )
-                        st.session_state.evo_meta_protocol_md = meta_md
-                        st.session_state.evo_wizard_step = 1
-                        st.rerun()
-                    except Exception as exc:
-                        st.error(f"Generation failed: {exc}")
+                    st.code(snap.tree())
 
-    # ─────────────────────────────────────────────────────────────────── #
-    # Step 1 — review meta_protocol + launch                             #
-    # ─────────────────────────────────────────────────────────────────── #
+    # Step 1 — review and launch
     elif st.session_state.evo_wizard_step == 1:
-        if st.session_state.evo_run_state != "running":
-            st.markdown("### 📄 Generated `meta_protocol.md`")
-            st.caption("Review and edit, then click Launch.")
-
-            edited = st.text_area(
-                "evo_proto_edit",
-                key="evo_meta_protocol_md",
-                height=340,
-                label_visibility="collapsed",
-            )
-
-        col_a, col_b, col_c, _ = st.columns([1, 1, 1, 2])
+        st.markdown("### 📄 Generated `meta_protocol.md`")
+        st.text_area("evo_proto_edit", key="evo_meta_protocol_md", height=340, label_visibility="collapsed")
+        
+        col_a, col_b, _ = st.columns([1, 1, 2])
         with col_a:
-            launch = st.button(
-                "🚀  Launch Evolution",
-                type="primary",
-                disabled=st.session_state.evo_run_state == "running",
-            )
+            if st.button("🚀 Launch Evolution", type="primary"):
+                job_id = _enqueue_evo_job(repo_root)
+                st.query_params["evo_job_id"] = job_id
+                st.rerun()
         with col_b:
-            if st.button("🔄  Regenerate"):
+            if st.button("🔄 Regenerate"):
                 st.session_state.evo_wizard_step = 0
                 st.rerun()
-        with col_c:
-            if st.button(
-                "⏹  Stop", disabled=st.session_state.evo_run_state != "running"
-            ):
-                if "_evo_stop" in st.session_state:
-                    st.session_state._evo_stop.set()
-                st.session_state.evo_run_state = "idle"
 
-        if launch:
-            _start_evolution(repo_root)
-            st.rerun()
-
-        # ── live log ─────────────────────────────────────────────────── #
-        st.markdown("---")
-        st.markdown("### 🖥️  Live Run Evolution")
-        _render_evo_log()
-        _render_evo_step_progress()
-
-        # Token warnings display for evolution
-        _render_token_warnings(
-            st.session_state.evo_log_events, st.session_state.max_tokens
-        )
-
-        if st.session_state.evo_run_state == "running":
-            time.sleep(0.5)
-            st.rerun()
-
-        # ── report when done ─────────────────────────────────────────── #
-        if (
-            st.session_state.evo_run_state in ("success", "failure")
-            and st.session_state.evo_report
-        ):
-            st.markdown("---")
-            st.markdown("### 📊 Evolution Report")
-            st.markdown(
-                f'<div class="proto-preview">{st.session_state.evo_report}</div>',
-                unsafe_allow_html=True,
+def _generate_meta_protocol(repo_root: Path):
+    apply_api_config()
+    with st.spinner("Generating meta_protocol.md..."):
+        snap = snapshot_codebase(repo_root)
+        builder = MetaProtocolBuilder(model=st.session_state.supervisor_model)
+        try:
+            meta_md = builder.build(
+                evolution_goal=st.session_state.evo_goal,
+                snapshot=snap,
+                extra_restrictions=st.session_state.evo_extra_restrictions,
             )
-            st.download_button(
-                "⬇  Download evolution_report.md",
-                data=st.session_state.evo_report,
-                file_name="evolution_report.md",
-                mime="text/markdown",
-            )
+            st.session_state.evo_meta_protocol_md = meta_md
+            st.session_state.evo_wizard_step = 1
+            st.rerun()
+        except Exception as exc:
+            st.error(f"Generation failed: {exc}")
 
-            col_r, _ = st.columns([1, 3])
-            with col_r:
-                if st.button("🔁  New Evolution Run"):
-                    st.session_state.evo_wizard_step = 0
-                    st.session_state.evo_run_state = "idle"
-                    st.session_state.evo_log_events = []
-                    st.session_state.evo_report = ""
-                    st.rerun()
-
-
-def _start_evolution(repo_root: Path):
-    _save_settings()
-    _apply_api_config()
-
+def _enqueue_evo_job(repo_root: Path) -> str:
+    save_settings()
+    apply_api_config()
     proto_path = write_meta_protocol(st.session_state.evo_meta_protocol_md, repo_root)
-
+    
     config = SupervisorConfig(
         protocol_path=proto_path,
         workspace=repo_root,
@@ -2020,175 +1678,59 @@ def _start_evolution(repo_root: Path):
         protected_files=tuple(st.session_state.get("protected_files", [])),
         max_tokens=int(st.session_state.max_tokens),
     )
+    return job_manager.enqueue_job("evolve", config)
 
-    shared = {
-        "events": [],
-        "state": "running",
-        "report": "",
-        "heartbeat": 0,
-        "last_event_time": time.time(),
-    }
-    stop_event = threading.Event()
-    st.session_state.evo_run_state = "running"
-    st.session_state.evo_report = ""
-    st.session_state._evo_shared = shared
-    st.session_state._evo_stop = stop_event
-    st.session_state._evo_heartbeat = 0
-    st.session_state.evo_log_events = []
+def _show_evo_status_screen(job_id: str):
+    status = job_manager.get_job_status(job_id)
+    if not status:
+        st.error(f"Job {job_id} not found.")
+        if st.button("Back to Setup"):
+            del st.query_params["evo_job_id"]
+            st.rerun()
+        return
 
-    def _worker():
-        heartbeat_interval = 3.0
-        last_heartbeat = time.time()
-
-        loop = SelfEvolutionLoop(config)
-        for event in loop.run_streaming():
-            if stop_event.is_set():
-                break
-            shared["events"].append(event)
-            shared["last_event_time"] = time.time()
-            if event.get("level") == "report":
-                shared["report"] = event["msg"]
-
-            now = time.time()
-            if now - last_heartbeat >= heartbeat_interval:
-                shared["heartbeat"] += 1
-                shared["events"].append(
-                    {
-                        "level": "heartbeat",
-                        "msg": f"Heartbeat #{shared['heartbeat']} — evolution still active",
-                        "count": shared["heartbeat"],
-                    }
-                )
-                last_heartbeat = now
-
-        if any(e["level"] == "success" for e in shared["events"]):
-            shared["state"] = "success"
+    state = status["state"]
+    
+    col_h1, col_h2, col_h3 = st.columns([3, 1, 1])
+    with col_h1:
+        st.markdown(f"### Evolution Job: `{job_id}`")
+    with col_h2:
+        if state == "RUNNING":
+            if st.button("⏹ Stop", use_container_width=True):
+                job_manager.cancel_job(job_id)
+                st.rerun()
         else:
-            shared["state"] = "failure"
+            if st.button("🗑 Clear", use_container_width=True):
+                del st.query_params["evo_job_id"]
+                st.rerun()
+    with col_h3:
+        if st.button("🔄 Refresh", use_container_width=True):
+            st.rerun()
 
-        if not shared["report"]:
-            rp = repo_root / "evolution_report.md"
-            if rp.exists():
-                shared["report"] = rp.read_text(encoding="utf-8")
+    if state == "RUNNING":
+        st.info("🧬 Evolution in progress...")
+        time.sleep(2)
+        st.rerun()
 
-    threading.Thread(target=_worker, daemon=True).start()
+    col_main, col_side = st.columns([2, 1])
+    with col_main:
+        st.markdown("#### 🖥️ Evolution Log")
+        _render_events(status.get("logs", []), "— waiting for logs —", show_verbose=True)
+        
+    with col_side:
+        st.markdown("#### ℹ️ Details")
+        st.markdown(f"**State:** {state}")
+        st.markdown(f"**Started:** {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(status.get('updated_at', 0)))}")
+        
+        _render_token_usage_bar(status.get("logs", []), int(st.session_state.max_tokens))
 
+        if status.get("report"):
+            st.markdown("#### 📊 Evolution Report")
+            with st.expander("View Report", expanded=True):
+                st.markdown(status["report"])
+                st.download_button("⬇ Download", data=status["report"], file_name=f"evo_report_{job_id}.md")
 
-def _render_evo_log():
-    st.session_state.self_evolution_verbose = st.checkbox(
-        "Verbose logging",
-        value=st.session_state.self_evolution_verbose,
-        key="evo_verbose_checkbox",
-    )
-
-    verbose = st.session_state.self_evolution_verbose
-
-    skip_levels = {"report"}
-    if not verbose:
-        skip_levels.add("opencode_prompt")
-        skip_levels.add("opencode_output")
-
-    state = st.session_state.evo_run_state
-    placeholder = (
-        "— waiting for evolution to start —" if state == "idle" else "— starting… —"
-    )
-    _render_events(
-        st.session_state.evo_log_events,
-        placeholder,
-        skip=skip_levels,
-        show_verbose=False,
-    )
-    cp_events = [
-        e
-        for e in st.session_state.evo_log_events
-        if "checkpoint saved" in e.get("msg", "").lower()
-    ]
-    if cp_events:
-        st.caption(f"💾 {len(cp_events)} checkpoint(s) saved so far")
-
-
-def _render_evo_step_progress():
-    step_events = [
-        e
-        for e in st.session_state.evo_log_events
-        if e.get("level") in ("step", "phase_transition")
-    ]
-    progress_events = [
-        e for e in st.session_state.evo_log_events if e.get("level") == "step_progress"
-    ]
-    heartbeat_events = [
-        e for e in st.session_state.evo_log_events if e.get("level") == "heartbeat"
-    ]
-
-    if st.session_state.evo_run_state == "running":
-        heartbeat_count = len(heartbeat_events)
-        status_col1, status_col2, status_col3 = st.columns([3, 1, 1])
-        with status_col1:
-            st.markdown("🟢 **Evolution process active**")
-        with status_col2:
-            st.caption(f"💓 {heartbeat_count} heartbeat(s)")
-        with status_col3:
-            st.caption(f"🧭 {len(step_events)} step(s)")
-        if progress_events:
-            last_progress = progress_events[-1]
-            msg = last_progress.get("msg", "")
-
-            def _evo_progress_content():
-                st.caption(msg)
-
-            render_expander_section("📊 Progress", _evo_progress_content)
-    elif progress_events:
-        last_progress = progress_events[-1]
-        msg = last_progress.get("msg", "")
-
-        progress_col1, progress_col2, progress_col3 = st.columns([3, 1, 1])
-        with progress_col1:
-            st.caption(f"📊 {msg}")
-        with progress_col2:
-            step_count = len(step_events)
-            st.caption(f"🧭 {step_count} step(s)")
-        with progress_col3:
-            last_heartbeat = heartbeat_events[-1] if heartbeat_events else None
-            if last_heartbeat:
-                st.caption("🟢 active")
-
-        progress_val = 0.0
-        if progress_events:
-            ev = progress_events[-1]
-            if "percentage" not in ev:
-                parts = ev.get("msg", "").split()
-                for i, p in enumerate(parts):
-                    if p.replace("%", "").replace(".", "").isdigit():
-                        try:
-                            progress_val = float(p.replace("%", ""))
-                            break
-                        except ValueError:
-                            pass
-            else:
-                progress_val = ev.get("percentage", 0.0)
-
-        if progress_val > 0:
-            progress_col1, progress_col2 = st.columns([4, 1])
-            with progress_col1:
-                st.progress(progress_val / 100.0, text=f"{progress_val:.0f}% complete")
-            with progress_col2:
-                pass
-
-        if step_events:
-
-            def _evo_step_history_content():
-                for ev in step_events[-5:]:
-                    lvl = ev.get("level", "")
-                    if lvl == "step":
-                        st.caption(f"• {ev.get('msg', '')[:80]}")
-                    elif lvl == "phase_transition":
-                        st.caption(f"⚡ {ev.get('msg', '')}")
-
-            render_expander_section("📍 Step History", _evo_step_history_content)
-
-
-# ═══════════════════════════════════════════════════════════════════════════ #
-# Router                                                                      #
+# Router
 # ═══════════════════════════════════════════════════════════════════════════ #
 
 page = st.session_state.page
