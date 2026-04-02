@@ -105,6 +105,12 @@ class JobManager:
                 # Periodic heartbeat
                 now = time.time()
                 if now - last_heartbeat >= heartbeat_interval:
+                    # Also append a heartbeat event so the UI can count them
+                    self.store.append_log(job_id, {
+                        "level": "heartbeat",
+                        "msg": "Heartbeat — supervisor still active"
+                    })
+                    
                     self.store.save_job_state(job_id, {
                         "type": job_type,
                         "state": "RUNNING",

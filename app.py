@@ -1455,6 +1455,7 @@ def _show_run_status_screen(job_id: str):
     col_main, col_side = st.columns([2, 1])
     
     with col_main:
+        _render_step_progress(status.get("logs", []), state)
         st.markdown("#### 🖥️ Live Log")
         _render_events(status.get("logs", []), "— waiting for logs —", show_verbose=True)
         
@@ -1500,6 +1501,83 @@ def _render_token_usage_bar(logs: list[dict], max_tokens: int):
     if found:
         color = "🔴" if latest_fraction > 0.9 else "🟡" if latest_fraction > 0.7 else "🟢"
         st.progress(min(latest_fraction, 1.0), text=f"{color} {latest_current:,} / {max_tokens:,} tokens")
+
+def _render_step_progress(logs: list[dict], run_state: str, is_evolution: bool = False):
+    """Render progress bar, step history, and heartbeats."""
+    step_events = [
+        e for e in logs if e.get("level") in ("step", "phase_transition")
+    ]
+    progress_events = [
+        e for e in logs if e.get("level") == "step_progress"
+    ]
+    heartbeat_events = [
+        e for e in logs if e.get("level") == "heartbeat"
+    ]
+
+    process_label = "Evolution process active" if is_evolution else "Background process active"
+
+    if run_state == "RUNNING":
+        heartbeat_count = len(heartbeat_events)
+        status_col1, status_col2, status_col3 = st.columns([3, 1, 1])
+        with status_col1:
+            st.markdown(f"🟢 **{process_label}**")
+        with status_col2:
+            st.caption(f"💓 {heartbeat_count} heartbeat(s)")
+        with status_col3:
+            st.caption(f"🧭 {len(step_events)} step(s)")
+        if progress_events:
+            last_progress = progress_events[-1]
+            msg = last_progress.get("msg", "")
+
+            def _progress_content():
+                st.caption(msg)
+
+            render_expander_section("📊 Progress", _progress_content)
+    elif progress_events:
+        last_progress = progress_events[-1]
+        msg = last_progress.get("msg", "")
+
+        progress_col1, progress_col2, progress_col3 = st.columns([3, 1, 1])
+        with progress_col1:
+            st.caption(f"📊 {msg}")
+        with progress_col2:
+            step_count = len(step_events)
+            st.caption(f"🧭 {step_count} step(s)")
+        with progress_col3:
+            last_heartbeat = heartbeat_events[-1] if heartbeat_events else None
+            if last_heartbeat:
+                st.caption("🟢 active")
+
+        progress_val = 0.0
+        if progress_events:
+            ev = progress_events[-1]
+            if "percentage" not in ev:
+                parts = ev.get("msg", "").split()
+                for i, p in enumerate(parts):
+                    if p.replace("%", "").replace(".", "").isdigit():
+                        try:
+                            progress_val = float(p.replace("%", ""))
+                            break
+                        except ValueError:
+                            pass
+            else:
+                progress_val = ev.get("percentage", 0.0)
+
+        if progress_val > 0:
+            progress_col1, progress_col2 = st.columns([4, 1])
+            with progress_col1:
+                st.progress(progress_val / 100.0, text=f"{progress_val:.0f}% complete")
+            with progress_col2:
+                pass
+
+        if step_events:
+            with st.expander("📍 Step History", expanded=False):
+                for ev in step_events[-5:]:
+                    lvl = ev.get("level", "")
+                    if lvl == "step":
+                        st.caption(f"• {ev.get('msg', '')[:80]}")
+                    elif lvl == "phase_transition":
+                        st.caption(f"⚡ {ev.get('msg', '')}")
 
 
 
@@ -1714,6 +1792,7 @@ def _show_evo_status_screen(job_id: str):
 
     col_main, col_side = st.columns([2, 1])
     with col_main:
+        _render_step_progress(status.get("logs", []), state, is_evolution=True)
         st.markdown("#### 🖥️ Evolution Log")
         _render_events(status.get("logs", []), "— waiting for logs —", show_verbose=True)
         
