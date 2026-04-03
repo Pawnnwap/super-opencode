@@ -19,13 +19,11 @@ import sys
 from pathlib import Path
 from typing import Callable, Generator, Optional
 
-from supervisor.analyzers.opencode_step_detector import (
-    OpencodeStepDetector,
-    PhaseTransition,
-    Step,
-    StepProgress,
-)
-from supervisor.workspace.workspace_archiver import ArchiveResult, WorkspaceArchiver
+from supervisor.analyzers.opencode_step_detector import (OpencodeStepDetector,
+                                                         PhaseTransition, Step,
+                                                         StepProgress)
+from supervisor.workspace.workspace_archiver import (ArchiveResult,
+                                                     WorkspaceArchiver)
 
 logger = logging.getLogger(__name__)
 

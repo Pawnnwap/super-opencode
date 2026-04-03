@@ -1,10 +1,8 @@
 import json
 import os
-import sys
 from pathlib import Path
 
 import streamlit as st
-
 
 _SETTINGS_FILE = Path(
     os.path.join(str(Path.home()), ".opencode_supervisor_settings.json")
@@ -29,6 +27,7 @@ _PERSIST_KEYS = [
     "evo_extra_restrictions",
 ]
 
+
 def load_settings() -> dict:
     """Load persisted settings from disk. Returns {} if file missing or corrupt."""
     try:
@@ -38,6 +37,7 @@ def load_settings() -> dict:
         pass
     return {}
 
+
 def save_settings() -> None:
     """Write current session_state values for persisted keys to disk."""
     data = {k: st.session_state.get(k, "") for k in _PERSIST_KEYS}
@@ -45,6 +45,7 @@ def save_settings() -> None:
         _SETTINGS_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
     except Exception:
         pass
+
 
 def apply_api_config():
     """Push API key and optional base URL into the environment for the SDK."""

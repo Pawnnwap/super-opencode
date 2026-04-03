@@ -14,14 +14,16 @@ import time
 from pathlib import Path
 from typing import Generator
 
-from supervisor.analyzers.codebase_analyzer import CodebaseSnapshot, snapshot_codebase
+from supervisor.analyzers.codebase_analyzer import (CodebaseSnapshot,
+                                                    snapshot_codebase)
 from supervisor.core.llm_supervisor import LLMSupervisor
 from supervisor.core.loop_base import BaseLoop, Event, LoopState, _ev
 from supervisor.protocols.protocol import load_protocol
 from supervisor.runners.test_runner import OcTestRunner, RunTestResult
 from supervisor.utils.config import SupervisorConfig
 from supervisor.utils.gitignore_utils import update_gitignore_files
-from supervisor.workspace.workspace_archiver import ArchiveResult, WorkspaceArchiver
+from supervisor.workspace.workspace_archiver import (ArchiveResult,
+                                                     WorkspaceArchiver)
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +94,7 @@ class SelfEvolutionLoop(BaseLoop):
             self.runner.start(init_prompt)
             self._last_step_time = time.time()
             output, timed_out = self.runner.read_output()
+            output = self._strip_thinking_blocks(output)
 
             yield from self._run_loop(output, timed_out)
         finally:
@@ -259,7 +262,8 @@ class SelfEvolutionLoop(BaseLoop):
         )
 
     def _init_prompt(self) -> str:
-        from supervisor.prompts import HASHLINE_SYSTEM_INSTRUCTIONS, SELF_EVOLUTION_INIT_PROMPT_TEMPLATE
+        from supervisor.prompts import (HASHLINE_SYSTEM_INSTRUCTIONS,
+                                        SELF_EVOLUTION_INIT_PROMPT_TEMPLATE)
 
         text = self.config.protocol_path.read_text(encoding="utf-8")
         baseline_note = (

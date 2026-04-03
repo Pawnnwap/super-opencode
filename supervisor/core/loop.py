@@ -106,6 +106,7 @@ class SupervisorLoop(BaseLoop):
             self.runner.start(init_prompt)
             self._last_step_time = time.time()
             output, timed_out = self.runner.read_output()
+            output = self._strip_thinking_blocks(output)
 
             yield from self._run_loop(output, timed_out)
         finally:
@@ -191,6 +192,7 @@ class SupervisorLoop(BaseLoop):
                 plan_runner.enable_continuation(True)
             plan_runner.start(prompt)
             output, timed_out = plan_runner.read_output()
+            output = self._strip_thinking_blocks(output)
 
             if timed_out or not output.strip():
                 yield _ev(
@@ -229,7 +231,7 @@ class SupervisorLoop(BaseLoop):
             )
             yield from self._emit_token_warnings()
 
-            last_feedback = verdict.feedback
+            last_feedback = self._strip_thinking_blocks(verdict.feedback)
 
         plan_runner.stop()
 
@@ -323,7 +325,8 @@ class SupervisorLoop(BaseLoop):
             yield _ev("error", f"Unhandled exception:\n{traceback.format_exc()}")
 
     def _init_prompt(self) -> str:
-        from supervisor.prompts import HASHLINE_SYSTEM_INSTRUCTIONS, INIT_PROMPT_TEMPLATE
+        from supervisor.prompts import (HASHLINE_SYSTEM_INSTRUCTIONS,
+                                        INIT_PROMPT_TEMPLATE)
 
         text = self.config.protocol_path.read_text(encoding="utf-8")
         ws = self.config.workspace.resolve()

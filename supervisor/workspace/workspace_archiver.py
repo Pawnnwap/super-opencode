@@ -77,7 +77,8 @@ class WorkspaceArchiver:
         self.archive_root.mkdir(parents=True, exist_ok=True)
         counter_file = self.archive_root / ".archive_counter"
         if counter_file.exists():
-            import os, stat
+            import os
+            import stat
             try:
                 if os.name == "nt":
                     import subprocess

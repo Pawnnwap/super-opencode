@@ -5,12 +5,10 @@ Run with:  streamlit run app.py
 
 from __future__ import annotations
 
-import concurrent.futures
 import json
 import os
 import subprocess
 import sys
-import threading
 import time
 from pathlib import Path
 
@@ -18,15 +16,11 @@ import streamlit as st
 from openai import OpenAI
 
 from services.job_manager import JobManager
-from services.settings import load_settings, save_settings, apply_api_config
+from services.settings import apply_api_config, load_settings, save_settings
 from supervisor.analyzers.codebase_analyzer import snapshot_codebase
-from supervisor.core.loop import SupervisorLoop
-from supervisor.core.self_evolution_loop import SelfEvolutionLoop
 from supervisor.monitoring.token_estimator import estimate_tokens
-from supervisor.protocols.meta_protocol_builder import (
-    MetaProtocolBuilder,
-    write_meta_protocol,
-)
+from supervisor.protocols.meta_protocol_builder import (MetaProtocolBuilder,
+                                                        write_meta_protocol)
 from supervisor.protocols.protocol_analyzer import ProtocolAnalyzer, Severity
 from supervisor.protocols.protocol_wizard import ProtocolWizard
 from supervisor.utils.config import SupervisorConfig
@@ -508,7 +502,7 @@ with st.sidebar:
 
     run_job_id = st.query_params.get("run_job_id")
     evo_job_id = st.query_params.get("evo_job_id")
-    
+
     is_running = False
     for jid in job_manager.store.list_jobs():
         status = job_manager.get_job_status(jid)
@@ -644,7 +638,7 @@ with st.sidebar:
 def _run_with_timeout(fn, seconds=30):
     """Run fn() in a daemon thread; raise TimeoutError if it exceeds `seconds`."""
     import threading
-    
+
     result = []
     error = []
 
@@ -660,19 +654,21 @@ def _run_with_timeout(fn, seconds=30):
 
     if t.is_alive():
         raise TimeoutError(f"Timed out after {seconds}s")
-    
+
     if error:
         raise error[0]
-        
+
     return result[0]
 
 
 def test_opencode():
     import tempfile
-    from supervisor.runners.opencode_runner import OpencodeRunner, find_opencode
+
+    from supervisor.runners.opencode_runner import (OpencodeRunner,
+                                                    find_opencode)
 
     workspace = Path(tempfile.gettempdir()) / "opencode_test_dummy"
-    workspace.mkdir(exist_ok=True) # Ensure dummy dir exists
+    workspace.mkdir(exist_ok=True)  # Ensure dummy dir exists
 
     try:
         exe = find_opencode(st.session_state.opencode_executable or "")
@@ -920,9 +916,7 @@ def page_wizard():
 
         with st.expander("🚫 Ignore Patterns (.opencodeignore)", expanded=False):
             from supervisor.workspace.ignore_patterns import (
-                IGNORE_FILE,
-                write_ignore_file,
-            )
+                IGNORE_FILE, write_ignore_file)
 
             st.caption(
                 f"Files matching these patterns will be excluded from context retrieval"
@@ -1382,7 +1376,7 @@ def page_run():
 
     # Check for existing job in query params
     job_id = st.query_params.get("run_job_id")
-    
+
     if not job_id:
         for jid in job_manager.store.list_jobs():
             status = job_manager.get_job_status(jid)
@@ -1396,6 +1390,7 @@ def page_run():
         _show_run_status_screen(job_id)
     else:
         _show_run_setup_screen()
+
 
 def _show_run_setup_screen():
     # Pre-flight check
@@ -1437,13 +1432,14 @@ def _show_run_setup_screen():
             st.query_params["run_job_id"] = job_id
             st.rerun()
 
+
 def _enqueue_run_job() -> str:
     save_settings()
     apply_api_config()
-    
+
     workspace = Path(st.session_state.workspace)
     proto_path = workspace / "protocol.md"
-    
+
     config = SupervisorConfig(
         protocol_path=proto_path,
         workspace=workspace,
@@ -1457,8 +1453,9 @@ def _enqueue_run_job() -> str:
         max_tokens=int(st.session_state.max_tokens),
         plan_mode_rounds=int(st.session_state.plan_mode_rounds),
     )
-    
+
     return job_manager.enqueue_job("run", config)
+
 
 def _show_run_status_screen(job_id: str):
     status = job_manager.get_job_status(job_id)
@@ -1470,7 +1467,7 @@ def _show_run_status_screen(job_id: str):
         return
 
     state = status["state"]
-    
+
     # Header with status and control buttons
     col_h1, col_h2, col_h3 = st.columns([3, 1, 1])
     with col_h1:
@@ -1490,17 +1487,17 @@ def _show_run_status_screen(job_id: str):
 
     # Layout for logs and info
     col_main, col_side = st.columns([2, 1])
-    
+
     with col_main:
         _render_step_progress(status.get("logs", []), state)
         st.markdown("#### 🖥️ Live Log")
         _render_events(status.get("logs", []), "— waiting for logs —", show_verbose=True)
-        
+
     with col_side:
         st.markdown("#### ℹ️ Details")
         st.markdown(f"**State:** {state}")
         st.markdown(f"**Started:** {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(status.get('updated_at', 0)))}")
-        
+
         # Token usage if available
         _render_token_usage_bar(status.get("logs", []), int(st.session_state.max_tokens))
 
@@ -1521,13 +1518,14 @@ def _show_run_status_screen(job_id: str):
         time.sleep(2)
         st.rerun()
 
+
 def _render_token_usage_bar(logs: list[dict], max_tokens: int):
     """Simplified token usage bar for the status screen."""
     import re
     latest_current = 0
     latest_fraction = 0.0
     found = False
-    
+
     for ev in logs:
         msg = ev.get("msg", "")
         if "context usage" in msg.lower():
@@ -1540,10 +1538,11 @@ def _render_token_usage_bar(logs: list[dict], max_tokens: int):
                     latest_fraction = fraction
                     latest_current = current
                     found = True
-                    
+
     if found:
         color = "🔴" if latest_fraction > 0.9 else "🟡" if latest_fraction > 0.7 else "🟢"
         st.progress(min(latest_fraction, 1.0), text=f"{color} {latest_current:,} / {max_tokens:,} tokens")
+
 
 def _render_step_progress(logs: list[dict], run_state: str, is_evolution: bool = False):
     """Render progress bar, step history, and heartbeats."""
@@ -1623,7 +1622,6 @@ def _render_step_progress(logs: list[dict], run_state: str, is_evolution: bool =
                         st.caption(f"⚡ {ev.get('msg', '')}")
 
 
-
 def _esc(t: str) -> str:
     return t.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
@@ -1695,18 +1693,16 @@ def _render_events(
     st.markdown(f'<div class="log-box">{body}</div>', unsafe_allow_html=True)
 
 
-
-
 # ═══════════════════════════════════════════════════════════════════════════ #
 # Self-Evolution                                                              #
 # ═══════════════════════════════════════════════════════════════════════════ #
 
 def page_evolve():
     st.markdown("# Self-Evolution")
-    
+
     # Check for existing job in query params
     job_id = st.query_params.get("evo_job_id")
-    
+
     if not job_id:
         for jid in job_manager.store.list_jobs():
             status = job_manager.get_job_status(jid)
@@ -1720,6 +1716,7 @@ def page_evolve():
         _show_evo_status_screen(job_id)
     else:
         _show_evo_setup_screen()
+
 
 def _show_evo_setup_screen():
     st.markdown(
@@ -1739,7 +1736,7 @@ def _show_evo_setup_screen():
     # Step 0 — define the evolution goal
     if st.session_state.evo_wizard_step == 0:
         st.markdown("### 🎯 What do you want to evolve?")
-        
+
         st.markdown('<div class="card">', unsafe_allow_html=True)
         st.markdown("**Evolution goal**")
         st.text_area("evo_goal_input", key="evo_goal", height=130, label_visibility="collapsed")
@@ -1764,7 +1761,7 @@ def _show_evo_setup_screen():
     elif st.session_state.evo_wizard_step == 1:
         st.markdown("### 📄 Generated `meta_protocol.md`")
         st.text_area("evo_proto_edit", key="evo_meta_protocol_md", height=340, label_visibility="collapsed")
-        
+
         col_a, col_b, _ = st.columns([1, 1, 2])
         with col_a:
             if st.button("🚀 Launch Evolution", type="primary"):
@@ -1775,6 +1772,7 @@ def _show_evo_setup_screen():
             if st.button("🔄 Regenerate"):
                 st.session_state.evo_wizard_step = 0
                 st.rerun()
+
 
 def _generate_meta_protocol(repo_root: Path):
     apply_api_config()
@@ -1793,11 +1791,12 @@ def _generate_meta_protocol(repo_root: Path):
         except Exception as exc:
             st.error(f"Generation failed: {exc}")
 
+
 def _enqueue_evo_job(repo_root: Path) -> str:
     save_settings()
     apply_api_config()
     proto_path = write_meta_protocol(st.session_state.evo_meta_protocol_md, repo_root)
-    
+
     config = SupervisorConfig(
         protocol_path=proto_path,
         workspace=repo_root,
@@ -1812,6 +1811,7 @@ def _enqueue_evo_job(repo_root: Path) -> str:
     )
     return job_manager.enqueue_job("evolve", config)
 
+
 def _show_evo_status_screen(job_id: str):
     status = job_manager.get_job_status(job_id)
     if not status:
@@ -1822,7 +1822,7 @@ def _show_evo_status_screen(job_id: str):
         return
 
     state = status["state"]
-    
+
     col_h1, col_h2, col_h3 = st.columns([3, 1, 1])
     with col_h1:
         st.markdown(f"### Evolution Job: `{job_id}`")
@@ -1844,12 +1844,12 @@ def _show_evo_status_screen(job_id: str):
         _render_step_progress(status.get("logs", []), state, is_evolution=True)
         st.markdown("#### 🖥️ Evolution Log")
         _render_events(status.get("logs", []), "— waiting for logs —", show_verbose=True)
-        
+
     with col_side:
         st.markdown("#### ℹ️ Details")
         st.markdown(f"**State:** {state}")
         st.markdown(f"**Started:** {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(status.get('updated_at', 0)))}")
-        
+
         _render_token_usage_bar(status.get("logs", []), int(st.session_state.max_tokens))
 
         if status.get("report"):
@@ -1865,6 +1865,7 @@ def _show_evo_status_screen(job_id: str):
 
 # Router
 # ═══════════════════════════════════════════════════════════════════════════ #
+
 
 page = st.session_state.page
 if page == "report":

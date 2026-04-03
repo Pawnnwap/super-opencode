@@ -44,9 +44,9 @@ from __future__ import annotations
 import difflib
 import hashlib
 import json
+import os
 import sys
 import tempfile
-import os
 from pathlib import Path
 from typing import Any
 
@@ -71,8 +71,8 @@ _CHARSET = "ZPMQVRWSNKTXJBYH"
 
 _ALGO_MAP: dict[str, str] = {
     "sha256": "sha256",
-    "sha1":   "sha1",
-    "md5":    "md5",
+    "sha1": "sha1",
+    "md5": "md5",
 }
 
 # 3-char IDs → 4096 possible values (vs 256 with 2-char), negligible collision risk
@@ -133,12 +133,12 @@ def _hashline_read(
         for ln in range(s, e + 1)
     ]
     return {
-        "path":        str(resolved),
+        "path": str(resolved),
         "total_lines": total,
-        "start_line":  s,
-        "end_line":    e,
-        "algo":        algo,
-        "content":     "\n".join(annotated),
+        "start_line": s,
+        "end_line": e,
+        "algo": algo,
+        "content": "\n".join(annotated),
     }
 
 
@@ -169,18 +169,18 @@ def _validate_all_refs(
             idx = line_no - 1
             if idx < 0 or idx >= len(lines):
                 stale.append({
-                    "edit_op":      edit["op"],
-                    "provided":     ref,
-                    "current":      f"<line {line_no} out of range>",
+                    "edit_op": edit["op"],
+                    "provided": ref,
+                    "current": f"<line {line_no} out of range>",
                     "line_content": "",
                 })
                 continue
             expected = _compute_line_hash(line_no, lines[idx], algo)
             if given_hash != expected:
                 stale.append({
-                    "edit_op":      edit["op"],
-                    "provided":     ref,
-                    "current":      f"{line_no}#{expected}",
+                    "edit_op": edit["op"],
+                    "provided": ref,
+                    "current": f"{line_no}#{expected}",
                     "line_content": lines[idx],
                 })
     return stale
@@ -248,27 +248,28 @@ class _MismatchError(Exception):
       .retry_edits  – original edits with refs auto-corrected (ready to retry)
       .snippet      – annotated text around affected lines (human-readable)
     """
+
     def __init__(
         self,
         stale_refs: list[dict[str, str]],
         retry_edits: list[dict[str, Any]],
         snippet: str,
     ):
-        self.stale_refs  = stale_refs
+        self.stale_refs = stale_refs
         self.retry_edits = retry_edits
-        self.snippet     = snippet
+        self.snippet = snippet
         super().__init__(self._build())
 
     def _build(self) -> str:
         return json.dumps({
-            "error":       "HashlineMismatch",
+            "error": "HashlineMismatch",
             "description": (
                 f"{len(self.stale_refs)} stale LINE#ID reference(s) — "
                 "edit rejected, nothing written."
             ),
-            "stale_refs":  self.stale_refs,
+            "stale_refs": self.stale_refs,
             "retry_edits": self.retry_edits,
-            "snippet":     self.snippet,
+            "snippet": self.snippet,
         }, indent=2)
 
 
@@ -341,7 +342,7 @@ def _hashline_edit(
         for ln in sorted(affected_line_nos):
             idx = ln - 1
             if 0 <= idx < len(original):
-                tag    = _compute_line_hash(ln, original[idx])
+                tag = _compute_line_hash(ln, original[idx])
                 is_bad = any(s["provided"].startswith(f"{ln}#") for s in stale)
                 marker = ">>>" if is_bad else "   "
                 snippet_lines.append(f"{marker} {ln}#{tag}| {original[idx]}")
@@ -418,9 +419,9 @@ def _hashline_edit(
             raise
 
     return {
-        "written":    not dry_run,
+        "written": not dry_run,
         "line_count": len(working),
-        "diff":       diff,
+        "diff": diff,
     }
 
 
@@ -556,10 +557,10 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
 
     # ── hashline_read ───────────────────────────────────────────────────────────
     if name == "read":
-        path  = arguments.get("path")
+        path = arguments.get("path")
         start = arguments.get("start_line")
-        end   = arguments.get("end_line")
-        algo  = arguments.get("hash_algo", "sha256")
+        end = arguments.get("end_line")
+        algo = arguments.get("hash_algo", "sha256")
 
         if not path:
             return [TextContent(type="text", text="Error: 'path' is required")]
@@ -584,8 +585,8 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
 
     # ── hashline_edit ───────────────────────────────────────────────────────────
     elif name == "edit":
-        path    = arguments.get("path")
-        edits   = arguments.get("edits")
+        path = arguments.get("path")
+        edits = arguments.get("edits")
         dry_run = bool(arguments.get("dry_run", False))
 
         if not path:
@@ -603,11 +604,11 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
 
         action = "Validated (dry_run)" if dry_run else "Written"
         summary_obj = {
-            "status":     action,
-            "path":       str(Path(path).resolve()),
-            "edits":      len(edits),
+            "status": action,
+            "path": str(Path(path).resolve()),
+            "edits": len(edits),
             "line_count": result["line_count"],
-            "diff":       result["diff"] or "(no changes)",
+            "diff": result["diff"] or "(no changes)",
         }
         return [TextContent(type="text", text=json.dumps(summary_obj, indent=2))]
 

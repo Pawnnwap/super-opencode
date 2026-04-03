@@ -1,9 +1,8 @@
-import json
 import threading
 import time
 import uuid
-from typing import Any, Dict, List, Optional, Callable
 from pathlib import Path
+from typing import Any, Dict, Optional
 
 from services.state_store import JobStateStore
 from supervisor.core.loop import SupervisorLoop
@@ -110,7 +109,7 @@ class JobManager:
                         "level": "heartbeat",
                         "msg": "Heartbeat — supervisor still active"
                     })
-                    
+
                     self.store.save_job_state(job_id, {
                         "type": job_type,
                         "state": "RUNNING",
@@ -124,7 +123,7 @@ class JobManager:
             # Determine final state
             logs = self.store.get_logs(job_id)
             final_state = "SUCCESS" if any(e.get("level") == "success" for e in logs) else "FAILED"
-            
+
             # Final report check if not captured during streaming
             if not report_content:
                 report_content = self._fetch_report(config.workspace, job_type)
@@ -154,7 +153,7 @@ class JobManager:
     def _estimate_progress(self, event: Dict[str, Any]) -> float:
         """Crude progress estimation based on event messages."""
         # This could be improved if loops emitted explicit progress percentages
-        return 0.0 # Default to 0 if not easily inferrable
+        return 0.0  # Default to 0 if not easily inferrable
 
     def _fetch_report(self, workspace: Path, job_type: str) -> str:
         """Try to read final report files from workspace."""

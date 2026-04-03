@@ -494,7 +494,7 @@ class LLMSupervisor:
         self, opencode_output: str, step_context: StepContext
     ) -> SupervisorVerdict:
         from supervisor.prompts import JUDGE_STEP_PROMPT
-        
+
         protected_context, feedback_context = self._get_evaluation_context()
 
         phases_str = (
@@ -573,7 +573,7 @@ class LLMSupervisor:
             total_plan_rounds=total_plan_rounds,
             opencode_output=opencode_output,
         )
-        
+
         history_msg = JUDGE_PLAN_PROMPT.format(
             context_info=context_info,
             feedback_context="",
