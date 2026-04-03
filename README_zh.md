@@ -45,21 +45,17 @@ choco install opencode
 
 ---
 
-## 免费 API 推荐
+## Supervisor API 配置
 
-- **[NVIDIA NIM](https://build.nvidia.com/models)** — 免费套餐可用于 AI 模型访问
-- **[IFlow CN](https://platform.iflow.cn/models)** — 免费 API 用于 AI 模型访问
+Supervisor 接受任何 OpenAI 兼容的 API 端点。以下是预配置的免费选项：
 
----
+| 提供商 | Base URL | 模型 | 说明 |
+|--------|----------|------|------|
+| **Google AI Studio** | `https://generativelanguage.googleapis.com/v1beta/openai/` | `gemma-4-31b-it` | 每天约 1.5K 次免费请求 |
+| **Nvidia NIM** | `https://integrate.api.nvidia.com/v1` | `nvidia/nemotron-3-super-120b-a12b` | 提供免费套餐 |
+| **iflow** *(已弃用)* | `https://apis.iflow.cn/v1` | `iflow/qwen3-coder-plus` | 服务将于 2026 年 4 月 17 日后停止 |
 
-## 推荐模型
-
-### Supervisor 模型
-- 使用 NVIDIA NIM: **nvidia/nemotron-3-super-120b-a12b** 或 **qwen/qwen3.5-397b-a17b**
-- 使用 IFlow: **qwen3-coder-plus**
-
-### opencode 模型
-- **opencode/big-pickle**
+> **隐私警告：** 免费 API 服务可能会将您的输入数据用于模型训练。处理敏感或专有信息时请谨慎。如果隐私是您的关注点，请考虑切换到付费套餐。
 
 ---
 

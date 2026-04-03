@@ -48,21 +48,17 @@ For UI configuration, use the path `C:\ProgramData\chocolatey\bin\opencode.exe`.
 
 ---
 
-## Free API Recommendations
+## Supervisor API Configuration
 
-- **[NVIDIA NIM](https://build.nvidia.com/models)** — Free tier available for AI model access
-- **[IFlow CN](https://platform.iflow.cn/models)** — Free API for AI model access
+The supervisor accepts any OpenAI-compatible API endpoint. Below are pre-configured free-tier options:
 
----
+| Provider | Base URL | Model | Notes |
+|----------|----------|-------|-------|
+| **Google AI Studio** | `https://generativelanguage.googleapis.com/v1beta/openai/` | `gemma-4-31b-it` | ~1.5K free requests per day |
+| **Nvidia NIM** | `https://integrate.api.nvidia.com/v1` | `nvidia/nemotron-3-super-120b-a12b` | Free tier available |
+| **iflow** *(deprecated)* | `https://apis.iflow.cn/v1` | `iflow/qwen3-coder-plus` | Service stops after 17th Apr 2026 |
 
-## Recommended Models
-
-### Supervisor Model
-- With NVIDIA NIM: **nvidia/nemotron-3-super-120b-a12b** or **qwen/qwen3.5-397b-a17b**
-- With IFlow: **qwen3-coder-plus**
-
-### opencode Model
-- **opencode/big-pickle**
+> **Privacy Warning:** Free API services may use your input data for model training. Be careful with sensitive or proprietary information. Consider switching to paid tiers if privacy is a concern.
 
 ---
 
