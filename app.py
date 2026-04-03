@@ -557,7 +557,7 @@ with st.sidebar:
                     msg = log.get("msg", "")
                     level = log.get("level", "")
                     # Look for "Tests: All passed" or success level events
-                    if "Tests: All passed" in msg or level == "success":
+                    if msg and ("Tests: All passed" in msg or level == "success"):
                         evo_passed = True
                         break
         if evo_passed:
