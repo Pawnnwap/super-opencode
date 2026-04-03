@@ -340,16 +340,9 @@ class SupervisorLoop(BaseLoop):
             self._state = LoopState.ENDED_FAILURE
             yield _ev("error", f"Unhandled exception:\n{traceback.format_exc()}")
 
-    def _codebase_preamble(self) -> str:
-        return "\n\n## Live codebase\n" + self._cached_snapshot.digest_for_prompt(
-            max_files=15,
-        )
-
     def _init_prompt(self) -> str:
-        from supervisor.prompts import (
-            HASHLINE_SYSTEM_INSTRUCTIONS,
-            INIT_PROMPT_TEMPLATE,
-        )
+        from supervisor.prompts import (HASHLINE_SYSTEM_INSTRUCTIONS,
+                                        INIT_PROMPT_TEMPLATE)
 
         text = self.config.protocol_path.read_text(encoding="utf-8")
         ws = self.config.workspace.resolve()
@@ -374,21 +367,6 @@ class SupervisorLoop(BaseLoop):
             protected_files_desc=protected_files_desc,
         )
 
-    @staticmethod
-    def _strip_done_phrases(text: str) -> str:
-        """Remove supervisor completion phrases from plan text."""
-        from supervisor.core.llm_supervisor import _DONE_PHRASES
-
-        cleaned = text
-        for phrase in _DONE_PHRASES:
-            cleaned = cleaned.replace(phrase, "")
-        # Collapse any double newlines or stray whitespace left behind
-        import re
-
-        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
-        cleaned = cleaned.strip()
-        return cleaned
-
     def _restart_prompt(self) -> str:
         summary, text = self._get_restart_context()
         return (
@@ -398,9 +376,6 @@ class SupervisorLoop(BaseLoop):
             f"Working directory: {self.config.workspace.resolve()}\n"
             "Continue from where the summary left off."
         )
-
-    def _write(self, text: str, filename: str) -> None:
-        (self.config.workspace / filename).write_text(text, encoding="utf-8")
 
 
 def _setup_logging(level: str) -> None:

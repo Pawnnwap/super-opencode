@@ -1,15 +1,17 @@
-from supervisor.prompts.templates import (
-                                          COMPACTION_INSTRUCTIONS_PROMPT,
+from supervisor.prompts.templates import (COMPACTION_INSTRUCTIONS_PROMPT,
                                           DELETION_PERMISSION_PROMPT,
                                           FILE_SELECTION_PROMPT,
                                           HASHLINE_SYSTEM_INSTRUCTIONS,
                                           INIT_PROMPT_TEMPLATE,
-                                          JUDGE_PLAN_PROMPT,
-                                          JUDGE_STEP_PROMPT,
+                                          JUDGE_PLAN_PROMPT, JUDGE_STEP_PROMPT,
                                           PROTOCOL_VIOLATION_TEMPLATE,
                                           RESTART_PROMPT_TEMPLATE,
                                           SELF_EVOLUTION_INIT_PROMPT_TEMPLATE,
-)
+                                          build_context_blocks,
+                                          build_init_prompt,
+                                          build_judge_prompt,
+                                          build_step_context,
+                                          build_workspace_footer)
 
 __all__ = [
     "COMPACTION_INSTRUCTIONS_PROMPT",
@@ -22,4 +24,9 @@ __all__ = [
     "PROTOCOL_VIOLATION_TEMPLATE",
     "RESTART_PROMPT_TEMPLATE",
     "SELF_EVOLUTION_INIT_PROMPT_TEMPLATE",
+    "build_context_blocks",
+    "build_init_prompt",
+    "build_judge_prompt",
+    "build_step_context",
+    "build_workspace_footer",
 ]

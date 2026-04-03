@@ -52,7 +52,8 @@ class BaseLoop:
         self._python_scanner_ran: bool = False
 
     def _init_components(self, agent: str = ""):
-        from supervisor.analyzers.opencode_step_detector import OpencodeStepDetector
+        from supervisor.analyzers.opencode_step_detector import \
+            OpencodeStepDetector
         from supervisor.monitoring.context_monitor import ContextMonitor
         from supervisor.runners.opencode_runner import OpencodeRunner
         from supervisor.workspace.workspace_guard import WorkspaceGuard
@@ -518,6 +519,30 @@ class BaseLoop:
             protocol_text=protocol_text,
             workspace=ws,
         )
+
+    def _codebase_preamble(self) -> str:
+        """Return a digest of the current codebase for the system prompt."""
+        return "\n\n## Live codebase\n" + self._cached_snapshot.digest_for_prompt(
+            max_files=15,
+        )
+
+    @staticmethod
+    def _strip_done_phrases(text: str) -> str:
+        """Remove supervisor completion phrases from text."""
+        from supervisor.core.llm_supervisor import _DONE_PHRASES
+
+        cleaned = text
+        for phrase in _DONE_PHRASES:
+            cleaned = cleaned.replace(phrase, "")
+        import re
+
+        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+        cleaned = cleaned.strip()
+        return cleaned
+
+    def _write(self, text: str, filename: str) -> None:
+        """Write text to a file in the workspace."""
+        (self.config.workspace / filename).write_text(text, encoding="utf-8")
 
     def scan_for_vulnerabilities(self) -> str | None:
         """Run vulnerability scan on workspace Python files, return formatted results or None."""

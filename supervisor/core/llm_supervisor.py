@@ -10,14 +10,13 @@ from pathlib import Path
 
 from openai import OpenAI
 
-from supervisor.monitoring.token_estimator import (
-    estimate_request_tokens,
-    should_truncate,
-    truncate_with_fallback,
-    warn_if_exceeds_limit,
-)
+from supervisor.monitoring.token_estimator import (estimate_request_tokens,
+                                                   should_truncate,
+                                                   truncate_with_fallback,
+                                                   warn_if_exceeds_limit)
 from supervisor.protocols.protocol import Protocol
-from supervisor.protocols.protocol_analyzer import ProtocolAnalysis, ProtocolAnalyzer
+from supervisor.protocols.protocol_analyzer import (ProtocolAnalysis,
+                                                    ProtocolAnalyzer)
 from supervisor.utils.text_utils import strip_thinking_blocks
 from supervisor.workspace.ignore_patterns import IgnoreMatcher
 
@@ -235,10 +234,8 @@ class LLMSupervisor:
 
         listing = "\n".join(listing_lines)
 
-        from supervisor.monitoring.token_estimator import (
-            estimate_tokens,
-            truncate_prompt,
-        )
+        from supervisor.monitoring.token_estimator import (estimate_tokens,
+                                                           truncate_prompt)
 
         if estimate_tokens(listing) > available_tokens:
             # We must truncate the listing

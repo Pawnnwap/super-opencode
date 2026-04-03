@@ -18,10 +18,8 @@ from services.job_manager import JobManager
 from services.settings import apply_api_config, load_settings, save_settings
 from supervisor.analyzers.codebase_analyzer import snapshot_codebase
 from supervisor.monitoring.token_estimator import estimate_tokens
-from supervisor.protocols.meta_protocol_builder import (
-    MetaProtocolBuilder,
-    write_meta_protocol,
-)
+from supervisor.protocols.meta_protocol_builder import (MetaProtocolBuilder,
+                                                        write_meta_protocol)
 from supervisor.protocols.protocol_analyzer import ProtocolAnalyzer, Severity
 from supervisor.protocols.protocol_wizard import ProtocolWizard
 from supervisor.utils.config import SupervisorConfig
@@ -718,7 +716,8 @@ def _run_with_timeout(fn, seconds=30):
 def test_opencode():
     import tempfile
 
-    from supervisor.runners.opencode_runner import OpencodeRunner, find_opencode
+    from supervisor.runners.opencode_runner import (OpencodeRunner,
+                                                    find_opencode)
 
     workspace = Path(tempfile.gettempdir()) / "opencode_test_dummy"
     workspace.mkdir(exist_ok=True)  # Ensure dummy dir exists
@@ -973,9 +972,7 @@ def page_wizard():
 
         with st.expander("🚫 Ignore Patterns (.opencodeignore)", expanded=False):
             from supervisor.workspace.ignore_patterns import (
-                IGNORE_FILE,
-                write_ignore_file,
-            )
+                IGNORE_FILE, write_ignore_file)
 
             st.caption(
                 "Files matching these patterns will be excluded from context retrieval",

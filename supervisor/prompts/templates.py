@@ -142,6 +142,7 @@ Current step: {current_step}/{total_steps}
 Current phase: {phase}
 Completed phases: {completed_phases}
 
+{experience_context}\
 {feedback_context}\
 {protected_context}\
 --- opencode output ---
@@ -228,3 +229,114 @@ Re-read these sections and adjust your actions accordingly.
 
 --- END VIOLATION NOTICE ---
 """
+
+
+# --------------------------------------------------------------------------- #
+# Parameterized builder functions – eliminate repeated string interpolation #
+# --------------------------------------------------------------------------- #
+
+
+def build_workspace_footer(
+    workspace: str,
+    extra_instructions: str = "",
+    protected_files_desc: str = "",
+) -> str:
+    """Build the common workspace footer used in all init prompts."""
+    parts = [
+        f"Your project root (cwd) is: {workspace}",
+        "All files you create or modify MUST be inside this directory.",
+        "Use relative paths from this directory for all file operations.",
+    ]
+    if extra_instructions:
+        parts.append(extra_instructions)
+    if protected_files_desc:
+        parts.append(protected_files_desc)
+    return "\n".join(parts)
+
+
+def build_context_blocks(
+    feedback_context: str = "",
+    protected_context: str = "",
+    experience_context: str = "",
+) -> str:
+    """Build optional context blocks (experience, feedback, protected)."""
+    parts = []
+    if experience_context:
+        parts.append(experience_context)
+    if feedback_context:
+        parts.append(feedback_context)
+    if protected_context:
+        parts.append(protected_context)
+    return "\n".join(parts)
+
+
+def build_step_context(
+    current_step: int,
+    total_steps: int,
+    phase: str,
+    completed_phases: str,
+) -> str:
+    """Build the standard step context block for judge prompts."""
+    return (
+        "--- Step Context ---\n"
+        f"Current step: {current_step}/{total_steps}\n"
+        f"Current phase: {phase}\n"
+        f"Completed phases: {completed_phases}\n"
+    )
+
+
+def build_init_prompt(
+    protocol_text: str,
+    workspace: str,
+    header: str = "Here is your protocol:",
+    plan_section: str = "",
+    plan_output_section: str = "",
+    extra_instructions: str = "",
+    protected_files_desc: str = "",
+) -> str:
+    """Build a standard initialization prompt."""
+    parts = [
+        HASHLINE_SYSTEM_INSTRUCTIONS,
+        "",
+        header,
+        "",
+        protocol_text,
+        "",
+    ]
+    if plan_section:
+        parts.append(plan_section)
+    if plan_output_section:
+        parts.append(plan_output_section)
+    parts.append(
+        build_workspace_footer(workspace, extra_instructions, protected_files_desc)
+    )
+    return "\n".join(parts)
+
+
+def build_judge_prompt(
+    opencode_output: str,
+    step_context: str = "",
+    context_blocks: str = "",
+    preamble: str = (
+        "opencode just produced the following output. Evaluate it against the protocol.\n"
+        "If ALL targets are met say 'all targets met'.\n"
+        "Otherwise give clear, actionable feedback.\n"
+    ),
+    postscript: str = (
+        "Focus your feedback on the current phase and remaining work."
+    ),
+) -> str:
+    """Build a judge-style evaluation prompt."""
+    parts = [preamble, ""]
+    if step_context:
+        parts.append(step_context)
+    if context_blocks:
+        parts.append(context_blocks)
+    parts += [
+        "--- opencode output ---",
+        opencode_output,
+        "--- end ---",
+        "",
+        postscript,
+    ]
+    return "\n".join(parts)

@@ -13,14 +13,16 @@ import time
 from collections.abc import Generator
 from pathlib import Path
 
-from supervisor.analyzers.codebase_analyzer import CodebaseSnapshot, snapshot_codebase
+from supervisor.analyzers.codebase_analyzer import (CodebaseSnapshot,
+                                                    snapshot_codebase)
 from supervisor.core.llm_supervisor import LLMSupervisor
 from supervisor.core.loop_base import BaseLoop, Event, LoopState, _ev
 from supervisor.protocols.protocol import load_protocol
 from supervisor.runners.test_runner import OcTestRunner, RunTestResult
 from supervisor.utils.config import SupervisorConfig
 from supervisor.utils.gitignore_utils import update_gitignore_files
-from supervisor.workspace.workspace_archiver import ArchiveResult, WorkspaceArchiver
+from supervisor.workspace.workspace_archiver import (ArchiveResult,
+                                                     WorkspaceArchiver)
 
 logger = logging.getLogger(__name__)
 
@@ -253,16 +255,9 @@ class SelfEvolutionLoop(BaseLoop):
 
     # ------------------------------------------------------------------ #
 
-    def _codebase_preamble(self) -> str:
-        return "\n\n## Live codebase\n" + self._cached_snapshot.digest_for_prompt(
-            max_files=15,
-        )
-
     def _init_prompt(self) -> str:
-        from supervisor.prompts import (
-            HASHLINE_SYSTEM_INSTRUCTIONS,
-            SELF_EVOLUTION_INIT_PROMPT_TEMPLATE,
-        )
+        from supervisor.prompts import (HASHLINE_SYSTEM_INSTRUCTIONS,
+                                        SELF_EVOLUTION_INIT_PROMPT_TEMPLATE)
 
         text = self.config.protocol_path.read_text(encoding="utf-8")
         baseline_note = (

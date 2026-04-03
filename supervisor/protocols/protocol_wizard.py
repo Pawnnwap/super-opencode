@@ -11,7 +11,8 @@ from __future__ import annotations
 from openai import OpenAI
 
 from supervisor.protocols.protocol import Protocol, parse_protocol_text
-from supervisor.protocols.protocol_analyzer import ProtocolAnalysis, ProtocolAnalyzer
+from supervisor.protocols.protocol_analyzer import (ProtocolAnalysis,
+                                                    ProtocolAnalyzer)
 from supervisor.utils.text_utils import strip_thinking_blocks
 
 REQUIRED_TARGET = "Construct/refactor the codebase to eliminate redundancy by implementing base classes and shared utility functions."
