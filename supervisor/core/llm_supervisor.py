@@ -17,6 +17,7 @@ from supervisor.monitoring.token_estimator import (estimate_request_tokens,
 from supervisor.protocols.protocol import Protocol
 from supervisor.protocols.protocol_analyzer import (ProtocolAnalysis,
                                                     ProtocolAnalyzer)
+from supervisor.utils.text_utils import strip_thinking_blocks
 from supervisor.workspace.ignore_patterns import IgnoreMatcher
 
 logger = logging.getLogger(__name__)
@@ -1077,7 +1078,7 @@ class LLMSupervisor:
                     model=self._model,
                     messages=working_messages,
                 )
-                reply = response.choices[0].message.content or ""
+                reply = strip_thinking_blocks(response.choices[0].message.content or "")
                 break
             except InternalServerError as exc:
                 code = getattr(exc, "code", None) or getattr(exc, "status_code", None)

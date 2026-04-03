@@ -22,7 +22,6 @@ from supervisor.core.loop_base import BaseLoop, Event, LoopState, _ev
 from supervisor.protocols.protocol import load_protocol
 from supervisor.utils.config import SupervisorConfig
 from supervisor.utils.gitignore_utils import update_gitignore_files
-from supervisor.utils.text_utils import strip_thinking_blocks
 from supervisor.workspace.workspace_archiver import WorkspaceArchiver
 
 logger = logging.getLogger(__name__)
@@ -107,7 +106,6 @@ class SupervisorLoop(BaseLoop):
             self.runner.start(init_prompt)
             self._last_step_time = time.time()
             output, timed_out = self.runner.read_output()
-            output = strip_thinking_blocks(output)
 
             yield from self._run_loop(output, timed_out)
         finally:
@@ -193,7 +191,6 @@ class SupervisorLoop(BaseLoop):
                 plan_runner.enable_continuation(True)
             plan_runner.start(prompt)
             output, timed_out = plan_runner.read_output()
-            output = strip_thinking_blocks(output)
 
             if timed_out or not output.strip():
                 yield _ev(
@@ -232,7 +229,17 @@ class SupervisorLoop(BaseLoop):
             )
             yield from self._emit_token_warnings()
 
-            last_feedback = strip_thinking_blocks(verdict.feedback)
+            # Early termination: if the supervisor says all targets are met,
+            # exit plan mode immediately regardless of remaining rounds.
+            if verdict.all_targets_met:
+                yield _ev(
+                    "info",
+                    f"[plan mode] Supervisor signaled all targets met after round {round_num}/{total} — ending plan phase early.",
+                )
+                last_feedback = verdict.feedback
+                break
+
+            last_feedback = verdict.feedback
 
         plan_runner.stop()
 
@@ -341,6 +348,8 @@ class SupervisorLoop(BaseLoop):
                 "## Last Supervisor Feedback on Plan\n\n"
                 f"{self._last_supervisor_feedback}\n\n"
             )
+        plan_section = self._strip_done_phrases(plan_section)
+        plan_output_section = self._strip_done_phrases(plan_output_section)
         return INIT_PROMPT_TEMPLATE.format(
             hashline_instructions=HASHLINE_SYSTEM_INSTRUCTIONS,
             protocol_text=text,
@@ -349,6 +358,20 @@ class SupervisorLoop(BaseLoop):
             workspace=ws,
             protected_files_desc=protected_files_desc,
         )
+
+    @staticmethod
+    def _strip_done_phrases(text: str) -> str:
+        """Remove supervisor completion phrases from plan text."""
+        from supervisor.core.llm_supervisor import _DONE_PHRASES
+
+        cleaned = text
+        for phrase in _DONE_PHRASES:
+            cleaned = cleaned.replace(phrase, "")
+        # Collapse any double newlines or stray whitespace left behind
+        import re
+        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+        cleaned = cleaned.strip()
+        return cleaned
 
     def _restart_prompt(self) -> str:
         summary, text = self._get_restart_context()

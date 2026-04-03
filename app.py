@@ -103,10 +103,18 @@ def _auto_upgrade_opencode():
 
 # ── supervisor package imports (all at top level — never lazy) ──────────── #
 
-# ── Job Manager instance ────────────────────────────────────────────────── #
+# ── Job Manager instance (cached across reruns) ───────────────────────── #
 # This instance handles long-running jobs in background threads and
 # persists status to disk to handle browser refreshes/disconnections.
-job_manager = JobManager(".job_store")
+# Using @st.cache_resource ensures _active_jobs survives Streamlit reruns.
+
+
+@st.cache_resource
+def _get_job_manager():
+    return JobManager(".job_store")
+
+
+job_manager = _get_job_manager()
 
 
 # ── page config ──────────────────────────────────────────────────────────── #
@@ -268,6 +276,26 @@ def render_expander_section(title, content_func):
         st.markdown("<div class='expander-content'>", unsafe_allow_html=True)
         content_func()
         st.markdown("</div>", unsafe_allow_html=True)
+
+
+def _clear_page_state(target_page: str) -> None:
+    """Clear UI state from other pages when navigating to a new page."""
+    # Clear custom model form state when leaving wizard page
+    if target_page != "wizard":
+        st.session_state.show_custom_model_form = False
+        st.session_state.custom_service_name = ""
+        st.session_state.custom_base_url = ""
+        st.session_state.custom_api_key = ""
+        st.session_state.custom_model_names = ""
+    # Clear wizard-specific state when navigating away
+    if target_page == "wizard":
+        pass  # wizard is the default page, keep its state
+    # Clear run-specific query params when navigating away from run page
+    if target_page != "run":
+        st.query_params.pop("run_job_id", None)
+    # Clear evolution-specific query params when navigating away from evolve page
+    if target_page != "evolve":
+        st.query_params.pop("evo_job_id", None)
 
 
 def render_file_block(title, body, language="python"):
@@ -531,6 +559,9 @@ with st.sidebar:
                 use_container_width=True,
                 type="primary" if active else "secondary",
             ):
+                st.session_state._prev_page = key
+                # Clear page-specific UI state on navigation
+                _clear_page_state(key)
                 st.session_state.page = key
                 st.rerun()
 
@@ -738,6 +769,10 @@ def test_supervisor():
 
 def page_wizard():
     from supervisor.runners.opencode_runner import find_opencode
+
+    # Show redirect warning if set by router (e.g. locked page redirect)
+    if st.session_state.get("_redirect_warning"):
+        st.warning(st.session_state.pop("_redirect_warning"))
 
     st.markdown("# Protocol Wizard")
     st.markdown(
@@ -1396,7 +1431,7 @@ def _show_run_setup_screen():
     # Pre-flight check
     workspace = Path(st.session_state.workspace) if st.session_state.workspace else None
     if not workspace:
-        st.warning("Please set a workspace path in the Protocol Wizard configuration.")
+        st.warning("Please set a workspace path in the configuration.")
         return
 
     if not workspace.exists():
@@ -1406,7 +1441,7 @@ def _show_run_setup_screen():
     proto_path = workspace / "protocol.md"
     if not proto_path.exists():
         st.error(f"**protocol.md not found** in workspace: `{workspace}`")
-        st.info("Please complete the Protocol Wizard to generate a protocol.md file.")
+        st.info("Please generate a protocol.md file before starting a live run.")
         return
 
     st.markdown(
@@ -1497,6 +1532,10 @@ def _show_run_status_screen(job_id: str):
         st.markdown("#### ℹ️ Details")
         st.markdown(f"**State:** {state}")
         st.markdown(f"**Started:** {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(status.get('updated_at', 0)))}")
+        sup_model = st.session_state.get("supervisor_model", "") or "(not set)"
+        oc_model = st.session_state.get("opencode_model", "") or "(not set)"
+        st.markdown(f"**Supervisor model:** `{sup_model}`")
+        st.markdown(f"**Opencode model:** `{oc_model}`")
 
         # Token usage if available
         _render_token_usage_bar(status.get("logs", []), int(st.session_state.max_tokens))
@@ -1849,6 +1888,10 @@ def _show_evo_status_screen(job_id: str):
         st.markdown("#### ℹ️ Details")
         st.markdown(f"**State:** {state}")
         st.markdown(f"**Started:** {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(status.get('updated_at', 0)))}")
+        sup_model = st.session_state.get("supervisor_model", "") or "(not set)"
+        oc_model = st.session_state.get("opencode_model", "") or "(not set)"
+        st.markdown(f"**Supervisor model:** `{sup_model}`")
+        st.markdown(f"**Opencode model:** `{oc_model}`")
 
         _render_token_usage_bar(status.get("logs", []), int(st.session_state.max_tokens))
 
@@ -1892,17 +1935,19 @@ if page == "wizard":
     page_wizard()
 elif page == "run":
     if not _tests_ok:
-        st.warning(
+        st.session_state.page = "wizard"
+        st.session_state["_redirect_warning"] = (
             "🔒 Live Run is locked. Pass connectivity tests on the Protocol Wizard page first."
         )
-        page_wizard()
+        st.rerun()
     else:
         page_run()
 elif page == "evolve":
     if not _tests_ok:
-        st.warning(
+        st.session_state.page = "wizard"
+        st.session_state["_redirect_warning"] = (
             "🔒 Self-Evolution is locked. Pass connectivity tests on the Protocol Wizard page first."
         )
-        page_wizard()
+        st.rerun()
     else:
         page_evolve()

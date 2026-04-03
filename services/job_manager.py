@@ -15,7 +15,7 @@ class JobManager:
 
     def __init__(self, store_dir: str = ".job_store"):
         self.store = JobStateStore(store_dir)
-        self._active_jobs: Dict[str, threading.Event] = {}
+        self._active_jobs: Dict[str, Dict[str, Any]] = {}
         self._lock = threading.Lock()
 
     def enqueue_job(self, job_type: str, config: SupervisorConfig) -> str:
@@ -24,7 +24,7 @@ class JobManager:
         stop_event = threading.Event()
 
         with self._lock:
-            self._active_jobs[job_id] = stop_event
+            self._active_jobs[job_id] = {"stop_event": stop_event, "loop": None}
 
         # Initial state
         self.store.save_job_state(job_id, {
@@ -60,7 +60,22 @@ class JobManager:
         """Request cancellation of a running job."""
         with self._lock:
             if job_id in self._active_jobs:
-                self._active_jobs[job_id].set()
+                entry = self._active_jobs[job_id]
+                # Signal the worker to stop FIRST, before any state writes
+                entry["stop_event"].set()
+                loop = entry.get("loop")
+                if loop is not None:
+                    runner = getattr(loop, "runner", None)
+                    if runner is not None:
+                        runner.stop()
+
+        # Write cancellation state AFTER signalling, outside the lock,
+        # so the worker's stop_event check wins the race reliably.
+        self.store.append_log(job_id, {"level": "warn", "msg": "Job cancelled by user."})
+        current = self.store.get_job_state(job_id) or {}
+        current["state"] = "CANCELLED"
+        current["heartbeat_at"] = time.time()
+        self.store.save_job_state(job_id, current)
 
     def _worker(self, job_id: str, job_type: str, config: SupervisorConfig, stop_event: threading.Event):
         """Worker thread that executes the job loop."""
@@ -83,6 +98,10 @@ class JobManager:
             else:
                 raise ValueError(f"Unknown job type: {job_type}")
 
+            with self._lock:
+                if job_id in self._active_jobs:
+                    self._active_jobs[job_id]["loop"] = loop
+
             heartbeat_interval = 5.0
             last_heartbeat = time.time()
             report_content = ""
@@ -90,8 +109,6 @@ class JobManager:
             # Run the loop and stream events
             for event in loop.run_streaming():
                 if stop_event.is_set():
-                    self.store.append_log(job_id, {"level": "warn", "msg": "Job cancelled by user."})
-                    self._update_state(job_id, "CANCELLED", report=report_content)
                     return
 
                 # Record the event in the log store
@@ -104,6 +121,9 @@ class JobManager:
                 # Periodic heartbeat
                 now = time.time()
                 if now - last_heartbeat >= heartbeat_interval:
+                    if stop_event.is_set():
+                        return
+
                     # Also append a heartbeat event so the UI can count them
                     self.store.append_log(job_id, {
                         "level": "heartbeat",
@@ -120,6 +140,8 @@ class JobManager:
                     })
                     last_heartbeat = now
 
+            if stop_event.is_set():
+                return
             # Determine final state
             logs = self.store.get_logs(job_id)
             final_state = "SUCCESS" if any(e.get("level") == "success" for e in logs) else "FAILED"

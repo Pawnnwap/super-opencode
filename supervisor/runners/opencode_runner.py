@@ -22,6 +22,7 @@ from typing import Callable, Generator, Optional
 from supervisor.analyzers.opencode_step_detector import (OpencodeStepDetector,
                                                          PhaseTransition, Step,
                                                          StepProgress)
+from supervisor.utils.text_utils import strip_thinking_blocks
 from supervisor.workspace.workspace_archiver import (ArchiveResult,
                                                      WorkspaceArchiver)
 
@@ -204,7 +205,7 @@ class OpencodeRunner:
     def read_output(self, timeout: Optional[int] = None) -> tuple[str, bool]:
         if self._last_result is None:
             return "", False
-        return self._last_result.output, self._last_result.timed_out
+        return strip_thinking_blocks(self._last_result.output), self._last_result.timed_out
 
     def last_diagnostic(self) -> str:
         return self._last_result.diagnostic() if self._last_result else "(no run yet)"
