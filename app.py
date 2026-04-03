@@ -1547,13 +1547,13 @@ def _render_token_usage_bar(logs: list[dict], max_tokens: int):
 def _render_step_progress(logs: list[dict], run_state: str, is_evolution: bool = False):
     """Render progress bar, step history, and heartbeats."""
     step_events = [
-        e for e in logs if e.get("level") in ("step", "phase_transition")
+        e for e in logs if isinstance(e, dict) and e.get("level") in ("step", "phase_transition")
     ]
     progress_events = [
-        e for e in logs if e.get("level") == "step_progress"
+        e for e in logs if isinstance(e, dict) and e.get("level") == "step_progress"
     ]
     heartbeat_events = [
-        e for e in logs if e.get("level") == "heartbeat"
+        e for e in logs if isinstance(e, dict) and e.get("level") == "heartbeat"
     ]
 
     process_label = "Evolution process active" if is_evolution else "Background process active"

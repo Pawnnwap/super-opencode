@@ -52,7 +52,9 @@ class JobStateStore:
             with open(path, "r", encoding="utf-8") as f:
                 for line in f:
                     if line.strip():
-                        logs.append(json.loads(line))
+                        parsed = json.loads(line)
+                        if isinstance(parsed, dict):
+                            logs.append(parsed)
         except (json.JSONDecodeError, IOError):
             pass
         return logs
