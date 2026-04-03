@@ -110,7 +110,8 @@ class LLMSupervisor:
         self._client = OpenAI()
         self._model = model
         self._workspace = workspace
-        self._system = protocol.as_system_prompt(workspace)
+        self._system_base = protocol.as_system_prompt(workspace)
+        self._system = self._system_base
         if extra_system:
             self._system += f"\n\n{extra_system}"
         self._protocol_target = protocol.target_section
@@ -1115,6 +1116,16 @@ class LLMSupervisor:
 
         all_met = any(p in reply.lower() for p in _DONE_PHRASES)
         return SupervisorVerdict(raw=reply, all_targets_met=all_met, feedback=reply)
+
+    def update_system_prompt(self, new_preamble: str) -> None:
+        """Update the extra_system preamble portion of the system prompt.
+
+        This rebuilds the internal _system string by combining the protocol
+        system prompt with the new preamble, without re-instantiating the class.
+        """
+        self._system = self._system_base
+        if new_preamble:
+            self._system += f"\n\n{new_preamble}"
 
     @staticmethod
     def _truncate_older_turns(messages: list[dict]) -> list[dict]:

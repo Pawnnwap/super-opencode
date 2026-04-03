@@ -1,5 +1,5 @@
 """
-supervisor/core/loop.py — main orchestration loop.   
+supervisor/core/loop.py — main orchestration loop.
 
 With the CLI-based runner, each turn is:
   1. opencode -p "<prompt>" runs and exits  (done inside runner.start / runner.send)
@@ -16,6 +16,7 @@ import logging
 import sys
 from typing import Generator
 
+from supervisor.analyzers.codebase_analyzer import snapshot_codebase
 from supervisor.analyzers.opencode_step_detector import StepProgress
 from supervisor.core.llm_supervisor import LLMSupervisor, StepContext
 from supervisor.core.loop_base import BaseLoop, Event, LoopState, _ev
@@ -40,10 +41,12 @@ class SupervisorLoop(BaseLoop):
             )
 
         self.protocol = load_protocol(config.protocol_path)
+        self._cached_snapshot = snapshot_codebase(config.workspace)
         self.supervisor = LLMSupervisor(
             self.protocol,
             config.workspace,
             config.supervisor_model,
+            extra_system=self._codebase_preamble(),
             read_external_feedback=config.read_external_feedback,
             max_tokens=config.max_tokens,
             max_protected_files_for_suggestions=config.max_protected_files_for_suggestions,
@@ -267,11 +270,17 @@ class SupervisorLoop(BaseLoop):
     def get_step_summary(self) -> dict:
         return self.runner.get_step_summary()
 
+    def _on_successful_output(self, output: str) -> Generator[Event, None, None]:
+        yield from self._check_and_update_snapshot()
+        yield from []
+
     def _get_verdict(self, output: str, progress) -> "SupervisorVerdict":
         step_context = self._get_step_context(progress)
         return self.supervisor.judge_with_step_context(output, step_context)
 
-    def _post_judge_feedback(self, safe_msg: str, output: str) -> Generator[Event, None, str]:
+    def _post_judge_feedback(
+        self, safe_msg: str, output: str
+    ) -> Generator[Event, None, str]:
         alignment = self.supervisor.verify_protocol_alignment(output, self.protocol)
         if not alignment.aligned:
             logger.warning(
@@ -320,7 +329,7 @@ class SupervisorLoop(BaseLoop):
     # Override run_streaming to update state when stopping the runner
     def run_streaming(self) -> Generator[Event, None, None]:
         try:
-            yield from self._run()
+            yield from super().run_streaming()
         except KeyboardInterrupt:
             self.runner.stop()
             self._state = LoopState.ENDED_FAILURE
@@ -331,6 +340,11 @@ class SupervisorLoop(BaseLoop):
             self.runner.stop()
             self._state = LoopState.ENDED_FAILURE
             yield _ev("error", f"Unhandled exception:\n{traceback.format_exc()}")
+
+    def _codebase_preamble(self) -> str:
+        return "\n\n## Live codebase\n" + self._cached_snapshot.digest_for_prompt(
+            max_files=15
+        )
 
     def _init_prompt(self) -> str:
         from supervisor.prompts import (HASHLINE_SYSTEM_INSTRUCTIONS,
@@ -369,6 +383,7 @@ class SupervisorLoop(BaseLoop):
             cleaned = cleaned.replace(phrase, "")
         # Collapse any double newlines or stray whitespace left behind
         import re
+
         cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
         cleaned = cleaned.strip()
         return cleaned

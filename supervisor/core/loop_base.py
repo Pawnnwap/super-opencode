@@ -48,6 +48,8 @@ class BaseLoop:
         self._step_history: list[dict] = []
         self._state = LoopState.RUNNING
         self._failures = 0
+        self._cached_snapshot = None
+        self._python_scanner_ran: bool = False
 
     def _init_components(self, agent: str = ""):
         from supervisor.analyzers.opencode_step_detector import \
@@ -71,17 +73,93 @@ class BaseLoop:
         self.guard = WorkspaceGuard(self.config.workspace, self.config.protected_files)
         self._step_detector = OpencodeStepDetector()
 
+    def _run_python_scanner(self) -> Generator[Event, None, None]:
+        """Run python_scanner.py on workspace if .py files exist and not yet run."""
+        import os
+
+        if self._python_scanner_ran:
+            return
+        if not self.config or not self.config.workspace:
+            return
+
+        workspace = self.config.workspace.resolve()
+        if not workspace.exists():
+            return
+
+        py_files = []
+        for root, dirs, files in os.walk(workspace):
+            dirs[:] = [d for d in dirs if not d.startswith(".")]
+            for f in files:
+                if f.endswith(".py"):
+                    py_files.append(f)
+                    break
+            if py_files:
+                break
+
+        if not py_files:
+            return
+
+        self._python_scanner_ran = True
+        yield _ev(
+            "info", f"Running python_scanner on {len(py_files)} Python file(s)..."
+        )
+
+        try:
+            from supervisor.vulnerability.python_scanner import scan
+
+            scan(
+                target=str(workspace),
+                autofix_first=True,
+                print_output=False,
+            )
+            yield _ev("info", "python_scanner completed")
+        except Exception as e:
+            yield _ev("warn", f"python_scanner failed: {e}")
+
+        return
+
     def run_streaming(self) -> Generator[Event, None, None]:
+        yield from self._run_python_scanner()
         try:
             yield from self._run()
         except KeyboardInterrupt:
-            self.runner.stop()
+            if self.runner:
+                self.runner.stop()
             yield _ev("warn", "Interrupted by user.")
         except Exception:
+            if self.runner:
+                self.runner.stop()
             import traceback
 
-            self.runner.stop()
             yield _ev("error", f"Unhandled exception:\n{traceback.format_exc()}")
+
+    def _refresh_codebase_snapshot(self) -> bool:
+        """Re-snapshot the workspace and update cached snapshot if changed.
+
+        Returns True only if the codebase has changed since the last snapshot.
+        """
+        from supervisor.analyzers.codebase_analyzer import snapshot_codebase
+
+        if self._cached_snapshot is None:
+            return False
+
+        new_snapshot = snapshot_codebase(self.config.workspace)
+        changed = self._cached_snapshot.changed_files(new_snapshot)
+        if changed:
+            logger.info(
+                "Codebase evolved: %d changed file(s): %s", len(changed), changed
+            )
+            self._cached_snapshot = new_snapshot
+            return True
+        return False
+
+    def _check_and_update_snapshot(self) -> Generator[Event, None, None]:
+        """Check if codebase changed and update supervisor if so."""
+        if self._refresh_codebase_snapshot():
+            yield _ev("info", "Codebase has evolved; updating context...")
+            new_preamble = self._codebase_preamble()
+            self.supervisor.update_system_prompt(new_preamble)
+        yield from []
 
     def _run(self) -> Generator[Event, None, None]:
         raise NotImplementedError("Subclasses must implement _run()")
@@ -107,7 +185,7 @@ class BaseLoop:
 
     def _remove_protection(self) -> Generator[Event, None, None]:
         yield _ev("info", "🔓  Removing read-only protection from critical files…")
-        if hasattr(self, '_all_protected') and self._all_protected:
+        if hasattr(self, "_all_protected") and self._all_protected:
             unprotected = self.guard.remove_readonly_protection(self._all_protected)
             yield _ev(
                 "info",
@@ -134,7 +212,9 @@ class BaseLoop:
             completed_phases=list(progress.completed_phases),
         )
 
-    def _pre_judge(self, output: str, progress) -> Generator[Event, None, tuple[str | None, bool]]:
+    def _pre_judge(
+        self, output: str, progress
+    ) -> Generator[Event, None, tuple[str | None, bool]]:
         """Hook before judging. Returns (augmented_output, abort_turn)."""
         yield _ev("info", "Supervisor judging…")
         return output, False
@@ -142,7 +222,9 @@ class BaseLoop:
     def _get_verdict(self, output: str, progress) -> "SupervisorVerdict":
         raise NotImplementedError()
 
-    def _post_judge_feedback(self, safe_msg: str, output: str) -> Generator[Event, None, str]:
+    def _post_judge_feedback(
+        self, safe_msg: str, output: str
+    ) -> Generator[Event, None, str]:
         """Hook to append alignment warnings etc."""
         return safe_msg
 
@@ -173,7 +255,9 @@ class BaseLoop:
         yield _ev("opencode_prompt", safe_msg)
         self.runner.send(safe_msg)
 
-        yield from self._yield_suggestions(actual_output, self._get_step_context(progress))
+        yield from self._yield_suggestions(
+            actual_output, self._get_step_context(progress)
+        )
 
     def _run_loop(
         self, initial_output: str, initial_timed_out: bool
@@ -340,7 +424,9 @@ class BaseLoop:
             candidates, self.config.workspace
         )
         yield _ev("supervisor_response", deletion_permission.raw)
-        msg, _ = self.guard.sanitize_message(strip_thinking_blocks(deletion_permission.feedback))
+        msg, _ = self.guard.sanitize_message(
+            strip_thinking_blocks(deletion_permission.feedback)
+        )
         yield _ev("opencode_prompt", msg)
         self.runner.send(msg)
         self.ctx_monitor.reset()
@@ -454,16 +540,14 @@ class BaseLoop:
         for root, dirs, files in os.walk(workspace):
             rel_root = str(Path(root).resolve().relative_to(workspace))
 
-            # Skip hidden directories (those starting with ".") entirely
             if any(part.startswith(".") for part in Path(rel_root).parts):
                 dirs[:] = []
                 continue
 
-            # Filter out directories matching ignore patterns (e.g. .gitignore rules)
             dirs[:] = [
                 d
                 for d in dirs
-                if not d.startswith(".")  # prune hidden subdirs before descent
+                if not d.startswith(".")
                 and not ignore_matcher.matches(
                     f"{rel_root}/{d}" if rel_root != "." else d
                 )
@@ -500,10 +584,8 @@ class BaseLoop:
                 rel = str(Path(finding.file).resolve().relative_to(workspace))
             except (ValueError, OSError):
                 rel = fpath
-            # Skip findings in any hidden directory (starting with ".")
             if any(part.startswith(".") for part in Path(rel).parts):
                 return False
-            # Skip findings matching ignore patterns (protected files, etc.)
             if ignore_matcher.matches(rel):
                 return False
             return True

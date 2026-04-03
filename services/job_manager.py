@@ -112,12 +112,17 @@ class JobManager:
                     return
 
                 # Record the event in the log store
+                # Handle non-dict events (e.g., strings) by converting to event dict
+                if not isinstance(event, dict):
+                    if isinstance(event, str):
+                        event = {"level": "info", "msg": event}
+                    else:
+                        event = {"level": "info", "msg": str(event)}
                 self.store.append_log(job_id, event)
 
                 # Capture report if it's emitted as an event
                 if event.get("level") == "report":
                     report_content = event.get("msg", "")
-
                 # Periodic heartbeat
                 now = time.time()
                 if now - last_heartbeat >= heartbeat_interval:

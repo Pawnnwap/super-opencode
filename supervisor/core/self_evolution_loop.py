@@ -110,6 +110,7 @@ class SelfEvolutionLoop(BaseLoop):
             "info",
             f"[iter {self._iteration}] opencode output ({len(output)} chars)",
         )
+        yield from self._check_and_update_snapshot()
 
     def _pre_judge(self, output: str, progress) -> Generator[Event, None, tuple[str | None, bool]]:
         yield _ev("info", f"🧪  Running tests (step {progress.current_step})…")
