@@ -340,7 +340,9 @@ def _get_opencode_config_file(config_dir: Path) -> Path:
     else:
         # Create empty opencode.json with correct structure
         default_content = {"$schema": "https://opencode.ai/config.json", "provider": {}}
-        opencode_json.write_text(json.dumps(default_content, indent=2), encoding="utf-8")
+        opencode_json.write_text(
+            json.dumps(default_content, indent=2), encoding="utf-8"
+        )
         target_file = opencode_json
 
     # Inject MCP session
@@ -359,7 +361,7 @@ def _get_opencode_config_file(config_dir: Path) -> Path:
         "type": "local",
         "command": ["python", hashline_path],
         "enabled": True,
-        "environment": {}
+        "environment": {},
     }
 
     # Only write to file if the configuration is not already present
@@ -540,6 +542,27 @@ with st.sidebar:
 
     if is_running:
         tests_passed = True
+    else:
+        # Check if any completed self-evolution job had passing tests
+        evo_passed = False
+        for jid in job_manager.store.list_jobs():
+            status = job_manager.get_job_status(jid)
+            if (
+                status
+                and status.get("type") == "evolve"
+                and status.get("state") == "SUCCESS"
+            ):
+                logs = status.get("logs", [])
+                # Check for test pass indicators in logs
+                for log in reversed(logs):
+                    msg = log.get("msg", "")
+                    level = log.get("level", "")
+                    # Look for "Tests: All passed" or success level events
+                    if "Tests: All passed" in msg or level == "success":
+                        evo_passed = True
+                        break
+        if evo_passed:
+            tests_passed = True
 
     for key, label in pages.items():
         locked = key != "wizard" and not tests_passed
@@ -1406,6 +1429,7 @@ def _save_protocol():
 # PAGE 2 — Live Run                                                           #
 # ═══════════════════════════════════════════════════════════════════════════ #
 
+
 def page_run():
     st.markdown("# Live Run")
 
@@ -1415,7 +1439,11 @@ def page_run():
     if not job_id:
         for jid in job_manager.store.list_jobs():
             status = job_manager.get_job_status(jid)
-            if status and status.get("type") == "run" and status.get("state") == "RUNNING":
+            if (
+                status
+                and status.get("type") == "run"
+                and status.get("state") == "RUNNING"
+            ):
                 job_id = jid
                 st.query_params["run_job_id"] = job_id
                 st.rerun()
@@ -1526,19 +1554,25 @@ def _show_run_status_screen(job_id: str):
     with col_main:
         _render_step_progress(status.get("logs", []), state)
         st.markdown("#### 🖥️ Live Log")
-        _render_events(status.get("logs", []), "— waiting for logs —", show_verbose=True)
+        _render_events(
+            status.get("logs", []), "— waiting for logs —", show_verbose=True
+        )
 
     with col_side:
         st.markdown("#### ℹ️ Details")
         st.markdown(f"**State:** {state}")
-        st.markdown(f"**Started:** {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(status.get('updated_at', 0)))}")
+        st.markdown(
+            f"**Started:** {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(status.get('updated_at', 0)))}"
+        )
         sup_model = st.session_state.get("supervisor_model", "") or "(not set)"
         oc_model = st.session_state.get("opencode_model", "") or "(not set)"
         st.markdown(f"**Supervisor model:** `{sup_model}`")
         st.markdown(f"**Opencode model:** `{oc_model}`")
 
         # Token usage if available
-        _render_token_usage_bar(status.get("logs", []), int(st.session_state.max_tokens))
+        _render_token_usage_bar(
+            status.get("logs", []), int(st.session_state.max_tokens)
+        )
 
         if status.get("report"):
             st.markdown("#### 📊 Report")
@@ -1548,12 +1582,14 @@ def _show_run_status_screen(job_id: str):
                     "⬇ Download",
                     data=status["report"],
                     file_name=f"report_{job_id}.md",
-                    mime="text/markdown"
+                    mime="text/markdown",
                 )
 
     # Auto-refresh loop must be at the end so UI renders first
     if state == "RUNNING":
-        st.info("🏃 Job is running in background. You can safely close this tab or refresh.")
+        st.info(
+            "🏃 Job is running in background. You can safely close this tab or refresh."
+        )
         time.sleep(2)
         st.rerun()
 
@@ -1561,6 +1597,7 @@ def _show_run_status_screen(job_id: str):
 def _render_token_usage_bar(logs: list[dict], max_tokens: int):
     """Simplified token usage bar for the status screen."""
     import re
+
     latest_current = 0
     latest_fraction = 0.0
     found = False
@@ -1579,14 +1616,21 @@ def _render_token_usage_bar(logs: list[dict], max_tokens: int):
                     found = True
 
     if found:
-        color = "🔴" if latest_fraction > 0.9 else "🟡" if latest_fraction > 0.7 else "🟢"
-        st.progress(min(latest_fraction, 1.0), text=f"{color} {latest_current:,} / {max_tokens:,} tokens")
+        color = (
+            "🔴" if latest_fraction > 0.9 else "🟡" if latest_fraction > 0.7 else "🟢"
+        )
+        st.progress(
+            min(latest_fraction, 1.0),
+            text=f"{color} {latest_current:,} / {max_tokens:,} tokens",
+        )
 
 
 def _render_step_progress(logs: list[dict], run_state: str, is_evolution: bool = False):
     """Render progress bar, step history, and heartbeats."""
     step_events = [
-        e for e in logs if isinstance(e, dict) and e.get("level") in ("step", "phase_transition")
+        e
+        for e in logs
+        if isinstance(e, dict) and e.get("level") in ("step", "phase_transition")
     ]
     progress_events = [
         e for e in logs if isinstance(e, dict) and e.get("level") == "step_progress"
@@ -1595,7 +1639,9 @@ def _render_step_progress(logs: list[dict], run_state: str, is_evolution: bool =
         e for e in logs if isinstance(e, dict) and e.get("level") == "heartbeat"
     ]
 
-    process_label = "Evolution process active" if is_evolution else "Background process active"
+    process_label = (
+        "Evolution process active" if is_evolution else "Background process active"
+    )
 
     if run_state == "RUNNING":
         heartbeat_count = len(heartbeat_events)
@@ -1710,7 +1756,7 @@ def _render_events(
         if lvl in _BLOCK_META:
             if not verbose:
                 # Compact summary line instead of full content
-                preview = _esc(msg[:120].replace("\n", " "))
+                preview = _esc(str(msg or '')[:120].replace("\n", " "))
                 hdr_cls, hdr_label = _BLOCK_META[lvl]
                 lines_html.append(
                     f'<span class="{hdr_cls}">{hdr_label}</span>'
@@ -1736,6 +1782,7 @@ def _render_events(
 # Self-Evolution                                                              #
 # ═══════════════════════════════════════════════════════════════════════════ #
 
+
 def page_evolve():
     st.markdown("# Self-Evolution")
 
@@ -1745,7 +1792,11 @@ def page_evolve():
     if not job_id:
         for jid in job_manager.store.list_jobs():
             status = job_manager.get_job_status(jid)
-            if status and status.get("type") == "evolve" and status.get("state") == "RUNNING":
+            if (
+                status
+                and status.get("type") == "evolve"
+                and status.get("state") == "RUNNING"
+            ):
                 job_id = jid
                 st.query_params["evo_job_id"] = job_id
                 st.rerun()
@@ -1766,7 +1817,9 @@ def _show_evo_setup_screen():
     )
 
     if not st.session_state.openai_key:
-        st.warning("Enter your OpenAI API key in the Protocol Wizard config panel first.")
+        st.warning(
+            "Enter your OpenAI API key in the Protocol Wizard config panel first."
+        )
         return
 
     repo_root = Path(__file__).parent.resolve()
@@ -1778,12 +1831,19 @@ def _show_evo_setup_screen():
 
         st.markdown('<div class="card">', unsafe_allow_html=True)
         st.markdown("**Evolution goal**")
-        st.text_area("evo_goal_input", key="evo_goal", height=130, label_visibility="collapsed")
+        st.text_area(
+            "evo_goal_input", key="evo_goal", height=130, label_visibility="collapsed"
+        )
         st.markdown("</div>", unsafe_allow_html=True)
 
         st.markdown('<div class="card">', unsafe_allow_html=True)
         st.markdown("**Extra restrictions**")
-        st.text_area("evo_restrictions_input", key="evo_extra_restrictions", height=80, label_visibility="collapsed")
+        st.text_area(
+            "evo_restrictions_input",
+            key="evo_extra_restrictions",
+            height=80,
+            label_visibility="collapsed",
+        )
         st.markdown("</div>", unsafe_allow_html=True)
 
         col_gen, col_snap, _ = st.columns([1, 1, 3])
@@ -1799,7 +1859,12 @@ def _show_evo_setup_screen():
     # Step 1 — review and launch
     elif st.session_state.evo_wizard_step == 1:
         st.markdown("### 📄 Generated `meta_protocol.md`")
-        st.text_area("evo_proto_edit", key="evo_meta_protocol_md", height=340, label_visibility="collapsed")
+        st.text_area(
+            "evo_proto_edit",
+            key="evo_meta_protocol_md",
+            height=340,
+            label_visibility="collapsed",
+        )
 
         col_a, col_b, _ = st.columns([1, 1, 2])
         with col_a:
@@ -1882,29 +1947,40 @@ def _show_evo_status_screen(job_id: str):
     with col_main:
         _render_step_progress(status.get("logs", []), state, is_evolution=True)
         st.markdown("#### 🖥️ Evolution Log")
-        _render_events(status.get("logs", []), "— waiting for logs —", show_verbose=True)
+        _render_events(
+            status.get("logs", []), "— waiting for logs —", show_verbose=True
+        )
 
     with col_side:
         st.markdown("#### ℹ️ Details")
         st.markdown(f"**State:** {state}")
-        st.markdown(f"**Started:** {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(status.get('updated_at', 0)))}")
+        st.markdown(
+            f"**Started:** {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(status.get('updated_at', 0)))}"
+        )
         sup_model = st.session_state.get("supervisor_model", "") or "(not set)"
         oc_model = st.session_state.get("opencode_model", "") or "(not set)"
         st.markdown(f"**Supervisor model:** `{sup_model}`")
         st.markdown(f"**Opencode model:** `{oc_model}`")
 
-        _render_token_usage_bar(status.get("logs", []), int(st.session_state.max_tokens))
+        _render_token_usage_bar(
+            status.get("logs", []), int(st.session_state.max_tokens)
+        )
 
         if status.get("report"):
             st.markdown("#### 📊 Evolution Report")
             with st.expander("View Report", expanded=True):
                 st.markdown(status["report"])
-                st.download_button("⬇ Download", data=status["report"], file_name=f"evo_report_{job_id}.md")
+                st.download_button(
+                    "⬇ Download",
+                    data=status["report"],
+                    file_name=f"evo_report_{job_id}.md",
+                )
 
     if state == "RUNNING":
         st.info("🧬 Evolution in progress...")
         time.sleep(2)
         st.rerun()
+
 
 # Router
 # ═══════════════════════════════════════════════════════════════════════════ #
