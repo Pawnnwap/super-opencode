@@ -1,5 +1,4 @@
-"""
-supervisor/ignore_patterns.py — handles .opencodeignore file parsing and pattern matching.
+"""supervisor/ignore_patterns.py — handles .opencodeignore file parsing and pattern matching.
 
 Supports patterns for excluding files during context retrieval and protecting files
 from modification:
@@ -15,9 +14,9 @@ Also integrates .gitignore patterns when available.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
 
 IGNORE_FILE = ".opencodeignore"
 GITIGNORE_FILE = ".gitignore"
@@ -137,9 +136,8 @@ class IgnoreMatcher:
             elif pattern.is_glob and pattern.regex:
                 if pattern.regex.match(path_str):
                     return True
-            else:
-                if filename == pattern.pattern or path_str == pattern.pattern:
-                    return True
+            elif filename == pattern.pattern or path_str == pattern.pattern:
+                return True
 
         return False
 
@@ -220,6 +218,7 @@ def load_gitignore_patterns(workspace: Path) -> list[str]:
 
     Returns:
         List of pattern strings from .gitignore, or empty list if not found.
+
     """
     gitignore_path = workspace / GITIGNORE_FILE
     if not gitignore_path.exists():
@@ -248,6 +247,7 @@ def load_combined_ignore_matcher(workspace: Path) -> IgnoreMatcher:
 
     Returns:
         IgnoreMatcher with combined patterns.
+
     """
     matcher = IgnoreMatcher(workspace)
 

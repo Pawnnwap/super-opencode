@@ -1,5 +1,4 @@
-"""
-supervisor/codebase_analyzer.py
+"""supervisor/codebase_analyzer.py
 
 Reads the supervisor codebase itself and produces:
   - A structured file tree string
@@ -35,6 +34,7 @@ _MAX_FILE_CHARS = 6_000
 @dataclass
 class CodeSkeleton:
     """Structural 'headline' view of a Python file — signatures only, no bodies."""
+
     classes: list[dict] = field(default_factory=list)
     functions: list[dict] = field(default_factory=list)
     imports: list[str] = field(default_factory=list)
@@ -164,8 +164,7 @@ class CodebaseSnapshot:
         return "\n".join(lines)
 
     def digest_for_prompt(self, max_files: int = 30) -> str:
-        """
-        Compact multi-file listing suitable for an LLM system prompt.
+        """Compact multi-file listing suitable for an LLM system prompt.
         Keeps the most important files (Python source first, then others).
         """
         ranked = sorted(
@@ -181,7 +180,7 @@ class CodebaseSnapshot:
             suffix = "  [TRUNCATED]" if snap.truncated else ""
             parts.append(
                 f"### {snap.rel_path}{suffix}\n"
-                f"```python\n{snap.content}\n```\n"
+                f"```python\n{snap.content}\n```\n",
             )
         return "\n".join(parts)
 
@@ -189,7 +188,7 @@ class CodebaseSnapshot:
         """Map of rel_path → sha256 for change detection."""
         return {f.rel_path: f.sha256 for f in self.files}
 
-    def changed_files(self, other: "CodebaseSnapshot") -> list[str]:
+    def changed_files(self, other: CodebaseSnapshot) -> list[str]:
         """Files that differ between two snapshots (added, removed, modified)."""
         a = self.file_hashes()
         b = other.file_hashes()
@@ -204,8 +203,7 @@ class CodebaseSnapshot:
     # ------------------------------------------------------------------ #
 
     def skimmed_digest_for_prompt(self, max_files: int = 30) -> str:
-        """
-        Token-efficient structural digest: signatures + docstrings only, no bodies.
+        """Token-efficient structural digest: signatures + docstrings only, no bodies.
         Use this as a first-pass map so an LLM can identify which files to load
         in full via digest_for_prompt() or direct file reads.
 
@@ -226,7 +224,7 @@ class CodebaseSnapshot:
         for snap in ranked:
             if snap.skeleton and not snap.skeleton.is_empty():
                 parts.append(
-                    f"```python\n{snap.skeleton.to_prompt_str(snap.rel_path)}\n```\n"
+                    f"```python\n{snap.skeleton.to_prompt_str(snap.rel_path)}\n```\n",
                 )
             else:
                 # Non-Python or unparseable: just name it so the LLM knows it exists
@@ -235,8 +233,7 @@ class CodebaseSnapshot:
         return "\n".join(parts)
 
     def skimmed_file(self, rel_path: str) -> str | None:
-        """
-        Return the skeleton prompt string for a single file by relative path.
+        """Return the skeleton prompt string for a single file by relative path.
         Returns None if the file isn't in the snapshot or has no skeleton.
         Useful when an LLM has identified a specific file and wants a cheap
         structural look before deciding whether to request the full content.
@@ -249,8 +246,7 @@ class CodebaseSnapshot:
         return None
 
     def skim_token_savings(self) -> dict:
-        """
-        Estimate token savings across the whole snapshot.
+        """Estimate token savings across the whole snapshot.
         Useful for logging / telemetry to validate the approach is working.
         """
         full_chars = sum(len(f.content) for f in self.files)
@@ -274,7 +270,7 @@ class CodebaseSnapshot:
 # Public factory                                                       #
 # ------------------------------------------------------------------ #
 
-def snapshot_codebase(root: Path, ignore_matcher: "IgnoreMatcher | None" = None) -> CodebaseSnapshot:
+def snapshot_codebase(root: Path, ignore_matcher: IgnoreMatcher | None = None) -> CodebaseSnapshot:
     """Walk *root* and build a CodebaseSnapshot."""
     snap = CodebaseSnapshot(root=root)
     for path in sorted(root.rglob("*")):

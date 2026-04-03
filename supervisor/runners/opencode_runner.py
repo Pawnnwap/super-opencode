@@ -1,5 +1,4 @@
-"""
-supervisor/opencode_runner.py
+"""supervisor/opencode_runner.py
 
 Drives opencode via its non-interactive CLI:
 
@@ -16,15 +15,17 @@ import os
 import platform
 import subprocess
 import sys
+from collections.abc import Callable, Generator
 from pathlib import Path
-from typing import Callable, Generator, Optional
 
-from supervisor.analyzers.opencode_step_detector import (OpencodeStepDetector,
-                                                         PhaseTransition, Step,
-                                                         StepProgress)
+from supervisor.analyzers.opencode_step_detector import (
+    OpencodeStepDetector,
+    PhaseTransition,
+    Step,
+    StepProgress,
+)
 from supervisor.utils.text_utils import strip_thinking_blocks
-from supervisor.workspace.workspace_archiver import (ArchiveResult,
-                                                     WorkspaceArchiver)
+from supervisor.workspace.workspace_archiver import ArchiveResult, WorkspaceArchiver
 
 logger = logging.getLogger(__name__)
 
@@ -48,15 +49,14 @@ _DOT_MODEL_FILE = Path(__file__).parent.parent / ".opencode_model"
 
 
 def find_opencode(explicit: str = "") -> str:
-    """
-    Locate the opencode executable by running 'where opencode' and picking
+    """Locate the opencode executable by running 'where opencode' and picking
     the result that contains 'chocolatey\\bin'.
 
     Raises FileNotFoundError with actionable instructions if nothing is found.
     """
     try:
         result = subprocess.run(
-            ["where", "opencode"], capture_output=True, text=True, check=True
+            ["where", "opencode"], capture_output=True, text=True, check=True,
         )
         for line in result.stdout.splitlines():
             if "chocolatey\\bin" in line.lower():
@@ -71,7 +71,7 @@ def find_opencode(explicit: str = "") -> str:
         "opencode.exe not found in Chocolatey.\n\n"
         "To fix:\n"
         "  • Run (as Administrator):  choco install opencode\n"
-        "  • Then restart the Streamlit app so it picks up the updated PATH."
+        "  • Then restart the Streamlit app so it picks up the updated PATH.",
     )
 
 
@@ -133,8 +133,7 @@ class RunResult:
 
 
 class OpencodeRunner:
-    """
-    One send()/start() call = one  opencode run "<prompt>"  subprocess.
+    """One send()/start() call = one  opencode run "<prompt>"  subprocess.
     stdin is always DEVNULL so opencode never tries to open a TUI or wait for input.
     Supports --continue flag for session continuity when context allows.
     """
@@ -142,14 +141,14 @@ class OpencodeRunner:
     def __init__(
         self,
         workspace: Path,
-        opencode_model: Optional[str] = None,
+        opencode_model: str | None = None,
         opencode_executable: str = "",
         timeout: int = 300,
         agent: str = "",
-        step_detector: Optional[OpencodeStepDetector] = None,
-        on_step: Optional[Callable[[Step], None]] = None,
-        on_transition: Optional[Callable[[PhaseTransition], None]] = None,
-        on_progress: Optional[Callable[[StepProgress], None]] = None,
+        step_detector: OpencodeStepDetector | None = None,
+        on_step: Callable[[Step], None] | None = None,
+        on_transition: Callable[[PhaseTransition], None] | None = None,
+        on_progress: Callable[[StepProgress], None] | None = None,
     ):
         self.workspace = workspace
         self.opencode_model = opencode_model
@@ -157,10 +156,10 @@ class OpencodeRunner:
         self.timeout = timeout
         self.agent = agent
 
-        self._last_result: Optional[RunResult] = None
+        self._last_result: RunResult | None = None
         self._chars_exchanged: int = 0
         self._alive: bool = False
-        self._process: Optional[subprocess.Popen] = None
+        self._process: subprocess.Popen | None = None
         self._archiver = WorkspaceArchiver(workspace)
         self._session_active: bool = False
         self._use_continue: bool = False
@@ -190,7 +189,7 @@ class OpencodeRunner:
         if not initial_prompt.strip():
             logger.warning("Empty prompt provided to opencode. Skipping run.")
             self._last_result = RunResult(
-                exception="Empty prompt provided. Skipping run."
+                exception="Empty prompt provided. Skipping run.",
             )
             return
         self._alive = True
@@ -202,7 +201,7 @@ class OpencodeRunner:
             raise RuntimeError("OpencodeRunner has been stopped.")
         self._run_prompt(message)
 
-    def read_output(self, timeout: Optional[int] = None) -> tuple[str, bool]:
+    def read_output(self, timeout: int | None = None) -> tuple[str, bool]:
         if self._last_result is None:
             return "", False
         return strip_thinking_blocks(self._last_result.output), self._last_result.timed_out
@@ -258,7 +257,7 @@ class OpencodeRunner:
                                             found_processes = True
                                         except Exception as e:
                                             logger.warning(
-                                                "Error killing process %s: %s", pid, e
+                                                "Error killing process %s: %s", pid, e,
                                             )
 
                     if not found_processes:
@@ -266,7 +265,7 @@ class OpencodeRunner:
                     return
                 except subprocess.TimeoutExpired:
                     logger.debug(
-                        "Primary process scan timed out, using fallback method"
+                        "Primary process scan timed out, using fallback method",
                     )
                 except Exception as e:
                     logger.warning("Primary process scan failed: %s", e)
@@ -274,7 +273,7 @@ class OpencodeRunner:
                 # Fallback method: If primary method fails or times out, try basic process names
                 try:
                     result = subprocess.run(
-                        ["tasklist"], capture_output=True, text=True, timeout=2
+                        ["tasklist"], capture_output=True, text=True, timeout=2,
                     )
                     found_processes = False
                     for line in result.stdout.splitlines()[3:]:  # Skip header lines
@@ -296,12 +295,12 @@ class OpencodeRunner:
                                     found_processes = True
                                 except Exception as e:
                                     logger.warning(
-                                        "Error killing process %s: %s", pid, e
+                                        "Error killing process %s: %s", pid, e,
                                     )
 
                     if not found_processes:
                         logger.debug(
-                            "No chocolatey/opencode processes found with fallback method"
+                            "No chocolatey/opencode processes found with fallback method",
                         )
                 except Exception as e:
                     logger.warning("Fallback process scan failed: %s", e)
@@ -332,8 +331,7 @@ class OpencodeRunner:
     # ------------------------------------------------------------------ #
 
     def _prepare_workspace(self) -> None:
-        """
-        Ensure the workspace exists and contains an opencode project marker
+        """Ensure the workspace exists and contains an opencode project marker
         so opencode anchors its project root here instead of walking up the
         directory tree to a parent folder.
         """
@@ -363,7 +361,7 @@ class OpencodeRunner:
 
         # .cmd/.bat on Windows need shell=True
         use_shell = sys.platform == "win32" and exe.lower().endswith(
-            (".cmd", ".bat", ".ps1")
+            (".cmd", ".bat", ".ps1"),
         )
 
         try:
@@ -531,8 +529,7 @@ class OpencodeRunner:
         }
 
     def send_cleanup_inquiry(self, candidates: list[str]) -> None:
-        """
-        Send an inquiry to opencode about the identified cleanup candidates.
+        """Send an inquiry to opencode about the identified cleanup candidates.
         Opencode will evaluate the files and respond with its recommendations.
         Files will be archived instead of deleted to preserve history.
         """
@@ -567,13 +564,12 @@ class OpencodeRunner:
         )
 
         logger.info(
-            "Sending cleanup inquiry to opencode for %d candidates", len(candidates)
+            "Sending cleanup inquiry to opencode for %d candidates", len(candidates),
         )
         self.send(inquiry)
 
     def identify_cleanup_candidates(self) -> list[str]:
-        """
-        Identify files that might be outdated or unused, then send an inquiry to
+        """Identify files that might be outdated or unused, then send an inquiry to
         opencode for its recommendation on what should be deleted.
         Returns opencode's response parsed as a list of file paths.
         """
@@ -665,11 +661,11 @@ class OpencodeRunner:
 
         candidates.extend(
             self._identify_versioned_backups(
-                workspace, should_ignore, is_versioned_backup, get_base_name
-            )
+                workspace, should_ignore, is_versioned_backup, get_base_name,
+            ),
         )
         candidates.extend(
-            self._identify_orphaned_files(workspace, should_ignore, _SOURCE_EXTS)
+            self._identify_orphaned_files(workspace, should_ignore, _SOURCE_EXTS),
         )
 
         if candidates:
@@ -767,15 +763,13 @@ class OpencodeRunner:
         return candidates
 
     def archive_files(self, files: list[str]) -> ArchiveResult:
-        """
-        Archive specified files instead of deleting them.
+        """Archive specified files instead of deleting them.
         This preserves historical versions while cleaning up the workspace.
         """
         return self._archiver.archive_workspace(label="cleanup", files_to_archive=files)
 
     def archive_before_new_run(self) -> ArchiveResult:
-        """
-        Archive the current workspace state before starting a new run.
+        """Archive the current workspace state before starting a new run.
         Called at the beginning of a supervisor loop execution.
         """
         return self._archiver.archive_before_new_run()
@@ -793,8 +787,7 @@ class OpencodeRunner:
         return self._archiver.get_archive_stats()
 
     def get_files_read(self) -> list[str]:
-        """
-        Extract file references from opencode output.
+        """Extract file references from opencode output.
         Looks for patterns like file paths, file operations, and file references.
         """
         import re

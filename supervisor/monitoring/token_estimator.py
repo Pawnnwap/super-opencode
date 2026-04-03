@@ -57,6 +57,7 @@ def get_threshold_for_fraction(fraction: float) -> float | None:
 @dataclass
 class TokenEstimate:
     """Result of a token estimation."""
+
     total: int
     system_prompt: int
     conversation_history: int
@@ -114,8 +115,7 @@ def truncate_prompt(
     max_tokens: int,
     preserve_end_ratio: float = 0.3,
 ) -> str:
-    """
-    Truncate prompt text keeping the end intact.
+    """Truncate prompt text keeping the end intact.
 
     Args:
         text: The text to truncate.
@@ -124,6 +124,7 @@ def truncate_prompt(
 
     Returns:
         Truncated text with truncation marker if truncated, original if within limits.
+
     """
     estimated = estimate_tokens(text)
     available = int(max_tokens * (1.0 - _RESPONSE_MARGIN))
@@ -166,8 +167,7 @@ def truncate_with_fallback(
     system_prompt: str = "",
     conversation_history: str = "",
 ) -> str:
-    """
-    Intelligently truncate text with fallback strategy.
+    """Intelligently truncate text with fallback strategy.
 
     1. First, truncate the conversation history (oldest parts first).
     2. Then truncate user input preserving the end.
@@ -209,8 +209,7 @@ def truncate_with_fallback(
 
 
 def warn_if_exceeds_limit(estimate: TokenEstimate, max_tokens: int) -> list[str]:
-    """
-    Log warnings when estimated tokens exceed various thresholds.
+    """Log warnings when estimated tokens exceed various thresholds.
 
     Returns a list of warning messages that were logged.
     """
@@ -243,8 +242,7 @@ def safe_truncate_request(
     max_tokens: int,
     truncation_enabled: bool = True,
 ) -> tuple[str, str, str, list[str]]:
-    """
-    Safely handle token estimation, warning, and optional truncation.
+    """Safely handle token estimation, warning, and optional truncation.
 
     Args:
         system_prompt: The system prompt text
@@ -255,6 +253,7 @@ def safe_truncate_request(
 
     Returns:
         Tuple of (truncated_system, truncated_history, truncated_user, warning_messages)
+
     """
     estimate = estimate_request_tokens(system_prompt, conversation_history, user_input)
     warning_msgs = warn_if_exceeds_limit(estimate, max_tokens)
@@ -285,7 +284,7 @@ def safe_truncate_request(
                 if user_tokens > user_budget:
                     truncated_user = truncate_prompt(user_input, user_budget)
                     warning_msgs.append(
-                        f"User input truncated from ~{user_tokens} to ~{estimate_tokens(truncated_user)} tokens"
+                        f"User input truncated from ~{user_tokens} to ~{estimate_tokens(truncated_user)} tokens",
                     )
                     logger.warning(warning_msgs[-1])
 

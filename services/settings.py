@@ -5,7 +5,7 @@ from pathlib import Path
 import streamlit as st
 
 _SETTINGS_FILE = Path(
-    os.path.join(str(Path.home()), ".opencode_supervisor_settings.json")
+    os.path.join(str(Path.home()), ".opencode_supervisor_settings.json"),
 )
 
 _PERSIST_KEYS = [

@@ -1,5 +1,4 @@
-"""
-supervisor/core/loop.py — main orchestration loop.
+"""supervisor/core/loop.py — main orchestration loop.
 
 With the CLI-based runner, each turn is:
   1. opencode -p "<prompt>" runs and exits  (done inside runner.start / runner.send)
@@ -14,7 +13,7 @@ from __future__ import annotations
 
 import logging
 import sys
-from typing import Generator
+from collections.abc import Generator
 
 from supervisor.analyzers.codebase_analyzer import snapshot_codebase
 from supervisor.analyzers.opencode_step_detector import StepProgress
@@ -37,7 +36,7 @@ class SupervisorLoop(BaseLoop):
         modified_gitignores = update_gitignore_files(config.workspace)
         if modified_gitignores:
             logger.info(
-                f"Modified {len(modified_gitignores)} .gitignore file(s): {[str(p) for p in modified_gitignores]}"
+                f"Modified {len(modified_gitignores)} .gitignore file(s): {[str(p) for p in modified_gitignores]}",
             )
 
         self.protocol = load_protocol(config.protocol_path)
@@ -119,7 +118,7 @@ class SupervisorLoop(BaseLoop):
             yield _ev("success", "All targets met — run finished successfully.")
         else:
             yield _ev(
-                "error", "Run ended with failures. See failure_report.md in workspace."
+                "error", "Run ended with failures. See failure_report.md in workspace.",
             )
 
     def _run_plan_mode(self) -> Generator[Event, None, None]:
@@ -274,12 +273,12 @@ class SupervisorLoop(BaseLoop):
         yield from self._check_and_update_snapshot()
         yield from []
 
-    def _get_verdict(self, output: str, progress) -> "SupervisorVerdict":
+    def _get_verdict(self, output: str, progress) -> SupervisorVerdict:
         step_context = self._get_step_context(progress)
         return self.supervisor.judge_with_step_context(output, step_context)
 
     def _post_judge_feedback(
-        self, safe_msg: str, output: str
+        self, safe_msg: str, output: str,
     ) -> Generator[Event, None, str]:
         alignment = self.supervisor.verify_protocol_alignment(output, self.protocol)
         if not alignment.aligned:
@@ -334,7 +333,7 @@ class SupervisorLoop(BaseLoop):
             self.runner.stop()
             self._state = LoopState.ENDED_FAILURE
             yield _ev("warn", "Interrupted by user.")
-        except Exception as exc:
+        except Exception:
             import traceback
 
             self.runner.stop()
@@ -343,12 +342,14 @@ class SupervisorLoop(BaseLoop):
 
     def _codebase_preamble(self) -> str:
         return "\n\n## Live codebase\n" + self._cached_snapshot.digest_for_prompt(
-            max_files=15
+            max_files=15,
         )
 
     def _init_prompt(self) -> str:
-        from supervisor.prompts import (HASHLINE_SYSTEM_INSTRUCTIONS,
-                                        INIT_PROMPT_TEMPLATE)
+        from supervisor.prompts import (
+            HASHLINE_SYSTEM_INSTRUCTIONS,
+            INIT_PROMPT_TEMPLATE,
+        )
 
         text = self.config.protocol_path.read_text(encoding="utf-8")
         ws = self.config.workspace.resolve()

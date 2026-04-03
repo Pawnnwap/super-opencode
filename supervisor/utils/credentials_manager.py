@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Optional
 
 from cryptography.fernet import Fernet
 
@@ -39,7 +38,7 @@ def save_credentials(api_key: str, base_url: str = "") -> None:
     _ENV_FILE.write_text("\n".join(lines), encoding="utf-8")
 
 
-def load_credentials() -> tuple[Optional[str], Optional[str]]:
+def load_credentials() -> tuple[str | None, str | None]:
     """Load and decrypt credentials from .env file."""
     if not _ENV_FILE.exists():
         return None, None
@@ -75,7 +74,7 @@ def has_cached_credentials() -> bool:
     return _ENV_FILE.exists()
 
 
-def get_credentials_from_environment() -> tuple[Optional[str], Optional[str]]:
+def get_credentials_from_environment() -> tuple[str | None, str | None]:
     """Get credentials from environment variables (highest priority)."""
     api_key = os.environ.get("OPENAI_API_KEY")
     base_url = os.environ.get("OPENAI_BASE_URL")
@@ -97,9 +96,8 @@ def validate_credentials(api_key: str, base_url: str = "") -> bool:
         return False
 
 
-def get_credentials() -> tuple[Optional[str], Optional[str]]:
-    """
-    Get credentials with priority:
+def get_credentials() -> tuple[str | None, str | None]:
+    """Get credentials with priority:
     1. Environment variables
     2. Cached .env file (if valid)
     """
@@ -111,7 +109,6 @@ def get_credentials() -> tuple[Optional[str], Optional[str]]:
     if cached_key:
         if validate_credentials(cached_key, cached_url or ""):
             return cached_key, cached_url
-        else:
-            clear_credentials()
+        clear_credentials()
 
     return None, None

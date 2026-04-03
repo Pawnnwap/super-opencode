@@ -8,7 +8,7 @@ from pathlib import Path
 
 _REQUIRED = {"INPUT", "TARGET", "RESTRICTIONS"}
 _HEADING_RE = re.compile(
-    r"^#{1,3}\s+(INPUT|TARGET|RESTRICTIONS)\s*$", re.IGNORECASE | re.MULTILINE
+    r"^#{1,3}\s+(INPUT|TARGET|RESTRICTIONS)\s*$", re.IGNORECASE | re.MULTILINE,
 )
 
 PROTECTED_PATHS_RESTRICTION = "- Do not delete or modify the .opencode directory or its contents\n- Do not delete or rename the .checkpoints directory\n- Do not delete or rename the archive directory"
@@ -76,7 +76,7 @@ def _parse(raw: str) -> Protocol:
     if missing:
         raise ValueError(
             f"protocol.md is missing: {', '.join(sorted(missing))}. "
-            "Must contain ## INPUT, ## TARGET, ## RESTRICTIONS."
+            "Must contain ## INPUT, ## TARGET, ## RESTRICTIONS.",
         )
     return Protocol(
         raw=raw,

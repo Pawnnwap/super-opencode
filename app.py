@@ -1,5 +1,4 @@
-"""
-app.py  —  opencode Supervisor UI
+"""app.py  —  opencode Supervisor UI
 Run with:  streamlit run app.py
 """
 
@@ -19,8 +18,10 @@ from services.job_manager import JobManager
 from services.settings import apply_api_config, load_settings, save_settings
 from supervisor.analyzers.codebase_analyzer import snapshot_codebase
 from supervisor.monitoring.token_estimator import estimate_tokens
-from supervisor.protocols.meta_protocol_builder import (MetaProtocolBuilder,
-                                                        write_meta_protocol)
+from supervisor.protocols.meta_protocol_builder import (
+    MetaProtocolBuilder,
+    write_meta_protocol,
+)
 from supervisor.protocols.protocol_analyzer import ProtocolAnalyzer, Severity
 from supervisor.protocols.protocol_wizard import ProtocolWizard
 from supervisor.utils.config import SupervisorConfig
@@ -341,7 +342,7 @@ def _get_opencode_config_file(config_dir: Path) -> Path:
         # Create empty opencode.json with correct structure
         default_content = {"$schema": "https://opencode.ai/config.json", "provider": {}}
         opencode_json.write_text(
-            json.dumps(default_content, indent=2), encoding="utf-8"
+            json.dumps(default_content, indent=2), encoding="utf-8",
         )
         target_file = opencode_json
 
@@ -575,18 +576,17 @@ with st.sidebar:
                 disabled=True,
             ):
                 pass
-        else:
-            if st.button(
-                label,
-                key=f"nav_{key}",
-                use_container_width=True,
-                type="primary" if active else "secondary",
-            ):
-                st.session_state._prev_page = key
-                # Clear page-specific UI state on navigation
-                _clear_page_state(key)
-                st.session_state.page = key
-                st.rerun()
+        elif st.button(
+            label,
+            key=f"nav_{key}",
+            use_container_width=True,
+            type="primary" if active else "secondary",
+        ):
+            st.session_state._prev_page = key
+            # Clear page-specific UI state on navigation
+            _clear_page_state(key)
+            st.session_state.page = key
+            st.rerun()
 
     if not tests_passed:
         st.caption("🔒 Run & Self-Evolution locked — pass connectivity tests first.")
@@ -620,7 +620,7 @@ with st.sidebar:
             )
 
             api_key = st.text_input(
-                "API key", key="custom_api_key", type="password", placeholder="sk-..."
+                "API key", key="custom_api_key", type="password", placeholder="sk-...",
             )
 
             # Fix 2: Add model names input
@@ -651,7 +651,7 @@ with st.sidebar:
                         config_dir = _find_opencode_config_dir()
                         if config_dir is None:
                             st.error(
-                                "Could not find or create opencode config directory."
+                                "Could not find or create opencode config directory.",
                             )
                         else:
                             config_file = _get_opencode_config_file(config_dir)
@@ -664,7 +664,7 @@ with st.sidebar:
                             )
                             st.success("✅ Service saved successfully!")
                             st.info(
-                                f"Models can now be referenced as `{service_name.strip()}/<model-name>`"
+                                f"Models can now be referenced as `{service_name.strip()}/<model-name>`",
                             )
                             st.session_state.show_custom_model_form = False
                             # Clear the form inputs
@@ -718,8 +718,7 @@ def _run_with_timeout(fn, seconds=30):
 def test_opencode():
     import tempfile
 
-    from supervisor.runners.opencode_runner import (OpencodeRunner,
-                                                    find_opencode)
+    from supervisor.runners.opencode_runner import OpencodeRunner, find_opencode
 
     workspace = Path(tempfile.gettempdir()) / "opencode_test_dummy"
     workspace.mkdir(exist_ok=True)  # Ensure dummy dir exists
@@ -800,7 +799,7 @@ def page_wizard():
     st.markdown("# Protocol Wizard")
     st.markdown(
         "Fill in each section in plain language. The supervisor LLM will refine "
-        "them into a clean, unambiguous `protocol.md`."
+        "them into a clean, unambiguous `protocol.md`.",
     )
 
     try:
@@ -833,7 +832,7 @@ def page_wizard():
                 placeholder="/home/user/myproject",
             )
             if st.session_state.workspace != st.session_state.get(
-                "_last_workspace", ""
+                "_last_workspace", "",
             ):
                 st.session_state.protected_files = []
                 st.session_state._last_workspace = st.session_state.workspace
@@ -938,7 +937,7 @@ def page_wizard():
                             if f.is_file()
                             and not is_in_dot_dir(f, workspace_path)
                             and not contains_debug_dir(f, workspace_path)
-                        ]
+                        ],
                     )
                 except Exception:
                     pass
@@ -974,10 +973,12 @@ def page_wizard():
 
         with st.expander("🚫 Ignore Patterns (.opencodeignore)", expanded=False):
             from supervisor.workspace.ignore_patterns import (
-                IGNORE_FILE, write_ignore_file)
+                IGNORE_FILE,
+                write_ignore_file,
+            )
 
             st.caption(
-                f"Files matching these patterns will be excluded from context retrieval"
+                "Files matching these patterns will be excluded from context retrieval",
             )
 
             ws_path = (
@@ -991,7 +992,7 @@ def page_wizard():
                 if ignore_file_path.exists():
                     try:
                         current_ignore_content = ignore_file_path.read_text(
-                            encoding="utf-8"
+                            encoding="utf-8",
                         )
                     except Exception:
                         pass
@@ -1024,7 +1025,7 @@ def page_wizard():
 
                 if ignore_file_path.exists():
                     st.caption(
-                        f"Found existing {IGNORE_FILE} with {len(current_ignore_content.splitlines())} patterns"
+                        f"Found existing {IGNORE_FILE} with {len(current_ignore_content.splitlines())} patterns",
                     )
 
                 st.markdown("---")
@@ -1044,7 +1045,7 @@ def page_wizard():
                                 str(p.relative_to(ws)).replace("\\", "/")
                                 for p in ws.rglob("*")
                                 if str(p.relative_to(ws)) != ".opencodeignore"
-                            ]
+                            ],
                         )
                         file_list_str = "\n".join(all_entries)
                         truncation_note = ""
@@ -1100,10 +1101,10 @@ def page_wizard():
                             disabled=True,
                         )
                         ignore_file_path.write_text(
-                            generated_patterns, encoding="utf-8"
+                            generated_patterns, encoding="utf-8",
                         )
                         st.toast(
-                            "Ignore patterns generated and saved to .opencodeignore."
+                            "Ignore patterns generated and saved to .opencodeignore.",
                         )
                     except Exception as e:
                         st.error(f"Failed to generate ignore patterns: {e}")
@@ -1185,11 +1186,11 @@ def page_wizard():
         existing_proto = workspace_path / "protocol.md"
         if existing_proto.exists() and not st.session_state.protocol_md:
             existing_text = existing_proto.read_text(encoding="utf-8")
-            st.info(f"📄 An existing `protocol.md` was found in your workspace.")
+            st.info("📄 An existing `protocol.md` was found in your workspace.")
             col_reuse, col_ignore, _ = st.columns([1, 1, 3])
             with col_reuse:
                 if st.button(
-                    "♻️  Use existing protocol.md", type="primary", key="btn_reuse_proto"
+                    "♻️  Use existing protocol.md", type="primary", key="btn_reuse_proto",
                 ):
                     st.session_state.protocol_md = existing_text
                     st.session_state.wizard_step = 1
@@ -1315,7 +1316,7 @@ def page_wizard():
             _render_refined_quality_analysis(st.session_state.protocol_md)
 
         render_expander_section(
-            "📊 Protocol Quality Analysis", _quality_analysis_content
+            "📊 Protocol Quality Analysis", _quality_analysis_content,
         )
 
         col_a, col_b, _ = st.columns([1, 1, 3])
@@ -1475,7 +1476,7 @@ def _show_run_setup_screen():
     st.markdown(
         f"**Workspace:** `{workspace}`  \n"
         f"**Protocol:** `{proto_path}`  \n"
-        f"**Supervisor model:** `{st.session_state.supervisor_model}`"
+        f"**Supervisor model:** `{st.session_state.supervisor_model}`",
     )
 
     col1, col2 = st.columns([2, 1])
@@ -1540,10 +1541,9 @@ def _show_run_status_screen(job_id: str):
             if st.button("⏹ Stop", use_container_width=True):
                 job_manager.cancel_job(job_id)
                 st.rerun()
-        else:
-            if st.button("🗑 Clear", use_container_width=True):
-                del st.query_params["run_job_id"]
-                st.rerun()
+        elif st.button("🗑 Clear", use_container_width=True):
+            del st.query_params["run_job_id"]
+            st.rerun()
     with col_h3:
         if st.button("🔄 Refresh", use_container_width=True):
             st.rerun()
@@ -1555,14 +1555,14 @@ def _show_run_status_screen(job_id: str):
         _render_step_progress(status.get("logs", []), state)
         st.markdown("#### 🖥️ Live Log")
         _render_events(
-            status.get("logs", []), "— waiting for logs —", show_verbose=True
+            status.get("logs", []), "— waiting for logs —", show_verbose=True,
         )
 
     with col_side:
         st.markdown("#### ℹ️ Details")
         st.markdown(f"**State:** {state}")
         st.markdown(
-            f"**Started:** {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(status.get('updated_at', 0)))}"
+            f"**Started:** {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(status.get('updated_at', 0)))}",
         )
         sup_model = st.session_state.get("supervisor_model", "") or "(not set)"
         oc_model = st.session_state.get("opencode_model", "") or "(not set)"
@@ -1571,7 +1571,7 @@ def _show_run_status_screen(job_id: str):
 
         # Token usage if available
         _render_token_usage_bar(
-            status.get("logs", []), int(st.session_state.max_tokens)
+            status.get("logs", []), int(st.session_state.max_tokens),
         )
 
         if status.get("report"):
@@ -1588,7 +1588,7 @@ def _show_run_status_screen(job_id: str):
     # Auto-refresh loop must be at the end so UI renders first
     if state == "RUNNING":
         st.info(
-            "🏃 Job is running in background. You can safely close this tab or refresh."
+            "🏃 Job is running in background. You can safely close this tab or refresh.",
         )
         time.sleep(2)
         st.rerun()
@@ -1756,11 +1756,11 @@ def _render_events(
         if lvl in _BLOCK_META:
             if not verbose:
                 # Compact summary line instead of full content
-                preview = _esc(str(msg or '')[:120].replace("\n", " "))
+                preview = _esc(str(msg or "")[:120].replace("\n", " "))
                 hdr_cls, hdr_label = _BLOCK_META[lvl]
                 lines_html.append(
                     f'<span class="{hdr_cls}">{hdr_label}</span>'
-                    + f'<span class="log-info" style="opacity:0.6"> {preview}…</span>\n'
+                    + f'<span class="log-info" style="opacity:0.6"> {preview}…</span>\n',
                 )
                 continue
 
@@ -1769,7 +1769,7 @@ def _render_events(
             lines_html.append(
                 f'<span class="log-rule">{"─" * 60}</span>\n'
                 + f'<span class="{hdr_cls}">{hdr_label}</span>\n'
-                + f'<span class="log-{lvl}">{_esc(msg)}</span>\n'
+                + f'<span class="log-{lvl}">{_esc(msg)}</span>\n',
             )
         else:
             lines_html.append(f'<span class="log-{lvl}">{_esc(msg)}</span>\n')
@@ -1813,12 +1813,12 @@ def _show_evo_setup_screen():
         "Point the supervisor + opencode at **this codebase itself**. "
         "Describe what you want improved or debugged — the system will "
         "auto-generate a `meta_protocol.md` from the live source tree, "
-        "then run the full supervisor loop."
+        "then run the full supervisor loop.",
     )
 
     if not st.session_state.openai_key:
         st.warning(
-            "Enter your OpenAI API key in the Protocol Wizard config panel first."
+            "Enter your OpenAI API key in the Protocol Wizard config panel first.",
         )
         return
 
@@ -1832,7 +1832,7 @@ def _show_evo_setup_screen():
         st.markdown('<div class="card">', unsafe_allow_html=True)
         st.markdown("**Evolution goal**")
         st.text_area(
-            "evo_goal_input", key="evo_goal", height=130, label_visibility="collapsed"
+            "evo_goal_input", key="evo_goal", height=130, label_visibility="collapsed",
         )
         st.markdown("</div>", unsafe_allow_html=True)
 
@@ -1935,10 +1935,9 @@ def _show_evo_status_screen(job_id: str):
             if st.button("⏹ Stop", use_container_width=True):
                 job_manager.cancel_job(job_id)
                 st.rerun()
-        else:
-            if st.button("🗑 Clear", use_container_width=True):
-                del st.query_params["evo_job_id"]
-                st.rerun()
+        elif st.button("🗑 Clear", use_container_width=True):
+            del st.query_params["evo_job_id"]
+            st.rerun()
     with col_h3:
         if st.button("🔄 Refresh", use_container_width=True):
             st.rerun()
@@ -1948,14 +1947,14 @@ def _show_evo_status_screen(job_id: str):
         _render_step_progress(status.get("logs", []), state, is_evolution=True)
         st.markdown("#### 🖥️ Evolution Log")
         _render_events(
-            status.get("logs", []), "— waiting for logs —", show_verbose=True
+            status.get("logs", []), "— waiting for logs —", show_verbose=True,
         )
 
     with col_side:
         st.markdown("#### ℹ️ Details")
         st.markdown(f"**State:** {state}")
         st.markdown(
-            f"**Started:** {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(status.get('updated_at', 0)))}"
+            f"**Started:** {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(status.get('updated_at', 0)))}",
         )
         sup_model = st.session_state.get("supervisor_model", "") or "(not set)"
         oc_model = st.session_state.get("opencode_model", "") or "(not set)"
@@ -1963,7 +1962,7 @@ def _show_evo_status_screen(job_id: str):
         st.markdown(f"**Opencode model:** `{oc_model}`")
 
         _render_token_usage_bar(
-            status.get("logs", []), int(st.session_state.max_tokens)
+            status.get("logs", []), int(st.session_state.max_tokens),
         )
 
         if status.get("report"):

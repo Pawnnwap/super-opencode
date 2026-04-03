@@ -1,5 +1,4 @@
-"""
-supervisor/workspace/opencodeignore_handler.py
+"""supervisor/workspace/opencodeignore_handler.py
 
 Handles loading and matching .opencodeignore patterns for workspace operations.
 Provides functions for loading patterns from .opencodeignore files and checking
@@ -21,6 +20,7 @@ def load_opencodeignore_patterns(workspace: Path) -> list[str]:
     Returns:
         List of pattern strings from .opencodeignore, or empty list if the
         file doesn't exist or cannot be read.
+
     """
     ignore_file = workspace / ".opencodeignore"
     if not ignore_file.exists():
@@ -53,6 +53,7 @@ def should_ignore(path: Path, patterns: list[str]) -> bool:
 
     Returns:
         True if the path matches any pattern, False otherwise.
+
     """
     if not patterns:
         return False

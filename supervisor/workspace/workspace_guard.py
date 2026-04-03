@@ -6,8 +6,9 @@ import os
 import re
 import stat
 import subprocess
+from collections.abc import Iterable
 from pathlib import Path
-from typing import TYPE_CHECKING, Iterable
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from supervisor.workspace.ignore_patterns import IgnoreMatcher
@@ -23,7 +24,7 @@ class WorkspaceGuard:
     def __init__(self, workspace: Path, protected_files: Iterable[str] = ()):
         self.workspace = workspace.resolve()
         self._protected_files: set[str] = set()
-        self._ignore_matcher: "IgnoreMatcher | None" = None
+        self._ignore_matcher: IgnoreMatcher | None = None
         for pf in protected_files:
             self._protected_files.add(Path(pf).as_posix())
 
@@ -48,10 +49,9 @@ class WorkspaceGuard:
             if path_obj.is_absolute():
                 path_obj.relative_to(self.workspace)
                 return True
-            else:
-                resolved = (self.workspace / path_obj).resolve()
-                resolved.relative_to(self.workspace)
-                return True
+            resolved = (self.workspace / path_obj).resolve()
+            resolved.relative_to(self.workspace)
+            return True
         except ValueError:
             return False
 
@@ -128,10 +128,9 @@ class WorkspaceGuard:
         return violations
 
     def sanitize_with_protection(
-        self, message: str
+        self, message: str,
     ) -> tuple[str, list[str], list[str]]:
-        """
-        Full sanitization: workspace bounds + protected paths.
+        """Full sanitization: workspace bounds + protected paths.
         Returns (sanitized_msg, workspace_violations, protected_violations).
         """
         sanitized, ws_violations = self.sanitize_message(message)
@@ -169,10 +168,9 @@ class WorkspaceGuard:
         return allowed, protected
 
     def validate_no_protected_operations(
-        self, paths: list[str]
+        self, paths: list[str],
     ) -> tuple[bool, list[str]]:
-        """
-        Validate that a list of file paths does not include protected paths.
+        """Validate that a list of file paths does not include protected paths.
         Returns (is_valid, list_of_violations).
         """
         violations = []
@@ -242,13 +240,13 @@ class WorkspaceGuard:
         if not self._protected_files:
             return ""
         lines = [
-            "\n\n[USER PROTECTED FILES] The following files are protected and must NOT be modified or deleted:"
+            "\n\n[USER PROTECTED FILES] The following files are protected and must NOT be modified or deleted:",
         ]
         for pf in sorted(self._protected_files):
             lines.append(f"  - {pf}")
         return "\n".join(lines)
 
-    def set_ignore_matcher(self, matcher: "IgnoreMatcher") -> None:
+    def set_ignore_matcher(self, matcher: IgnoreMatcher) -> None:
         """Set the ignore matcher for checking ignored file patterns."""
         self._ignore_matcher = matcher
 
@@ -269,8 +267,7 @@ class WorkspaceGuard:
         return violations
 
     def set_readonly_protection(self, paths: list[str]) -> list[str]:
-        """
-        Set read-only attributes recursively on the given paths.
+        """Set read-only attributes recursively on the given paths.
         Handles platform differences (Windows vs Unix).
         Does not follow symbolic links outside the workspace.
         Returns list of paths that were successfully protected.
@@ -312,8 +309,7 @@ class WorkspaceGuard:
         return protected
 
     def remove_readonly_protection(self, paths: list[str]) -> list[str]:
-        """
-        Remove read-only attributes recursively on the given paths.
+        """Remove read-only attributes recursively on the given paths.
         Handles platform differences (Windows vs Unix).
         Does not follow symbolic links outside the workspace.
         Returns list of paths that were successfully unprotected.

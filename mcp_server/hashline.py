@@ -1,5 +1,4 @@
-"""
-hashline.py  –  MCP server exposing `hashline_read` and `hashline_edit`
+"""hashline.py  –  MCP server exposing `hashline_read` and `hashline_edit`
 ================================================================================
 
 Exposes two custom tools (server name = "hashline", so opencode sees):
@@ -60,7 +59,7 @@ try:
 except ImportError as exc:
     sys.exit(
         "mcp package not found.  Install it with:  pip install mcp\n"
-        f"Original error: {exc}"
+        f"Original error: {exc}",
     )
 
 # ---------------------------------------------------------------------------
@@ -151,8 +150,7 @@ def _validate_all_refs(
     lines: list[str],
     algo: str = "sha256",
 ) -> list[dict[str, str]]:
-    """
-    Complete upfront validation pass — collects ALL stale refs before any edit
+    """Complete upfront validation pass — collects ALL stale refs before any edit
     is applied so opencode gets a full picture in a single response.
 
     Returns a list of structured stale-ref dicts (empty = all valid):
@@ -190,8 +188,7 @@ def _auto_patch_edits(
     edits: list[dict[str, Any]],
     stale: list[dict[str, str]],
 ) -> list[dict[str, Any]]:
-    """
-    Return a copy of `edits` with stale refs replaced by their current IDs.
+    """Return a copy of `edits` with stale refs replaced by their current IDs.
     This is included in the error payload so opencode can retry without
     a manual re-read.
     """
@@ -209,8 +206,7 @@ def _auto_patch_edits(
 
 
 def _check_edit_conflicts(edits: list[dict[str, Any]]) -> list[str]:
-    """
-    Detect overlapping edits (e.g. replace and delete on the same line).
+    """Detect overlapping edits (e.g. replace and delete on the same line).
     Returns a list of human-readable conflict descriptions (empty = no conflicts).
     """
     conflicts: list[str] = []
@@ -228,7 +224,7 @@ def _check_edit_conflicts(edits: list[dict[str, Any]]) -> list[str]:
             if not (end < prev_start or start > prev_end):
                 conflicts.append(
                     f"'{edit['op']}' on lines {start}–{end} overlaps "
-                    f"'{prev_op}' on lines {prev_start}–{prev_end}"
+                    f"'{prev_op}' on lines {prev_start}–{prev_end}",
                 )
         ranges.append((start, end, edit["op"]))
 
@@ -240,8 +236,7 @@ def _check_edit_conflicts(edits: list[dict[str, Any]]) -> list[str]:
 # ---------------------------------------------------------------------------
 
 class _MismatchError(Exception):
-    """
-    Stale LINE#ID references detected.
+    """Stale LINE#ID references detected.
 
     Carries:
       .stale_refs   – structured list for machine consumption
@@ -291,8 +286,7 @@ def _hashline_edit(
     *,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """
-    Validate all LINE#ID references, then apply edits atomically.
+    """Validate all LINE#ID references, then apply edits atomically.
 
     Each edit dict:
         op       : "replace" | "delete" | "append" | "prepend"
@@ -322,7 +316,7 @@ def _hashline_edit(
     if conflicts:
         raise ValueError(
             "Edit conflict(s) detected — nothing written:\n"
-            + "\n".join(f"  • {c}" for c in conflicts)
+            + "\n".join(f"  • {c}" for c in conflicts),
         )
 
     # ── 2. Complete upfront validation pass ───────────────────────────────────
@@ -584,7 +578,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         return [TextContent(type="text", text=text)]
 
     # ── hashline_edit ───────────────────────────────────────────────────────────
-    elif name == "edit":
+    if name == "edit":
         path = arguments.get("path")
         edits = arguments.get("edits")
         dry_run = bool(arguments.get("dry_run", False))
@@ -612,8 +606,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         }
         return [TextContent(type="text", text=json.dumps(summary_obj, indent=2))]
 
-    else:
-        raise ValueError(f"Unknown tool: '{name}'")
+    raise ValueError(f"Unknown tool: '{name}'")
 
 
 # ---------------------------------------------------------------------------

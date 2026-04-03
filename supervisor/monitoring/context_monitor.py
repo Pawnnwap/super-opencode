@@ -38,7 +38,7 @@ class ContextMonitor:
         if prompt_head is not None:
             self._prompt_head = prompt_head[:100]
         logger.debug(
-            "Context: ~%d / %d (%.1f%%)", tokens, self.max_tokens, self.fraction * 100
+            "Context: ~%d / %d (%.1f%%)", tokens, self.max_tokens, self.fraction * 100,
         )
 
         # Graduated warning: emit warning at each threshold crossed

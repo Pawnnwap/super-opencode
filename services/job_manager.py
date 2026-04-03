@@ -2,7 +2,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any
 
 from services.state_store import JobStateStore
 from supervisor.core.loop import SupervisorLoop
@@ -15,7 +15,7 @@ class JobManager:
 
     def __init__(self, store_dir: str = ".job_store"):
         self.store = JobStateStore(store_dir)
-        self._active_jobs: Dict[str, Dict[str, Any]] = {}
+        self._active_jobs: dict[str, dict[str, Any]] = {}
         self._lock = threading.Lock()
 
     def enqueue_job(self, job_type: str, config: SupervisorConfig) -> str:
@@ -33,20 +33,20 @@ class JobManager:
             "progress": 0.0,
             "heartbeat_at": time.time(),
             "config": self._serialize_config(config),
-            "report": ""
+            "report": "",
         })
 
         # Start worker thread
         thread = threading.Thread(
             target=self._worker,
             args=(job_id, job_type, config, stop_event),
-            daemon=True
+            daemon=True,
         )
         thread.start()
 
         return job_id
 
-    def get_job_status(self, job_id: str) -> Optional[Dict[str, Any]]:
+    def get_job_status(self, job_id: str) -> dict[str, Any] | None:
         """Retrieve current status and logs for a job."""
         state = self.store.get_job_state(job_id)
         if not state:
@@ -87,7 +87,7 @@ class JobManager:
                 "progress": 0.0,
                 "heartbeat_at": time.time(),
                 "config": self._serialize_config(config),
-                "report": ""
+                "report": "",
             })
 
             # Select the appropriate loop
@@ -132,7 +132,7 @@ class JobManager:
                     # Also append a heartbeat event so the UI can count them
                     self.store.append_log(job_id, {
                         "level": "heartbeat",
-                        "msg": "Heartbeat — supervisor still active"
+                        "msg": "Heartbeat — supervisor still active",
                     })
 
                     self.store.save_job_state(job_id, {
@@ -141,7 +141,7 @@ class JobManager:
                         "progress": self._estimate_progress(event),
                         "heartbeat_at": now,
                         "config": self._serialize_config(config),
-                        "report": report_content
+                        "report": report_content,
                     })
                     last_heartbeat = now
 
@@ -159,9 +159,9 @@ class JobManager:
 
         except Exception as e:
             import traceback
-            error_msg = f"Worker error: {str(e)}\n{traceback.format_exc()}"
+            error_msg = f"Worker error: {e!s}\n{traceback.format_exc()}"
             self.store.append_log(job_id, {"level": "error", "msg": error_msg})
-            self._update_state(job_id, "FAILED", report=report_content if 'report_content' in locals() else "")
+            self._update_state(job_id, "FAILED", report=report_content if "report_content" in locals() else "")
         finally:
             with self._lock:
                 if job_id in self._active_jobs:
@@ -173,11 +173,11 @@ class JobManager:
         current.update({
             "state": state_name,
             "heartbeat_at": time.time(),
-            "report": report
+            "report": report,
         })
         self.store.save_job_state(job_id, current)
 
-    def _estimate_progress(self, event: Dict[str, Any]) -> float:
+    def _estimate_progress(self, event: dict[str, Any]) -> float:
         """Crude progress estimation based on event messages."""
         # This could be improved if loops emitted explicit progress percentages
         return 0.0  # Default to 0 if not easily inferrable
@@ -199,7 +199,7 @@ class JobManager:
                     pass
         return ""
 
-    def _serialize_config(self, config: SupervisorConfig) -> Dict[str, Any]:
+    def _serialize_config(self, config: SupervisorConfig) -> dict[str, Any]:
         """Convert SupervisorConfig to a serializable dict."""
         return {
             "protocol_path": str(config.protocol_path),
@@ -212,5 +212,5 @@ class JobManager:
             "timeout": config.timeout,
             "protected_files": list(config.protected_files),
             "max_tokens": config.max_tokens,
-            "plan_mode_rounds": config.plan_mode_rounds
+            "plan_mode_rounds": config.plan_mode_rounds,
         }

@@ -2,7 +2,6 @@
 
 import logging
 from pathlib import Path
-from typing import List
 
 logger = logging.getLogger(__name__)
 
@@ -17,9 +16,8 @@ test_*.py
 """
 
 
-def update_gitignore_files(workspace_root: Path) -> List[Path]:
-    """
-    Find all .gitignore files in the workspace tree and append the required lines
+def update_gitignore_files(workspace_root: Path) -> list[Path]:
+    """Find all .gitignore files in the workspace tree and append the required lines
     if they don't already exist. Returns a list of modified files.
 
     Args:
@@ -27,6 +25,7 @@ def update_gitignore_files(workspace_root: Path) -> List[Path]:
 
     Returns:
         List of Path objects for .gitignore files that were modified
+
     """
     # Find all .gitignore files in the workspace
     gitignore_files = list(workspace_root.rglob(".gitignore"))

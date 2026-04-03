@@ -1,5 +1,4 @@
-"""
-supervisor/opencode_step_detector.py
+"""supervisor/opencode_step_detector.py
 
 Monitors opencode execution output and detects inner step boundaries,
 phase transitions, and progress indicators.
@@ -8,9 +7,9 @@ phase transitions, and progress indicators.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable, Generator
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import Callable, Generator, Optional
 
 
 class StepPhase(Enum):
@@ -102,7 +101,7 @@ class OpencodeStepDetector:
             re.IGNORECASE,
         ),
         re.compile(
-            r"(?:^|\n)\s*[-*]\s*(?:first|step \d+|let me|start|begin)", re.IGNORECASE
+            r"(?:^|\n)\s*[-*]\s*(?:first|step \d+|let me|start|begin)", re.IGNORECASE,
         ),
         re.compile(
             r"(?:^|\n)\s*(?:\d+[\.\)]\s*(?:first|then|next|after|before|step \d+))",
@@ -114,20 +113,20 @@ class OpencodeStepDetector:
             re.IGNORECASE,
         ),
         re.compile(
-            r"here(?:'s| is) (?:my|the) (?:plan|approach|strategy)", re.IGNORECASE
+            r"here(?:'s| is) (?:my|the) (?:plan|approach|strategy)", re.IGNORECASE,
         ),
     ]
 
     CODING_PATTERNS = [
         re.compile(
-            r"(?:^|\n)\s*(?:creating|writing|modifying|editing|updating)", re.IGNORECASE
+            r"(?:^|\n)\s*(?:creating|writing|modifying|editing|updating)", re.IGNORECASE,
         ),
         re.compile(r"(?:^|\n)\s*(?:file:|path:)", re.IGNORECASE),
         re.compile(
-            r"(?:^|\n)\s*(?:```[\w]*|def |class |import |from\s+\w)", re.IGNORECASE
+            r"(?:^|\n)\s*(?:```[\w]*|def |class |import |from\s+\w)", re.IGNORECASE,
         ),
         re.compile(
-            r"(?:^|\n)\s*(?:open|read|write|create)\s+(?:file|directory)", re.IGNORECASE
+            r"(?:^|\n)\s*(?:open|read|write|create)\s+(?:file|directory)", re.IGNORECASE,
         ),
         re.compile(
             r"(?:^|\n)\s*(?:will|going to)\s+(?:create|write|modify|edit|add|remove|change)",
@@ -138,18 +137,18 @@ class OpencodeStepDetector:
 
     TESTING_PATTERNS = [
         re.compile(
-            r"(?:^|\n)\s*(?:running|executing|performing)\s+(?:test)", re.IGNORECASE
+            r"(?:^|\n)\s*(?:running|executing|performing)\s+(?:test)", re.IGNORECASE,
         ),
         re.compile(
-            r"(?:^|\n)\s*(?:test result|passed|failed|error|fail)", re.IGNORECASE
+            r"(?:^|\n)\s*(?:test result|passed|failed|error|fail)", re.IGNORECASE,
         ),
         re.compile(r"(?:^|\n)\s*pytest", re.IGNORECASE),
         re.compile(
-            r"(?:^|\n)\s*(?:assert|verify|check)\s+(?:that|if|=|==)", re.IGNORECASE
+            r"(?:^|\n)\s*(?:assert|verify|check)\s+(?:that|if|=|==)", re.IGNORECASE,
         ),
         re.compile(r"(?:^|\n)\s*(?:test|spec)\s*(?::|for)", re.IGNORECASE),
         re.compile(
-            r"(?:^|\n)\s*(?:running|executing)\s+(?:command|script)", re.IGNORECASE
+            r"(?:^|\n)\s*(?:running|executing)\s+(?:command|script)", re.IGNORECASE,
         ),
     ]
 
@@ -159,7 +158,7 @@ class OpencodeStepDetector:
             re.IGNORECASE,
         ),
         re.compile(
-            r"(?:^|\n)\s*(?:looks good|verified|confirmed|validated)", re.IGNORECASE
+            r"(?:^|\n)\s*(?:looks good|verified|confirmed|validated)", re.IGNORECASE,
         ),
         re.compile(r"(?:^|\n)\s*(?:all done|complete|finished|done)", re.IGNORECASE),
         re.compile(r"(?:^|\n)\s*(?:final|summary|conclusion)", re.IGNORECASE),
@@ -168,7 +167,7 @@ class OpencodeStepDetector:
     STEP_INDICATOR_PATTERNS = [
         re.compile(r"(?:^|\n)\s*(?:step|turn|iteration)\s*(\d+)", re.IGNORECASE),
         re.compile(
-            r"(?:^|\n)\s*(?:moving to|now |next )?(?:step|phase)\s*(\d+)", re.IGNORECASE
+            r"(?:^|\n)\s*(?:moving to|now |next )?(?:step|phase)\s*(\d+)", re.IGNORECASE,
         ),
         re.compile(r"(?:^|\n)\s*(?:\[ ?(\d+) ?/ ?\d+ ?\])", re.IGNORECASE),
         re.compile(
@@ -176,15 +175,15 @@ class OpencodeStepDetector:
             re.IGNORECASE,
         ),
         re.compile(
-            r"(?:^|\n)\s*(?:begin|starting)\s+(?:step|phase)\s*(\d+)", re.IGNORECASE
+            r"(?:^|\n)\s*(?:begin|starting)\s+(?:step|phase)\s*(\d+)", re.IGNORECASE,
         ),
     ]
 
     def __init__(
         self,
-        step_callback: Optional[Callable[[Step], None]] = None,
-        transition_callback: Optional[Callable[[PhaseTransition], None]] = None,
-        progress_callback: Optional[Callable[[StepProgress], None]] = None,
+        step_callback: Callable[[Step], None] | None = None,
+        transition_callback: Callable[[PhaseTransition], None] | None = None,
+        progress_callback: Callable[[StepProgress], None] | None = None,
     ):
         self._step_callback = step_callback
         self._transition_callback = transition_callback
@@ -216,7 +215,7 @@ class OpencodeStepDetector:
                 return True
         return False
 
-    def detect_step_number(self, text: str) -> Optional[int]:
+    def detect_step_number(self, text: str) -> int | None:
         for pattern in self.STEP_INDICATOR_PATTERNS:
             match = pattern.search(text)
             if match:
@@ -325,9 +324,9 @@ class OpencodeStepDetector:
 
 
 def create_step_detector(
-    on_step: Optional[Callable[[Step], None]] = None,
-    on_transition: Optional[Callable[[PhaseTransition], None]] = None,
-    on_progress: Optional[Callable[[StepProgress], None]] = None,
+    on_step: Callable[[Step], None] | None = None,
+    on_transition: Callable[[PhaseTransition], None] | None = None,
+    on_progress: Callable[[StepProgress], None] | None = None,
 ) -> OpencodeStepDetector:
     return OpencodeStepDetector(
         step_callback=on_step,

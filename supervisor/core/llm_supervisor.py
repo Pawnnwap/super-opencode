@@ -10,13 +10,14 @@ from pathlib import Path
 
 from openai import OpenAI
 
-from supervisor.monitoring.token_estimator import (estimate_request_tokens,
-                                                   should_truncate,
-                                                   truncate_with_fallback,
-                                                   warn_if_exceeds_limit)
+from supervisor.monitoring.token_estimator import (
+    estimate_request_tokens,
+    should_truncate,
+    truncate_with_fallback,
+    warn_if_exceeds_limit,
+)
 from supervisor.protocols.protocol import Protocol
-from supervisor.protocols.protocol_analyzer import (ProtocolAnalysis,
-                                                    ProtocolAnalyzer)
+from supervisor.protocols.protocol_analyzer import ProtocolAnalysis, ProtocolAnalyzer
 from supervisor.utils.text_utils import strip_thinking_blocks
 from supervisor.workspace.ignore_patterns import IgnoreMatcher
 
@@ -87,8 +88,7 @@ class StepContext:
 
 
 class LLMSupervisor:
-    """
-    Wraps an OpenAI chat client. Protocol is the system prompt;
+    """Wraps an OpenAI chat client. Protocol is the system prompt;
     conversation history gives the supervisor persistent memory.
     """
 
@@ -180,6 +180,7 @@ class LLMSupervisor:
         Returns:
             True if the file should be skipped, False otherwise.
             Protected files (.opencoderc, .opencode/*) are never skipped.
+
         """
         protected_markers = (".opencoderc", ".opencode/")
         if any(
@@ -199,6 +200,7 @@ class LLMSupervisor:
         Returns:
             List of relative path strings chosen by the LLM (length <= top_k).
             Falls back to the first top_k sorted paths if the response cannot be parsed.
+
         """
         import json as _json
 
@@ -233,8 +235,10 @@ class LLMSupervisor:
 
         listing = "\n".join(listing_lines)
 
-        from supervisor.monitoring.token_estimator import (estimate_tokens,
-                                                           truncate_prompt)
+        from supervisor.monitoring.token_estimator import (
+            estimate_tokens,
+            truncate_prompt,
+        )
 
         if estimate_tokens(listing) > available_tokens:
             # We must truncate the listing
@@ -418,7 +422,7 @@ class LLMSupervisor:
 
         if latest_md is not None:
             logger.info(
-                "Using external feedback file: %s", latest_md.relative_to(workspace)
+                "Using external feedback file: %s", latest_md.relative_to(workspace),
             )
             return latest_md
 
@@ -493,7 +497,7 @@ class LLMSupervisor:
         return self._chat(msg, history_content=history_msg)
 
     def judge_with_step_context(
-        self, opencode_output: str, step_context: StepContext
+        self, opencode_output: str, step_context: StepContext,
     ) -> SupervisorVerdict:
         from supervisor.prompts import JUDGE_STEP_PROMPT
 
@@ -548,6 +552,7 @@ class LLMSupervisor:
 
         Returns:
             SupervisorVerdict with feedback to send back to opencode.
+
         """
         from supervisor.prompts import JUDGE_PLAN_PROMPT
 
@@ -600,7 +605,7 @@ class LLMSupervisor:
         return self._chat(COMPACTION_INSTRUCTIONS_PROMPT)
 
     def ask_for_deletion_permission(
-        self, candidates: list[str], workspace: Path
+        self, candidates: list[str], workspace: Path,
     ) -> SupervisorVerdict:
         if not candidates:
             return self.ask_for_compaction_instructions()
@@ -611,7 +616,7 @@ class LLMSupervisor:
         return self._chat(msg)
 
     def report_final_status(
-        self, reason: str, opencode_output: str, workspace: Path
+        self, reason: str, opencode_output: str, workspace: Path,
     ) -> str:
         msg = (
             f"Run ending. Reason: {reason}\n\n"
@@ -760,7 +765,7 @@ class LLMSupervisor:
                         section="RESTRICTIONS",
                         description=description,
                         suggestion=suggestion,
-                    )
+                    ),
                 )
 
         if protocol.target_section:
@@ -774,7 +779,7 @@ class LLMSupervisor:
                         section="TARGET",
                         description="No evidence of target-related activity in output",
                         suggestion=f"Your output should address these target keywords: {', '.join(target_keywords[:5])}",
-                    )
+                    ),
                 )
 
         if protocol.restrictions_section:
@@ -789,7 +794,7 @@ class LLMSupervisor:
                             section="RESTRICTIONS",
                             description=f"Potential attempt to ignore restriction keyword: {kw}",
                             suggestion="You must comply with all restrictions listed in the protocol.",
-                        )
+                        ),
                     )
                     break
 
@@ -838,7 +843,7 @@ class LLMSupervisor:
         return [w for w in words if w.lower() not in stopwords][:10]
 
     def _generate_reinforcement_message(
-        self, violations: list[ProtocolViolation]
+        self, violations: list[ProtocolViolation],
     ) -> str:
         if not violations:
             return ""
@@ -874,6 +879,7 @@ class LLMSupervisor:
 
         Returns:
             True if the turn should be recorded, False otherwise
+
         """
         if not self._compact_intermediate_steps:
             return True
@@ -951,9 +957,7 @@ class LLMSupervisor:
             role = msg.get("role", "")
             content = msg.get("content", "")
 
-            if role == "user" and self.should_record_turn(content, role):
-                preserved.append(msg)
-            elif role == "assistant":
+            if (role == "user" and self.should_record_turn(content, role)) or role == "assistant":
                 preserved.append(msg)
 
         if len(preserved) > keep_count + 1:

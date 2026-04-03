@@ -1,5 +1,4 @@
-"""
-supervisor/protocol_wizard.py
+"""supervisor/protocol_wizard.py
 
 Interactively refines the three protocol sections with the LLM
 and returns a polished Protocol object + the markdown string.
@@ -12,9 +11,9 @@ from __future__ import annotations
 from openai import OpenAI
 
 from supervisor.protocols.protocol import Protocol, parse_protocol_text
-from supervisor.protocols.protocol_analyzer import (ProtocolAnalysis,
-                                                    ProtocolAnalyzer)
+from supervisor.protocols.protocol_analyzer import ProtocolAnalysis, ProtocolAnalyzer
 from supervisor.utils.text_utils import strip_thinking_blocks
+
 REQUIRED_TARGET = "Construct/refactor the codebase to eliminate redundancy by implementing base classes and shared utility functions."
 
 
@@ -42,6 +41,7 @@ def _append_required_target(md: str) -> str:
     lines.insert(last_numbered_idx + 1, new_item)
     return "\n".join(lines)
 
+
 _WIZARD_SYSTEM = """\
 You are a technical project-management assistant.
 Your job is to help a user write a clean, unambiguous protocol.md
@@ -64,8 +64,7 @@ When the user gives you raw notes for any section, you must:
 
 
 class ProtocolWizard:
-    """
-    Drives a guided conversation to produce a refined protocol.md.
+    """Drives a guided conversation to produce a refined protocol.md.
     """
 
     def __init__(self, model: str = "gpt-4o"):
@@ -96,8 +95,7 @@ class ProtocolWizard:
         raw_target: str,
         raw_restrictions: str,
     ) -> tuple[str, Protocol]:
-        """
-        Send all three raw sections to the LLM in one shot.
+        """Send all three raw sections to the LLM in one shot.
         Returns (refined_markdown, Protocol).
         """
         user_msg = (
@@ -118,8 +116,7 @@ class ProtocolWizard:
         raw_text: str,
         existing_context: str = "",
     ) -> str:
-        """
-        Refine a single section in isolation (used for the iterative wizard).
+        """Refine a single section in isolation (used for the iterative wizard).
         Returns the rewritten section text (no heading).
         """
         context_note = (
@@ -142,8 +139,7 @@ class ProtocolWizard:
         raw_target: str,
         raw_restrictions: str,
     ) -> ProtocolAnalysis | None:
-        """
-        Analyze raw protocol sections and return quality feedback.
+        """Analyze raw protocol sections and return quality feedback.
         Returns None if the text cannot be parsed into a valid protocol.
         """
         analyzer = ProtocolAnalyzer()
@@ -159,8 +155,7 @@ class ProtocolWizard:
             return None
 
     def analyze_refined(self, refined_md: str) -> ProtocolAnalysis | None:
-        """
-        Analyze a refined protocol markdown string.
+        """Analyze a refined protocol markdown string.
         Returns None if the text cannot be parsed.
         """
         analyzer = ProtocolAnalyzer()

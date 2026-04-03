@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Generator
 from enum import Enum, auto
 from pathlib import Path
-from typing import Generator
 
 from supervisor.utils.text_utils import strip_thinking_blocks
 
@@ -52,8 +52,7 @@ class BaseLoop:
         self._python_scanner_ran: bool = False
 
     def _init_components(self, agent: str = ""):
-        from supervisor.analyzers.opencode_step_detector import \
-            OpencodeStepDetector
+        from supervisor.analyzers.opencode_step_detector import OpencodeStepDetector
         from supervisor.monitoring.context_monitor import ContextMonitor
         from supervisor.runners.opencode_runner import OpencodeRunner
         from supervisor.workspace.workspace_guard import WorkspaceGuard
@@ -101,7 +100,7 @@ class BaseLoop:
 
         self._python_scanner_ran = True
         yield _ev(
-            "info", f"Running python_scanner on {len(py_files)} Python file(s)..."
+            "info", f"Running python_scanner on {len(py_files)} Python file(s)...",
         )
 
         try:
@@ -147,7 +146,7 @@ class BaseLoop:
         changed = self._cached_snapshot.changed_files(new_snapshot)
         if changed:
             logger.info(
-                "Codebase evolved: %d changed file(s): %s", len(changed), changed
+                "Codebase evolved: %d changed file(s): %s", len(changed), changed,
             )
             self._cached_snapshot = new_snapshot
             return True
@@ -200,9 +199,9 @@ class BaseLoop:
         yield from []
 
     def _handle_failure(self, output: str) -> Generator[Event, None, None]:
-        raise NotImplementedError()
+        raise NotImplementedError
 
-    def _get_step_context(self, progress) -> "StepContext":
+    def _get_step_context(self, progress) -> StepContext:
         from supervisor.core.llm_supervisor import StepContext
 
         return StepContext(
@@ -213,17 +212,17 @@ class BaseLoop:
         )
 
     def _pre_judge(
-        self, output: str, progress
+        self, output: str, progress,
     ) -> Generator[Event, None, tuple[str | None, bool]]:
         """Hook before judging. Returns (augmented_output, abort_turn)."""
         yield _ev("info", "Supervisor judging…")
         return output, False
 
-    def _get_verdict(self, output: str, progress) -> "SupervisorVerdict":
-        raise NotImplementedError()
+    def _get_verdict(self, output: str, progress) -> SupervisorVerdict:
+        raise NotImplementedError
 
     def _post_judge_feedback(
-        self, safe_msg: str, output: str
+        self, safe_msg: str, output: str,
     ) -> Generator[Event, None, str]:
         """Hook to append alignment warnings etc."""
         return safe_msg
@@ -247,7 +246,7 @@ class BaseLoop:
             return
 
         vuln_scan = self.scan_for_vulnerabilities()
-        feedback_text = verdict.feedback + (vuln_scan if vuln_scan else "")
+        feedback_text = verdict.feedback + (vuln_scan or "")
         safe_msg = yield from self._sanitize_feedback(feedback_text)
 
         safe_msg = yield from self._post_judge_feedback(safe_msg, actual_output)
@@ -256,11 +255,11 @@ class BaseLoop:
         self.runner.send(safe_msg)
 
         yield from self._yield_suggestions(
-            actual_output, self._get_step_context(progress)
+            actual_output, self._get_step_context(progress),
         )
 
     def _run_loop(
-        self, initial_output: str, initial_timed_out: bool
+        self, initial_output: str, initial_timed_out: bool,
     ) -> Generator[Event, None, None]:
         output = initial_output
         timed_out = initial_timed_out
@@ -413,19 +412,19 @@ class BaseLoop:
 
     def _do_compaction(self) -> Generator[Event, None, None]:
         yield _ev(
-            "warn", f"Context at {self.ctx_monitor.fraction * 100:.0f}% — compacting."
+            "warn", f"Context at {self.ctx_monitor.fraction * 100:.0f}% — compacting.",
         )
         candidates = self.runner.identify_cleanup_candidates()
         if candidates:
             yield _ev(
-                "info", f"Identified {len(candidates)} files for potential cleanup."
+                "info", f"Identified {len(candidates)} files for potential cleanup.",
             )
         deletion_permission = self.supervisor.ask_for_deletion_permission(
-            candidates, self.config.workspace
+            candidates, self.config.workspace,
         )
         yield _ev("supervisor_response", deletion_permission.raw)
         msg, _ = self.guard.sanitize_message(
-            strip_thinking_blocks(deletion_permission.feedback)
+            strip_thinking_blocks(deletion_permission.feedback),
         )
         yield _ev("opencode_prompt", msg)
         self.runner.send(msg)
@@ -435,7 +434,7 @@ class BaseLoop:
     def _update_context_monitor(self) -> Generator[Event, None, None]:
         files_read = self.runner.get_files_read()
         self.ctx_monitor.update(
-            self.runner.estimated_context_tokens, files_read=files_read
+            self.runner.estimated_context_tokens, files_read=files_read,
         )
         if self.ctx_monitor.approaching_limit:
             advice = self.ctx_monitor.get_reduction_advice()
@@ -480,7 +479,7 @@ class BaseLoop:
         return safe_msg
 
     def _yield_suggestions(
-        self, opencode_output: str, step_context=None
+        self, opencode_output: str, step_context=None,
     ) -> Generator[Event, None, None]:
         suggestions, chosen_paths = self.supervisor.generate_suggestions(
             opencode_output=opencode_output,
@@ -488,7 +487,7 @@ class BaseLoop:
         )
         if chosen_paths:
             yield _ev(
-                "supervisor_read_files", "\n".join(f"• {p}" for p in chosen_paths)
+                "supervisor_read_files", "\n".join(f"• {p}" for p in chosen_paths),
             )
 
         if suggestions and "no suggestions" not in suggestions.lower():
@@ -549,7 +548,7 @@ class BaseLoop:
                 for d in dirs
                 if not d.startswith(".")
                 and not ignore_matcher.matches(
-                    f"{rel_root}/{d}" if rel_root != "." else d
+                    f"{rel_root}/{d}" if rel_root != "." else d,
                 )
             ]
             for f in files:
@@ -560,7 +559,7 @@ class BaseLoop:
 
         if not py_files:
             logger.info(
-                "No Python files found in workspace, skipping vulnerability scan"
+                "No Python files found in workspace, skipping vulnerability scan",
             )
             return None
 

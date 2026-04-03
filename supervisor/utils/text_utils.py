@@ -1,7 +1,7 @@
 import re
 
 _THINKING_BLOCK_RE = re.compile(
-    r"(?:<thought>|<think>).*?(?:</thought>|</think>)", re.DOTALL
+    r"(?:<thought>|<think>).*?(?:</thought>|</think>)", re.DOTALL,
 )
 
 

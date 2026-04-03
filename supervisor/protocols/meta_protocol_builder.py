@@ -1,5 +1,4 @@
-"""
-supervisor/meta_protocol_builder.py
+"""supervisor/meta_protocol_builder.py
 
 Generates a protocol.md targeted at self-evolution:
   - INPUT  is derived automatically from the live codebase snapshot
@@ -18,8 +17,8 @@ from pathlib import Path
 from openai import OpenAI
 
 from supervisor.analyzers.codebase_analyzer import CodebaseSnapshot
+from supervisor.protocols.protocol_wizard import _append_required_target
 from supervisor.utils.text_utils import strip_thinking_blocks
-from supervisor.protocols.protocol_wizard import (REQUIRED_TARGET, _append_required_target)
 
 _BUILDER_SYSTEM = """\
 You are a technical architect writing a protocol.md for an autonomous
@@ -55,8 +54,7 @@ class MetaProtocolBuilder:
         snapshot: CodebaseSnapshot,
         extra_restrictions: str = "",
     ) -> str:
-        """
-        Return a refined meta_protocol.md string.
+        """Return a refined meta_protocol.md string.
         """
         digest = snapshot.digest_for_prompt(max_files=20)
 

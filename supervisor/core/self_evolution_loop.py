@@ -1,5 +1,4 @@
-"""
-supervisor/core/self_evolution_loop.py
+"""supervisor/core/self_evolution_loop.py
 
 Self-evolution loop using the CLI-based opencode runner.
 Each turn: opencode -p "<prompt>" runs, exits, output is captured.
@@ -11,19 +10,17 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Generator
 from pathlib import Path
-from typing import Generator
 
-from supervisor.analyzers.codebase_analyzer import (CodebaseSnapshot,
-                                                    snapshot_codebase)
+from supervisor.analyzers.codebase_analyzer import CodebaseSnapshot, snapshot_codebase
 from supervisor.core.llm_supervisor import LLMSupervisor
 from supervisor.core.loop_base import BaseLoop, Event, LoopState, _ev
 from supervisor.protocols.protocol import load_protocol
 from supervisor.runners.test_runner import OcTestRunner, RunTestResult
 from supervisor.utils.config import SupervisorConfig
 from supervisor.utils.gitignore_utils import update_gitignore_files
-from supervisor.workspace.workspace_archiver import (ArchiveResult,
-                                                     WorkspaceArchiver)
+from supervisor.workspace.workspace_archiver import ArchiveResult, WorkspaceArchiver
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +33,7 @@ class SelfEvolutionLoop(BaseLoop):
         modified_gitignores = update_gitignore_files(config.workspace)
         if modified_gitignores:
             logger.info(
-                f"Modified {len(modified_gitignores)} .gitignore file(s): {[str(p) for p in modified_gitignores]}"
+                f"Modified {len(modified_gitignores)} .gitignore file(s): {[str(p) for p in modified_gitignores]}",
             )
 
         self.protocol = load_protocol(config.protocol_path)
@@ -148,7 +145,7 @@ class SelfEvolutionLoop(BaseLoop):
         augmented = f"{output}\n\n--- evolution progress ---\n{test_info}\n\n--- test output ---\n{result.output[-400:]}"
         return augmented, False
 
-    def _get_verdict(self, output: str, progress) -> "SupervisorVerdict":
+    def _get_verdict(self, output: str, progress) -> SupervisorVerdict:
         return self.supervisor.judge(output)
 
     def _handle_failure(self, last_output: str) -> Generator[Event, None, None]:
@@ -172,7 +169,7 @@ class SelfEvolutionLoop(BaseLoop):
             return
 
         yield _ev(
-            "info", f"Retrying… (attempt {self._failures}/{self.config.max_retries})"
+            "info", f"Retrying… (attempt {self._failures}/{self.config.max_retries})",
         )
         self.runner.start(self._restart_prompt())
 
@@ -180,7 +177,7 @@ class SelfEvolutionLoop(BaseLoop):
         if self._best_archive:
             restored = self.archiver.restore_archive(self._best_archive)
             yield _ev(
-                "info", f"Rolled back {len(restored)} files from: {self._best_archive}"
+                "info", f"Rolled back {len(restored)} files from: {self._best_archive}",
             )
         else:
             yield _ev("warn", "No archive to roll back to.")
@@ -213,11 +210,11 @@ class SelfEvolutionLoop(BaseLoop):
             for step_event in self._step_history[-10:]:
                 if step_event.get("level") == "step":
                     lines.append(
-                        f"  - {step_event.get('phase_label', 'Step')}: {step_event.get('msg', '')[:60]}"
+                        f"  - {step_event.get('phase_label', 'Step')}: {step_event.get('msg', '')[:60]}",
                     )
                 elif step_event.get("level") == "phase_transition":
                     lines.append(
-                        f"  - ⚡ {step_event.get('from_phase', '?')} → {step_event.get('to_phase', '?')}"
+                        f"  - ⚡ {step_event.get('from_phase', '?')} → {step_event.get('to_phase', '?')}",
                     )
 
         if self._baseline and self._last_result:
@@ -251,19 +248,21 @@ class SelfEvolutionLoop(BaseLoop):
 
         rp = self.config.workspace / "evolution_report.md"
         rp.write_text(report, encoding="utf-8")
-        yield _ev("info", f"evolution_report.md written.")
+        yield _ev("info", "evolution_report.md written.")
         yield _ev("report", report)
 
     # ------------------------------------------------------------------ #
 
     def _codebase_preamble(self) -> str:
         return "\n\n## Live codebase\n" + self._cached_snapshot.digest_for_prompt(
-            max_files=15
+            max_files=15,
         )
 
     def _init_prompt(self) -> str:
-        from supervisor.prompts import (HASHLINE_SYSTEM_INSTRUCTIONS,
-                                        SELF_EVOLUTION_INIT_PROMPT_TEMPLATE)
+        from supervisor.prompts import (
+            HASHLINE_SYSTEM_INSTRUCTIONS,
+            SELF_EVOLUTION_INIT_PROMPT_TEMPLATE,
+        )
 
         text = self.config.protocol_path.read_text(encoding="utf-8")
         baseline_note = (

@@ -1,5 +1,4 @@
-"""
-supervisor/workspace_archiver.py
+"""supervisor/workspace_archiver.py
 
 Workspace archiving mechanism that preserves historical versions
 instead of deleting old files.
@@ -25,7 +24,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from supervisor.workspace.opencodeignore_handler import (
-    load_opencodeignore_patterns, should_ignore)
+    load_opencodeignore_patterns,
+    should_ignore,
+)
 
 if TYPE_CHECKING:
     from supervisor.workspace.ignore_patterns import IgnoreMatcher
@@ -100,7 +101,7 @@ class WorkspaceArchiver:
     def _should_archive(
         self,
         path: Path,
-        ignore_matcher: "IgnoreMatcher | None" = None,
+        ignore_matcher: IgnoreMatcher | None = None,
         opencodeignore_patterns: list[str] | None = None,
     ) -> bool:
         if not path.is_file():
@@ -125,10 +126,9 @@ class WorkspaceArchiver:
         self,
         label: str = "",
         files_to_archive: list[str] | None = None,
-        ignore_matcher: "IgnoreMatcher | None" = None,
+        ignore_matcher: IgnoreMatcher | None = None,
     ) -> ArchiveResult:
-        """
-        Archive the current workspace content to a timestamped archive folder.
+        """Archive the current workspace content to a timestamped archive folder.
 
         Automatically loads and applies .opencodeignore patterns from the workspace root.
 
@@ -139,6 +139,7 @@ class WorkspaceArchiver:
 
         Returns:
             ArchiveResult with success status, archive path, and list of archived files
+
         """
         self._archive_counter += 1
         self._save_counter()
@@ -178,14 +179,14 @@ class WorkspaceArchiver:
                         src.exists()
                         and src.is_file()
                         and self._should_archive(
-                            src, ignore_matcher, opencodeignore_patterns
+                            src, ignore_matcher, opencodeignore_patterns,
                         )
                     ):
                         _archive_file(src)
             else:
                 for src in sorted(self.workspace.rglob("*")):
                     if self._should_archive(
-                        src, ignore_matcher, opencodeignore_patterns
+                        src, ignore_matcher, opencodeignore_patterns,
                     ):
                         _archive_file(src)
 
@@ -196,7 +197,7 @@ class WorkspaceArchiver:
                 "workspace": str(self.workspace),
             }
             (archive_path / "archive_metadata.json").write_text(
-                json.dumps(metadata, indent=2), encoding="utf-8"
+                json.dumps(metadata, indent=2), encoding="utf-8",
             )
 
             return ArchiveResult(
@@ -217,8 +218,7 @@ class WorkspaceArchiver:
             )
 
     def archive_before_new_run(self) -> ArchiveResult:
-        """
-        Archive the current workspace state before starting a new supervisor run.
+        """Archive the current workspace state before starting a new supervisor run.
         This is typically called at the beginning of a supervisor loop execution.
         """
         return self.archive_workspace(label="before_new_run")
@@ -237,7 +237,7 @@ class WorkspaceArchiver:
             if metadata_file.exists():
                 try:
                     metadata.update(
-                        json.loads(metadata_file.read_text(encoding="utf-8"))
+                        json.loads(metadata_file.read_text(encoding="utf-8")),
                     )
                 except (json.JSONDecodeError, OSError):
                     pass
@@ -245,8 +245,7 @@ class WorkspaceArchiver:
         return archives
 
     def restore_archive(self, archive_path: Path) -> list[str]:
-        """
-        Restore files from an archive back to the workspace.
+        """Restore files from an archive back to the workspace.
         Returns list of restored file paths.
         """
         from supervisor.utils.file_ops import copy_tree_to_workspace

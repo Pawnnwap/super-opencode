@@ -1,7 +1,7 @@
 import json
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 
 class JobStateStore:
@@ -17,7 +17,7 @@ class JobStateStore:
     def _get_logs_path(self, job_id: str) -> Path:
         return self.store_dir / f"{job_id}.logs"
 
-    def save_job_state(self, job_id: str, state: Dict[str, Any]):
+    def save_job_state(self, job_id: str, state: dict[str, Any]):
         """Save job metadata and current state."""
         state["job_id"] = job_id
         state["updated_at"] = time.time()
@@ -25,37 +25,37 @@ class JobStateStore:
         with open(path, "w", encoding="utf-8") as f:
             json.dump(state, f, indent=2)
 
-    def get_job_state(self, job_id: str) -> Optional[Dict[str, Any]]:
+    def get_job_state(self, job_id: str) -> dict[str, Any] | None:
         """Load job metadata and state."""
         path = self._get_job_path(job_id)
         if not path.exists():
             return None
         try:
-            with open(path, "r", encoding="utf-8") as f:
+            with open(path, encoding="utf-8") as f:
                 return json.load(f)
-        except (json.JSONDecodeError, IOError):
+        except (json.JSONDecodeError, OSError):
             return None
 
-    def append_log(self, job_id: str, log_event: Dict[str, Any]):
+    def append_log(self, job_id: str, log_event: dict[str, Any]):
         """Append a log event to the job's log file."""
         path = self._get_logs_path(job_id)
         with open(path, "a", encoding="utf-8") as f:
             f.write(json.dumps(log_event) + "\n")
 
-    def get_logs(self, job_id: str) -> List[Dict[str, Any]]:
+    def get_logs(self, job_id: str) -> list[dict[str, Any]]:
         """Retrieve all log events for a job."""
         path = self._get_logs_path(job_id)
         if not path.exists():
             return []
         logs = []
         try:
-            with open(path, "r", encoding="utf-8") as f:
+            with open(path, encoding="utf-8") as f:
                 for line in f:
                     if line.strip():
                         parsed = json.loads(line)
                         if isinstance(parsed, dict):
                             logs.append(parsed)
-        except (json.JSONDecodeError, IOError):
+        except (json.JSONDecodeError, OSError):
             pass
         return logs
 
@@ -65,6 +65,6 @@ class JobStateStore:
             if path.exists():
                 path.unlink()
 
-    def list_jobs(self) -> List[str]:
+    def list_jobs(self) -> list[str]:
         """List all tracked job IDs."""
         return [f.stem for f in self.store_dir.glob("*.json")]
