@@ -19,6 +19,7 @@ from openai import OpenAI
 
 from supervisor.analyzers.codebase_analyzer import CodebaseSnapshot
 from supervisor.utils.text_utils import strip_thinking_blocks
+from supervisor.protocols.protocol_wizard import (REQUIRED_TARGET, _append_required_target)
 
 _BUILDER_SYSTEM = """\
 You are a technical architect writing a protocol.md for an autonomous
@@ -77,7 +78,9 @@ class MetaProtocolBuilder:
             kwargs["temperature"] = 0.2
 
         response = self._client.chat.completions.create(**kwargs)
-        return strip_thinking_blocks(response.choices[0].message.content.strip())
+        meta_md = strip_thinking_blocks(response.choices[0].message.content.strip())
+        meta_md = _append_required_target(meta_md)
+        return meta_md
 
 
 def write_meta_protocol(content: str, workspace: Path) -> Path:

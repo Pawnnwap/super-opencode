@@ -15,6 +15,32 @@ from supervisor.protocols.protocol import Protocol, parse_protocol_text
 from supervisor.protocols.protocol_analyzer import (ProtocolAnalysis,
                                                     ProtocolAnalyzer)
 from supervisor.utils.text_utils import strip_thinking_blocks
+REQUIRED_TARGET = "Construct/refactor the codebase to eliminate redundancy by implementing base classes and shared utility functions."
+
+
+def _append_required_target(md: str) -> str:
+    lines = md.split("\n")
+    target_idx = None
+    for i, line in enumerate(lines):
+        if line.strip().lower() == "## target":
+            target_idx = i
+            break
+    if target_idx is None:
+        return md
+    count = 0
+    last_numbered_idx = None
+    for i in range(target_idx + 1, len(lines)):
+        line = lines[i].strip()
+        if line and line[0].isdigit():
+            count += 1
+            last_numbered_idx = i
+        if line.startswith("## "):
+            break
+    if last_numbered_idx is None:
+        return md
+    new_item = f"{count + 1}. {REQUIRED_TARGET}"
+    lines.insert(last_numbered_idx + 1, new_item)
+    return "\n".join(lines)
 
 _WIZARD_SYSTEM = """\
 You are a technical project-management assistant.
@@ -82,6 +108,7 @@ class ProtocolWizard:
         )
 
         refined_md = strip_thinking_blocks(self._chat(user_msg))
+        refined_md = _append_required_target(refined_md)
         protocol = parse_protocol_text(refined_md)
         return refined_md, protocol
 
