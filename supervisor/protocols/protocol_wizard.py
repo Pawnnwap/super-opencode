@@ -14,6 +14,7 @@ from openai import OpenAI
 from supervisor.protocols.protocol import Protocol, parse_protocol_text
 from supervisor.protocols.protocol_analyzer import (ProtocolAnalysis,
                                                     ProtocolAnalyzer)
+from supervisor.utils.text_utils import strip_thinking_blocks
 
 _WIZARD_SYSTEM = """\
 You are a technical project-management assistant.
@@ -80,7 +81,7 @@ class ProtocolWizard:
             f"### RESTRICTIONS (raw)\n{raw_restrictions}"
         )
 
-        refined_md = self._chat(user_msg)
+        refined_md = strip_thinking_blocks(self._chat(user_msg))
         protocol = parse_protocol_text(refined_md)
         return refined_md, protocol
 
@@ -106,7 +107,7 @@ class ProtocolWizard:
             f"Return ONLY the body text for the {section_name} section "
             "(no heading, no preamble)."
         )
-        return self._chat(user_msg)
+        return strip_thinking_blocks(self._chat(user_msg))
 
     def analyze_sections(
         self,

@@ -1,13 +1,27 @@
 # opencode-supervisor
 
+> **一个自我进化的自主编码代理 —— 它监督、评判并改进自身代码。**
+
 ---
 
 [English](./README.md) | 中文
 
-Streamlit UI + 模块化 Python 后端，运行一个 `opencode` 代理于监督反馈循环中 —— 并能将同一个循环作用于**自身**来调试和改进其源代码。
+一个由 Streamlit 驱动的双循环自主编码系统。`SupervisorLoop` 负责协议引导的任务执行，
+通过 LLM 评判器（`LLMSupervisor`）对每次迭代进行协议对齐评估。`SelfEvolutionLoop` 将
+同样的机制作用于代码库自身 —— 运行带测试门控的自我改进，并在回归时自动回滚。所有文件
+编辑都通过 `hashline` MCP 服务器进行，该服务器使用内容寻址哈希验证每次更改，彻底消除
+陈旧引用错误。
 
-基于 MCP 的哈希锚定文件编辑系统、执行前的计划模式、多工具漏洞扫描，
-以及带分级警告的自动上下文管理。
+核心能力：
+
+- **双循环架构** — `SupervisorLoop` 处理外部任务，`SelfEvolutionLoop` 实现自我改进
+- **LLM 评判器** — `LLMSupervisor` 在每一步评估 opencode 输出是否符合协议目标
+- **哈希锚定编辑** — `hashline` MCP 服务器提供 `hashline_read` / `hashline_edit`，支持陈旧 ID 拒绝和原子写入
+- **Streamlit UI** — 三页管理界面：协议向导、实时运行、自我演进
+- **计划模式** — 可配置的执行前规划轮数，使用只读 opencode 分析
+- **漏洞扫描** — 9 工具静态分析流水线（Bandit、Semgrep、Ruff 等）
+- **上下文管理** — 基于 token 的监控，带分级警告和自动压缩
+
 
 ---
 

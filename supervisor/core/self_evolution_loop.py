@@ -22,6 +22,7 @@ from supervisor.protocols.protocol import load_protocol
 from supervisor.runners.test_runner import OcTestRunner, RunTestResult
 from supervisor.utils.config import SupervisorConfig
 from supervisor.utils.gitignore_utils import update_gitignore_files
+from supervisor.utils.text_utils import strip_thinking_blocks
 from supervisor.workspace.workspace_archiver import (ArchiveResult,
                                                      WorkspaceArchiver)
 
@@ -94,7 +95,7 @@ class SelfEvolutionLoop(BaseLoop):
             self.runner.start(init_prompt)
             self._last_step_time = time.time()
             output, timed_out = self.runner.read_output()
-            output = self._strip_thinking_blocks(output)
+            output = strip_thinking_blocks(output)
 
             yield from self._run_loop(output, timed_out)
         finally:

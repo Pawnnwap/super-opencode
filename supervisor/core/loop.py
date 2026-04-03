@@ -22,6 +22,7 @@ from supervisor.core.loop_base import BaseLoop, Event, LoopState, _ev
 from supervisor.protocols.protocol import load_protocol
 from supervisor.utils.config import SupervisorConfig
 from supervisor.utils.gitignore_utils import update_gitignore_files
+from supervisor.utils.text_utils import strip_thinking_blocks
 from supervisor.workspace.workspace_archiver import WorkspaceArchiver
 
 logger = logging.getLogger(__name__)
@@ -106,7 +107,7 @@ class SupervisorLoop(BaseLoop):
             self.runner.start(init_prompt)
             self._last_step_time = time.time()
             output, timed_out = self.runner.read_output()
-            output = self._strip_thinking_blocks(output)
+            output = strip_thinking_blocks(output)
 
             yield from self._run_loop(output, timed_out)
         finally:
@@ -192,7 +193,7 @@ class SupervisorLoop(BaseLoop):
                 plan_runner.enable_continuation(True)
             plan_runner.start(prompt)
             output, timed_out = plan_runner.read_output()
-            output = self._strip_thinking_blocks(output)
+            output = strip_thinking_blocks(output)
 
             if timed_out or not output.strip():
                 yield _ev(
@@ -231,7 +232,7 @@ class SupervisorLoop(BaseLoop):
             )
             yield from self._emit_token_warnings()
 
-            last_feedback = self._strip_thinking_blocks(verdict.feedback)
+            last_feedback = strip_thinking_blocks(verdict.feedback)
 
         plan_runner.stop()
 

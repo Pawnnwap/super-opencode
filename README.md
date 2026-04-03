@@ -1,16 +1,27 @@
 # opencode-supervisor
 
+> **A self-evolving autonomous coding agent — it supervises, judges, and improves itself.**
+
 ---
 
 [English](./README.md) | [中文](./README_zh.md)
 
-Streamlit UI + modular Python backend that runs an `opencode` agent in a
-supervised feedback loop — and can turn that same loop on **itself** to
-debug and evolve its own source code.
+A Streamlit-driven, dual-loop autonomous coding system. `SupervisorLoop` drives protocol-guided
+task execution with an LLM-based judge (`LLMSupervisor`) that evaluates every iteration for
+protocol alignment. `SelfEvolutionLoop` turns the same machinery on the codebase itself —
+running test-gated self-improvement with automatic regression rollback. All file edits flow
+through a `hashline` MCP server that validates every change with content-addressed hashes,
+eliminating stale-reference errors.
 
-Features an MCP-based hash-anchored file editing system, plan mode for
-deliberative reasoning before execution, multi-tool vulnerability scanning,
-and automatic context management with graduated warnings.
+Key capabilities:
+
+- **Dual-loop architecture** — `SupervisorLoop` for external tasks, `SelfEvolutionLoop` for self-improvement
+- **LLM-based judge** — `LLMSupervisor` evaluates opencode output against protocol targets at every step
+- **Hash-anchored editing** — `hashline` MCP server provides `hashline_read` / `hashline_edit` with stale-ID rejection and atomic writes
+- **Streamlit UI** — Three-page management interface: Protocol Wizard, Live Run, and Self-Evolution
+- **Plan mode** — Configurable pre-execution planning rounds with read-only opencode analysis
+- **Vulnerability scanning** — 9-tool static analysis pipeline (Bandit, Semgrep, Ruff, etc.)
+- **Context management** — Token-aware monitoring with graduated warnings and auto-compaction
 
 ---
 

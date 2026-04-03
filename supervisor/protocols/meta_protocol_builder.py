@@ -18,6 +18,7 @@ from pathlib import Path
 from openai import OpenAI
 
 from supervisor.analyzers.codebase_analyzer import CodebaseSnapshot
+from supervisor.utils.text_utils import strip_thinking_blocks
 
 _BUILDER_SYSTEM = """\
 You are a technical architect writing a protocol.md for an autonomous
@@ -76,7 +77,7 @@ class MetaProtocolBuilder:
             kwargs["temperature"] = 0.2
 
         response = self._client.chat.completions.create(**kwargs)
-        return response.choices[0].message.content.strip()
+        return strip_thinking_blocks(response.choices[0].message.content.strip())
 
 
 def write_meta_protocol(content: str, workspace: Path) -> Path:

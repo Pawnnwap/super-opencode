@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import logging
-import re
 import time
 from enum import Enum, auto
 from pathlib import Path
 from typing import Generator
+
+from supervisor.utils.text_utils import strip_thinking_blocks
 
 logger = logging.getLogger(__name__)
 
@@ -47,12 +48,6 @@ class BaseLoop:
         self._step_history: list[dict] = []
         self._state = LoopState.RUNNING
         self._failures = 0
-    _THINKING_BLOCK_RE = re.compile(r"(?:<thought>|<think>).*?(?:</thought>|</think>)", re.DOTALL)
-
-    @staticmethod
-    def _strip_thinking_blocks(text: str) -> str:
-        """Remove all <think>...</think> and <thought>...</thought> blocks (non-greedy)."""
-        return BaseLoop._THINKING_BLOCK_RE.sub("", text)
 
     def _init_components(self, agent: str = ""):
         from supervisor.analyzers.opencode_step_detector import \
@@ -159,7 +154,7 @@ class BaseLoop:
             return
 
         actual_output = augmented_output if augmented_output is not None else output
-        actual_output_stripped = self._strip_thinking_blocks(actual_output)
+        actual_output_stripped = strip_thinking_blocks(actual_output)
 
         verdict = self._get_verdict(actual_output_stripped, progress)
         yield _ev("supervisor_response", verdict.raw)
@@ -172,7 +167,7 @@ class BaseLoop:
 
         vuln_scan = self.scan_for_vulnerabilities()
         feedback_text = verdict.feedback + (vuln_scan if vuln_scan else "")
-        feedback_text = self._strip_thinking_blocks(feedback_text)
+        feedback_text = strip_thinking_blocks(feedback_text)
         safe_msg = yield from self._sanitize_feedback(feedback_text)
 
         safe_msg = yield from self._post_judge_feedback(safe_msg, actual_output)
@@ -196,7 +191,7 @@ class BaseLoop:
                     yield from self._handle_active_progress_timeout(current_progress)
                     self._timeout_extension_count += 1
                     output, timed_out = self.runner.read_output()
-                    output = self._strip_thinking_blocks(output)
+                    output = strip_thinking_blocks(output)
                     continue
 
                 diag = self.runner.last_diagnostic()
@@ -205,7 +200,7 @@ class BaseLoop:
                 if self._state != LoopState.RUNNING:
                     break
                 output, timed_out = self.runner.read_output()
-                output = self._strip_thinking_blocks(output)
+                output = strip_thinking_blocks(output)
                 continue
 
             self._failures = 0
@@ -227,7 +222,7 @@ class BaseLoop:
                 self.supervisor.compact_history()
                 yield from self._do_compaction()
                 output, timed_out = self.runner.read_output()
-                output = self._strip_thinking_blocks(output)
+                output = strip_thinking_blocks(output)
                 continue
 
             yield from self._do_judgement(output)
@@ -237,7 +232,7 @@ class BaseLoop:
             yield from self._handle_session_continuity()
 
             output, timed_out = self.runner.read_output()
-            output = self._strip_thinking_blocks(output)
+            output = strip_thinking_blocks(output)
 
     def _handle_session_continuity(self) -> Generator[Event, None, None]:
         """Decide whether to continue the current opencode session or restart.
@@ -351,7 +346,7 @@ class BaseLoop:
             candidates, self.config.workspace
         )
         yield _ev("supervisor_response", deletion_permission.raw)
-        msg, _ = self.guard.sanitize_message(self._strip_thinking_blocks(deletion_permission.feedback))
+        msg, _ = self.guard.sanitize_message(strip_thinking_blocks(deletion_permission.feedback))
         yield _ev("opencode_prompt", msg)
         self.runner.send(msg)
         self.ctx_monitor.reset()
