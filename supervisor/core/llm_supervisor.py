@@ -472,6 +472,22 @@ class LLMSupervisor:
                     )
         return protected_context, feedback_context
 
+    def _build_experience_context(self) -> str:
+        """Read experience.md from workspace and format for prompt injection.
+
+        Returns empty string if the file is missing or unreadable.
+        Failures are logged but never raised.
+        """
+        try:
+            from supervisor.utils.experience_tracker import \
+                read_experience_capped
+            experience_text = read_experience_capped(self._workspace, max_chars=10000)
+            if experience_text.strip():
+                return f"--- Previous Experience ---\n{experience_text}\n--- end ---\n\n"
+        except Exception as exc:
+            logger.warning("Failed to build experience context: %s", exc)
+        return ""
+
     def judge(self, opencode_output: str) -> SupervisorVerdict:
         protected_context, feedback_context = self._get_evaluation_context()
 
@@ -505,11 +521,13 @@ class LLMSupervisor:
             if step_context.completed_phases
             else "none"
         )
+        experience_context = self._build_experience_context()
         msg = JUDGE_STEP_PROMPT.format(
             current_step=step_context.current_step,
             total_steps=step_context.total_steps_estimate,
             phase=step_context.phase,
             completed_phases=phases_str,
+            experience_context=experience_context,
             feedback_context=feedback_context,
             protected_context=protected_context,
             opencode_output=opencode_output,
@@ -519,6 +537,7 @@ class LLMSupervisor:
             total_steps=step_context.total_steps_estimate,
             phase=step_context.phase,
             completed_phases=phases_str,
+            experience_context="",
             feedback_context="",
             protected_context="",
             opencode_output=opencode_output,
@@ -569,7 +588,9 @@ class LLMSupervisor:
                 f"Completed phases: {phases_str}\n\n"
             )
 
+        experience_context = self._build_experience_context()
         msg = JUDGE_PLAN_PROMPT.format(
+            experience_context=experience_context,
             context_info=context_info,
             feedback_context=feedback_context,
             protected_context=protected_context,
@@ -579,6 +600,7 @@ class LLMSupervisor:
         )
 
         history_msg = JUDGE_PLAN_PROMPT.format(
+            experience_context="",
             context_info=context_info,
             feedback_context="",
             protected_context="",

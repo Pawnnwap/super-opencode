@@ -160,7 +160,9 @@ Review the plan below and provide actionable feedback to refine it. Do NOT decla
   3. Alignment with protocol requirements
   4. Sequencing and dependency issues
 
+{experience_context}\
 {context_info}\
+
 {feedback_context}\
 {protected_context}\
 --- opencode plan output ---
