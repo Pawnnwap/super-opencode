@@ -143,11 +143,15 @@ class OpencodeRunner:
         opencode_executable: str = "",
         timeout: int = 300,
         agent: str = "",
+        opencode_model_backup: str | None = None,
         step_detector: OpencodeStepDetector | None = None,
         on_step: Callable[[Step], None] | None = None,
         on_transition: Callable[[PhaseTransition], None] | None = None,
         on_progress: Callable[[StepProgress], None] | None = None,
     ):
+        self.workspace = workspace
+        self.opencode_model = opencode_model
+        self.opencode_model_backup = opencode_model_backup
         self.workspace = workspace
         self.opencode_model = opencode_model
         self.opencode_executable = opencode_executable
@@ -354,94 +358,120 @@ class OpencodeRunner:
 
     def _run_prompt(self, prompt: str) -> None:
         exe = find_opencode(self.opencode_executable)
-        cmd = self._build_cmd(exe, prompt)
-        logger.info("CMD: %s", " ".join(cmd))
+        using_backup = False
 
-        # .cmd/.bat on Windows need shell=True
-        use_shell = sys.platform == "win32" and exe.lower().endswith(
-            (".cmd", ".bat", ".ps1"),
-        )
+        while True:
+            model_for_cmd = self.opencode_model_backup if using_backup else self.opencode_model
+            cmd = self._build_cmd(exe, prompt, model=model_for_cmd)
+            logger.info("CMD: %s", " ".join(cmd))
 
-        try:
-            self._process = subprocess.Popen(
-                cmd,
-                stdin=subprocess.DEVNULL,  # ← kills TUI / interactive prompts
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                cwd=str(self.workspace),
-                env={**os.environ, "NO_COLOR": "1", "TERM": "dumb"},
-                shell=use_shell,
+            # .cmd/.bat on Windows need shell=True
+            use_shell = sys.platform == "win32" and exe.lower().endswith(
+                (".cmd", ".bat", ".ps1"),
             )
 
-            # Wait for process to complete with timeout
             try:
-                stdout, stderr = self._process.communicate(timeout=self.timeout)
-                returncode = self._process.returncode
-            except subprocess.TimeoutExpired:
-                # Timeout occurred
-                stdout_val = self._process.stdout.read() if self._process.stdout else ""
-                stderr_val = self._process.stderr.read() if self._process.stderr else ""
+                self._process = subprocess.Popen(
+                    cmd,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    cwd=str(self.workspace),
+                    env={**os.environ, "NO_COLOR": "1", "TERM": "dumb"},
+                    shell=use_shell,
+                )
 
-                stdout_val = (
-                    stdout_val.decode("utf-8", errors="replace")
-                    if isinstance(stdout_val, bytes)
-                    else (stdout_val or "")
-                )
-                stderr_val = (
-                    stderr_val.decode("utf-8", errors="replace")
-                    if isinstance(stderr_val, bytes)
-                    else (stderr_val or "")
-                )
+                try:
+                    stdout, stderr = self._process.communicate(timeout=self.timeout)
+                    returncode = self._process.returncode
+                except subprocess.TimeoutExpired:
+                    stdout_val = self._process.stdout.read() if self._process.stdout else ""
+                    stderr_val = self._process.stderr.read() if self._process.stderr else ""
+
+                    stdout_val = (
+                        stdout_val.decode("utf-8", errors="replace")
+                        if isinstance(stdout_val, bytes)
+                        else (stdout_val or "")
+                    )
+                    stderr_val = (
+                        stderr_val.decode("utf-8", errors="replace")
+                        if isinstance(stderr_val, bytes)
+                        else (stderr_val or "")
+                    )
+
+                    self._last_result = RunResult(
+                        stdout=stdout_val,
+                        stderr=stderr_val,
+                        returncode=-1,
+                        timed_out=True,
+                    )
+                    logger.warning("opencode timed out after %ds", self.timeout)
+
+                    if not using_backup and self.opencode_model_backup:
+                        logger.warning(
+                            "Primary model %s timed out, falling back to backup %s",
+                            self.opencode_model, self.opencode_model_backup,
+                        )
+                        using_backup = True
+                        continue
+
+                    self._chars_exchanged += len(prompt) + len(self._last_result.output)
+                    return
+
+                stdout = stdout or ""
+                stderr = stderr or ""
+
+                combined_lower = (stdout + stderr).lower()
+                if (
+                    "unable to connect" in combined_lower
+                    or "is the computer able to access" in combined_lower
+                ):
+                    stderr = (
+                        "[OPENCODE CONFIG ERROR] opencode cannot reach the AI provider.\n"
+                        "Fix: run 'opencode' interactively → configure a working provider,\n"
+                        "or set the model in the UI 'opencode model' field.\n\n"
+                        "Raw error:\n" + (stdout + stderr).strip()
+                    )
+                    stdout = ""
 
                 self._last_result = RunResult(
-                    stdout=stdout_val,
-                    stderr=stderr_val,
-                    returncode=-1,
-                    timed_out=True,
+                    stdout=stdout,
+                    stderr=stderr,
+                    returncode=returncode,
                 )
-                logger.warning("opencode timed out after %ds", self.timeout)
-                self._chars_exchanged += len(prompt) + len(self._last_result.output)
-                return
-
-            stdout = stdout or ""
-            stderr = stderr or ""
-
-            # Detect known fatal errors
-            combined_lower = (stdout + stderr).lower()
-            if (
-                "unable to connect" in combined_lower
-                or "is the computer able to access" in combined_lower
-            ):
-                stderr = (
-                    "[OPENCODE CONFIG ERROR] opencode cannot reach the AI provider.\n"
-                    "Fix: run 'opencode' interactively → configure a working provider,\n"
-                    "or set the model in the UI 'opencode model' field.\n\n"
-                    "Raw error:\n" + (stdout + stderr).strip()
+                logger.info(
+                    "opencode exit=%d  stdout=%d  stderr=%d",
+                    returncode,
+                    len(stdout),
+                    len(stderr),
                 )
-                stdout = ""
+                if stderr.strip():
+                    logger.info("stderr: %s", stderr[:400])
 
-            self._last_result = RunResult(
-                stdout=stdout,
-                stderr=stderr,
-                returncode=returncode,
-            )
-            logger.info(
-                "opencode exit=%d  stdout=%d  stderr=%d",
-                returncode,
-                len(stdout),
-                len(stderr),
-            )
-            if stderr.strip():
-                logger.info("stderr: %s", stderr[:400])
+                if not self._last_result.ok and not using_backup and self.opencode_model_backup:
+                    logger.warning(
+                        "Primary model %s failed (exit=%d), falling back to backup %s",
+                        self.opencode_model, returncode, self.opencode_model_backup,
+                    )
+                    using_backup = True
+                    continue
 
-        except Exception as exc:
-            self._last_result = RunResult(exception=str(exc), returncode=-1)
-            logger.error("opencode launch error: %s", exc)
+            except Exception as exc:
+                if not using_backup and self.opencode_model_backup:
+                    logger.warning(
+                        "Primary model %s launch error (%s), falling back to backup %s",
+                        self.opencode_model, exc, self.opencode_model_backup,
+                    )
+                    using_backup = True
+                    continue
+                self._last_result = RunResult(exception=str(exc), returncode=-1)
+                logger.error("opencode launch error: %s", exc)
 
-        self._chars_exchanged += len(prompt) + len(self._last_result.output)
+            self._chars_exchanged += len(prompt) + len(self._last_result.output)
+            return
 
     def enable_continuation(self, enabled: bool = True) -> None:
         """Enable or disable --continue flag for the next run.
@@ -468,7 +498,7 @@ class OpencodeRunner:
         """Reset the context token counter (e.g. after compaction or restart)."""
         self._chars_exchanged = 0
 
-    def _build_cmd(self, exe: str, prompt: str) -> list[str]:
+    def _build_cmd(self, exe: str, prompt: str, model: str | None = None) -> list[str]:
         # opencode run [--agent <agent>] [--continue] "<prompt>" [--model <model>]
         cmd = [exe, "run"]
 
@@ -481,13 +511,14 @@ class OpencodeRunner:
 
         cmd.append(prompt)
 
-        # Resolve model: explicit UI field > .opencode_model file
-        model = str(self.opencode_model or "").strip()
-        if not model and _DOT_MODEL_FILE.exists():
-            model = _DOT_MODEL_FILE.read_text(encoding="utf-8").strip()
-        if model:
-            cmd += ["--model", model]
+        # Resolve model: explicit argument > UI field > .opencode_model file
+        resolved_model = str(model or self.opencode_model or "").strip()
+        if not resolved_model and _DOT_MODEL_FILE.exists():
+            resolved_model = _DOT_MODEL_FILE.read_text(encoding="utf-8").strip()
+        if resolved_model:
+            cmd += ["--model", resolved_model]
 
+        return cmd
         return cmd
 
     def process_step_detection(self, output: str) -> Generator[dict, None, None]:

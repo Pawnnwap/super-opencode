@@ -50,6 +50,7 @@ class SelfEvolutionLoop(BaseLoop):
             truncation_enabled=config.truncation_enabled,
             max_history_turns=config.max_history_turns,
             compact_intermediate_steps=config.compact_intermediate_steps,
+            model_backup=config.supervisor_model_backup,
         )
         self._init_components()
         self.test_runner = OcTestRunner(config.workspace)

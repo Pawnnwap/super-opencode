@@ -105,9 +105,11 @@ class LLMSupervisor:
         truncation_enabled: bool = True,
         max_history_turns: int = 40,
         compact_intermediate_steps: bool = False,
+        model_backup: str | None = None,
     ):
         self._client = OpenAI()
         self._model = model
+        self._model_backup = model_backup
         self._workspace = workspace
         self._system_base = protocol.as_system_prompt(workspace)
         self._system = self._system_base
@@ -1090,42 +1092,55 @@ class LLMSupervisor:
         record_content: str,
         should_record_user: bool,
     ) -> SupervisorVerdict:
-        from openai import InternalServerError
+        from openai import APIError, InternalServerError, OpenAIError
 
         max_retries = 5
         attempt = 0
         working_messages = list(messages)
+        using_backup = False
 
         while attempt <= max_retries:
+            current_model = self._model_backup if using_backup else self._model
             try:
                 response = self._client.chat.completions.create(
-                    model=self._model,
+                    model=current_model,
                     messages=working_messages,
                 )
                 reply = strip_thinking_blocks(response.choices[0].message.content or "")
                 break
-            except InternalServerError as exc:
-                code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
-                body = str(exc)
-                if code != 511 and "max tokens" not in body.lower():
-                    raise
-                if attempt >= max_retries:
-                    logger.error(
-                        "Prompt still exceeds token limit after %d truncation attempts",
-                        max_retries,
+            except (APIError, OpenAIError) as exc:
+                if not using_backup and self._model_backup:
+                    logger.warning(
+                        "Primary model %s failed (%s), falling back to backup %s",
+                        self._model, exc, self._model_backup,
                     )
-                    raise
+                    using_backup = True
+                    attempt = 0
+                    continue
+                if isinstance(exc, InternalServerError):
+                    code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
+                    body = str(exc)
+                    if code != 511 and "max tokens" not in body.lower():
+                        raise
+                    if attempt >= max_retries:
+                        logger.error(
+                            "Prompt still exceeds token limit after %d truncation attempts",
+                            max_retries,
+                        )
+                        raise
 
-                old_count = len(working_messages)
-                working_messages = self._truncate_older_turns(working_messages)
-                new_count = len(working_messages)
-                removed = old_count - new_count
-                attempt += 1
-                logger.warning(
-                    "Token-limit retry %d/%d: removed %d older message(s), "
-                    "now %d messages in request",
-                    attempt, max_retries, removed, new_count,
-                )
+                    old_count = len(working_messages)
+                    working_messages = self._truncate_older_turns(working_messages)
+                    new_count = len(working_messages)
+                    removed = old_count - new_count
+                    attempt += 1
+                    logger.warning(
+                        "Token-limit retry %d/%d: removed %d older message(s), "
+                        "now %d messages in request",
+                        attempt, max_retries, removed, new_count,
+                    )
+                else:
+                    raise
 
         if should_record_user:
             self._history.append({"role": "user", "content": record_content})
