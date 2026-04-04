@@ -8,11 +8,11 @@ With the CLI-based runner, each turn is:
 
 No idle detection, no drain threads, no pipe hacks.
 """
-
 from __future__ import annotations
 
 import logging
 import sys
+import time
 from collections.abc import Generator
 
 from supervisor.analyzers.codebase_analyzer import snapshot_codebase
@@ -145,10 +145,10 @@ class SupervisorLoop(BaseLoop):
         # Dedicated runner locked to the plan agent — the main self.runner
         # stays untouched and will be used for build mode.
         plan_runner = OpencodeRunner(
-            self.config.workspace,
-            self.config.opencode_model,
-            self.config.opencode_executable,
-            self.config.timeout,
+            workspace=self.config.workspace,
+            opencode_model=self.config.opencode_model,
+            opencode_executable=self.config.opencode_executable,
+            timeout=self.config.timeout,
             agent="plan",
             opencode_model_backup=self.config.opencode_model_backup,
         )
@@ -296,6 +296,8 @@ class SupervisorLoop(BaseLoop):
         return safe_msg
 
     def _handle_failure(self, last_output: str) -> Generator[Event, None, None]:
+        time.sleep(3)
+
         self._failures += 1
         retries_remaining = max(0, self.config.max_retries - self._failures)
 

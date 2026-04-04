@@ -15,6 +15,7 @@ import os
 import platform
 import subprocess
 import sys
+import time
 from collections.abc import Callable, Generator
 from pathlib import Path
 
@@ -46,12 +47,44 @@ _WINDOWS_EXTRA_DIRS = [
 _DOT_MODEL_FILE = Path(__file__).parent.parent / ".opencode_model"
 
 
+def _coerce_str(value: object, field_name: str) -> str:
+    """Coerce *value* to a stripped string, logging a warning when the raw type
+    is not already ``str`` so the caller knows where bad data entered the system.
+
+    Returns an empty string for ``None`` and falsy values.
+    """
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        logger.warning(
+            "Type coercion: field '%s' received %r (type=%s) — expected str. "
+            "Converting automatically. Check the caller / UI widget that produced this value.",
+            field_name,
+            value,
+            type(value).__name__,
+        )
+        value = str(value)
+    return value.strip()
+
+
 def find_opencode(explicit: str = "") -> str:
     """Locate the opencode executable by running 'where opencode' and picking
     the result that contains 'chocolatey\\bin'.
 
     Raises FileNotFoundError with actionable instructions if nothing is found.
     """
+    explicit = _coerce_str(explicit, "opencode_executable (find_opencode arg)")
+
+    if explicit:
+        p = Path(explicit)
+        if p.is_file():
+            logger.debug("Using explicit opencode path: %s", explicit)
+            return explicit
+        logger.warning(
+            "Explicit opencode path '%s' does not exist — falling back to auto-detection.",
+            explicit,
+        )
+
     try:
         result = subprocess.run(
             ["where", "opencode"], capture_output=True, text=True, check=True,
@@ -60,7 +93,7 @@ def find_opencode(explicit: str = "") -> str:
             if "chocolatey\\bin" in line.lower():
                 path = line.strip()
                 if Path(path).is_file():
-                    logger.info(f"Found opencode.exe at {path}")
+                    logger.info("Found opencode.exe at %s", path)
                     return path
     except subprocess.CalledProcessError:
         pass
@@ -149,14 +182,53 @@ class OpencodeRunner:
         on_transition: Callable[[PhaseTransition], None] | None = None,
         on_progress: Callable[[StepProgress], None] | None = None,
     ):
+        # ── Coerce and validate all user-supplied string inputs up front ── #
+        # Log raw types so we immediately know if a UI widget passed the wrong type
+        logger.debug(
+            "__init__ raw inputs — "
+            "opencode_model=%r (type=%s)  "
+            "opencode_executable=%r (type=%s)  "
+            "agent=%r (type=%s)  "
+            "opencode_model_backup=%r (type=%s)  "
+            "timeout=%r (type=%s)",
+            opencode_model, type(opencode_model).__name__,
+            opencode_executable, type(opencode_executable).__name__,
+            agent, type(agent).__name__,
+            opencode_model_backup, type(opencode_model_backup).__name__,
+            timeout, type(timeout).__name__,
+        )
+
         self.workspace = workspace
-        self.opencode_model = opencode_model
-        self.opencode_model_backup = opencode_model_backup
-        self.workspace = workspace
-        self.opencode_model = opencode_model
-        self.opencode_executable = opencode_executable
-        self.timeout = timeout
-        self.agent = agent
+
+        # Coerce model strings — a float like 3.5 from a number widget is the
+        # most common source of the "unsupported operand type(s) for +: float and str" error.
+        raw_model = _coerce_str(opencode_model, "opencode_model")
+        self.opencode_model: str | None = raw_model if raw_model else None
+
+        raw_backup = _coerce_str(opencode_model_backup, "opencode_model_backup")
+        self.opencode_model_backup: str | None = raw_backup if raw_backup else None
+
+        self.opencode_executable = _coerce_str(opencode_executable, "opencode_executable")
+        self.agent = _coerce_str(agent, "agent")
+
+        # timeout must be an int; guard against float from UI sliders
+        if not isinstance(timeout, int):
+            logger.warning(
+                "Type coercion: 'timeout' received %r (type=%s) — casting to int.",
+                timeout, type(timeout).__name__,
+            )
+        self.timeout = int(timeout)
+
+        logger.info(
+            "__init__ coerced values — "
+            "opencode_model=%r  opencode_model_backup=%r  "
+            "agent=%r  timeout=%d  workspace=%s",
+            self.opencode_model,
+            self.opencode_model_backup,
+            self.agent,
+            self.timeout,
+            self.workspace,
+        )
 
         self._last_result: RunResult | None = None
         self._chars_exchanged: int = 0
@@ -188,19 +260,23 @@ class OpencodeRunner:
     # ------------------------------------------------------------------ #
 
     def start(self, initial_prompt: str) -> None:
-        if not initial_prompt.strip():
+        initial_prompt = _coerce_str(initial_prompt, "initial_prompt (start)")
+        if not initial_prompt:
             logger.warning("Empty prompt provided to opencode. Skipping run.")
             self._last_result = RunResult(
                 exception="Empty prompt provided. Skipping run.",
             )
             return
+        logger.info("start() — prompt length=%d chars", len(initial_prompt))
         self._alive = True
         self._prepare_workspace()
         self._run_prompt(initial_prompt)
 
     def send(self, message: str) -> None:
+        message = _coerce_str(message, "message (send)")
         if not self._alive:
             raise RuntimeError("OpencodeRunner has been stopped.")
+        logger.info("send() — message length=%d chars", len(message))
         self._run_prompt(message)
 
     def read_output(self, timeout: int | None = None) -> tuple[str, bool]:
@@ -215,21 +291,19 @@ class OpencodeRunner:
         self._alive = False
         self._session_active = False
         if self._process is not None:
-            # Force kill the process to ensure immediate termination
             try:
                 self._process.kill()
             except Exception as exc:
                 logger.warning("Error killing process: %s", exc)
 
-        # Kill any system processes containing "Chocolatey" (case-insensitive)
         self._kill_chocolatey_processes()
 
     def _kill_chocolatey_processes(self) -> None:
-        """Kill processes that have 'chocolatey', 'choco', or 'opencode' in their names or command lines."""
+        """Kill processes that have 'chocolatey', 'choco', or 'opencode' in their names."""
         try:
             system = platform.system()
             if system == "Windows":
-                # Primary method: Use simple tasklist without verbose output (faster)
+                # Primary method: Use tasklist /fo csv
                 try:
                     result = subprocess.run(
                         ["tasklist", "/fo", "csv"],
@@ -261,24 +335,21 @@ class OpencodeRunner:
                                             logger.warning(
                                                 "Error killing process %s: %s", pid, e,
                                             )
-
                     if not found_processes:
                         logger.debug("No chocolatey/opencode processes found to kill")
                     return
                 except subprocess.TimeoutExpired:
-                    logger.debug(
-                        "Primary process scan timed out, using fallback method",
-                    )
+                    logger.debug("Primary process scan timed out, using fallback method")
                 except Exception as e:
                     logger.warning("Primary process scan failed: %s", e)
 
-                # Fallback method: If primary method fails or times out, try basic process names
+                # Fallback: plain tasklist
                 try:
                     result = subprocess.run(
                         ["tasklist"], capture_output=True, text=True, timeout=2,
                     )
                     found_processes = False
-                    for line in result.stdout.splitlines()[3:]:  # Skip header lines
+                    for line in result.stdout.splitlines()[3:]:
                         parts = line.split()
                         if len(parts) >= 2:
                             process_name = parts[0].lower()
@@ -299,11 +370,8 @@ class OpencodeRunner:
                                     logger.warning(
                                         "Error killing process %s: %s", pid, e,
                                     )
-
                     if not found_processes:
-                        logger.debug(
-                            "No chocolatey/opencode processes found with fallback method",
-                        )
+                        logger.debug("No processes found with fallback method")
                 except Exception as e:
                     logger.warning("Fallback process scan failed: %s", e)
             else:
@@ -333,23 +401,15 @@ class OpencodeRunner:
     # ------------------------------------------------------------------ #
 
     def _prepare_workspace(self) -> None:
-        """Ensure the workspace exists and contains an opencode project marker
-        so opencode anchors its project root here instead of walking up the
-        directory tree to a parent folder.
-        """
+        """Ensure the workspace exists and contains an opencode project marker."""
         self.workspace.mkdir(parents=True, exist_ok=True)
 
-        # opencode looks for .opencode/ as its project root marker.
-        # Create it if missing so opencode doesn't escape the workspace.
         oc_dir = self.workspace / ".opencode"
         oc_dir.mkdir(exist_ok=True)
 
-        # Minimal config.json that tells opencode this is the project root
-        # and disables permission prompts that would block non-interactive use.
         config_path = oc_dir / "config.json"
         if not config_path.exists():
             import json
-
             config_path.write_text(
                 json.dumps({"autoapprove": True}, indent=2),
                 encoding="utf-8",
@@ -357,15 +417,30 @@ class OpencodeRunner:
             logger.info("Created .opencode/config.json in workspace")
 
     def _run_prompt(self, prompt: str) -> None:
+        # Defensive coercion — should already be clean but belt-and-suspenders
+        prompt = _coerce_str(prompt, "prompt (_run_prompt)")
+
         exe = find_opencode(self.opencode_executable)
         using_backup = False
 
         while True:
             model_for_cmd = self.opencode_model_backup if using_backup else self.opencode_model
+
+            # ── Log exactly what we are about to pass to _build_cmd ── #
+            logger.debug(
+                "_run_prompt pre-build — "
+                "using_backup=%s  model_for_cmd=%r (type=%s)  "
+                "prompt_len=%d  agent=%r",
+                using_backup,
+                model_for_cmd,
+                type(model_for_cmd).__name__,
+                len(prompt),
+                self.agent,
+            )
+
             cmd = self._build_cmd(exe, prompt, model=model_for_cmd)
             logger.info("CMD: %s", " ".join(cmd))
 
-            # .cmd/.bat on Windows need shell=True
             use_shell = sys.platform == "win32" and exe.lower().endswith(
                 (".cmd", ".bat", ".ps1"),
             )
@@ -412,8 +487,9 @@ class OpencodeRunner:
 
                     if not using_backup and self.opencode_model_backup:
                         logger.warning(
-                            "Primary model %s timed out, falling back to backup %s",
-                            self.opencode_model, self.opencode_model_backup,
+                            "Primary model %r timed out, falling back to backup %r",
+                            self.opencode_model,
+                            self.opencode_model_backup,
                         )
                         using_backup = True
                         continue
@@ -443,66 +519,101 @@ class OpencodeRunner:
                     returncode=returncode,
                 )
                 logger.info(
-                    "opencode exit=%d  stdout=%d  stderr=%d",
+                    "opencode exit=%d  stdout=%d chars  stderr=%d chars",
                     returncode,
                     len(stdout),
                     len(stderr),
                 )
                 if stderr.strip():
-                    logger.info("stderr: %s", stderr[:400])
+                    logger.info("stderr snippet: %s", stderr[:400])
 
                 if not self._last_result.ok and not using_backup and self.opencode_model_backup:
                     logger.warning(
-                        "Primary model %s failed (exit=%d), falling back to backup %s",
-                        self.opencode_model, returncode, self.opencode_model_backup,
+                        "Primary model %r failed (exit=%d), falling back to backup %r",
+                        self.opencode_model,
+                        returncode,
+                        self.opencode_model_backup,
                     )
                     using_backup = True
                     continue
 
             except Exception as exc:
+                time.sleep(3)
+                logger.error(
+                    "opencode launch error — exc=%s  using_backup=%s  "
+                    "model_for_cmd=%r (type=%s)  prompt_snippet=%r  agent=%r",
+                    exc,
+                    using_backup,
+                    model_for_cmd,
+                    type(model_for_cmd).__name__,
+                    prompt[:120],
+                    self.agent,
+                )
                 if not using_backup and self.opencode_model_backup:
                     logger.warning(
-                        "Primary model %s launch error (%s), falling back to backup %s",
-                        self.opencode_model, exc, self.opencode_model_backup,
+                        "Falling back to backup model %r after launch error on primary %r",
+                        self.opencode_model_backup,
+                        self.opencode_model,
                     )
                     using_backup = True
                     continue
                 self._last_result = RunResult(exception=str(exc), returncode=-1)
-                logger.error("opencode launch error: %s", exc)
 
             self._chars_exchanged += len(prompt) + len(self._last_result.output)
             return
 
     def enable_continuation(self, enabled: bool = True) -> None:
-        """Enable or disable --continue flag for the next run.
-
-        When enabled, opencode will continue the previous session instead
-        of starting a fresh one. Use this when context is below limits.
-        """
+        """Enable or disable --continue flag for the next run."""
         self._use_continue = enabled
 
     def is_continuation_enabled(self) -> bool:
-        """Check if --continue flag is currently enabled."""
         return self._use_continue
 
     def mark_session_active(self) -> None:
-        """Mark that a session has been started and can be continued."""
         self._session_active = True
 
     def reset_session(self) -> None:
-        """Reset session state after a context restart."""
         self._session_active = False
         self._use_continue = False
 
     def reset_context_counter(self) -> None:
-        """Reset the context token counter (e.g. after compaction or restart)."""
         self._chars_exchanged = 0
 
     def _build_cmd(self, exe: str, prompt: str, model: str | None = None) -> list[str]:
-        # opencode run [--agent <agent>] [--continue] "<prompt>" [--model <model>]
-        cmd = [exe, "run"]
+        """Build the opencode CLI command list.
 
-        agent = str(self.agent or "").strip()
+        Every value is coerced to ``str`` here as a final safety net, and the
+        resolved values are logged at DEBUG level so any future type surprises
+        are immediately visible in the log.
+        """
+        exe = _coerce_str(exe, "exe (_build_cmd)")
+        prompt = _coerce_str(prompt, "prompt (_build_cmd)")
+        agent = _coerce_str(self.agent, "self.agent (_build_cmd)")
+
+        # Resolve model with explicit coercion at every step
+        raw_model_arg = _coerce_str(model, "model arg (_build_cmd)")
+        raw_self_model = _coerce_str(self.opencode_model, "self.opencode_model (_build_cmd)")
+        resolved_model = raw_model_arg or raw_self_model
+
+        if not resolved_model and _DOT_MODEL_FILE.exists():
+            resolved_model = _DOT_MODEL_FILE.read_text(encoding="utf-8").strip()
+            logger.debug("Model resolved from .opencode_model file: %r", resolved_model)
+
+        logger.debug(
+            "_build_cmd — exe=%r  agent=%r  use_continue=%s  "
+            "model_arg=%r  self.opencode_model=%r  resolved_model=%r  "
+            "prompt_len=%d",
+            exe,
+            agent,
+            self._use_continue,
+            raw_model_arg,
+            raw_self_model,
+            resolved_model,
+            len(prompt),
+        )
+
+        cmd: list[str] = [exe, "run"]
+
         if agent:
             cmd += ["--agent", agent]
 
@@ -511,14 +622,9 @@ class OpencodeRunner:
 
         cmd.append(prompt)
 
-        # Resolve model: explicit argument > UI field > .opencode_model file
-        resolved_model = str(model or self.opencode_model or "").strip()
-        if not resolved_model and _DOT_MODEL_FILE.exists():
-            resolved_model = _DOT_MODEL_FILE.read_text(encoding="utf-8").strip()
         if resolved_model:
             cmd += ["--model", resolved_model]
 
-        return cmd
         return cmd
 
     def process_step_detection(self, output: str) -> Generator[dict, None, None]:
@@ -526,10 +632,7 @@ class OpencodeRunner:
             yield event
 
     def get_step_events(self, output: str) -> list[dict]:
-        events = []
-        for event in self._step_detector.process_output(output):
-            events.append(event)
-        return events
+        return list(self._step_detector.process_output(output))
 
     def get_current_phase(self) -> str:
         return self._step_detector.progress.phase.name.lower()
@@ -558,10 +661,7 @@ class OpencodeRunner:
         }
 
     def send_cleanup_inquiry(self, candidates: list[str]) -> None:
-        """Send an inquiry to opencode about the identified cleanup candidates.
-        Opencode will evaluate the files and respond with its recommendations.
-        Files will be archived instead of deleted to preserve history.
-        """
+        """Send an inquiry to opencode about identified cleanup candidates."""
         if not candidates:
             return
 
@@ -598,10 +698,7 @@ class OpencodeRunner:
         self.send(inquiry)
 
     def identify_cleanup_candidates(self) -> list[str]:
-        """Identify files that might be outdated or unused, then send an inquiry to
-        opencode for its recommendation on what should be deleted.
-        Returns opencode's response parsed as a list of file paths.
-        """
+        """Identify files that might be outdated or unused."""
         import re
 
         candidates: list[str] = []
@@ -621,30 +718,11 @@ class OpencodeRunner:
         ]
 
         _SOURCE_EXTS = {
-            ".py",
-            ".pyc",
-            ".pyo",
-            ".pyd",
-            ".md",
-            ".txt",
-            ".rst",
-            ".json",
-            ".yaml",
-            ".yml",
-            ".toml",
-            ".cfg",
-            ".ini",
-            ".js",
-            ".ts",
-            ".jsx",
-            ".tsx",
-            ".css",
-            ".scss",
-            ".html",
-            ".xml",
-            ".sh",
-            ".bat",
-            ".ps1",
+            ".py", ".pyc", ".pyo", ".pyd",
+            ".md", ".txt", ".rst",
+            ".json", ".yaml", ".yml", ".toml", ".cfg", ".ini",
+            ".js", ".ts", ".jsx", ".tsx", ".css", ".scss",
+            ".html", ".xml", ".sh", ".bat", ".ps1",
         }
 
         def should_ignore(path: Path) -> bool:
@@ -656,27 +734,16 @@ class OpencodeRunner:
                 return True
             if path == workspace / ".checkpoints":
                 return True
-            ignore_dirs = {
-                ".git",
-                ".venv",
-                "venv",
-                "node_modules",
-                ".mypy_cache",
-                ".opencode",
-            }
+            ignore_dirs = {".git", ".venv", "venv", "node_modules", ".mypy_cache", ".opencode"}
             if any(part in ignore_dirs for part in rel.parts):
                 return True
             return False
 
         def is_versioned_backup(name: str) -> bool:
-            for pattern in _VERSION_PATTERNS:
-                if pattern.search(name):
-                    return True
-            return False
+            return any(p.search(name) for p in _VERSION_PATTERNS)
 
         def get_base_name(path: Path) -> str:
-            name = path.name
-            base = name
+            base = path.name
             changed = True
             while changed:
                 changed = False
@@ -719,9 +786,7 @@ class OpencodeRunner:
             all_files[path.name] = path
             if is_versioned_backup(path.name):
                 base = get_base_name(path)
-                if base not in backup_groups:
-                    backup_groups[base] = []
-                backup_groups[base].append(path)
+                backup_groups.setdefault(base, []).append(path)
 
         for base_name, backups in backup_groups.items():
             if base_name in all_files:
@@ -738,15 +803,12 @@ class OpencodeRunner:
         should_ignore,
         source_exts: set,
     ) -> list[str]:
-        candidates: list[str] = []
         import re
 
+        candidates: list[str] = []
         import_patterns = [
             (re.compile(r"^(?:from|import)\s+([\w.]+)", re.MULTILINE), "py"),
-            (
-                re.compile(r'require\s*\(\s*["\']([^"\']+)["\']\s*\)', re.MULTILINE),
-                "js",
-            ),
+            (re.compile(r'require\s*\(\s*["\']([^"\']+)["\']\s*\)', re.MULTILINE), "js"),
             (re.compile(r'import\s+.*?from\s+["\']([^"\']+)["\']', re.MULTILINE), "js"),
             (re.compile(r'#include\s*["<]([^">]+)[">]', re.MULTILINE), "c"),
         ]
@@ -775,50 +837,33 @@ class OpencodeRunner:
                 continue
             rel_str = str(path.relative_to(workspace))
 
-            is_pycache_dir = path.is_dir() and path.name == "__pycache__"
-            if is_pycache_dir:
+            if path.is_dir() and path.name == "__pycache__":
                 candidates.append(rel_str)
                 continue
 
-            is_cache_file = path.suffix in {
-                ".pyc",
-                ".pyo",
-                ".pyc.tmp",
-            } or path.name.endswith(".pyc")
-            if is_cache_file:
+            if path.suffix in {".pyc", ".pyo", ".pyc.tmp"} or path.name.endswith(".pyc"):
                 candidates.append(rel_str)
                 continue
 
         return candidates
 
     def archive_files(self, files: list[str]) -> ArchiveResult:
-        """Archive specified files instead of deleting them.
-        This preserves historical versions while cleaning up the workspace.
-        """
         return self._archiver.archive_workspace(label="cleanup", files_to_archive=files)
 
     def archive_before_new_run(self) -> ArchiveResult:
-        """Archive the current workspace state before starting a new run.
-        Called at the beginning of a supervisor loop execution.
-        """
         return self._archiver.archive_before_new_run()
 
     def get_archiver(self) -> WorkspaceArchiver:
-        """Return the workspace archiver instance."""
         return self._archiver
 
     def list_archives(self) -> list[dict]:
-        """List all available archives."""
         return self._archiver.list_archives()
 
     def get_archive_stats(self) -> dict:
-        """Get archive statistics."""
         return self._archiver.get_archive_stats()
 
     def get_files_read(self) -> list[str]:
-        """Extract file references from opencode output.
-        Looks for patterns like file paths, file operations, and file references.
-        """
+        """Extract file references from opencode output."""
         import re
 
         if not self._last_result or not self._last_result.output:
@@ -827,21 +872,16 @@ class OpencodeRunner:
         output = self._last_result.output
         files: set[str] = set()
 
-        # Patterns for file references in opencode output
         file_patterns = [
-            # File paths with common extensions
             re.compile(
                 r"(?:^|\s)([a-zA-Z_][\w./\\-]*\.(?:py|js|ts|jsx|tsx|json|yaml|yml|toml|md|txt|rst|cfg|ini|sh|bat|ps1|html|css|xml))(?:\s|$)",
                 re.MULTILINE,
             ),
-            # "file:" or "path:" prefixed paths
             re.compile(r"(?:file|path):\s*([a-zA-Z_][\w./\\-]+)", re.IGNORECASE),
-            # File operations like "Reading file X" or "Creating file Y"
             re.compile(
                 r"(?:reading|creating|writing|modifying|editing|updating|opening)\s+(?:file\s+)?([a-zA-Z_][\w./\\-]+)",
                 re.IGNORECASE,
             ),
-            # File paths in code blocks
             re.compile(
                 r"```[\w]*\s*\n\s*(?:#\s*)?([a-zA-Z_][\w./\\-]+\.(?:py|js|ts|json|yaml|yml|toml|md|txt))",
                 re.MULTILINE,
@@ -851,7 +891,7 @@ class OpencodeRunner:
         for pattern in file_patterns:
             for match in pattern.finditer(output):
                 file_path = match.group(1)
-                if file_path and len(file_path) > 2:  # Filter out very short matches
+                if file_path and len(file_path) > 2:
                     files.add(file_path)
 
         return sorted(files)

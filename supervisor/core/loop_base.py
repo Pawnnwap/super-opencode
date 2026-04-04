@@ -59,10 +59,10 @@ class BaseLoop:
         from supervisor.workspace.workspace_guard import WorkspaceGuard
 
         self.runner = OpencodeRunner(
-            self.config.workspace,
-            self.config.timeout,
-            self.config.opencode_model,
-            self.config.opencode_executable,
+            workspace=self.config.workspace,
+            timeout=self.config.timeout,
+            opencode_model=self.config.opencode_model,
+            opencode_executable=self.config.opencode_executable,
             agent=agent,
             opencode_model_backup=self.config.opencode_model_backup,
         )

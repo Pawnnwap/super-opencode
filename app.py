@@ -731,8 +731,9 @@ def test_opencode():
 
     runner = OpencodeRunner(
         workspace=workspace,
-        opencode_model=st.session_state.opencode_model or None,
+        opencode_model=st.session_state.opencode_model,
         opencode_executable=exe,
+        opencode_model_backup=st.session_state.opencode_model_backup,
         timeout=30,
     )
 

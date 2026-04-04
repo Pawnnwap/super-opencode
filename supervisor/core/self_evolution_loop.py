@@ -41,9 +41,9 @@ class SelfEvolutionLoop(BaseLoop):
         self.protocol = load_protocol(config.protocol_path)
         self._cached_snapshot = snapshot_codebase(self.config.workspace)
         self.supervisor = LLMSupervisor(
-            self.protocol,
-            config.workspace,
-            config.supervisor_model,
+            protocol=self.protocol,
+            workspace=config.workspace,
+            model=config.supervisor_model,
             extra_system=self._codebase_preamble(),
             read_external_feedback=config.read_external_feedback,
             max_tokens=config.max_tokens,
