@@ -11,7 +11,7 @@ from supervisor.runners.opencode_runner import OpencodeRunner
 class TestOpencodeRunner(unittest.TestCase):
     def setUp(self):
         self.workspace = MagicMock()
-        self.runner = OpencodeRunner(workspace=self.workspace)
+        self.runner = OpencodeRunner(workspace=self.workspace, timeout=300)
 
     @patch("supervisor.runners.opencode_runner.subprocess.run")
     @patch("supervisor.runners.opencode_runner.platform.system")
@@ -64,7 +64,7 @@ class TestContinuationBehavior(unittest.TestCase):
 
     def setUp(self):
         self.workspace = MagicMock()
-        self.runner = OpencodeRunner(workspace=self.workspace)
+        self.runner = OpencodeRunner(workspace=self.workspace, timeout=300)
 
     def test_continuation_disabled_by_default(self):
         """By default, --continue should not be enabled."""

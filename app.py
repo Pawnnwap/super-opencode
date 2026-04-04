@@ -551,7 +551,7 @@ with st.sidebar:
                 and status.get("type") == "evolve"
                 and status.get("state") == "SUCCESS"
             ):
-                logs = status.get("logs", [])
+                logs = status.get("logs") or []
                 # Check for test pass indicators in logs
                 for log in reversed(logs):
                     msg = log.get("msg", "")
@@ -1548,12 +1548,13 @@ def _show_run_status_screen(job_id: str):
     # Layout for logs and info
     col_main, col_side = st.columns([2, 1])
 
+    # Safely retrieve logs — the job store may persist logs as null
+    logs = status.get("logs") or []
+
     with col_main:
-        _render_step_progress(status.get("logs", []), state)
+        _render_step_progress(logs, state)
         st.markdown("#### 🖥️ Live Log")
-        _render_events(
-            status.get("logs", []), "— waiting for logs —", show_verbose=True,
-        )
+        _render_events(logs, "— waiting for logs —", show_verbose=True, page_key="run")
 
     with col_side:
         st.markdown("#### ℹ️ Details")
@@ -1567,9 +1568,7 @@ def _show_run_status_screen(job_id: str):
         st.markdown(f"**Opencode model:** `{oc_model}`")
 
         # Token usage if available
-        _render_token_usage_bar(
-            status.get("logs", []), int(st.session_state.max_tokens),
-        )
+        _render_token_usage_bar(logs, int(st.session_state.max_tokens))
 
         if status.get("report"):
             st.markdown("#### 📊 Report")
@@ -1582,13 +1581,17 @@ def _show_run_status_screen(job_id: str):
                     mime="text/markdown",
                 )
 
-    # Auto-refresh loop must be at the end so UI renders first
+    # Auto-refresh loop must be at the end so UI renders first.
+    # Use try/finally so the sleep+rerun always fires even if the render above
+    # raised (Streamlit will surface the error on the next rerun).
     if state == "RUNNING":
         st.info(
             "🏃 Job is running in background. You can safely close this tab or refresh.",
         )
-        time.sleep(2)
-        st.rerun()
+        try:
+            time.sleep(2)
+        finally:
+            st.rerun()
 
 
 def _render_token_usage_bar(logs: list[dict], max_tokens: int):
@@ -1600,7 +1603,9 @@ def _render_token_usage_bar(logs: list[dict], max_tokens: int):
     found = False
 
     for ev in logs:
-        msg = ev.get("msg", "")
+        if not isinstance(ev, dict):
+            continue
+        msg = ev.get("msg") or ""
         if "context usage" in msg.lower():
             match = re.search(r"(\d[\d,]*)\s*/\s*(\d[\d,]*)\s*tokens", msg)
             if match:
@@ -1624,6 +1629,10 @@ def _render_token_usage_bar(logs: list[dict], max_tokens: int):
 
 def _render_step_progress(logs: list[dict], run_state: str, is_evolution: bool = False):
     """Render progress bar, step history, and heartbeats."""
+    # Guard: logs may be None if the job store persisted a null value
+    if not logs:
+        logs = []
+
     step_events = [
         e
         for e in logs
@@ -1651,7 +1660,7 @@ def _render_step_progress(logs: list[dict], run_state: str, is_evolution: bool =
             st.caption(f"🧭 {len(step_events)} step(s)")
         if progress_events:
             last_progress = progress_events[-1]
-            msg = last_progress.get("msg", "")
+            msg = last_progress.get("msg") or ""
 
             def _progress_content():
                 st.caption(msg)
@@ -1659,7 +1668,7 @@ def _render_step_progress(logs: list[dict], run_state: str, is_evolution: bool =
             render_expander_section("📊 Progress", _progress_content)
     elif progress_events:
         last_progress = progress_events[-1]
-        msg = last_progress.get("msg", "")
+        msg = last_progress.get("msg") or ""
 
         progress_col1, progress_col2, progress_col3 = st.columns([3, 1, 1])
         with progress_col1:
@@ -1675,17 +1684,22 @@ def _render_step_progress(logs: list[dict], run_state: str, is_evolution: bool =
         progress_val = 0.0
         if progress_events:
             ev = progress_events[-1]
-            if "percentage" not in ev:
-                parts = ev.get("msg", "").split()
-                for i, p in enumerate(parts):
-                    if p.replace("%", "").replace(".", "").isdigit():
+            if "percentage" in ev and ev["percentage"] is not None:
+                try:
+                    progress_val = float(ev["percentage"])
+                except (TypeError, ValueError):
+                    progress_val = 0.0
+            else:
+                # Fallback: parse "XX%" from the message string
+                parts = (ev.get("msg") or "").split()
+                for p in parts:
+                    candidate = p.replace("%", "").replace(".", "")
+                    if candidate.isdigit():
                         try:
                             progress_val = float(p.replace("%", ""))
                             break
                         except ValueError:
                             pass
-            else:
-                progress_val = ev.get("percentage", 0.0)
 
         if progress_val > 0:
             progress_col1, progress_col2 = st.columns([4, 1])
@@ -1699,13 +1713,29 @@ def _render_step_progress(logs: list[dict], run_state: str, is_evolution: bool =
                 for ev in step_events[-5:]:
                     lvl = ev.get("level", "")
                     if lvl == "step":
-                        st.caption(f"• {ev.get('msg', '')[:80]}")
+                        st.caption(f"• {(ev.get('msg') or '')[:80]}")
                     elif lvl == "phase_transition":
-                        st.caption(f"⚡ {ev.get('msg', '')}")
+                        st.caption(f"⚡ {ev.get('msg') or ''}")
 
 
 def _esc(t: str) -> str:
-    return t.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    """HTML-escape a string. Accepts any type and coerces to str first.
+
+    Root cause of the original crash: log events emitted by background
+    threads (or deserialized from JSON by the job store) can carry
+    ``msg=None`` when the key is present but explicitly set to null.
+    ``ev.get("msg", "")`` returns ``""`` only when the key is *absent*;
+    if the key exists with value ``None`` the default is ignored and
+    ``None`` is returned — which then crashes ``.replace()``.
+
+    All call sites in ``_render_events`` and ``_render_step_progress``
+    now use ``ev.get("msg") or ""`` (falsy-coerce) so ``None`` becomes
+    ``""``.  This function also coerces defensively as a last line of
+    defence.
+    """
+    if t is None:
+        return ""
+    return str(t).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
 _BLOCK_META = {
@@ -1721,16 +1751,43 @@ def _render_events(
     empty_msg: str,
     skip: set | None = None,
     show_verbose: bool = True,
+    page_key: str = "default",
 ) -> None:
+    """Render log events into a styled terminal box.
+
+    Parameters
+    ----------
+    events:
+        List of log event dicts.  May be ``None`` (job store persists
+        ``logs: null``) — handled gracefully.
+    empty_msg:
+        Placeholder text shown when there are no events.
+    skip:
+        Set of log-level strings to exclude from rendering.
+    show_verbose:
+        Whether to render the verbose toggle widget.
+    page_key:
+        A stable, unique string per call-site (e.g. ``"run"`` or
+        ``"evo"``) used to build the Streamlit widget key for the
+        verbose toggle.  Without this, both the run page and the evo
+        page emit a toggle with the same key, causing a ``DuplicateWidgetID``
+        error when both are rendered in the same rerun.
+    """
+    # Guard: job store may persist logs as null
+    if not events:
+        events = []
+
     skip = skip or set()
     verbose = st.session_state.get("verbose_log", True)
 
     if show_verbose:
-        # Verbose toggle
+        # Use a stable, page-scoped key to avoid DuplicateWidgetID when
+        # both run and evo pages are rendered in the same Streamlit session.
+        toggle_key = f"vtoggle_{page_key}"
         st.session_state.verbose_log = st.toggle(
             "Verbose log",
             value=verbose,
-            key=f"vtoggle_{empty_msg[:8].replace(' ', '_')}",
+            key=toggle_key,
         )
         verbose = st.session_state.verbose_log
 
@@ -1745,15 +1802,22 @@ def _render_events(
     lines_html: list[str] = []
 
     for ev in events[-600:]:
-        lvl = ev.get("level", "info")
+        # Skip malformed entries that aren't dicts
+        if not isinstance(ev, dict):
+            continue
+
+        lvl = ev.get("level") or "info"
         if lvl in skip:
             continue
-        msg = ev.get("msg", "")
+
+        # KEY FIX: always coerce msg to str — ev.get("msg", "") returns None
+        # when the key exists but its value is explicitly null in JSON.
+        msg = ev.get("msg") or ""
 
         if lvl in _BLOCK_META:
             if not verbose:
                 # Compact summary line instead of full content
-                preview = _esc(str(msg or "")[:120].replace("\n", " "))
+                preview = _esc(str(msg)[:120].replace("\n", " "))
                 hdr_cls, hdr_label = _BLOCK_META[lvl]
                 lines_html.append(
                     f'<span class="{hdr_cls}">{hdr_label}</span>'
@@ -1766,10 +1830,10 @@ def _render_events(
             lines_html.append(
                 f'<span class="log-rule">{"─" * 60}</span>\n'
                 + f'<span class="{hdr_cls}">{hdr_label}</span>\n'
-                + f'<span class="log-{lvl}">{_esc(msg)}</span>\n',
+                + f'<span class="log-{_esc(lvl)}">{_esc(msg)}</span>\n',
             )
         else:
-            lines_html.append(f'<span class="log-{lvl}">{_esc(msg)}</span>\n')
+            lines_html.append(f'<span class="log-{_esc(lvl)}">{_esc(msg)}</span>\n')
 
     body = "".join(lines_html)
     st.markdown(f'<div class="log-box">{body}</div>', unsafe_allow_html=True)
@@ -1939,13 +2003,14 @@ def _show_evo_status_screen(job_id: str):
         if st.button("🔄 Refresh", use_container_width=True):
             st.rerun()
 
+    # Safely retrieve logs — the job store may persist logs as null
+    logs = status.get("logs") or []
+
     col_main, col_side = st.columns([2, 1])
     with col_main:
-        _render_step_progress(status.get("logs", []), state, is_evolution=True)
+        _render_step_progress(logs, state, is_evolution=True)
         st.markdown("#### 🖥️ Evolution Log")
-        _render_events(
-            status.get("logs", []), "— waiting for logs —", show_verbose=True,
-        )
+        _render_events(logs, "— waiting for logs —", show_verbose=True, page_key="evo")
 
     with col_side:
         st.markdown("#### ℹ️ Details")
@@ -1958,9 +2023,7 @@ def _show_evo_status_screen(job_id: str):
         st.markdown(f"**Supervisor model:** `{sup_model}`")
         st.markdown(f"**Opencode model:** `{oc_model}`")
 
-        _render_token_usage_bar(
-            status.get("logs", []), int(st.session_state.max_tokens),
-        )
+        _render_token_usage_bar(logs, int(st.session_state.max_tokens))
 
         if status.get("report"):
             st.markdown("#### 📊 Evolution Report")
@@ -1974,8 +2037,10 @@ def _show_evo_status_screen(job_id: str):
 
     if state == "RUNNING":
         st.info("🧬 Evolution in progress...")
-        time.sleep(2)
-        st.rerun()
+        try:
+            time.sleep(2)
+        finally:
+            st.rerun()
 
 
 # Router

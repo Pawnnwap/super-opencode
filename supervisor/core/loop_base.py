@@ -60,9 +60,9 @@ class BaseLoop:
 
         self.runner = OpencodeRunner(
             self.config.workspace,
+            self.config.timeout,
             self.config.opencode_model,
             self.config.opencode_executable,
-            self.config.timeout,
             agent=agent,
         )
         self.ctx_monitor = ContextMonitor(

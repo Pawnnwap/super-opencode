@@ -139,9 +139,9 @@ class OpencodeRunner:
     def __init__(
         self,
         workspace: Path,
+        timeout: int,
         opencode_model: str | None = None,
         opencode_executable: str = "",
-        timeout: int = 300,
         agent: str = "",
         step_detector: OpencodeStepDetector | None = None,
         on_step: Callable[[Step], None] | None = None,
