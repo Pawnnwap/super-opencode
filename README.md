@@ -220,12 +220,15 @@ supervisor/
   runners/
     opencode_runner.py              Subprocess wrapper for the opencode CLI
     test_runner.py                  Runs pytest / syntax check; structured results
+    test_opencode_runner.py       Tests for OpencodeRunner
 
   utils/
     config.py                       Frozen SupervisorConfig dataclass
     file_ops.py                     File operations utilities
     credentials_manager.py          Credential storage helpers
     gitignore_utils.py              Automatic .gitignore update helpers
+    experience_tracker.py           Tracks successful patterns across runs
+    text_utils.py                   Text processing utilities
 
   prompts/
     __init__.py                     Package exports for prompt templates
@@ -234,6 +237,7 @@ supervisor/
   monitoring/
     context_monitor.py              Tracks context window usage with graduated warnings
     token_estimator.py              Token counting (tiktoken) and prompt truncation
+    session_tracker.py              Session state and lifecycle tracking
 
   workspace/
     workspace_guard.py              Blocks out-of-workspace path references
@@ -244,12 +248,16 @@ supervisor/
   vulnerability/
     python_scanner.py               Python code vulnerability scanner (static analysis)
 
-  tests/                            Test suite (pytest)
-    runners/
-      test_opencode_runner.py       Tests for OpencodeRunner
 
 pyproject.toml                      Makes `supervisor` an installable package (also defines all deps)
 requirements.txt                    Alternative dependency list for pip install -r
+services/
+  job_manager.py                    Background job management with persistence
+  state_store.py                    Job state persistence layer
+  settings.py                       UI configuration persistence
+tests/                              Test suite (pytest)
+  test_session_tracker.py           Tests for SessionTracker
+  test_experience_tracker.py        Tests for ExperienceTracker
 mcp_server/
   hashline.py                       MCP server for hash-anchored file editing (hashline_read, hashline_edit)
 ```

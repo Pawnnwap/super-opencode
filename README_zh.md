@@ -206,12 +206,15 @@ supervisor/
   runners/
     opencode_runner.py              opencode CLI 的子进程包装器
     test_runner.py                  运行 pytest / 语法检查；结构化结果
+    test_opencode_runner.py       OpencodeRunner 测试
 
   utils/
     config.py                       不可变 SupervisorConfig 数据类
     file_ops.py                     文件操作工具
     credentials_manager.py          凭证存储助手
     gitignore_utils.py              自动 .gitignore 更新助手
+    experience_tracker.py           跟踪跨运行的成功模式
+    text_utils.py                   文本处理工具
 
   prompts/
     __init__.py                     提示模板包导出
@@ -220,6 +223,7 @@ supervisor/
   monitoring/
     context_monitor.py              跟踪上下文窗口使用情况，分级警告
     token_estimator.py              Token 计算（tiktoken）和提示截断
+    session_tracker.py              会话状态和生命周期跟踪
 
   workspace/
     workspace_guard.py              阻止对工作区外路径的引用
@@ -230,12 +234,16 @@ supervisor/
   vulnerability/
     python_scanner.py               Python 代码漏洞扫描器（静态分析）
 
-  tests/                            测试套件（pytest）
-    runners/
-      test_opencode_runner.py       OpencodeRunner 测试
 
 pyproject.toml                      使 `supervisor` 成为可安装包（同时定义所有依赖）
 requirements.txt                    备用依赖列表，用于 pip install -r
+services/
+  job_manager.py                    带持久化的后台作业管理
+  state_store.py                    作业状态持久化层
+  settings.py                       UI 配置持久化
+tests/                              测试套件（pytest）
+  test_session_tracker.py           SessionTracker 测试
+  test_experience_tracker.py        ExperienceTracker 测试
 mcp_server/
   hashline.py                       哈希锚定文件编辑的 MCP 服务器（hashline_read, hashline_edit）
 ```
