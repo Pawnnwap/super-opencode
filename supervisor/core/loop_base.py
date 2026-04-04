@@ -6,7 +6,7 @@ from collections.abc import Generator
 from enum import Enum, auto
 from pathlib import Path
 
-from supervisor.utils.text_utils import strip_thinking_blocks
+from supervisor.utils.text_utils import sanitize_event_message, strip_thinking_blocks
 
 logger = logging.getLogger(__name__)
 
@@ -27,8 +27,8 @@ class LoopState(Enum):
     ENDED_FAILURE = auto()
 
 
-def _ev(level: str, msg: str, **kwargs) -> Event:
-    event = {"level": level, "msg": msg}
+def _ev(level: str, msg: object, **kwargs) -> Event:
+    event = {"level": level, "msg": sanitize_event_message(msg)}
     event.update(kwargs)
     return event
 

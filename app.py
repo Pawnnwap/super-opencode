@@ -1843,7 +1843,9 @@ def _render_events(
 
         # KEY FIX: always coerce msg to str — ev.get("msg", "") returns None
         # when the key exists but its value is explicitly null in JSON.
-        msg = ev.get("msg") or ""
+        # Also handles any residual list/dict payloads from pre-sanitization logs.
+        raw_msg = ev.get("msg") or ""
+        msg = str(raw_msg) if not isinstance(raw_msg, str) else raw_msg
 
         if lvl in _BLOCK_META:
             if not verbose:

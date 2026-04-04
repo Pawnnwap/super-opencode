@@ -8,6 +8,7 @@ from services.state_store import JobStateStore
 from supervisor.core.loop import SupervisorLoop
 from supervisor.core.self_evolution_loop import SelfEvolutionLoop
 from supervisor.utils.config import SupervisorConfig
+from supervisor.utils.text_utils import sanitize_event_message
 
 
 class JobManager:
@@ -117,7 +118,11 @@ class JobManager:
                     if isinstance(event, str):
                         event = {"level": "info", "msg": event}
                     else:
-                        event = {"level": "info", "msg": str(event)}
+                        event = {"level": "info", "msg": sanitize_event_message(event)}
+                else:
+                    # Sanitize msg field in dict events before logging
+                    if "msg" in event:
+                        event["msg"] = sanitize_event_message(event["msg"])
                 self.store.append_log(job_id, event)
 
                 # Capture report if it's emitted as an event
