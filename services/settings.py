@@ -14,6 +14,8 @@ _PERSIST_KEYS = [
     "workspace",
     "supervisor_model",
     "opencode_model",
+    "supervisor_model_backup",
+    "opencode_model_backup",
     "opencode_executable",
     "max_retries",
     "context_threshold",

@@ -447,7 +447,9 @@ defaults = {
     "base_url": "",
     "workspace": "",
     "supervisor_model": "",
+    "supervisor_model_backup": "",
     "opencode_model": "",
+    "opencode_model_backup": "",
     "opencode_executable": "",
     "max_retries": 3,
     "context_threshold": 60,
@@ -841,6 +843,12 @@ def page_wizard():
                 value=st.session_state.supervisor_model,
                 placeholder="e.g. gpt-4o, claude-3-5-sonnet, mistral-large",
             )
+            st.session_state.supervisor_model_backup = st.text_input(
+                "Supervisor model backup",
+                key="cfg_supervisor_model_backup",
+                value=st.session_state.supervisor_model_backup,
+                placeholder="e.g. gpt-4o-mini (used when primary fails)",
+            )
         with col2:
             # Dynamic model list from 'opencode models' command
             models = st.session_state.get("opencode_models", [])
@@ -862,6 +870,26 @@ def page_wizard():
                     "opencode model",
                     key="cfg_opencode_model_fallback",
                     value=st.session_state.opencode_model,
+                )
+            # Backup model droplist — excludes the currently selected main model
+            backup_models = [m for m in models if m != st.session_state.opencode_model] if models else []
+            if backup_models:
+                backup_current = st.session_state.get("opencode_model_backup", "")
+                backup_default_idx = backup_models.index(backup_current) if backup_current in backup_models else 0
+                backup_selected = st.selectbox(
+                    "opencode model backup",
+                    options=backup_models,
+                    index=backup_default_idx,
+                    key="cfg_opencode_model_backup_select",
+                    help="Fallback model used when the primary model fails",
+                )
+                st.session_state.opencode_model_backup = backup_selected
+            else:
+                st.session_state.opencode_model_backup = st.text_input(
+                    "opencode model backup",
+                    key="cfg_opencode_model_backup",
+                    value=st.session_state.opencode_model_backup,
+                    placeholder="e.g. /my-provider/backup-model (used when primary fails)",
                 )
 
             def _refresh_models():
@@ -1507,8 +1535,10 @@ def _enqueue_run_job() -> str:
         max_retries=int(st.session_state.max_retries),
         context_threshold=st.session_state.context_threshold / 100.0,
         opencode_model=st.session_state.opencode_model or None,
+        opencode_model_backup=st.session_state.opencode_model_backup or None,
         opencode_executable=st.session_state.opencode_executable,
-        supervisor_model=st.session_state.supervisor_model,
+        supervisor_model=st.session_state.supervisor_model or "gpt-4o",
+        supervisor_model_backup=st.session_state.supervisor_model_backup or None,
         timeout=int(st.session_state.timeout) * 60,
         protected_files=tuple(st.session_state.get("protected_files", [])),
         max_tokens=int(st.session_state.max_tokens),
@@ -1968,8 +1998,10 @@ def _enqueue_evo_job(repo_root: Path) -> str:
         max_retries=int(st.session_state.max_retries),
         context_threshold=st.session_state.context_threshold / 100.0,
         opencode_model=st.session_state.opencode_model or None,
+        opencode_model_backup=st.session_state.opencode_model_backup or None,
         opencode_executable=st.session_state.opencode_executable,
-        supervisor_model=st.session_state.supervisor_model,
+        supervisor_model=st.session_state.supervisor_model or "gpt-4o",
+        supervisor_model_backup=st.session_state.supervisor_model_backup or None,
         timeout=int(st.session_state.timeout) * 60,
         protected_files=tuple(st.session_state.get("protected_files", [])),
         max_tokens=int(st.session_state.max_tokens),

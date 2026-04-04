@@ -52,6 +52,7 @@ class SupervisorLoop(BaseLoop):
             truncation_enabled=config.truncation_enabled,
             max_history_turns=config.max_history_turns,
             compact_intermediate_steps=config.compact_intermediate_steps,
+            model_backup=config.supervisor_model_backup,
         )
         self._init_components(agent="build")
         self.archiver = WorkspaceArchiver(config.workspace)
@@ -149,6 +150,7 @@ class SupervisorLoop(BaseLoop):
             self.config.opencode_executable,
             self.config.timeout,
             agent="plan",
+            opencode_model_backup=self.config.opencode_model_backup,
         )
 
         protocol_text = self.config.protocol_path.read_text(encoding="utf-8")

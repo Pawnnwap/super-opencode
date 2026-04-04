@@ -64,6 +64,7 @@ class BaseLoop:
             self.config.opencode_model,
             self.config.opencode_executable,
             agent=agent,
+            opencode_model_backup=self.config.opencode_model_backup,
         )
         self.ctx_monitor = ContextMonitor(
             self.config.context_threshold,

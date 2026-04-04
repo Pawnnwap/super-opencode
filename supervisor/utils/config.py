@@ -13,6 +13,8 @@ class SupervisorConfig:
     opencode_model: str | None = None
     opencode_executable: str = ""
     supervisor_model: str = "gpt-4o"
+    supervisor_model_backup: str | None = None
+    opencode_model_backup: str | None = None
     timeout: int = 300
     log_level: str = "INFO"
     protected_files: tuple[str, ...] = ()
