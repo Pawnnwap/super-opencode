@@ -6,7 +6,8 @@ from collections.abc import Generator
 from enum import Enum, auto
 from pathlib import Path
 
-from supervisor.utils.text_utils import sanitize_event_message, strip_thinking_blocks
+from supervisor.utils.text_utils import (sanitize_event_message,
+                                         strip_thinking_blocks)
 
 logger = logging.getLogger(__name__)
 
