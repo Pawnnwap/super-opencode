@@ -27,6 +27,7 @@ _PERSIST_KEYS = [
     "raw_restrictions",
     "evo_goal",
     "evo_extra_restrictions",
+    "enable_python_scanner",
 ]
 
 

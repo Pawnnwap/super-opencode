@@ -476,6 +476,7 @@ defaults = {
     "opencode_test_passed": False,
     "supervisor_test_passed": False,
     "opencode_models": [],
+    "enable_python_scanner": True,
 }
 for k, v in defaults.items():
     if k not in st.session_state:
@@ -930,6 +931,12 @@ def page_wizard():
                 min_value=1,
                 max_value=999,
                 value=min(max(int(st.session_state.timeout), 1), 999),
+            )
+            st.session_state.enable_python_scanner = st.toggle(
+                "Enable Python scanner",
+                key="cfg_enable_python_scanner",
+                value=bool(st.session_state.enable_python_scanner),
+                help="Run the Python vulnerability scanner before each live run",
             )
         with st.expander("🛡️  Protected Files", expanded=False):
             st.caption("Files that opencode cannot modify or delete")
@@ -1515,6 +1522,19 @@ def _show_run_setup_screen():
             key="run_plan_mode_rounds_setup",
             help="Number of planning rounds before execution",
         )
+        enable_scanner = st.toggle(
+            "Enable Python scanner",
+            value=bool(st.session_state.enable_python_scanner),
+            key="run_enable_python_scanner_setup",
+            help="Run the Python vulnerability scanner before execution",
+        )
+    with col2:
+        if st.button("▶  Start Live Run", type="primary", use_container_width=True):
+            st.session_state.plan_mode_rounds = plan_rounds
+            st.session_state.enable_python_scanner = enable_scanner
+            job_id = _enqueue_run_job()
+            st.query_params["run_job_id"] = job_id
+            st.rerun()
     with col2:
         if st.button("▶  Start Live Run", type="primary", use_container_width=True):
             st.session_state.plan_mode_rounds = plan_rounds
@@ -1544,6 +1564,7 @@ def _enqueue_run_job() -> str:
         protected_files=tuple(st.session_state.get("protected_files", [])),
         max_tokens=int(st.session_state.max_tokens),
         plan_mode_rounds=int(st.session_state.plan_mode_rounds),
+        enable_python_scanner=bool(st.session_state.enable_python_scanner),
     )
 
     return job_manager.enqueue_job("run", config)
@@ -2008,6 +2029,7 @@ def _enqueue_evo_job(repo_root: Path) -> str:
         timeout=int(st.session_state.timeout) * 60,
         protected_files=tuple(st.session_state.get("protected_files", [])),
         max_tokens=int(st.session_state.max_tokens),
+        enable_python_scanner=bool(st.session_state.enable_python_scanner),
     )
     return job_manager.enqueue_job("evolve", config)
 

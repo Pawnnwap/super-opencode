@@ -121,7 +121,8 @@ class BaseLoop:
         return
 
     def run_streaming(self) -> Generator[Event, None, None]:
-        yield from self._run_python_scanner()
+        if self.config and getattr(self.config, 'enable_python_scanner', True):
+            yield from self._run_python_scanner()
         try:
             yield from self._run()
         except KeyboardInterrupt:
