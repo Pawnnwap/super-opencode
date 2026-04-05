@@ -1529,15 +1529,9 @@ def _show_run_setup_screen():
             help="Run the Python vulnerability scanner before execution",
         )
     with col2:
-        if st.button("▶  Start Live Run", type="primary", use_container_width=True):
+        if st.button("▶  Start Live Run", type="primary", use_container_width=True, key="start_live_run_button"):
             st.session_state.plan_mode_rounds = plan_rounds
             st.session_state.enable_python_scanner = enable_scanner
-            job_id = _enqueue_run_job()
-            st.query_params["run_job_id"] = job_id
-            st.rerun()
-    with col2:
-        if st.button("▶  Start Live Run", type="primary", use_container_width=True):
-            st.session_state.plan_mode_rounds = plan_rounds
             job_id = _enqueue_run_job()
             st.query_params["run_job_id"] = job_id
             st.rerun()
