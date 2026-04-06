@@ -235,7 +235,7 @@ class LLMSupervisor:
             listing_lines.append(f"{path} ({size} bytes)")
 
         from supervisor.monitoring.session_tracker import SessionTracker
-
+        listing = "\n".join(listing_lines)
         if SessionTracker.estimate_tokens(listing) > available_tokens:
             # We must truncate the listing
             listing = SessionTracker.truncate_prompt(
