@@ -52,6 +52,23 @@ class BaseLoop:
         self._cached_snapshot = None
         self._python_scanner_ran: bool = False
 
+    def _setup_core_services(self, agent: str = ""):
+        from supervisor.protocols.protocol import load_protocol
+        from supervisor.utils.gitignore_utils import update_gitignore_files
+        from supervisor.analyzers.codebase_analyzer import snapshot_codebase
+        from supervisor.workspace.workspace_archiver import WorkspaceArchiver
+
+        # Update .gitignore files
+        modified_gitignores = update_gitignore_files(self.config.workspace)
+        if modified_gitignores:
+            logger.info(
+                f"Modified {len(modified_gitignores)} .gitignore file(s): {[str(p) for p in modified_gitignores]}",
+            )
+
+        self.protocol = load_protocol(self.config.protocol_path)
+        self._cached_snapshot = snapshot_codebase(self.config.workspace)
+        self.archiver = WorkspaceArchiver(self.config.workspace)
+        self._init_components(agent=agent)
     def _init_components(self, agent: str = ""):
         from supervisor.analyzers.opencode_step_detector import \
             OpencodeStepDetector
@@ -206,8 +223,26 @@ class BaseLoop:
         yield from []
 
     def _handle_failure(self, output: str) -> Generator[Event, None, None]:
-        raise NotImplementedError
+        self._failures += 1
+        retries_remaining = max(0, self.config.max_retries - self._failures)
 
+        yield _ev(
+            "warn",
+            f"opencode returned empty/timeout (failure {self._failures}/{self.config.max_retries}, "
+            f"{retries_remaining} {'retry' if retries_remaining == 1 else 'retries'} remaining).",
+        )
+        yield from self._forced_summary(output)
+
+        if self._failures >= self.config.max_retries:
+            yield from self._on_final_failure(output)
+            self._state = LoopState.ENDED_FAILURE
+            return
+
+        yield _ev(
+            "info",
+            f"Retrying… (attempt {self._failures}/{self.config.max_retries})",
+        )
+        self.runner.start(self._restart_prompt())
     def _get_step_context(self, progress) -> StepContext:
         from supervisor.core.llm_supervisor import StepContext
 

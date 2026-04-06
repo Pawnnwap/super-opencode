@@ -31,15 +31,8 @@ class SelfEvolutionLoop(BaseLoop):
     def __init__(self, config: SupervisorConfig):
         super().__init__(config)
 
-        # Update .gitignore files before any other operations
-        modified_gitignores = update_gitignore_files(config.workspace)
-        if modified_gitignores:
-            logger.info(
-                f"Modified {len(modified_gitignores)} .gitignore file(s): {[str(p) for p in modified_gitignores]}",
-            )
+        self._setup_core_services()
 
-        self.protocol = load_protocol(config.protocol_path)
-        self._cached_snapshot = snapshot_codebase(self.config.workspace)
         self.supervisor = LLMSupervisor(
             protocol=self.protocol,
             workspace=config.workspace,
@@ -52,9 +45,7 @@ class SelfEvolutionLoop(BaseLoop):
             compact_intermediate_steps=config.compact_intermediate_steps,
             model_backup=config.supervisor_model_backup,
         )
-        self._init_components()
         self.test_runner = OcTestRunner(config.workspace)
-        self.archiver = WorkspaceArchiver(config.workspace)
 
         self._baseline: RunTestResult | None = None
         self._last_result: RunTestResult | None = None
@@ -152,30 +143,7 @@ class SelfEvolutionLoop(BaseLoop):
         return self.supervisor.judge(output)
 
     def _handle_failure(self, last_output: str) -> Generator[Event, None, None]:
-        self._failures += 1
-        retries_remaining = max(0, self.config.max_retries - self._failures)
-
-        yield _ev(
-            "warn",
-            f"Empty/timeout (failure {self._failures}/{self.config.max_retries}, "
-            f"{retries_remaining} {'retry' if retries_remaining == 1 else 'retries'} remaining).",
-        )
-        yield from self._forced_summary(last_output)
-
-        if self._failures >= self.config.max_retries:
-            yield _ev(
-                "error",
-                f"All {self.config.max_retries} {'retry' if self.config.max_retries == 1 else 'retries'} exhausted. "
-                f"Self-evolution terminated after {self._failures} failures.",
-            )
-            self._state = LoopState.ENDED_FAILURE
-            return
-
-        yield _ev(
-            "info", f"Retrying… (attempt {self._failures}/{self.config.max_retries})",
-        )
-        self.runner.start(self._restart_prompt())
-
+        yield from super()._handle_failure(last_output)
     def _rollback(self) -> Generator[Event, None, None]:
         if self._best_archive:
             restored = self.archiver.restore_archive(self._best_archive)

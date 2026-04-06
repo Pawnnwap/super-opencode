@@ -32,15 +32,8 @@ class SupervisorLoop(BaseLoop):
         super().__init__(config)
         _setup_logging(config.log_level)
 
-        # Update .gitignore files before any other operations
-        modified_gitignores = update_gitignore_files(config.workspace)
-        if modified_gitignores:
-            logger.info(
-                f"Modified {len(modified_gitignores)} .gitignore file(s): {[str(p) for p in modified_gitignores]}",
-            )
+        self._setup_core_services(agent="build")
 
-        self.protocol = load_protocol(config.protocol_path)
-        self._cached_snapshot = snapshot_codebase(config.workspace)
         self.supervisor = LLMSupervisor(
             self.protocol,
             config.workspace,
@@ -54,8 +47,6 @@ class SupervisorLoop(BaseLoop):
             compact_intermediate_steps=config.compact_intermediate_steps,
             model_backup=config.supervisor_model_backup,
         )
-        self._init_components(agent="build")
-        self.archiver = WorkspaceArchiver(config.workspace)
         self._step_detector_initialized = False
         self._plan_context: str = (
             ""  # populated by _run_plan_mode, carried into _init_prompt
@@ -297,38 +288,20 @@ class SupervisorLoop(BaseLoop):
 
     def _handle_failure(self, last_output: str) -> Generator[Event, None, None]:
         time.sleep(3)
+        yield from super()._handle_failure(last_output)
 
-        self._failures += 1
-        retries_remaining = max(0, self.config.max_retries - self._failures)
-
-        yield _ev(
-            "warn",
-            f"opencode returned empty/timeout (failure {self._failures}/{self.config.max_retries}, "
-            f"{retries_remaining} {'retry' if retries_remaining == 1 else 'retries'} remaining).",
+    def _on_final_failure(self, output: str) -> Generator[Event, None, None]:
+        report = self.supervisor.report_final_status(
+            reason=f"opencode failed {self._failures} consecutive times",
+            opencode_output=output,
+            workspace=self.config.workspace,
         )
-        yield from self._forced_summary(last_output)
-
-        if self._failures >= self.config.max_retries:
-            report = self.supervisor.report_final_status(
-                reason=f"opencode failed {self._failures} consecutive times",
-                opencode_output=last_output,
-                workspace=self.config.workspace,
-            )
-            self._write(report, "failure_report.md")
-            yield _ev(
-                "error",
-                f"All {self.config.max_retries} {'retry' if self.config.max_retries == 1 else 'retries'} exhausted. "
-                f"Run terminated after {self._failures} failures.\n\n{report}",
-            )
-            self._state = LoopState.ENDED_FAILURE
-            return
-
+        self._write(report, "failure_report.md")
         yield _ev(
-            "info",
-            f"Retrying with restart prompt… (attempt {self._failures}/{self.config.max_retries})",
+            "error",
+            f"All {self.config.max_retries} {'retry' if self.config.max_retries == 1 else 'retries'} exhausted. "
+            f"Run terminated after {self._failures} failures.\n\n{report}",
         )
-        self.runner.start(self._restart_prompt())
-
     # Override run_streaming to update state when stopping the runner
     def run_streaming(self) -> Generator[Event, None, None]:
         try:
