@@ -1110,9 +1110,14 @@ class LLMSupervisor:
         record_content: str,
         should_record_user: bool,
     ) -> SupervisorVerdict:
+        import time
+
         from openai import APIError, InternalServerError, OpenAIError
 
+
         max_retries = 5
+        empty_choices_retries = 0
+        max_empty_choices_retries = 3
         attempt = 0
         working_messages = list(messages)
         using_backup = False
@@ -1124,6 +1129,20 @@ class LLMSupervisor:
                     model=current_model,
                     messages=working_messages,
                 )
+                if not response.choices:
+                    if empty_choices_retries >= max_empty_choices_retries:
+                        raise OpenAIError("LLM response returned no choices after %d retries" % max_empty_choices_retries)
+                    wait = 15 * (2 ** empty_choices_retries)
+                    logger.warning(
+                        "LLM response returned no choices, retry %d/%d after %ds",
+                        empty_choices_retries + 1,
+                        max_empty_choices_retries,
+                        wait,
+                    )
+                    time.sleep(wait)
+                    empty_choices_retries += 1
+                    continue
+                empty_choices_retries = 0
                 reply = strip_thinking_blocks(response.choices[0].message.content or "")
                 break
             except (APIError, OpenAIError) as exc:
