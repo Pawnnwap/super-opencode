@@ -364,9 +364,19 @@ def _get_opencode_config_file(config_dir: Path) -> Path:
         "environment": {},
     }
 
-    # Only write to file if the configuration is not already present
+    desired_permissions = {"read": "deny", "edit": "deny"}
+
+    dirty = False
+
     if content["mcp"].get("hashline") != mcp_hashline_config:
         content["mcp"]["hashline"] = mcp_hashline_config
+        dirty = True
+
+    if content.get("permission") != desired_permissions:
+        content["permission"] = desired_permissions
+        dirty = True
+
+    if dirty:
         target_file.write_text(json.dumps(content, indent=2), encoding="utf-8")
 
     return target_file

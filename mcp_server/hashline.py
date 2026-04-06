@@ -1,10 +1,11 @@
-"""hashline.py  –  MCP server exposing `read` and `edit` (server: hashline)
+"""hashline.py  –  MCP server exposing `read`, `edit`, `write` (server: hashline)
 ================================================================================
 
-opencode sees: hashline_read / hashline_edit
+opencode sees: hashline_read / hashline_edit / hashline_write
 
     read(path, start_line?, end_line?)
     edit(path, edits, dry_run?, auto_retry?)
+    write(path, lines, overwrite?)
 
 ── read ───────────────────────────────────────────────────────────────────────
 Annotates every line with a LINE#ID position anchor:
@@ -22,6 +23,11 @@ side in the same call — no round-trip needed.
 auto_retry=false: returns retry_edits with corrected refs for manual retry.
 
 Edit ops: replace, replace_range, delete, append, prepend.
+
+── write ──────────────────────────────────────────────────────────────────────
+Create a new file from a list of lines. Refuses to overwrite an existing file
+unless overwrite=true is explicitly passed. Parent directories are created
+automatically. No LINE#IDs needed — this is for new files only.
 
 Usage
 -----
@@ -265,6 +271,50 @@ def _compact_diff(original: list[str], new: list[str], context: int = 3) -> str:
     ))
 
 
+# ---------------------------------------------------------------------------
+# Write (new files)
+# ---------------------------------------------------------------------------
+
+def _hashline_write(
+    path: str | Path,
+    lines: list[str],
+    *,
+    overwrite: bool = False,
+) -> dict[str, Any]:
+    """Create a new file from lines, atomically.
+
+    Refuses to overwrite an existing file unless overwrite=True.
+    Parent directories are created automatically.
+
+    Returns:
+        status : "created" | "overwritten"
+        path   : resolved absolute path
+        lines  : number of lines written
+    """
+    resolved = Path(path).resolve()
+
+    if resolved.exists() and not overwrite:
+        raise FileExistsError(
+            f"File already exists: {resolved}  —  pass overwrite=true to replace it, "
+            "or use `hashline edit` to modify it in place."
+        )
+
+    resolved.parent.mkdir(parents=True, exist_ok=True)
+    status = "overwritten" if resolved.exists() else "created"
+
+    content = "\n".join(lines)
+    if lines:  # preserve trailing newline convention
+        content += "\n"
+
+    _write_atomic(resolved, content)
+
+    return {
+        "status": status,
+        "path": str(resolved),
+        "lines": len(lines),
+    }
+
+
 def _hashline_edit(
     path: str | Path,
     edits: list[dict[str, Any]],
@@ -398,9 +448,9 @@ HASHLINE_READ_TOOL = Tool(
     inputSchema={
         "type": "object",
         "properties": {
-            "path": {"type": "string", "description": "File path (absolute or relative to cwd)."},
+            "path":       {"type": "string",  "description": "File path (absolute or relative to cwd)."},
             "start_line": {"type": "integer", "description": "First line to return (1-based). Default: 1.", "minimum": 1},
-            "end_line": {"type": "integer", "description": "Last line to return (1-based). Default: EOF.", "minimum": 1},
+            "end_line":   {"type": "integer", "description": "Last line to return (1-based). Default: EOF.", "minimum": 1},
         },
         "required": ["path"],
     },
@@ -436,9 +486,9 @@ HASHLINE_EDIT_TOOL = Tool(
                             "enum": ["replace", "replace_range", "delete", "append", "prepend"],
                             "description": "Operation type.",
                         },
-                        "pos": {"type": "string", "description": "LINE#ID of target line, e.g. '42#VKB'."},
+                        "pos":     {"type": "string", "description": "LINE#ID of target line, e.g. '42#VKB'."},
                         "end_pos": {"type": "string", "description": "LINE#ID of range end (replace_range only)."},
-                        "lines": {"type": "array", "items": {"type": "string"}, "description": "Lines to insert/replace (omit for delete)."},
+                        "lines":   {"type": "array", "items": {"type": "string"}, "description": "Lines to insert/replace (omit for delete)."},
                     },
                 },
             },
@@ -461,10 +511,42 @@ HASHLINE_EDIT_TOOL = Tool(
     },
 )
 
+HASHLINE_WRITE_TOOL = Tool(
+    name="write",
+    description=(
+        "Create a new file from a list of lines.\n\n"
+        "USE THIS instead of built-in `write` for creating new files — "
+        "it refuses to silently overwrite existing files unless overwrite=true "
+        "is explicitly set, preventing accidental data loss.\n\n"
+        "Parent directories are created automatically.\n\n"
+        "For editing an existing file, use `hashline edit` instead."
+    ),
+    inputSchema={
+        "type": "object",
+        "properties": {
+            "path": {
+                "type": "string",
+                "description": "Path of the file to create (absolute or relative to cwd).",
+            },
+            "lines": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "File content as a list of lines (without newline characters).",
+            },
+            "overwrite": {
+                "type": "boolean",
+                "description": "Allow overwriting an existing file. Default: false.",
+                "default": False,
+            },
+        },
+        "required": ["path", "lines"],
+    },
+)
+
 
 @server.list_tools()
 async def list_tools() -> list[Tool]:
-    return [HASHLINE_READ_TOOL, HASHLINE_EDIT_TOOL]
+    return [HASHLINE_READ_TOOL, HASHLINE_EDIT_TOOL, HASHLINE_WRITE_TOOL]
 
 
 @server.call_tool()
@@ -506,6 +588,28 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         except _MismatchError as exc:
             return [TextContent(type="text", text=str(exc))]
         except (FileNotFoundError, ValueError) as exc:
+            return [TextContent(type="text", text=f"Error: {exc}")]
+
+        return [TextContent(type="text", text=json.dumps(result, indent=2))]
+
+    # ── write ───────────────────────────────────────────────────────────────────
+    if name == "write":
+        path = arguments.get("path")
+        lines = arguments.get("lines")
+        overwrite = bool(arguments.get("overwrite", False))
+
+        if not path:
+            return [TextContent(type="text", text="Error: 'path' is required")]
+        if lines is None:
+            return [TextContent(type="text", text="Error: 'lines' is required")]
+        if not isinstance(lines, list):
+            return [TextContent(type="text", text="Error: 'lines' must be an array of strings")]
+
+        try:
+            result = _hashline_write(path, lines, overwrite=overwrite)
+        except FileExistsError as exc:
+            return [TextContent(type="text", text=f"Error: {exc}")]
+        except (OSError, ValueError) as exc:
             return [TextContent(type="text", text=f"Error: {exc}")]
 
         return [TextContent(type="text", text=json.dumps(result, indent=2))]
