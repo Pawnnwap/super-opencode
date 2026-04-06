@@ -15,14 +15,10 @@ import sys
 import time
 from collections.abc import Generator
 
-from supervisor.analyzers.codebase_analyzer import snapshot_codebase
 from supervisor.analyzers.opencode_step_detector import StepProgress
 from supervisor.core.llm_supervisor import LLMSupervisor, StepContext
 from supervisor.core.loop_base import BaseLoop, Event, LoopState, _ev
-from supervisor.protocols.protocol import load_protocol
 from supervisor.utils.config import SupervisorConfig
-from supervisor.utils.gitignore_utils import update_gitignore_files
-from supervisor.workspace.workspace_archiver import WorkspaceArchiver
 
 logger = logging.getLogger(__name__)
 
@@ -303,6 +299,7 @@ class SupervisorLoop(BaseLoop):
             f"Run terminated after {self._failures} failures.\n\n{report}",
         )
     # Override run_streaming to update state when stopping the runner
+
     def run_streaming(self) -> Generator[Event, None, None]:
         try:
             yield from super().run_streaming()

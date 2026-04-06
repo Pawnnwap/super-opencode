@@ -17,12 +17,9 @@ from supervisor.analyzers.codebase_analyzer import (CodebaseSnapshot,
                                                     snapshot_codebase)
 from supervisor.core.llm_supervisor import LLMSupervisor
 from supervisor.core.loop_base import BaseLoop, Event, LoopState, _ev
-from supervisor.protocols.protocol import load_protocol
 from supervisor.runners.test_runner import OcTestRunner, RunTestResult
 from supervisor.utils.config import SupervisorConfig
-from supervisor.utils.gitignore_utils import update_gitignore_files
-from supervisor.workspace.workspace_archiver import (ArchiveResult,
-                                                     WorkspaceArchiver)
+from supervisor.workspace.workspace_archiver import ArchiveResult
 
 logger = logging.getLogger(__name__)
 
@@ -144,6 +141,7 @@ class SelfEvolutionLoop(BaseLoop):
 
     def _handle_failure(self, last_output: str) -> Generator[Event, None, None]:
         yield from super()._handle_failure(last_output)
+
     def _rollback(self) -> Generator[Event, None, None]:
         if self._best_archive:
             restored = self.archiver.restore_archive(self._best_archive)

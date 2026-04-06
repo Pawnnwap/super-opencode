@@ -53,9 +53,9 @@ class BaseLoop:
         self._python_scanner_ran: bool = False
 
     def _setup_core_services(self, agent: str = ""):
+        from supervisor.analyzers.codebase_analyzer import snapshot_codebase
         from supervisor.protocols.protocol import load_protocol
         from supervisor.utils.gitignore_utils import update_gitignore_files
-        from supervisor.analyzers.codebase_analyzer import snapshot_codebase
         from supervisor.workspace.workspace_archiver import WorkspaceArchiver
 
         # Update .gitignore files
@@ -69,6 +69,7 @@ class BaseLoop:
         self._cached_snapshot = snapshot_codebase(self.config.workspace)
         self.archiver = WorkspaceArchiver(self.config.workspace)
         self._init_components(agent=agent)
+
     def _init_components(self, agent: str = ""):
         from supervisor.analyzers.opencode_step_detector import \
             OpencodeStepDetector
@@ -243,6 +244,7 @@ class BaseLoop:
             f"Retrying… (attempt {self._failures}/{self.config.max_retries})",
         )
         self.runner.start(self._restart_prompt())
+
     def _get_step_context(self, progress) -> StepContext:
         from supervisor.core.llm_supervisor import StepContext
 
