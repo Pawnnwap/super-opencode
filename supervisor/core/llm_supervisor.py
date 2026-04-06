@@ -10,7 +10,7 @@ from pathlib import Path
 
 from openai import OpenAI
 
-from supervisor.monitoring.token_estimator import (estimate_request_tokens,
+from supervisor.monitoring.session_tracker import (estimate_request_tokens,
                                                    should_truncate,
                                                    truncate_with_fallback,
                                                    warn_if_exceeds_limit)
@@ -234,16 +234,16 @@ class LLMSupervisor:
         for path, size in sorted_items:
             listing_lines.append(f"{path} ({size} bytes)")
 
-        listing = "\n".join(listing_lines)
+        from supervisor.monitoring.session_tracker import SessionTracker
 
-        from supervisor.monitoring.token_estimator import (estimate_tokens,
-                                                           truncate_prompt)
-
-        if estimate_tokens(listing) > available_tokens:
+        if SessionTracker.estimate_tokens(listing) > available_tokens:
             # We must truncate the listing
-            listing = truncate_prompt(listing, available_tokens, preserve_end_ratio=0.0)
+            listing = SessionTracker.truncate_prompt(
+                listing, available_tokens, preserve_end_ratio=0.0
+            )
 
         from supervisor.prompts import FILE_SELECTION_PROMPT
+
         prompt = FILE_SELECTION_PROMPT.format(
             top_k=top_k,
             protocol_target=self._protocol_target,
@@ -421,7 +421,8 @@ class LLMSupervisor:
 
         if latest_md is not None:
             logger.info(
-                "Using external feedback file: %s", latest_md.relative_to(workspace),
+                "Using external feedback file: %s",
+                latest_md.relative_to(workspace),
             )
             return latest_md
 
@@ -483,9 +484,12 @@ class LLMSupervisor:
         try:
             from supervisor.utils.experience_tracker import \
                 read_experience_capped
+
             experience_text = read_experience_capped(self._workspace, max_chars=10000)
             if experience_text.strip():
-                return f"--- Previous Experience ---\n{experience_text}\n--- end ---\n\n"
+                return (
+                    f"--- Previous Experience ---\n{experience_text}\n--- end ---\n\n"
+                )
         except Exception as exc:
             logger.warning("Failed to build experience context: %s", exc)
         return ""
@@ -512,7 +516,9 @@ class LLMSupervisor:
         return self._chat(msg, history_content=history_msg)
 
     def judge_with_step_context(
-        self, opencode_output: str, step_context: StepContext,
+        self,
+        opencode_output: str,
+        step_context: StepContext,
     ) -> SupervisorVerdict:
         from supervisor.prompts import JUDGE_STEP_PROMPT
 
@@ -623,21 +629,28 @@ class LLMSupervisor:
 
     def ask_for_compaction_instructions(self) -> SupervisorVerdict:
         from supervisor.prompts import COMPACTION_INSTRUCTIONS_PROMPT
+
         return self._chat(COMPACTION_INSTRUCTIONS_PROMPT)
 
     def ask_for_deletion_permission(
-        self, candidates: list[str], workspace: Path,
+        self,
+        candidates: list[str],
+        workspace: Path,
     ) -> SupervisorVerdict:
         if not candidates:
             return self.ask_for_compaction_instructions()
 
         file_list = "\n".join(f"  - {f}" for f in candidates)
         from supervisor.prompts import DELETION_PERMISSION_PROMPT
+
         msg = DELETION_PERMISSION_PROMPT.format(file_list=file_list)
         return self._chat(msg)
 
     def report_final_status(
-        self, reason: str, opencode_output: str, workspace: Path,
+        self,
+        reason: str,
+        opencode_output: str,
+        workspace: Path,
     ) -> str:
         msg = (
             f"Run ending. Reason: {reason}\n\n"
@@ -864,7 +877,8 @@ class LLMSupervisor:
         return [w for w in words if w.lower() not in stopwords][:10]
 
     def _generate_reinforcement_message(
-        self, violations: list[ProtocolViolation],
+        self,
+        violations: list[ProtocolViolation],
     ) -> str:
         if not violations:
             return ""
@@ -875,6 +889,7 @@ class LLMSupervisor:
             violations_text += f"   Correction: {v.suggestion}\n\n"
 
         from supervisor.prompts import PROTOCOL_VIOLATION_TEMPLATE
+
         return PROTOCOL_VIOLATION_TEMPLATE.format(violations=violations_text)
 
     # ------------------------------------------------------------------ #
@@ -978,7 +993,9 @@ class LLMSupervisor:
             role = msg.get("role", "")
             content = msg.get("content", "")
 
-            if (role == "user" and self.should_record_turn(content, role)) or role == "assistant":
+            if (
+                role == "user" and self.should_record_turn(content, role)
+            ) or role == "assistant":
                 preserved.append(msg)
 
         if len(preserved) > keep_count + 1:
@@ -1112,13 +1129,17 @@ class LLMSupervisor:
                 if not using_backup and self._model_backup:
                     logger.warning(
                         "Primary model %s failed (%s), falling back to backup %s",
-                        self._model, exc, self._model_backup,
+                        self._model,
+                        exc,
+                        self._model_backup,
                     )
                     using_backup = True
                     attempt = 0
                     continue
                 if isinstance(exc, InternalServerError):
-                    code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
+                    code = getattr(exc, "code", None) or getattr(
+                        exc, "status_code", None
+                    )
                     body = str(exc)
                     if code != 511 and "max tokens" not in body.lower():
                         raise
@@ -1137,7 +1158,10 @@ class LLMSupervisor:
                     logger.warning(
                         "Token-limit retry %d/%d: removed %d older message(s), "
                         "now %d messages in request",
-                        attempt, max_retries, removed, new_count,
+                        attempt,
+                        max_retries,
+                        removed,
+                        new_count,
                     )
                 else:
                     raise

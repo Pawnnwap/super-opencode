@@ -211,7 +211,6 @@ supervisor/
   utils/
     config.py                       不可变 SupervisorConfig 数据类
     file_ops.py                     文件操作工具
-    credentials_manager.py          凭证存储助手
     gitignore_utils.py              自动 .gitignore 更新助手
     experience_tracker.py           跟踪跨运行的成功模式
     text_utils.py                   文本处理工具

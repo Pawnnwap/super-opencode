@@ -225,7 +225,6 @@ supervisor/
   utils/
     config.py                       Frozen SupervisorConfig dataclass
     file_ops.py                     File operations utilities
-    credentials_manager.py          Credential storage helpers
     gitignore_utils.py              Automatic .gitignore update helpers
     experience_tracker.py           Tracks successful patterns across runs
     text_utils.py                   Text processing utilities

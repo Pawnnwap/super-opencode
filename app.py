@@ -17,7 +17,7 @@ from openai import OpenAI
 from services.job_manager import JobManager
 from services.settings import apply_api_config, load_settings, save_settings
 from supervisor.analyzers.codebase_analyzer import snapshot_codebase
-from supervisor.monitoring.token_estimator import estimate_tokens
+from supervisor.monitoring.session_tracker import SessionTracker
 from supervisor.protocols.meta_protocol_builder import (MetaProtocolBuilder,
                                                         write_meta_protocol)
 from supervisor.protocols.protocol_analyzer import ProtocolAnalyzer, Severity
@@ -340,7 +340,8 @@ def _get_opencode_config_file(config_dir: Path) -> Path:
         # Create empty opencode.json with correct structure
         default_content = {"$schema": "https://opencode.ai/config.json", "provider": {}}
         opencode_json.write_text(
-            json.dumps(default_content, indent=2), encoding="utf-8",
+            json.dumps(default_content, indent=2),
+            encoding="utf-8",
         )
         target_file = opencode_json
 
@@ -621,7 +622,10 @@ with st.sidebar:
             )
 
             api_key = st.text_input(
-                "API key", key="custom_api_key", type="password", placeholder="sk-...",
+                "API key",
+                key="custom_api_key",
+                type="password",
+                placeholder="sk-...",
             )
 
             # Fix 2: Add model names input
@@ -835,7 +839,8 @@ def page_wizard():
                 placeholder="/home/user/myproject",
             )
             if st.session_state.workspace != st.session_state.get(
-                "_last_workspace", "",
+                "_last_workspace",
+                "",
             ):
                 st.session_state.protected_files = []
                 st.session_state._last_workspace = st.session_state.workspace
@@ -874,10 +879,18 @@ def page_wizard():
                     value=st.session_state.opencode_model,
                 )
             # Backup model droplist — excludes the currently selected main model
-            backup_models = [m for m in models if m != st.session_state.opencode_model] if models else []
+            backup_models = (
+                [m for m in models if m != st.session_state.opencode_model]
+                if models
+                else []
+            )
             if backup_models:
                 backup_current = st.session_state.get("opencode_model_backup", "")
-                backup_default_idx = backup_models.index(backup_current) if backup_current in backup_models else 0
+                backup_default_idx = (
+                    backup_models.index(backup_current)
+                    if backup_current in backup_models
+                    else 0
+                )
                 backup_selected = st.selectbox(
                     "opencode model backup",
                     options=backup_models,
@@ -1082,7 +1095,7 @@ def page_wizard():
                         )
                         file_list_str = "\n".join(all_entries)
                         truncation_note = ""
-                        token_count = estimate_tokens(file_list_str)
+                        token_count = SessionTracker.estimate_tokens(file_list_str)
                         if token_count > 100000:
                             all_entries = all_entries[:1000]
                             file_list_str = "\n".join(all_entries)
@@ -1134,7 +1147,8 @@ def page_wizard():
                             disabled=True,
                         )
                         ignore_file_path.write_text(
-                            generated_patterns, encoding="utf-8",
+                            generated_patterns,
+                            encoding="utf-8",
                         )
                         st.toast(
                             "Ignore patterns generated and saved to .opencodeignore.",
@@ -1223,7 +1237,9 @@ def page_wizard():
             col_reuse, col_ignore, _ = st.columns([1, 1, 3])
             with col_reuse:
                 if st.button(
-                    "♻️  Use existing protocol.md", type="primary", key="btn_reuse_proto",
+                    "♻️  Use existing protocol.md",
+                    type="primary",
+                    key="btn_reuse_proto",
                 ):
                     st.session_state.protocol_md = existing_text
                     st.session_state.wizard_step = 1
@@ -1349,7 +1365,8 @@ def page_wizard():
             _render_refined_quality_analysis(st.session_state.protocol_md)
 
         render_expander_section(
-            "📊 Protocol Quality Analysis", _quality_analysis_content,
+            "📊 Protocol Quality Analysis",
+            _quality_analysis_content,
         )
 
         col_a, col_b, _ = st.columns([1, 1, 3])
@@ -1529,7 +1546,12 @@ def _show_run_setup_screen():
             help="Run the Python vulnerability scanner before execution",
         )
     with col2:
-        if st.button("▶  Start Live Run", type="primary", use_container_width=True, key="start_live_run_button"):
+        if st.button(
+            "▶  Start Live Run",
+            type="primary",
+            use_container_width=True,
+            key="start_live_run_button",
+        ):
             st.session_state.plan_mode_rounds = plan_rounds
             st.session_state.enable_python_scanner = enable_scanner
             job_id = _enqueue_run_job()
@@ -1941,7 +1963,10 @@ def _show_evo_setup_screen():
         st.markdown('<div class="card">', unsafe_allow_html=True)
         st.markdown("**Evolution goal**")
         st.text_area(
-            "evo_goal_input", key="evo_goal", height=130, label_visibility="collapsed",
+            "evo_goal_input",
+            key="evo_goal",
+            height=130,
+            label_visibility="collapsed",
         )
         st.markdown("</div>", unsafe_allow_html=True)
 

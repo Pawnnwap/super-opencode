@@ -55,7 +55,7 @@ class BaseLoop:
     def _init_components(self, agent: str = ""):
         from supervisor.analyzers.opencode_step_detector import \
             OpencodeStepDetector
-        from supervisor.monitoring.context_monitor import ContextMonitor
+        from supervisor.monitoring.session_tracker import SessionTracker
         from supervisor.runners.opencode_runner import OpencodeRunner
         from supervisor.workspace.workspace_guard import WorkspaceGuard
 
@@ -67,7 +67,7 @@ class BaseLoop:
             agent=agent,
             opencode_model_backup=self.config.opencode_model_backup,
         )
-        self.ctx_monitor = ContextMonitor(
+        self.ctx_monitor = SessionTracker(
             self.config.context_threshold,
             self.config.max_tokens,
             self.config.truncation_enabled,
@@ -103,7 +103,8 @@ class BaseLoop:
 
         self._python_scanner_ran = True
         yield _ev(
-            "info", f"Running python_scanner on {len(py_files)} Python file(s)...",
+            "info",
+            f"Running python_scanner on {len(py_files)} Python file(s)...",
         )
 
         try:
@@ -121,7 +122,7 @@ class BaseLoop:
         return
 
     def run_streaming(self) -> Generator[Event, None, None]:
-        if self.config and getattr(self.config, 'enable_python_scanner', True):
+        if self.config and getattr(self.config, "enable_python_scanner", True):
             yield from self._run_python_scanner()
         try:
             yield from self._run()
@@ -150,7 +151,9 @@ class BaseLoop:
         changed = self._cached_snapshot.changed_files(new_snapshot)
         if changed:
             logger.info(
-                "Codebase evolved: %d changed file(s): %s", len(changed), changed,
+                "Codebase evolved: %d changed file(s): %s",
+                len(changed),
+                changed,
             )
             self._cached_snapshot = new_snapshot
             return True
@@ -216,7 +219,9 @@ class BaseLoop:
         )
 
     def _pre_judge(
-        self, output: str, progress,
+        self,
+        output: str,
+        progress,
     ) -> Generator[Event, None, tuple[str | None, bool]]:
         """Hook before judging. Returns (augmented_output, abort_turn)."""
         yield _ev("info", "Supervisor judging…")
@@ -226,7 +231,9 @@ class BaseLoop:
         raise NotImplementedError
 
     def _post_judge_feedback(
-        self, safe_msg: str, output: str,
+        self,
+        safe_msg: str,
+        output: str,
     ) -> Generator[Event, None, str]:
         """Hook to append alignment warnings etc."""
         return safe_msg
@@ -259,11 +266,14 @@ class BaseLoop:
         self.runner.send(safe_msg)
 
         yield from self._yield_suggestions(
-            actual_output, self._get_step_context(progress),
+            actual_output,
+            self._get_step_context(progress),
         )
 
     def _run_loop(
-        self, initial_output: str, initial_timed_out: bool,
+        self,
+        initial_output: str,
+        initial_timed_out: bool,
     ) -> Generator[Event, None, None]:
         output = initial_output
         timed_out = initial_timed_out
@@ -416,15 +426,18 @@ class BaseLoop:
 
     def _do_compaction(self) -> Generator[Event, None, None]:
         yield _ev(
-            "warn", f"Context at {self.ctx_monitor.fraction * 100:.0f}% — compacting.",
+            "warn",
+            f"Context at {self.ctx_monitor.fraction * 100:.0f}% — compacting.",
         )
         candidates = self.runner.identify_cleanup_candidates()
         if candidates:
             yield _ev(
-                "info", f"Identified {len(candidates)} files for potential cleanup.",
+                "info",
+                f"Identified {len(candidates)} files for potential cleanup.",
             )
         deletion_permission = self.supervisor.ask_for_deletion_permission(
-            candidates, self.config.workspace,
+            candidates,
+            self.config.workspace,
         )
         yield _ev("supervisor_response", deletion_permission.raw)
         msg, _ = self.guard.sanitize_message(
@@ -438,7 +451,8 @@ class BaseLoop:
     def _update_context_monitor(self) -> Generator[Event, None, None]:
         files_read = self.runner.get_files_read()
         self.ctx_monitor.update(
-            self.runner.estimated_context_tokens, files_read=files_read,
+            self.runner.estimated_context_tokens,
+            files_read=files_read,
         )
         if self.ctx_monitor.approaching_limit:
             advice = self.ctx_monitor.get_reduction_advice()
@@ -483,7 +497,9 @@ class BaseLoop:
         return safe_msg
 
     def _yield_suggestions(
-        self, opencode_output: str, step_context=None,
+        self,
+        opencode_output: str,
+        step_context=None,
     ) -> Generator[Event, None, None]:
         suggestions, chosen_paths = self.supervisor.generate_suggestions(
             opencode_output=opencode_output,
@@ -491,7 +507,8 @@ class BaseLoop:
         )
         if chosen_paths:
             yield _ev(
-                "supervisor_read_files", "\n".join(f"• {p}" for p in chosen_paths),
+                "supervisor_read_files",
+                "\n".join(f"• {p}" for p in chosen_paths),
             )
 
         if suggestions and "no suggestions" not in suggestions.lower():
