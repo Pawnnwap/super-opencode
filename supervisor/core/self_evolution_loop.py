@@ -223,8 +223,7 @@ class SelfEvolutionLoop(BaseLoop):
     # ------------------------------------------------------------------ #
 
     def _init_prompt(self) -> str:
-        from supervisor.prompts import (HASHLINE_SYSTEM_INSTRUCTIONS,
-                                        SELF_EVOLUTION_INIT_PROMPT_TEMPLATE)
+        from supervisor.prompts import SELF_EVOLUTION_INIT_PROMPT_TEMPLATE
 
         text = self.config.protocol_path.read_text(encoding="utf-8")
         baseline_note = (
@@ -235,7 +234,6 @@ class SelfEvolutionLoop(BaseLoop):
         ws = self.config.workspace.resolve()
         protected_files_desc = ""
         return SELF_EVOLUTION_INIT_PROMPT_TEMPLATE.format(
-            hashline_instructions=HASHLINE_SYSTEM_INSTRUCTIONS,
             protocol_text=text,
             baseline_note=baseline_note,
             workspace=ws,

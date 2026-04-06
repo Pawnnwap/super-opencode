@@ -1,92 +1,5 @@
-HASHLINE_SYSTEM_INSTRUCTIONS = """\
-## File Editing Protocol – Hash-Anchored Lines
-
-You have two MCP tools for all file read/write operations:
-`hashline_read` and `hashline_edit`.
-
----
-
-### Reading files
-
-**Always call `hashline_read` instead of the built-in `read` when you intend
-to edit the file afterwards.**
-
-`hashline_read` returns the file with every line prefixed by a LINE#ID:
-
-    42#VKB| def process(data):
-    43#XJZ|     return transform(data)
-
-The LINE#ID format is `LINE_NO#HASH` where the 3-character hash encodes both
-the line number and its content. IDs go stale the moment anything writes to
-the file — always use IDs from the most recent `hashline_read`.
-
-You may use the built-in `read` for purely exploratory reads where you will
-NOT edit afterwards.
-
----
-
-### Editing files
-
-**Always call `hashline_edit` instead of the built-in `write`/`edit` when
-modifying a hash-annotated file.**
-
-All LINE#IDs are validated in a single pass before a single byte is written.
-If every ID is valid the file is written atomically and you receive a unified
-diff confirming the change. If any ID is stale the entire operation is
-rejected and nothing is written.
-
-#### Edit operations
-
-| op        | required fields   | effect                                            |
-|-----------|-------------------|---------------------------------------------------|
-| `replace` | `pos`             | replace the line at `pos` with `lines`            |
-| `replace` | `pos` + `end_pos` | replace lines `pos` through `end_pos` with `lines`|
-| `delete`  | `pos`             | remove the line at `pos`                          |
-| `append`  | `pos`             | insert `lines` immediately AFTER `pos`            |
-| `prepend` | `pos`             | insert `lines` immediately BEFORE `pos`           |
-
-Example call:
-```json
-{
-  "path": "src/utils.py",
-  "edits": [
-    {
-      "op": "replace",
-      "pos": "42#VKB",
-      "lines": ["def process(data: dict):"]
-    },
-    {
-      "op": "append",
-      "pos": "43#XJZ",
-      "lines": ["    # validate after transform", "    assert result is not None"]
-    }
-  ]
-}
-```
-
----
-
-### Rules
-
-1. **Never reproduce the full file** — always use targeted edits.
-2. **Always use IDs from the most recent `hashline_read`** — earlier IDs may
-   be stale if anything wrote to the file since then.
-3. **On a stale-ID error** — the JSON response contains `retry_edits`: your
-   original edits with all refs already corrected. Call `hashline_edit` again
-   with `retry_edits` as the `edits` value. Only re-read the file if you need
-   lines not covered by the returned `snippet`.
-4. **Batch edits per file** — pass all edits for a file in a single
-   `hashline_edit` call. Bottom-up ordering is handled automatically.
-5. **Overlapping edits are rejected** — if two edits target the same line
-   range, split them into sequential calls (re-reading between calls).
-
-> **dry_run** — pass `"dry_run": true` to validate IDs without writing to
-> disk. Useful for preflight checks on large or sensitive edits.
-"""
 
 INIT_PROMPT_TEMPLATE = """\
-{hashline_instructions}
-
 Here is your protocol:
 
 {protocol_text}
@@ -103,8 +16,6 @@ The .archive/ directory preserves historical versions — do not modify it.
 Begin."""
 
 SELF_EVOLUTION_INIT_PROMPT_TEMPLATE = """\
-{hashline_instructions}
-
 You are modifying the codebase you live in. Read the protocol carefully.
 
 PROTOCOL:
@@ -298,8 +209,6 @@ def build_init_prompt(
 ) -> str:
     """Build a standard initialization prompt."""
     parts = [
-        HASHLINE_SYSTEM_INSTRUCTIONS,
-        "",
         header,
         "",
         protocol_text,

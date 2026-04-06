@@ -13,16 +13,13 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 
-from supervisor.monitoring.token_estimator import (
-    TokenEstimate,
-    estimate_request_tokens,
-    estimate_tokens,
-    should_truncate,
-    truncate_prompt,
-    truncate_with_fallback,
-    warn_if_exceeds_limit,
-    get_threshold_for_fraction,
-)
+from supervisor.monitoring.token_estimator import (TokenEstimate,
+                                                   estimate_request_tokens,
+                                                   estimate_tokens,
+                                                   get_threshold_for_fraction,
+                                                   truncate_prompt,
+                                                   truncate_with_fallback,
+                                                   warn_if_exceeds_limit)
 
 logger = logging.getLogger(__name__)
 

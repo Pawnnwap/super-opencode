@@ -10,14 +10,13 @@ from pathlib import Path
 
 from openai import OpenAI
 
+from supervisor.monitoring.session_tracker import (estimate_request_tokens,
+                                                   truncate_with_fallback,
+                                                   warn_if_exceeds_limit)
 from supervisor.monitoring.token_estimator import should_truncate
-from supervisor.monitoring.session_tracker import (
-    estimate_request_tokens,
-    truncate_with_fallback,
-    warn_if_exceeds_limit,
-)
 from supervisor.protocols.protocol import Protocol
-from supervisor.protocols.protocol_analyzer import ProtocolAnalysis, ProtocolAnalyzer
+from supervisor.protocols.protocol_analyzer import (ProtocolAnalysis,
+                                                    ProtocolAnalyzer)
 from supervisor.utils.text_utils import strip_thinking_blocks
 from supervisor.workspace.ignore_patterns import IgnoreMatcher
 
@@ -484,7 +483,8 @@ class LLMSupervisor:
         Failures are logged but never raised.
         """
         try:
-            from supervisor.utils.experience_tracker import read_experience_capped
+            from supervisor.utils.experience_tracker import \
+                read_experience_capped
 
             experience_text = read_experience_capped(self._workspace, max_chars=10000)
             if experience_text.strip():
@@ -1005,7 +1005,7 @@ class LLMSupervisor:
                 tail = preserved[-keep_count:]
                 self._history = core + tail
             else:
-                self._history = preserved[-min(keep_count * 2, len(preserved)) :]
+                self._history = preserved[-min(keep_count * 2, len(preserved)):]
 
     def estimate_current_tokens(self) -> int:
         """Estimate total tokens for current conversation state."""
@@ -1113,7 +1113,6 @@ class LLMSupervisor:
         import time
 
         from openai import APIError, InternalServerError, OpenAIError
-
 
         max_retries = 5
         empty_choices_retries = 0

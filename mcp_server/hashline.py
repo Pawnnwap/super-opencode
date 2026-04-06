@@ -1,37 +1,31 @@
-"""hashline.py  –  MCP server exposing `hashline_read` and `hashline_edit`
+"""hashline.py  –  MCP server exposing `read` and `edit` (server: hashline)
 ================================================================================
 
-Exposes two custom tools (server name = "hashline", so opencode sees):
+opencode sees: hashline_read / hashline_edit
 
-    hashline_read(path, start_line?, end_line?, hash_algo?)
-    hashline_edit(path, edits, dry_run?)
+    read(path, start_line?, end_line?)
+    edit(path, edits, dry_run?, auto_retry?)
 
-── hashline_read ──────────────────────────────────────────────────────────────
-Adds LINE#ID annotations to each line of the file.
+── read ───────────────────────────────────────────────────────────────────────
+Annotates every line with a LINE#ID position anchor:
 
     42#VKB| def process(data):
     43#XJZ|     return transform(data)
 
-Use instead of the built-in `read` whenever you intend to edit afterwards.
+── edit ───────────────────────────────────────────────────────────────────────
+Validates all LINE#IDs in one upfront pass, then writes atomically.
+Nothing is written if any ID is stale.
 
-── hashline_edit ──────────────────────────────────────────────────────────────
-Validates LINE#ID references and writes the edited file to disk atomically.
-Rejects the entire operation (nothing written) if any ID is stale.
+auto_retry=true (default): stale refs are auto-patched and re-applied server-
+side in the same call — no round-trip needed.
 
-Returns structured JSON feedback on mismatch so opencode can auto-patch refs
-and retry immediately without a manual re-read.
+auto_retry=false: returns retry_edits with corrected refs for manual retry.
 
 Edit ops: replace, replace_range, delete, append, prepend.
 
-This replaces the built-in `write`/`edit` for hash-anchored workflows —
-validation happens at write time, before any bytes hit disk.
-
 Usage
 -----
-Run as a standalone stdio MCP server:
-
     python hashline.py
-
 
 Dependencies
 ------------
@@ -63,81 +57,63 @@ except ImportError as exc:
     )
 
 # ---------------------------------------------------------------------------
-# Hash logic
+# Hash logic  (sha256 hardcoded — mixing algos across read/edit breaks refs)
 # ---------------------------------------------------------------------------
 
 _CHARSET = "ZPMQVRWSNKTXJBYH"
-
-_ALGO_MAP: dict[str, str] = {
-    "sha256": "sha256",
-    "sha1": "sha1",
-    "md5": "md5",
-}
-
-# 3-char IDs → 4096 possible values (vs 256 with 2-char), negligible collision risk
-_HASH_CHARS = 3
+_ALGO = "sha256"
+_HASH_CHARS = 3   # 4096 possible IDs — negligible collision risk
 
 
-def _compute_line_hash(line_number: int, content: str, algo: str = "sha256") -> str:
+def _compute_line_hash(line_number: int, content: str) -> str:
     raw = f"{line_number}:{content}"
-    h = hashlib.new(_ALGO_MAP.get(algo, "sha256"), raw.encode())
-    digest = h.digest()
+    digest = hashlib.new(_ALGO, raw.encode()).digest()
     return "".join(_CHARSET[digest[i] & 0x0F] for i in range(_HASH_CHARS))
 
 
-def _format_tagged_line(line_number: int, content: str, algo: str = "sha256") -> str:
-    tag = _compute_line_hash(line_number, content, algo)
-    return f"{line_number}#{tag}| {content}"
+def _format_tagged_line(line_number: int, content: str) -> str:
+    return f"{line_number}#{_compute_line_hash(line_number, content)}| {content}"
 
 
 def _parse_ref(ref: str) -> tuple[int, str]:
-    """Parse '42#VKB' → (42, 'VKB').  Raises ValueError on bad format."""
+    """Parse '42#VKB' -> (42, 'VKB').  Raises ValueError on bad format."""
     ref = ref.strip()
-    if "#" not in ref:
-        raise ValueError(f"Invalid LINE#ID '{ref}': expected '<line_no>#<{_HASH_CHARS}-char-hash>'")
     parts = ref.split("#", 1)
-    if not parts[0].isdigit() or len(parts[1]) != _HASH_CHARS:
-        raise ValueError(f"Invalid LINE#ID '{ref}': expected '<line_no>#<{_HASH_CHARS}-char-hash>'")
+    if len(parts) != 2 or not parts[0].isdigit() or len(parts[1]) != _HASH_CHARS:
+        raise ValueError(f"Invalid LINE#ID '{ref}': expected '<line_no>#<{_HASH_CHARS}-char-id>'")
     return int(parts[0]), parts[1]
 
 
 # ---------------------------------------------------------------------------
-# hashline_read logic
+# Read
 # ---------------------------------------------------------------------------
 
 def _hashline_read(
     path: str | Path,
     start_line: int | None = None,
     end_line: int | None = None,
-    algo: str = "sha256",
 ) -> dict[str, Any]:
     resolved = Path(path).resolve()
     if not resolved.exists():
         raise FileNotFoundError(f"File not found: {resolved}")
     if not resolved.is_file():
-        raise IsADirectoryError(f"Path is a directory, not a file: {resolved}")
+        raise IsADirectoryError(f"Path is a directory: {resolved}")
 
-    raw_text = resolved.read_text(encoding="utf-8", errors="replace")
-    all_lines = raw_text.splitlines()
+    all_lines = resolved.read_text(encoding="utf-8", errors="replace").splitlines()
     total = len(all_lines)
 
     s = max(1, start_line) if start_line is not None else 1
     e = min(total, end_line) if end_line is not None else total
 
     if s > total:
-        raise ValueError(f"start_line={s} exceeds file length ({total} lines): {resolved}")
+        raise ValueError(f"start_line={s} exceeds file length ({total}): {resolved}")
 
-    annotated = [
-        _format_tagged_line(ln, all_lines[ln - 1], algo)
-        for ln in range(s, e + 1)
-    ]
     return {
         "path": str(resolved),
         "total_lines": total,
         "start_line": s,
         "end_line": e,
-        "algo": algo,
-        "content": "\n".join(annotated),
+        "content": "\n".join(_format_tagged_line(ln, all_lines[ln - 1]) for ln in range(s, e + 1)),
     }
 
 
@@ -148,12 +124,10 @@ def _hashline_read(
 def _validate_all_refs(
     edits: list[dict[str, Any]],
     lines: list[str],
-    algo: str = "sha256",
 ) -> list[dict[str, str]]:
-    """Complete upfront validation pass — collects ALL stale refs before any edit
-    is applied so opencode gets a full picture in a single response.
+    """Collect ALL stale refs before touching anything.
 
-    Returns a list of structured stale-ref dicts (empty = all valid):
+    Returns list of stale-ref dicts (empty = all valid):
         [{"edit_op": "replace", "provided": "42#VKB", "current": "42#XJZ",
           "line_content": "def process(data):"}]
     """
@@ -173,7 +147,7 @@ def _validate_all_refs(
                     "line_content": "",
                 })
                 continue
-            expected = _compute_line_hash(line_no, lines[idx], algo)
+            expected = _compute_line_hash(line_no, lines[idx])
             if given_hash != expected:
                 stale.append({
                     "edit_op": edit["op"],
@@ -188,12 +162,8 @@ def _auto_patch_edits(
     edits: list[dict[str, Any]],
     stale: list[dict[str, str]],
 ) -> list[dict[str, Any]]:
-    """Return a copy of `edits` with stale refs replaced by their current IDs.
-    This is included in the error payload so opencode can retry without
-    a manual re-read.
-    """
+    """Return edits with stale refs replaced by their current IDs."""
     correction_map = {s["provided"]: s["current"] for s in stale}
-
     patched = []
     for edit in edits:
         e = dict(edit)
@@ -206,11 +176,9 @@ def _auto_patch_edits(
 
 
 def _check_edit_conflicts(edits: list[dict[str, Any]]) -> list[str]:
-    """Detect overlapping edits (e.g. replace and delete on the same line).
-    Returns a list of human-readable conflict descriptions (empty = no conflicts).
-    """
+    """Detect overlapping edits. Returns conflict descriptions (empty = ok)."""
     conflicts: list[str] = []
-    ranges: list[tuple[int, int, str]] = []   # (start, end, op)
+    ranges: list[tuple[int, int, str]] = []
 
     for edit in edits:
         pos_ref = edit.get("pos")
@@ -223,8 +191,8 @@ def _check_edit_conflicts(edits: list[dict[str, Any]]) -> list[str]:
         for prev_start, prev_end, prev_op in ranges:
             if not (end < prev_start or start > prev_end):
                 conflicts.append(
-                    f"'{edit['op']}' on lines {start}–{end} overlaps "
-                    f"'{prev_op}' on lines {prev_start}–{prev_end}",
+                    f"'{edit['op']}' on lines {start}-{end} overlaps "
+                    f"'{prev_op}' on lines {prev_start}-{prev_end}",
                 )
         ranges.append((start, end, edit["op"]))
 
@@ -232,134 +200,24 @@ def _check_edit_conflicts(edits: list[dict[str, Any]]) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# hashline_edit logic
+# Edit (core)
 # ---------------------------------------------------------------------------
 
-class _MismatchError(Exception):
-    """Stale LINE#ID references detected.
-
-    Carries:
-      .stale_refs   – structured list for machine consumption
-      .retry_edits  – original edits with refs auto-corrected (ready to retry)
-      .snippet      – annotated text around affected lines (human-readable)
-    """
-
-    def __init__(
-        self,
-        stale_refs: list[dict[str, str]],
-        retry_edits: list[dict[str, Any]],
-        snippet: str,
-    ):
-        self.stale_refs = stale_refs
-        self.retry_edits = retry_edits
-        self.snippet = snippet
-        super().__init__(self._build())
-
-    def _build(self) -> str:
-        return json.dumps({
-            "error": "HashlineMismatch",
-            "description": (
-                f"{len(self.stale_refs)} stale LINE#ID reference(s) — "
-                "edit rejected, nothing written."
-            ),
-            "stale_refs": self.stale_refs,
-            "retry_edits": self.retry_edits,
-            "snippet": self.snippet,
-        }, indent=2)
-
-
-def _compact_diff(original_lines: list[str], new_lines: list[str], context: int = 3) -> str:
-    """Return a unified diff string for post-edit verification."""
-    return "\n".join(difflib.unified_diff(
-        original_lines,
-        new_lines,
-        fromfile="before",
-        tofile="after",
-        lineterm="",
-        n=context,
-    ))
-
-
-def _hashline_edit(
-    path: str | Path,
-    edits: list[dict[str, Any]],
-    *,
-    dry_run: bool = False,
-) -> dict[str, Any]:
-    """Validate all LINE#ID references, then apply edits atomically.
-
-    Each edit dict:
-        op       : "replace" | "delete" | "append" | "prepend"
-        pos      : "42#VKB"            (required for all ops)
-        end_pos  : "45#XJZ"            (replace-range only)
-        lines    : ["new line", ...]   (replace / append / prepend)
-
-    Returns a result dict containing:
-        written      : bool
-        line_count   : int
-        diff         : str   (unified diff for immediate verification)
-
-    Raises _MismatchError if any ID is stale (nothing written).
-    Raises ValueError on edit conflicts or unknown ops.
-    Writes via a temp file + rename so a failed mid-write never corrupts disk.
-    """
-    resolved = Path(path).resolve()
-    if not resolved.exists():
-        raise FileNotFoundError(f"File not found: {resolved}")
-
-    raw_text = resolved.read_text(encoding="utf-8", errors="replace")
-    had_trailing_newline = raw_text.endswith("\n")
-    original = raw_text.splitlines()
-
-    # ── 1. Conflict detection ─────────────────────────────────────────────────
-    conflicts = _check_edit_conflicts(edits)
-    if conflicts:
-        raise ValueError(
-            "Edit conflict(s) detected — nothing written:\n"
-            + "\n".join(f"  • {c}" for c in conflicts),
-        )
-
-    # ── 2. Complete upfront validation pass ───────────────────────────────────
-    stale = _validate_all_refs(edits, original)
-
-    if stale:
-        # Build annotated snippet around all affected lines
-        affected_line_nos: set[int] = set()
-        for s in stale:
-            try:
-                ln = _parse_ref(s["provided"])[0]
-                affected_line_nos.update(range(max(1, ln - 2), min(len(original), ln + 3) + 1))
-            except ValueError:
-                pass
-
-        snippet_lines: list[str] = []
-        for ln in sorted(affected_line_nos):
-            idx = ln - 1
-            if 0 <= idx < len(original):
-                tag = _compute_line_hash(ln, original[idx])
-                is_bad = any(s["provided"].startswith(f"{ln}#") for s in stale)
-                marker = ">>>" if is_bad else "   "
-                snippet_lines.append(f"{marker} {ln}#{tag}| {original[idx]}")
-
-        retry_edits = _auto_patch_edits(edits, stale)
-        raise _MismatchError(stale, retry_edits, "\n".join(snippet_lines))
-
-    # ── 3. Sort bottom-up so earlier indices stay valid after each splice ─────
+def _apply_edits(working: list[str], edits: list[dict[str, Any]]) -> None:
+    """Apply edits in-place, bottom-up so earlier indices stay valid."""
     def _sort_key(e: dict) -> int:
         pos = e.get("pos")
         return -_parse_ref(pos)[0] if pos else 0
 
-    working = list(original)   # copy we will mutate
-
     for edit in sorted(edits, key=_sort_key):
         op = edit["op"]
 
-        if op == "replace":
+        if op in ("replace", "replace_range"):
             start_no, _ = _parse_ref(edit["pos"])
             start_idx = start_no - 1
             if edit.get("end_pos"):
                 end_no, _ = _parse_ref(edit["end_pos"])
-                end_idx = end_no          # exclusive slice end
+                end_idx = end_no   # exclusive slice end
             else:
                 end_idx = start_idx + 1
             working[start_idx:end_idx] = edit.get("lines") or []
@@ -369,54 +227,153 @@ def _hashline_edit(
             del working[line_no - 1]
 
         elif op == "append":
-            if edit.get("pos"):
-                line_no, _ = _parse_ref(edit["pos"])
-                insert_at = line_no       # after this line (0-based: line_no)
-            else:
-                insert_at = len(working)
+            line_no, _ = _parse_ref(edit["pos"])
+            insert_at = line_no   # 0-based index after this line
             for i, new_line in enumerate(edit.get("lines") or []):
                 working.insert(insert_at + i, new_line)
 
         elif op == "prepend":
-            if edit.get("pos"):
-                line_no, _ = _parse_ref(edit["pos"])
-                insert_at = line_no - 1   # before this line
-            else:
-                insert_at = 0
+            line_no, _ = _parse_ref(edit["pos"])
+            insert_at = line_no - 1
             for i, new_line in enumerate(edit.get("lines") or []):
                 working.insert(insert_at + i, new_line)
 
         else:
-            raise ValueError(f"Unknown op '{op}'. Must be replace | delete | append | prepend.")
+            raise ValueError(
+                f"Unknown op '{op}'. Must be: replace | replace_range | delete | append | prepend"
+            )
 
-    # ── 4. Preserve trailing newline ──────────────────────────────────────────
+
+def _write_atomic(resolved: Path, content: str) -> None:
+    """Write content via temp file + os.replace (atomic on POSIX)."""
+    fd, tmp_path = tempfile.mkstemp(dir=resolved.parent, prefix=".hashline_tmp_")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(content)
+        os.replace(tmp_path, resolved)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+def _compact_diff(original: list[str], new: list[str], context: int = 3) -> str:
+    return "\n".join(difflib.unified_diff(
+        original, new, fromfile="before", tofile="after", lineterm="", n=context,
+    ))
+
+
+def _hashline_edit(
+    path: str | Path,
+    edits: list[dict[str, Any]],
+    *,
+    dry_run: bool = False,
+    auto_retry: bool = True,
+) -> dict[str, Any]:
+    """Validate LINE#IDs, apply edits, write atomically.
+
+    auto_retry=True  -> stale refs are auto-patched and re-applied server-side.
+    auto_retry=False -> raises _MismatchError with retry_edits payload.
+
+    Returns:
+        status   : "written" | "dry_run" | "auto_retried"
+        patches  : number of refs auto-corrected (only when auto_retried)
+        diff     : unified diff string (key omitted if no changes)
+    """
+    resolved = Path(path).resolve()
+    if not resolved.exists():
+        raise FileNotFoundError(f"File not found: {resolved}")
+
+    raw_text = resolved.read_text(encoding="utf-8", errors="replace")
+    had_trailing_newline = raw_text.endswith("\n")
+    original = raw_text.splitlines()
+
+    # 1. Conflict detection
+    conflicts = _check_edit_conflicts(edits)
+    if conflicts:
+        raise ValueError(
+            "Edit conflict(s) detected - nothing written:\n"
+            + "\n".join(f"  * {c}" for c in conflicts),
+        )
+
+    # 2. Validate refs
+    stale = _validate_all_refs(edits, original)
+    auto_retried = False
+
+    if stale:
+        if not auto_retry:
+            # Build snippet around affected lines for manual debugging
+            affected: set[int] = set()
+            for s in stale:
+                try:
+                    ln = _parse_ref(s["provided"])[0]
+                    affected.update(range(max(1, ln - 2), min(len(original), ln + 3) + 1))
+                except ValueError:
+                    pass
+
+            snippet_lines: list[str] = []
+            for ln in sorted(affected):
+                idx = ln - 1
+                if 0 <= idx < len(original):
+                    tag = _compute_line_hash(ln, original[idx])
+                    marker = ">>>" if any(s["provided"].startswith(f"{ln}#") for s in stale) else "   "
+                    snippet_lines.append(f"{marker} {ln}#{tag}| {original[idx]}")
+
+            raise _MismatchError(stale, _auto_patch_edits(edits, stale), "\n".join(snippet_lines))
+
+        # auto_retry=True: patch and continue
+        edits = _auto_patch_edits(edits, stale)
+        auto_retried = True
+
+    # 3. Apply edits
+    working = list(original)
+    _apply_edits(working, edits)
+
+    # 4. Preserve trailing newline
     new_content = "\n".join(working)
     if had_trailing_newline:
         new_content += "\n"
 
-    # ── 5. Build diff before writing ──────────────────────────────────────────
+    # 5. Diff
     diff = _compact_diff(original, working)
 
-    # ── 6. Atomic write via temp file + os.replace ────────────────────────────
+    # 6. Write
     if not dry_run:
-        dir_ = resolved.parent
-        fd, tmp_path = tempfile.mkstemp(dir=dir_, prefix=".hashline_edit_tmp_")
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                fh.write(new_content)
-            os.replace(tmp_path, resolved)   # atomic on POSIX; best-effort on Windows
-        except Exception:
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
-            raise
+        _write_atomic(resolved, new_content)
 
-    return {
-        "written": not dry_run,
-        "line_count": len(working),
-        "diff": diff,
+    result: dict[str, Any] = {
+        "status": "dry_run" if dry_run else ("auto_retried" if auto_retried else "written"),
     }
+    if auto_retried:
+        result["patches"] = len(stale)
+    if diff:
+        result["diff"] = diff
+    return result
+
+
+# ---------------------------------------------------------------------------
+# _MismatchError  (only raised when auto_retry=False)
+# ---------------------------------------------------------------------------
+
+class _MismatchError(Exception):
+    def __init__(
+        self,
+        stale_refs: list[dict[str, str]],
+        retry_edits: list[dict[str, Any]],
+        snippet: str,
+    ):
+        self.stale_refs = stale_refs
+        self.retry_edits = retry_edits
+        self.snippet = snippet
+        super().__init__(json.dumps({
+            "error": "HashlineMismatch",
+            "description": f"{len(stale_refs)} stale LINE#ID(s) - nothing written.",
+            "stale_refs": stale_refs,
+            "retry_edits": retry_edits,
+            "snippet": snippet,
+        }, indent=2))
 
 
 # ---------------------------------------------------------------------------
@@ -426,43 +383,24 @@ def _hashline_edit(
 server = Server("hashline")
 
 
-# ── Tool schemas ─────────────────────────────────────────────────────────────
-
 HASHLINE_READ_TOOL = Tool(
     name="read",
     description=(
-        "Read a file and return its content with LINE#ID hash annotations.\n\n"
-        "Each line is prefixed:   LINE_NO#HASH| <content>\n\n"
-        "    42#VKB| def process(data):\n"
-        "    43#XJZ|     return transform(data)\n\n"
-        "Always use this tool instead of built-in `read` when you plan to edit "
-        "the file afterwards.  Pass the LINE#IDs directly to `hashline_edit`.\n\n"
-        "IDs go stale the moment the file changes — re-read after every write.\n\n"
-        "Note: IDs are 3 characters (4096 possible values) for low collision risk."
+        "Read a file with LINE#ID annotations required for safe editing.\n\n"
+        "PREFER THIS OVER built-in `read` when the file will be edited — "
+        "without LINE#IDs, `hashline edit` rejects every operation.\n\n"
+        "Format:  42#VKB| def process(data):\n"
+        "         43#XJZ|     return transform(data)\n\n"
+        "Pass LINE#IDs directly to `hashline edit`. "
+        "IDs go stale on every write — re-read after each edit.\n\n"
+        "Use start_line/end_line to read only the relevant section."
     ),
     inputSchema={
         "type": "object",
         "properties": {
-            "path": {
-                "type": "string",
-                "description": "Path to the file (absolute or relative to cwd).",
-            },
-            "start_line": {
-                "type": "integer",
-                "description": "First line to return (1-based, inclusive). Default: 1.",
-                "minimum": 1,
-            },
-            "end_line": {
-                "type": "integer",
-                "description": "Last line to return (1-based, inclusive). Default: EOF.",
-                "minimum": 1,
-            },
-            "hash_algo": {
-                "type": "string",
-                "enum": ["sha256", "sha1", "md5"],
-                "description": "Hash algorithm for LINE#IDs. Default: sha256.",
-                "default": "sha256",
-            },
+            "path": {"type": "string", "description": "File path (absolute or relative to cwd)."},
+            "start_line": {"type": "integer", "description": "First line to return (1-based). Default: 1.", "minimum": 1},
+            "end_line": {"type": "integer", "description": "Last line to return (1-based). Default: EOF.", "minimum": 1},
         },
         "required": ["path"],
     },
@@ -471,65 +409,52 @@ HASHLINE_READ_TOOL = Tool(
 HASHLINE_EDIT_TOOL = Tool(
     name="edit",
     description=(
-        "Apply hash-validated edits to a file.\n\n"
-        "Every edit references a LINE#ID obtained from `hashline_read`.  All IDs "
-        "are validated in a single upfront pass before a single byte is written.  "
-        "If any ID is stale the entire operation is rejected and you receive:\n\n"
-        "  • stale_refs   – structured list of provided vs current IDs\n"
-        "  • retry_edits  – your original edits with refs auto-corrected (retry immediately)\n"
-        "  • snippet      – annotated lines around affected area\n\n"
-        "On success you receive a unified diff for immediate verification.\n\n"
-        "Always use this tool instead of the built-in `write`/`edit` when "
-        "working with hash-annotated files.\n\n"
-        "Operations\n"
-        "----------\n"
-        "replace   – replace line at `pos` (or range `pos`..`end_pos`) with `lines`\n"
-        "delete    – remove the line at `pos`\n"
-        "append    – insert `lines` AFTER `pos`\n"
-        "prepend   – insert `lines` BEFORE `pos`\n\n"
-        "Multiple edits are applied in a single atomic write (bottom-up order "
-        "is handled automatically).  Overlapping edits are detected and rejected."
+        "Apply validated edits to a file using LINE#IDs from `hashline read`.\n\n"
+        "PREFER THIS OVER built-in `write`/`edit` — validates atomically before "
+        "touching disk; a failed write never corrupts the file.\n\n"
+        "auto_retry=true (default): stale refs are auto-patched and re-applied "
+        "server-side in the same call. No extra round-trip needed.\n\n"
+        "auto_retry=false: returns retry_edits with corrected refs on mismatch.\n\n"
+        "On success: diff is returned (key omitted if no changes).\n\n"
+        "ops: replace | replace_range (pos+end_pos) | delete | append | prepend\n"
+        "Multiple edits -> one atomic write. Overlapping edits rejected upfront."
     ),
     inputSchema={
         "type": "object",
         "properties": {
-            "path": {
-                "type": "string",
-                "description": "Path to the file to edit.",
-            },
+            "path": {"type": "string", "description": "File to edit."},
             "edits": {
                 "type": "array",
-                "description": "List of edit operations to apply.",
+                "description": "Edit operations to apply.",
+                "minItems": 1,
                 "items": {
                     "type": "object",
+                    "required": ["op", "pos"],
                     "properties": {
                         "op": {
                             "type": "string",
-                            "enum": ["replace", "delete", "append", "prepend"],
-                            "description": "Edit operation.",
+                            "enum": ["replace", "replace_range", "delete", "append", "prepend"],
+                            "description": "Operation type.",
                         },
-                        "pos": {
-                            "type": "string",
-                            "description": "LINE#ID of the target line, e.g. '42#VKB'.",
-                        },
-                        "end_pos": {
-                            "type": "string",
-                            "description": "LINE#ID of the last line in a range (replace-range only).",
-                        },
-                        "lines": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": "Replacement / insertion lines (not needed for delete).",
-                        },
+                        "pos": {"type": "string", "description": "LINE#ID of target line, e.g. '42#VKB'."},
+                        "end_pos": {"type": "string", "description": "LINE#ID of range end (replace_range only)."},
+                        "lines": {"type": "array", "items": {"type": "string"}, "description": "Lines to insert/replace (omit for delete)."},
                     },
-                    "required": ["op", "pos"],
                 },
-                "minItems": 1,
             },
             "dry_run": {
                 "type": "boolean",
-                "description": "Validate only — do not write to disk. Default: false.",
+                "description": "Validate + diff only; do not write. Default: false.",
                 "default": False,
+            },
+            "auto_retry": {
+                "type": "boolean",
+                "description": (
+                    "When true (default), stale LINE#IDs are auto-corrected and "
+                    "the edit re-applied server-side — no round-trip needed. "
+                    "Set false to receive retry_edits for manual retry."
+                ),
+                "default": True,
             },
         },
         "required": ["path", "edits"],
@@ -537,51 +462,39 @@ HASHLINE_EDIT_TOOL = Tool(
 )
 
 
-# ── Tool listing ──────────────────────────────────────────────────────────────
-
 @server.list_tools()
 async def list_tools() -> list[Tool]:
     return [HASHLINE_READ_TOOL, HASHLINE_EDIT_TOOL]
 
 
-# ── Tool execution ────────────────────────────────────────────────────────────
-
 @server.call_tool()
 async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
 
-    # ── hashline_read ───────────────────────────────────────────────────────────
+    # ── read ────────────────────────────────────────────────────────────────────
     if name == "read":
         path = arguments.get("path")
-        start = arguments.get("start_line")
-        end = arguments.get("end_line")
-        algo = arguments.get("hash_algo", "sha256")
-
         if not path:
             return [TextContent(type="text", text="Error: 'path' is required")]
-        if algo not in _ALGO_MAP:
-            return [TextContent(type="text", text=f"Error: unsupported hash_algo '{algo}'")]
 
         try:
-            result = _hashline_read(path, start_line=start, end_line=end, algo=algo)
+            result = _hashline_read(
+                path,
+                start_line=arguments.get("start_line"),
+                end_line=arguments.get("end_line"),
+            )
         except (FileNotFoundError, IsADirectoryError, ValueError) as exc:
             return [TextContent(type="text", text=f"Error: {exc}")]
 
-        if result["start_line"] != 1 or result["end_line"] != result["total_lines"]:
-            range_note = (
-                f"Lines {result['start_line']}–{result['end_line']} "
-                f"of {result['total_lines']} (algo={result['algo']})"
-            )
-        else:
-            range_note = f"{result['total_lines']} lines total (algo={result['algo']})"
+        s, e, total = result["start_line"], result["end_line"], result["total_lines"]
+        range_note = f"Lines {s}-{e} of {total}" if (s != 1 or e != total) else f"{total} lines"
+        return [TextContent(type="text", text=f"File: {result['path']} ({range_note})\n\n{result['content']}")]
 
-        text = f"File: {result['path']}\n{range_note}\n\n{result['content']}"
-        return [TextContent(type="text", text=text)]
-
-    # ── hashline_edit ───────────────────────────────────────────────────────────
+    # ── edit ────────────────────────────────────────────────────────────────────
     if name == "edit":
         path = arguments.get("path")
         edits = arguments.get("edits")
         dry_run = bool(arguments.get("dry_run", False))
+        auto_retry = bool(arguments.get("auto_retry", True))
 
         if not path:
             return [TextContent(type="text", text="Error: 'path' is required")]
@@ -589,22 +502,13 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             return [TextContent(type="text", text="Error: 'edits' must be a non-empty list")]
 
         try:
-            result = _hashline_edit(path, edits, dry_run=dry_run)
+            result = _hashline_edit(path, edits, dry_run=dry_run, auto_retry=auto_retry)
         except _MismatchError as exc:
-            # Return structured JSON — opencode can auto-patch refs and retry
             return [TextContent(type="text", text=str(exc))]
         except (FileNotFoundError, ValueError) as exc:
             return [TextContent(type="text", text=f"Error: {exc}")]
 
-        action = "Validated (dry_run)" if dry_run else "Written"
-        summary_obj = {
-            "status": action,
-            "path": str(Path(path).resolve()),
-            "edits": len(edits),
-            "line_count": result["line_count"],
-            "diff": result["diff"] or "(no changes)",
-        }
-        return [TextContent(type="text", text=json.dumps(summary_obj, indent=2))]
+        return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
     raise ValueError(f"Unknown tool: '{name}'")
 
@@ -615,11 +519,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
 
 async def _main() -> None:
     async with stdio_server() as (read_stream, write_stream):
-        await server.run(
-            read_stream,
-            write_stream,
-            server.create_initialization_options(),
-        )
+        await server.run(read_stream, write_stream, server.create_initialization_options())
 
 
 if __name__ == "__main__":
