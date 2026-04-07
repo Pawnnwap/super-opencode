@@ -19,6 +19,7 @@ from supervisor.analyzers.opencode_step_detector import StepProgress
 from supervisor.core.llm_supervisor import LLMSupervisor, StepContext
 from supervisor.core.loop_base import BaseLoop, Event, LoopState, _ev
 from supervisor.utils.config import SupervisorConfig
+from supervisor.utils.file_ops import safe_read_text
 
 logger = logging.getLogger(__name__)
 
@@ -136,7 +137,7 @@ class SupervisorLoop(BaseLoop):
             agent="plan",
         )
 
-        protocol_text = self.config.protocol_path.read_text(encoding="utf-8")
+        protocol_text = safe_read_text(self.config.protocol_path)
         ws = self.config.workspace.resolve()
         protected_files_desc = self.guard.get_all_protected_files_description()
         plan_prompt = (
@@ -314,7 +315,7 @@ class SupervisorLoop(BaseLoop):
     def _init_prompt(self) -> str:
         from supervisor.prompts import INIT_PROMPT_TEMPLATE
 
-        text = self.config.protocol_path.read_text(encoding="utf-8")
+        text = safe_read_text(self.config.protocol_path)
         ws = self.config.workspace.resolve()
         protected_files_desc = self.guard.get_all_protected_files_description()
         plan_section = f"{self._plan_context}\n\n" if self._plan_context else ""

@@ -206,7 +206,6 @@ supervisor/
   runners/
     opencode_runner.py              opencode CLI 的子进程包装器
     test_runner.py                  运行 pytest / 语法检查；结构化结果
-    test_opencode_runner.py       OpencodeRunner 测试
 
   utils/
     config.py                       不可变 SupervisorConfig 数据类

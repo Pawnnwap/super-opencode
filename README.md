@@ -220,7 +220,6 @@ supervisor/
   runners/
     opencode_runner.py              Subprocess wrapper for the opencode CLI
     test_runner.py                  Runs pytest / syntax check; structured results
-    test_opencode_runner.py       Tests for OpencodeRunner
 
   utils/
     config.py                       Frozen SupervisorConfig dataclass

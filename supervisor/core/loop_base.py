@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from supervisor.utils.file_ops import safe_read_text
 import logging
 import time
 from collections.abc import Generator
@@ -560,12 +561,8 @@ class BaseLoop:
 
     def _get_restart_context(self) -> tuple[str, str]:
         summary_path = self.config.workspace / "summary.md"
-        summary = (
-            summary_path.read_text(encoding="utf-8")
-            if summary_path.exists()
-            else "(none)"
-        )
-        text = self.config.protocol_path.read_text(encoding="utf-8")
+        summary = safe_read_text(summary_path, default="(none)")
+        text = safe_read_text(self.config.protocol_path)
         return summary, text
 
     def _get_restart_prompt_for_continuation(self) -> str:

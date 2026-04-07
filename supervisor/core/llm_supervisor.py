@@ -18,6 +18,7 @@ from supervisor.monitoring.session_tracker import (
 from supervisor.monitoring.token_estimator import should_truncate
 from supervisor.protocols.protocol import Protocol
 from supervisor.protocols.protocol_analyzer import ProtocolAnalysis, ProtocolAnalyzer
+from supervisor.utils.file_ops import safe_read_text
 from supervisor.utils.text_utils import strip_thinking_blocks
 from supervisor.workspace.ignore_patterns import IgnoreMatcher
 
@@ -138,7 +139,7 @@ class LLMSupervisor:
         if opencoderc.is_file():
             try:
                 rel = opencoderc.relative_to(workspace)
-                protected_contents[str(rel)] = opencoderc.read_text(encoding="utf-8")
+                protected_contents[str(rel)] = safe_read_text(opencoderc)
             except (OSError, UnicodeDecodeError):
                 pass
 
@@ -147,7 +148,7 @@ class LLMSupervisor:
         if opencode_file.is_file():
             try:
                 rel = opencode_file.relative_to(workspace)
-                protected_contents[str(rel)] = opencode_file.read_text(encoding="utf-8")
+                protected_contents[str(rel)] = safe_read_text(opencode_file)
             except (OSError, UnicodeDecodeError):
                 pass
 
@@ -167,7 +168,7 @@ class LLMSupervisor:
                     fpath = Path(dirpath) / fname
                     try:
                         rel = fpath.relative_to(workspace)
-                        protected_contents[str(rel)] = fpath.read_text(encoding="utf-8")
+                        protected_contents[str(rel)] = safe_read_text(fpath)
                     except (OSError, UnicodeDecodeError):
                         pass
 
@@ -374,7 +375,7 @@ class LLMSupervisor:
         result: dict[str, str] = {}
         for rel_str in chosen_paths:
             try:
-                result[rel_str] = (workspace / rel_str).read_text(encoding="utf-8")
+                result[rel_str] = safe_read_text(workspace / rel_str)
             except (OSError, UnicodeDecodeError) as exc:
                 logger.warning("Could not read selected file %s: %s", rel_str, exc)
 
@@ -440,7 +441,7 @@ class LLMSupervisor:
     def _read_feedback_content(self, feedback_file: Path) -> str:
         """Read the content of a feedback file, returning empty string on failure."""
         try:
-            content = feedback_file.read_text(encoding="utf-8")
+            content = safe_read_text(feedback_file)
             logger.info(
                 "Read %d chars from feedback file: %s",
                 len(content),
