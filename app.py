@@ -75,6 +75,47 @@ def _auto_upgrade_opencode():
         print(f"[opencode-upgrade] Unexpected error: {e}. Continuing startup.", file=sys.stderr)
 
 
+def _auto_upgrade_dcp():
+    if sys.platform != "win32":
+        print("[dcp-upgrade] Skipping upgrade: not on Windows", file=sys.stderr)
+        return
+
+    if _should_skip_upgrade():
+        print("[dcp-upgrade] Skipping upgrade: disabled via config/env var", file=sys.stderr)
+        return
+
+    try:
+        print("[dcp-upgrade] Running: opencode plugin @tarquinen/opencode-dcp@latest --global", file=sys.stderr)
+        
+        # We call the command directly. shell=True is used here because 'opencode' 
+        # is likely a batch/cmd shim installed via npm or choco.
+        proc = subprocess.Popen(
+            ["opencode", "plugin", "@tarquinen/opencode-dcp@latest", "--global"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            shell=True  # Required on Windows to resolve global CLI shims without admin
+        )
+        
+        stdout, stderr = proc.communicate(timeout=120)
+        
+        if stdout:
+            print(f"[dcp-upgrade] stdout: {stdout.strip()}", file=sys.stderr)
+        if stderr:
+            print(f"[dcp-upgrade] stderr: {stderr.strip()}", file=sys.stderr)
+            
+        code_msg = "successfully" if proc.returncode == 0 else f"with code {proc.returncode}. Continuing startup."
+        print(f"[dcp-upgrade] Upgrade completed {code_msg}.", file=sys.stderr)
+
+    except subprocess.TimeoutExpired:
+        print("[dcp-upgrade] Upgrade timed out after 120 seconds. Continuing startup.", file=sys.stderr)
+    except FileNotFoundError:
+        print("[dcp-upgrade] 'opencode' command not found. Ensure it is in your PATH.", file=sys.stderr)
+    except Exception as e:
+        print(f"[dcp-upgrade] Unexpected error: {e}. Continuing startup.", file=sys.stderr)
+
+
 # ── Job Manager ──────────────────────────────────────────────────────────── #
 
 @st.cache_resource
@@ -96,6 +137,7 @@ st.set_page_config(
 
 if not st.session_state.get("_upgrade_done"):
     _auto_upgrade_opencode()
+    _auto_upgrade_dcp()
     st.session_state["_upgrade_done"] = True
 
 CUSTOM_CSS = """

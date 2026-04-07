@@ -9,7 +9,7 @@ Your project root (cwd) is: {workspace}
 All files you create or modify MUST be inside this directory.
 Use relative paths from this directory for all file operations.
 A .opencode/ folder has been created there to mark this as your project root.
-IMPORTANT: Never touch .checkpoints/ — that is reserved for the supervisor.
+IMPORTANT:
 The .archive/ directory preserves historical versions — do not modify it.
 {protected_files_desc}
 Begin."""
@@ -23,7 +23,6 @@ PROTOCOL:
 Your project root (cwd) is: {workspace}
 All files you create or modify MUST be inside this directory.
 Use relative paths from this directory for all file operations.
-Never touch .checkpoints/ — that is reserved for the supervisor.
 All versions are automatically archived in the .archive/ directory.
 Do NOT delete or manually manage version files — the archive system handles this.
 Do NOT delete or modify the .opencode directory or its contents.
