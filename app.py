@@ -50,23 +50,39 @@ def _auto_upgrade_opencode():
     if sys.platform != "win32":
         print("[opencode-upgrade] Skipping upgrade: not on Windows", file=sys.stderr)
         return
+
     if _should_skip_upgrade():
         print("[opencode-upgrade] Skipping upgrade: disabled via config/env var", file=sys.stderr)
         return
+
     try:
+        home_dir = str(Path.home())
         print("[opencode-upgrade] Running: choco upgrade opencode -y (with admin elevation)", file=sys.stderr)
+        
+        # We execute the PowerShell command with cwd set to Home 
+        # to prevent EPERM errors if the current project dir is locked.
         proc = subprocess.Popen(
-            ["powershell", "-Command",
-             "Start-Process choco -ArgumentList 'upgrade','opencode','-y' -Verb RunAs -Wait"],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            [
+                "powershell", "-Command",
+                "Start-Process choco -ArgumentList 'upgrade','opencode','-y' -Verb RunAs -Wait"
+            ],
+            stdin=subprocess.PIPE, 
+            stdout=subprocess.PIPE, 
+            stderr=subprocess.PIPE, 
+            text=True,
+            cwd=home_dir
         )
+        
         stdout, stderr = proc.communicate(timeout=120)
+        
         if stdout:
             print(f"[opencode-upgrade] stdout: {stdout.strip()}", file=sys.stderr)
         if stderr:
             print(f"[opencode-upgrade] stderr: {stderr.strip()}", file=sys.stderr)
+            
         code_msg = "successfully" if proc.returncode == 0 else f"with code {proc.returncode}. Continuing startup."
         print(f"[opencode-upgrade] Upgrade completed {code_msg}.", file=sys.stderr)
+
     except subprocess.TimeoutExpired:
         print("[opencode-upgrade] Upgrade timed out after 120 seconds. Continuing startup.", file=sys.stderr)
     except FileNotFoundError:
@@ -85,35 +101,21 @@ def _auto_upgrade_dcp():
         return
 
     try:
-        print("[dcp-upgrade] Running: opencode plugin @tarquinen/opencode-dcp@latest --global", file=sys.stderr)
-        
-        # We call the command directly. shell=True is used here because 'opencode' 
-        # is likely a batch/cmd shim installed via npm or choco.
-        proc = subprocess.Popen(
-            ["opencode", "plugin", "@tarquinen/opencode-dcp@latest", "--global"],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            shell=True  # Required on Windows to resolve global CLI shims without admin
-        )
-        
-        stdout, stderr = proc.communicate(timeout=120)
-        
-        if stdout:
-            print(f"[dcp-upgrade] stdout: {stdout.strip()}", file=sys.stderr)
-        if stderr:
-            print(f"[dcp-upgrade] stderr: {stderr.strip()}", file=sys.stderr)
-            
-        code_msg = "successfully" if proc.returncode == 0 else f"with code {proc.returncode}. Continuing startup."
-        print(f"[dcp-upgrade] Upgrade completed {code_msg}.", file=sys.stderr)
+        print("[dcp-upgrade] Spawning background upgrade window...", file=sys.stderr)
+        cmd_string = 'start "" cmd /c "opencode plugin @tarquinen/opencode-dcp@latest --global"'
+        home_dir = os.path.expanduser("~")
 
-    except subprocess.TimeoutExpired:
-        print("[dcp-upgrade] Upgrade timed out after 120 seconds. Continuing startup.", file=sys.stderr)
-    except FileNotFoundError:
-        print("[dcp-upgrade] 'opencode' command not found. Ensure it is in your PATH.", file=sys.stderr)
+        subprocess.Popen(
+            cmd_string,
+            shell=True,
+            cwd=home_dir,
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+        )
+
+        print("[dcp-upgrade] Upgrade window launched. It will close on completion.", file=sys.stderr)
+
     except Exception as e:
-        print(f"[dcp-upgrade] Unexpected error: {e}. Continuing startup.", file=sys.stderr)
+        print(f"[dcp-upgrade] Unexpected error spawning window: {e}", file=sys.stderr)
 
 
 # ── Job Manager ──────────────────────────────────────────────────────────── #
@@ -243,51 +245,75 @@ def _redirect_if_locked(page: str, warning: str) -> None:
 
 # ── opencode config helpers ──────────────────────────────────────────────── #
 
-def _find_opencode_config_dir() -> Path | None:
+def _find_opencode_config_dir() -> Path:
+    """Locates the OpenCode configuration directory based on the OS.
+    If it doesn't exist, it creates it in the standard location.
+    """
     home = Path.home()
-    config_dir = Path(os.path.join(str(home), ".config", "opencode"))
-    if config_dir.exists() and config_dir.is_dir():
-        return config_dir
+
+    # 1. Check for Unix-style/Standard config path
+    config_dir = home / ".config" / "opencode"
+
+    # 2. Check for Windows-specific AppData path if on Win32
     if sys.platform == "win32":
-        config_dir_win = Path(os.path.join(str(home), "AppData", "Local", "opencode"))
-        if config_dir_win.exists() and config_dir_win.is_dir():
-            return config_dir_win
+        win_config = home / "AppData" / "Local" / "opencode"
+        if win_config.exists() and win_config.is_dir():
+            return win_config
+        # If neither exists, we'll default to creating the .config path
+        # or stick to win_config. Let's stick to the Windows standard for creation:
+        config_dir = win_config
+
     config_dir.mkdir(parents=True, exist_ok=True)
     return config_dir
 
 
 def _get_opencode_config_file(config_dir: Path) -> Path:
-    opencode_json = Path(os.path.join(str(config_dir), "opencode.json"))
-    config_json = Path(os.path.join(str(config_dir), "config.json"))
+    """Manages the config file (opencode.json or config.json).
+    Ensures hashline MCP and permissions are correctly set.
+    """
+    opencode_json = config_dir / "opencode.json"
+    config_json = config_dir / "config.json"
 
+    # Identify which file to use
     if opencode_json.exists():
         target_file = opencode_json
     elif config_json.exists():
         target_file = config_json
     else:
-        default_content = {"$schema": "https://opencode.ai/config.json", "provider": {}}
-        opencode_json.write_text(json.dumps(default_content, indent=2), encoding="utf-8")
+        # Create default if neither exists
         target_file = opencode_json
+        default_content = {"$schema": "https://opencode.ai/config.json", "provider": {}}
+        target_file.write_text(json.dumps(default_content, indent=2), encoding="utf-8")
 
     try:
         content = json.loads(target_file.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, FileNotFoundError):
         content = {"$schema": "https://opencode.ai/config.json", "provider": {}}
 
+    # Ensure MCP and Permission structure
     if "mcp" not in content:
         content["mcp"] = {}
 
+    # Setup for Hashline MCP
+    # Use forward slashes for cross-platform JSON compatibility
     hashline_path = str(Path(__file__).parent.resolve() / "mcp_server" / "hashline.py").replace("\\", "/")
-    mcp_hashline_config = {"type": "local", "command": ["python", hashline_path], "enabled": True, "environment": {}}
+    mcp_hashline_config = {
+        "type": "local",
+        "command": ["python", hashline_path],
+        "enabled": True,
+        "environment": {},
+    }
     desired_permissions = {"read": "deny", "edit": "deny"}
 
     dirty = False
     if content["mcp"].get("hashline") != mcp_hashline_config:
         content["mcp"]["hashline"] = mcp_hashline_config
         dirty = True
+
     if content.get("permission") != desired_permissions:
         content["permission"] = desired_permissions
         dirty = True
+
     if dirty:
         target_file.write_text(json.dumps(content, indent=2), encoding="utf-8")
 
@@ -295,12 +321,18 @@ def _get_opencode_config_file(config_dir: Path) -> Path:
 
 
 def _add_custom_provider_to_config(
-    config_file: Path, service_name: str, base_url: str, api_key: str, model_names: list[str],
+    config_file: Path,
+    service_name: str,
+    base_url: str,
+    api_key: str,
+    model_names: list[str],
 ) -> None:
+    """Adds a custom provider to the specified config file."""
     try:
         content = json.loads(config_file.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, FileNotFoundError):
         content = {"$schema": "https://opencode.ai/config.json", "provider": {}}
+
     content.setdefault("provider", {})[service_name] = {
         "npm": "@ai-sdk/openai-compatible",
         "options": {"baseURL": base_url, "apiKey": api_key},
@@ -310,16 +342,51 @@ def _add_custom_provider_to_config(
 
 
 def _fetch_opencode_models(exe: str = "opencode") -> list[str]:
+    """Fetches available models. Runs from Home Dir to avoid EPERM on project files.
+    """
+    home_dir = str(Path.home())
     try:
-        proc = subprocess.run([exe, "models"], capture_output=True, text=True, timeout=15)
-        if proc.returncode == 0:
-            return [line.strip() for line in proc.stdout.strip().splitlines() if line.strip()]
-    except Exception:
-        pass
+        proc = subprocess.run(
+            [exe, "models"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            cwd=home_dir,  # Run from home to avoid local file locks
+            shell=(sys.platform == "win32"),
+        )
+
+        if proc.returncode != 0:
+            # If opencode models fails, it often prints the error to stdout or stderr
+            error_output = proc.stderr.strip() or proc.stdout.strip()
+            print(f"[opencode-models] Error: {error_output}", file=sys.stderr)
+            return []
+
+        raw_lines = proc.stdout.strip().splitlines()
+        models = []
+
+        # Filter headers, dividers, and empty lines
+        for line in raw_lines:
+            clean = line.strip()
+            if not clean or any(clean.startswith(h) for h in ("-", "ID", "NAME", "PROMPT", "Error")):
+                continue
+
+            # Extract just the first word (Model ID) if output is a table
+            model_id = clean.split()[0]
+            models.append(model_id)
+
+        return models
+
+    except subprocess.TimeoutExpired:
+        print("[opencode-models] Request timed out after 15s.", file=sys.stderr)
+    except FileNotFoundError:
+        print(f"[opencode-models] Executable '{exe}' not found in PATH.", file=sys.stderr)
+    except Exception as e:
+        print(f"[opencode-models] Unexpected error: {e}", file=sys.stderr)
+
     return []
 
-
 # ── SupervisorConfig factory ─────────────────────────────────────────────── #
+
 
 def _build_supervisor_config(protocol_path: Path, workspace: Path, **overrides) -> SupervisorConfig:
     """Build a SupervisorConfig from session state, with optional overrides."""
@@ -378,10 +445,10 @@ if not st.session_state["opencode_models"]:
 # ── Sidebar ──────────────────────────────────────────────────────────────── #
 
 _PILL_MAP = {
-    "PENDING":   '<span class="pill pill-idle">queued…</span>',
-    "RUNNING":   '<span class="pill pill-running">running</span>',
-    "SUCCESS":   '<span class="pill pill-success">done ✓</span>',
-    "FAILED":    '<span class="pill pill-failure">failed ✗</span>',
+    "PENDING": '<span class="pill pill-idle">queued…</span>',
+    "RUNNING": '<span class="pill pill-running">running</span>',
+    "SUCCESS": '<span class="pill pill-success">done ✓</span>',
+    "FAILED": '<span class="pill pill-failure">failed ✗</span>',
     "CANCELLED": '<span class="pill pill-failure">cancelled ⏹</span>',
 }
 
@@ -418,7 +485,7 @@ with st.sidebar:
     st.markdown("---")
 
     tests_passed = (
-        st.session_state.opencode_test_passed and st.session_state.supervisor_test_passed
+        (st.session_state.opencode_test_passed and st.session_state.supervisor_test_passed)
         or _any_job_running()
         or _evo_job_passed()
     )
@@ -513,6 +580,7 @@ def _run_with_timeout(fn, seconds: int = 30):
 
 def test_opencode() -> tuple[bool, str]:
     import tempfile
+
     from supervisor.runners.opencode_runner import OpencodeRunner, find_opencode
 
     workspace = Path(tempfile.gettempdir()) / "opencode_test_dummy"
@@ -667,9 +735,9 @@ def _render_refined_quality_analysis(refined_md: str) -> None:
     st.caption(f"{color} Quality: {analysis.quality_rating}")
 
     if analysis.issues:
-        errors   = [i for i in analysis.issues if i.severity == Severity.ERROR]
+        errors = [i for i in analysis.issues if i.severity == Severity.ERROR]
         warnings = [i for i in analysis.issues if i.severity == Severity.WARNING]
-        infos    = [i for i in analysis.issues if i.severity == Severity.INFO]
+        infos = [i for i in analysis.issues if i.severity == Severity.INFO]
 
         if errors:
             st.error(f"{len(errors)} error(s) found")
@@ -698,8 +766,7 @@ def _render_existing_protocol_banner(
     reuse_label: str = "♻️  Use existing protocol.md",
     on_reuse=None,
 ) -> bool:
-    """
-    If ``proto_path`` exists and ``st.session_state[state_key]`` is falsy,
+    """If ``proto_path`` exists and ``st.session_state[state_key]`` is falsy,
     show a reuse / ignore banner.  Returns True if the banner was shown.
     ``on_reuse`` is an optional callable invoked when the user clicks Reuse.
     """
@@ -871,7 +938,10 @@ def page_wizard() -> None:
 
         # Ignore patterns sub-expander
         with st.expander("🚫 Ignore Patterns (.opencodeignore)", expanded=False):
-            from supervisor.workspace.ignore_patterns import IGNORE_FILE, write_ignore_file
+            from supervisor.workspace.ignore_patterns import (
+                IGNORE_FILE,
+                write_ignore_file,
+            )
             st.caption("Files matching these patterns will be excluded from context retrieval")
             ws_path = Path(st.session_state.workspace) if st.session_state.workspace else None
             if not ws_path or not ws_path.exists():
@@ -982,7 +1052,7 @@ def page_wizard() -> None:
         ("raw_restrictions", "**RESTRICTIONS** — hard rules the agent must not break", 100,
          "e.g.\n- Don't touch files outside ./src\n- No system package installs\n- Keep code under 300 lines"),
     ]:
-        st.markdown(f'<div class="card">', unsafe_allow_html=True)
+        st.markdown('<div class="card">', unsafe_allow_html=True)
         st.markdown(label)
         st.text_area(section_key, key=section_key, height=height,
                      placeholder=placeholder, label_visibility="collapsed")
@@ -1054,10 +1124,10 @@ def _esc(t) -> str:
 
 
 _BLOCK_META = {
-    "opencode_prompt":      ("hdr-oc-prompt",    "▶ PROMPT → opencode"),
-    "opencode_output":      ("hdr-oc-output",    "◀ OUTPUT ← opencode"),
-    "supervisor_response":  ("hdr-sv-response",  "🧠 SUPERVISOR"),
-    "supervisor_read_files":("hdr-sv-read",      "📂 SUPERVISOR READ FILES"),
+    "opencode_prompt": ("hdr-oc-prompt", "▶ PROMPT → opencode"),
+    "opencode_output": ("hdr-oc-output", "◀ OUTPUT ← opencode"),
+    "supervisor_response": ("hdr-sv-response", "🧠 SUPERVISOR"),
+    "supervisor_read_files": ("hdr-sv-read", "📂 SUPERVISOR READ FILES"),
 }
 
 
@@ -1123,7 +1193,7 @@ def _render_token_usage_bar(logs: list[dict], max_tokens: int) -> None:
             match = re.search(r"(\d[\d,]*)\s*/\s*(\d[\d,]*)\s*tokens", msg)
             if match:
                 current = int(match.group(1).replace(",", ""))
-                max_t   = int(match.group(2).replace(",", ""))
+                max_t = int(match.group(2).replace(",", ""))
                 fraction = current / max_t if max_t > 0 else 0
                 if fraction >= latest_fraction:
                     latest_fraction, latest_current, found = fraction, current, True
@@ -1135,10 +1205,10 @@ def _render_token_usage_bar(logs: list[dict], max_tokens: int) -> None:
 
 def _render_step_progress(logs: list[dict], run_state: str, is_evolution: bool = False) -> None:
     logs = logs or []
-    step_events     = [e for e in logs if isinstance(e, dict) and e.get("level") in ("step", "phase_transition")]
+    step_events = [e for e in logs if isinstance(e, dict) and e.get("level") in ("step", "phase_transition")]
     progress_events = [e for e in logs if isinstance(e, dict) and e.get("level") == "step_progress"]
-    heartbeat_events= [e for e in logs if isinstance(e, dict) and e.get("level") == "heartbeat"]
-    process_label   = "Evolution process active" if is_evolution else "Background process active"
+    heartbeat_events = [e for e in logs if isinstance(e, dict) and e.get("level") == "heartbeat"]
+    process_label = "Evolution process active" if is_evolution else "Background process active"
 
     if run_state == "RUNNING":
         c1, c2, c3 = st.columns([3, 1, 1])
@@ -1188,8 +1258,7 @@ def _render_step_progress(logs: list[dict], run_state: str, is_evolution: bool =
 # ── Shared job status screen ─────────────────────────────────────────────── #
 
 class JobStatusScreen:
-    """
-    Renders the status screen for a running or completed job.
+    """Renders the status screen for a running or completed job.
     Encapsulates the duplicated pattern between run and evo pages.
     """
 
@@ -1221,7 +1290,7 @@ class JobStatusScreen:
             return
 
         state = status["state"]
-        logs  = _safe_logs(status)
+        logs = _safe_logs(status)
 
         # Header row
         col_h1, col_h2, col_h3 = st.columns([3, 1, 1])
@@ -1251,7 +1320,7 @@ class JobStatusScreen:
             st.markdown(
                 f"**Started:** {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(status.get('updated_at', 0)))}")
             sup_model = st.session_state.get("supervisor_model", "") or "(not set)"
-            oc_model  = st.session_state.get("opencode_model", "")  or "(not set)"
+            oc_model = st.session_state.get("opencode_model", "") or "(not set)"
             st.markdown(f"**Supervisor model:** `{sup_model}`")
             st.markdown(f"**Opencode model:** `{oc_model}`")
             _render_token_usage_bar(logs, int(st.session_state.max_tokens))
@@ -1402,7 +1471,7 @@ def _show_evo_setup_screen() -> None:
             ("evo_goal", "**Evolution goal**", 130),
             ("evo_extra_restrictions", "**Extra restrictions**", 80),
         ]:
-            st.markdown(f'<div class="card">', unsafe_allow_html=True)
+            st.markdown('<div class="card">', unsafe_allow_html=True)
             st.markdown(label)
             st.text_area(section_key, key=section_key, height=height, label_visibility="collapsed")
             st.markdown("</div>", unsafe_allow_html=True)
@@ -1463,7 +1532,7 @@ if st.session_state.page == "report":
     st.session_state.page = "run"
 
 _tests_ok = (
-    st.session_state.opencode_test_passed and st.session_state.supervisor_test_passed
+    (st.session_state.opencode_test_passed and st.session_state.supervisor_test_passed)
     or _any_job_running()
 )
 
