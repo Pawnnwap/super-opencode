@@ -58,28 +58,23 @@ def _auto_upgrade_opencode():
     try:
         home_dir = str(Path.home())
         print("[opencode-upgrade] Running: choco upgrade opencode -y (with admin elevation)", file=sys.stderr)
-        
-        # We execute the PowerShell command with cwd set to Home 
-        # to prevent EPERM errors if the current project dir is locked.
         proc = subprocess.Popen(
             [
                 "powershell", "-Command",
-                "Start-Process choco -ArgumentList 'upgrade','opencode','-y' -Verb RunAs -Wait"
+                "Start-Process choco -ArgumentList 'upgrade','opencode','-y' -Verb RunAs -Wait",
             ],
-            stdin=subprocess.PIPE, 
-            stdout=subprocess.PIPE, 
-            stderr=subprocess.PIPE, 
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            cwd=home_dir
+            cwd=home_dir,
         )
-        
         stdout, stderr = proc.communicate(timeout=120)
-        
         if stdout:
             print(f"[opencode-upgrade] stdout: {stdout.strip()}", file=sys.stderr)
         if stderr:
             print(f"[opencode-upgrade] stderr: {stderr.strip()}", file=sys.stderr)
-            
+
         code_msg = "successfully" if proc.returncode == 0 else f"with code {proc.returncode}. Continuing startup."
         print(f"[opencode-upgrade] Upgrade completed {code_msg}.", file=sys.stderr)
 
