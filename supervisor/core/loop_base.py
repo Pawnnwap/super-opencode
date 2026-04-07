@@ -7,7 +7,8 @@ from enum import Enum, auto
 from pathlib import Path
 
 from supervisor.utils.experience_tracker import update_experience
-from supervisor.utils.text_utils import sanitize_event_message, strip_thinking_blocks
+from supervisor.utils.text_utils import (sanitize_event_message,
+                                         strip_thinking_blocks)
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +73,8 @@ class BaseLoop:
         self._init_components(agent=agent)
 
     def _init_components(self, agent: str = ""):
-        from supervisor.analyzers.opencode_step_detector import OpencodeStepDetector
+        from supervisor.analyzers.opencode_step_detector import \
+            OpencodeStepDetector
         from supervisor.monitoring.session_tracker import SessionTracker
         from supervisor.runners.opencode_runner import OpencodeRunner
         from supervisor.workspace.workspace_guard import WorkspaceGuard

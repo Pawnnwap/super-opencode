@@ -19,15 +19,13 @@ import time
 from collections.abc import Callable, Generator
 from pathlib import Path
 
-from supervisor.analyzers.opencode_step_detector import (
-    OpencodeStepDetector,
-    PhaseTransition,
-    Step,
-    StepProgress,
-)
+from supervisor.analyzers.opencode_step_detector import (OpencodeStepDetector,
+                                                         PhaseTransition, Step,
+                                                         StepProgress)
 from supervisor.prompts.commands import BREVITY_COMMAND
 from supervisor.utils.text_utils import strip_thinking_blocks
-from supervisor.workspace.workspace_archiver import ArchiveResult, WorkspaceArchiver
+from supervisor.workspace.workspace_archiver import (ArchiveResult,
+                                                     WorkspaceArchiver)
 
 logger = logging.getLogger(__name__)
 

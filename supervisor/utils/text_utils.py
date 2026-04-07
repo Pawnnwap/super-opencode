@@ -33,8 +33,14 @@ def sanitize_event_message(msg: object) -> str:
     """
     if isinstance(msg, str):
         return msg
-    if isinstance(msg, (list, dict)):
+    if isinstance(msg, (list, dict)): 
         return json.dumps(msg, ensure_ascii=False, separators=(", ", ": "))
     if msg is None:
         return ""
-    return str(msg)
+    # Handle edge cases where msg might be an iterable that should be treated as a single entity
+    # Convert to string first, then ensure it's a proper string
+    result = str(msg)
+    # Ensure the result is a proper string (handles cases where str() might return non-string)
+    if not isinstance(result, str):
+        result = repr(msg)
+    return result

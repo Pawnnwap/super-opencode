@@ -16,6 +16,7 @@ test_*.py
 *.isorted
 *.bak
 *.txt
+experience.md
 """
 
 
