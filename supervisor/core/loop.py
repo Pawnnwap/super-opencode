@@ -255,6 +255,7 @@ class SupervisorLoop(BaseLoop):
         return self.runner.get_step_summary()
 
     def _on_successful_output(self, output: str) -> Generator[Event, None, None]:
+        yield from super()._on_successful_output(output)
         yield from self._check_and_update_snapshot()
         yield from []
 
@@ -283,6 +284,7 @@ class SupervisorLoop(BaseLoop):
         yield from super()._handle_failure(last_output)
 
     def _on_final_failure(self, output: str) -> Generator[Event, None, None]:
+        yield from super()._on_final_failure(output)
         report = self.supervisor.report_final_status(
             reason=f"opencode failed {self._failures} consecutive times",
             opencode_output=output,

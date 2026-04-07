@@ -483,14 +483,24 @@ class LLMSupervisor:
         Failures are logged but never raised.
         """
         try:
+            from supervisor.monitoring.session_tracker import SessionTracker
             from supervisor.utils.experience_tracker import \
                 read_experience_capped
 
             experience_text = read_experience_capped(self._workspace, max_chars=10000)
-            if experience_text.strip():
-                return (
-                    f"--- Previous Experience ---\n{experience_text}\n--- end ---\n\n"
+            if not experience_text.strip():
+                return ""
+
+            # Ensure experience does not exceed a reasonable budget (e.g., 10% of max_tokens)
+            budget = int(self._max_tokens * 0.1)
+            if SessionTracker.estimate_tokens(experience_text) > budget:
+                experience_text = SessionTracker.truncate_prompt(
+                    experience_text, budget, preserve_end_ratio=0.0
                 )
+
+            return (
+                f"--- Previous Experience ---\n{experience_text}\n--- end ---\n\n"
+            )
         except Exception as exc:
             logger.warning("Failed to build experience context: %s", exc)
         return ""

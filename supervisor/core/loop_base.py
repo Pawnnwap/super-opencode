@@ -6,6 +6,7 @@ from collections.abc import Generator
 from enum import Enum, auto
 from pathlib import Path
 
+from supervisor.utils.experience_tracker import update_experience
 from supervisor.utils.text_utils import (sanitize_event_message,
                                          strip_thinking_blocks)
 
@@ -240,7 +241,9 @@ class BaseLoop:
             f"Retrying… (attempt {self._failures}/{self.config.max_retries})",
         )
         self.runner.start(self._restart_prompt())
-
+    def _on_final_failure(self, output: str) -> Generator[Event, None, None]:
+        update_experience(self.config.workspace, failed=["Reached max retries"])
+        yield from []
     def _get_step_context(self, progress) -> StepContext:
         from supervisor.core.llm_supervisor import StepContext
 
@@ -287,6 +290,8 @@ class BaseLoop:
 
         if verdict.all_targets_met:
             self._state = LoopState.ENDED_SUCCESS
+            if self._failures == 0:
+                update_experience(self.config.workspace, worked=["Successfully met all targets"])
             return
 
         vuln_scan = self.scan_for_vulnerabilities()

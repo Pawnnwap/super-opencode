@@ -13,6 +13,9 @@ GITIGNORE_LINES = """# super-opencode
 nul
 test_*.py
 .job_store
+*.isorted
+*.bak
+*.txt
 """
 
 
