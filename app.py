@@ -687,63 +687,60 @@ def _render_quality_metrics(analysis) -> None:
     with col4: st.metric("RESTRICTIONS", f"{analysis.restrictions_score.overall:.0%}")
 
 
-def _render_quality_analysis(raw_input: str, raw_target: str, raw_restrictions: str) -> None:
-    analyzer = ProtocolAnalyzer()
-    temp_text = (
-        f"## INPUT\n\n{raw_input}\n\n"
-        f"## TARGET\n\n{raw_target}\n\n"
-        f"## RESTRICTIONS\n\n{raw_restrictions}\n"
-    )
-    try:
-        analysis = analyzer.analyze_text(temp_text)
-    except Exception:
-        st.caption("Complete all three sections to see quality scores.")
-        return
+def _render_protocol_quality(text: str, detailed: bool = False) -> None:
+    """Render protocol quality metrics and issues.
 
-    _render_quality_metrics(analysis)
-
-    if analysis.issues:
-        st.caption(f"Found {len(analysis.issues)} issue(s)")
-        for issue in analysis.issues[:5]:
-            icon = {"error": "❌", "warning": "⚠️", "info": "ℹ️"}[issue.severity.value]
-            st.caption(f"{icon} [{issue.section}] {issue.message}")
-
-
-def _render_refined_quality_analysis(refined_md: str) -> None:
+    Parameters
+    ----------
+    text:
+        Protocol markdown to analyze.
+    detailed:
+        When True, show per-severity breakdowns with suggestions (used for
+        the refined protocol view).  When False, show a compact issue list
+        (used for the draft quality preview).
+    """
     analyzer = ProtocolAnalyzer()
     try:
-        analysis = analyzer.analyze_text(refined_md)
+        analysis = analyzer.analyze_text(text)
     except Exception as e:
-        st.warning(f"Cannot analyze protocol: {e}")
+        st.caption("Complete all three sections to see quality scores." if not detailed
+                   else f"Cannot analyze protocol: {e}")
         return
 
-    rating_colors = {"excellent": "🟢", "good": "🟡", "fair": "🟠", "poor": "🔴"}
-    color = rating_colors.get(analysis.quality_rating, "⚪")
-
     _render_quality_metrics(analysis)
-    st.caption(f"{color} Quality: {analysis.quality_rating}")
+
+    if detailed:
+        rating_colors = {"excellent": "🟢", "good": "🟡", "fair": "🟠", "poor": "🔴"}
+        color = rating_colors.get(analysis.quality_rating, "⚪")
+        st.caption(f"{color} Quality: {analysis.quality_rating}")
 
     if analysis.issues:
-        errors = [i for i in analysis.issues if i.severity == Severity.ERROR]
-        warnings = [i for i in analysis.issues if i.severity == Severity.WARNING]
-        infos = [i for i in analysis.issues if i.severity == Severity.INFO]
+        if not detailed:
+            st.caption(f"Found {len(analysis.issues)} issue(s)")
+            for issue in analysis.issues[:5]:
+                icon = {"error": "❌", "warning": "⚠️", "info": "ℹ️"}[issue.severity.value]
+                st.caption(f"{icon} [{issue.section}] {issue.message}")
+        else:
+            errors = [i for i in analysis.issues if i.severity == Severity.ERROR]
+            warnings = [i for i in analysis.issues if i.severity == Severity.WARNING]
+            infos = [i for i in analysis.issues if i.severity == Severity.INFO]
 
-        if errors:
-            st.error(f"{len(errors)} error(s) found")
-            for issue in errors:
-                st.caption(f"❌ [{issue.section}] {issue.message}")
-                if issue.suggestion:
-                    st.caption(f"   → {issue.suggestion}")
-        if warnings:
-            st.warning(f"{len(warnings)} warning(s)")
-            for issue in warnings:
-                st.caption(f"⚠️ [{issue.section}] {issue.message}")
-        if infos:
-            with st.expander(f"{len(infos)} suggestion(s)"):
-                for issue in infos:
-                    st.caption(f"ℹ️ [{issue.section}] {issue.message}")
+            if errors:
+                st.error(f"{len(errors)} error(s) found")
+                for issue in errors:
+                    st.caption(f"❌ [{issue.section}] {issue.message}")
                     if issue.suggestion:
                         st.caption(f"   → {issue.suggestion}")
+            if warnings:
+                st.warning(f"{len(warnings)} warning(s)")
+                for issue in warnings:
+                    st.caption(f"⚠️ [{issue.section}] {issue.message}")
+            if infos:
+                with st.expander(f"{len(infos)} suggestion(s)"):
+                    for issue in infos:
+                        st.caption(f"ℹ️ [{issue.section}] {issue.message}")
+                        if issue.suggestion:
+                            st.caption(f"   → {issue.suggestion}")
 
 
 # ── Existing-protocol reuse banner ──────────────────────────────────────── #
@@ -994,12 +991,8 @@ def page_wizard() -> None:
                         )
                         user_msg = (
                             f"The workspace contains the following files and directories:\n\n"
-                            f"{file_list_str}\n\n{truncation_note}\n\n"
-                            "Generate a .opencodeignore file that ignores common build "
-                            "artifacts, dependency directories, cache files, and other "
-                            "files that should not be modified by an autonomous coding "
-                            "agent. The patterns should be in gitignore format. Only "
-                            "output the patterns, one per line. Do not include any explanations."
+                            f"{file_list_str}"
+                            + (f"\n\n{truncation_note}" if truncation_note else "")
                         )
                         response = client.chat.completions.create(
                             model=model,
@@ -1048,10 +1041,10 @@ def page_wizard() -> None:
 
     if any(st.session_state.get(k, "").strip() for k in ("raw_input", "raw_target", "raw_restrictions")):
         with st.expander("📊 Protocol Quality Preview"):
-            _render_quality_analysis(
-                st.session_state.raw_input,
-                st.session_state.raw_target,
-                st.session_state.raw_restrictions,
+            _render_protocol_quality(
+                f"## INPUT\n\n{st.session_state.raw_input}\n\n"
+                f"## TARGET\n\n{st.session_state.raw_target}\n\n"
+                f"## RESTRICTIONS\n\n{st.session_state.raw_restrictions}\n"
             )
 
     if st.button("✨  Refine with AI", type="primary"):
@@ -1084,7 +1077,7 @@ def page_wizard() -> None:
         st.markdown("*Review and edit below, then accept.*")
         st.text_area("proto_edit", key="protocol_md", height=300, label_visibility="collapsed")
         with st.expander("📊 Protocol Quality Analysis"):
-            _render_refined_quality_analysis(st.session_state.protocol_md)
+            _render_protocol_quality(st.session_state.protocol_md, detailed=True)
         col_a, col_b, _ = st.columns([1, 1, 3])
         with col_a:
             if st.button("✅  Accept & Save", type="primary"):
@@ -1517,7 +1510,7 @@ if st.session_state.page == "report":
 
 _tests_ok = (
     (st.session_state.opencode_test_passed and st.session_state.supervisor_test_passed)
-    or _any_job_running()
+    or _jobs_running
 )
 
 _LOCKED_PAGES = {"run", "evolve"}
