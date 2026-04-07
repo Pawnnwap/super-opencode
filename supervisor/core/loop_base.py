@@ -241,9 +241,11 @@ class BaseLoop:
             f"Retrying… (attempt {self._failures}/{self.config.max_retries})",
         )
         self.runner.start(self._restart_prompt())
+
     def _on_final_failure(self, output: str) -> Generator[Event, None, None]:
         update_experience(self.config.workspace, failed=["Reached max retries"])
         yield from []
+
     def _get_step_context(self, progress) -> StepContext:
         from supervisor.core.llm_supervisor import StepContext
 

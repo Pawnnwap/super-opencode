@@ -448,9 +448,9 @@ HASHLINE_READ_TOOL = Tool(
     inputSchema={
         "type": "object",
         "properties": {
-            "path":       {"type": "string",  "description": "File path (absolute or relative to cwd)."},
+            "path": {"type": "string", "description": "File path (absolute or relative to cwd)."},
             "start_line": {"type": "integer", "description": "First line to return (1-based). Default: 1.", "minimum": 1},
-            "end_line":   {"type": "integer", "description": "Last line to return (1-based). Default: EOF.", "minimum": 1},
+            "end_line": {"type": "integer", "description": "Last line to return (1-based). Default: EOF.", "minimum": 1},
         },
         "required": ["path"],
     },
@@ -486,9 +486,9 @@ HASHLINE_EDIT_TOOL = Tool(
                             "enum": ["replace", "replace_range", "delete", "append", "prepend"],
                             "description": "Operation type.",
                         },
-                        "pos":     {"type": "string", "description": "LINE#ID of target line, e.g. '42#VKB'."},
+                        "pos": {"type": "string", "description": "LINE#ID of target line, e.g. '42#VKB'."},
                         "end_pos": {"type": "string", "description": "LINE#ID of range end (replace_range only)."},
-                        "lines":   {"type": "array", "items": {"type": "string"}, "description": "Lines to insert/replace (omit for delete)."},
+                        "lines": {"type": "array", "items": {"type": "string"}, "description": "Lines to insert/replace (omit for delete)."},
                     },
                 },
             },

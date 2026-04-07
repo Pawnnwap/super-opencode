@@ -328,8 +328,7 @@ def _find_opencode_config_dir() -> Path | None:
 
 def _get_opencode_config_file(config_dir: Path) -> Path:
     """Get the opencode.json file, creating it if it doesn't exist."""
-    import shutil
-    
+
     opencode_json = Path(os.path.join(str(config_dir), "opencode.json"))
     config_json = Path(os.path.join(str(config_dir), "config.json"))
 
