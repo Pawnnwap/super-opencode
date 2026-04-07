@@ -381,23 +381,6 @@ def _get_opencode_config_file(config_dir: Path) -> Path:
     if dirty:
         target_file.write_text(json.dumps(content, indent=2), encoding="utf-8")
 
-    # Handle plugins folder
-    source_plugins_dir = Path(__file__).parent.resolve() / "plugins"
-    dest_plugins_dir = config_dir / "plugins"
-
-    if source_plugins_dir.exists() and source_plugins_dir.is_dir():
-        if not dest_plugins_dir.exists():
-            # No plugins folder in config_dir - copy the whole folder
-            shutil.copytree(source_plugins_dir, dest_plugins_dir)
-        else:
-            # Plugins folder exists in config_dir - merge/combine
-            for item in source_plugins_dir.rglob("*"):
-                if item.is_file():
-                    relative_path = item.relative_to(source_plugins_dir)
-                    dest_item = dest_plugins_dir / relative_path
-                    dest_item.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(item, dest_item)
-
     return target_file
 
 
@@ -772,7 +755,7 @@ def test_opencode():
     )
 
     def _inner():
-        runner.start("brevity!")
+        runner.start("hi")
         # Ensure we don't hang indefinitely reading output
         output, timed_out = runner.read_output(timeout=25)
         if timed_out:

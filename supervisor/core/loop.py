@@ -131,13 +131,9 @@ class SupervisorLoop(BaseLoop):
 
         # Dedicated runner locked to the plan agent — the main self.runner
         # stays untouched and will be used for build mode.
-        plan_runner = OpencodeRunner(
-            workspace=self.config.workspace,
-            opencode_model=self.config.opencode_model,
-            opencode_executable=self.config.opencode_executable,
-            timeout=self.config.timeout,
+        plan_runner = OpencodeRunner.from_config(
+            self.config,
             agent="plan",
-            opencode_model_backup=self.config.opencode_model_backup,
         )
 
         protocol_text = self.config.protocol_path.read_text(encoding="utf-8")

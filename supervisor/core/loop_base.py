@@ -77,13 +77,9 @@ class BaseLoop:
         from supervisor.runners.opencode_runner import OpencodeRunner
         from supervisor.workspace.workspace_guard import WorkspaceGuard
 
-        self.runner = OpencodeRunner(
-            workspace=self.config.workspace,
-            timeout=self.config.timeout,
-            opencode_model=self.config.opencode_model,
-            opencode_executable=self.config.opencode_executable,
+        self.runner = OpencodeRunner.from_config(
+            self.config,
             agent=agent,
-            opencode_model_backup=self.config.opencode_model_backup,
         )
         self.ctx_monitor = SessionTracker(
             self.config.context_threshold,

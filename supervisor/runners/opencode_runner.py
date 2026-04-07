@@ -18,6 +18,7 @@ import sys
 import time
 from collections.abc import Callable, Generator
 from pathlib import Path
+from supervisor.prompts.commands import BREVITY_COMMAND
 
 from supervisor.analyzers.opencode_step_detector import (OpencodeStepDetector,
                                                          PhaseTransition, Step,
@@ -247,6 +248,17 @@ class OpencodeRunner:
                 progress_callback=on_progress,
             )
 
+    @classmethod
+    def from_config(cls, config, agent: str = "") -> OpencodeRunner:
+        """Factory method to create a runner from a SupervisorConfig object."""
+        return cls(
+            workspace=config.workspace,
+            timeout=config.timeout,
+            opencode_model=config.opencode_model,
+            opencode_executable=config.opencode_executable,
+            agent=agent,
+            opencode_model_backup=config.opencode_model_backup,
+        )
     @property
     def step_detector(self) -> OpencodeStepDetector:
         return self._step_detector
@@ -267,6 +279,13 @@ class OpencodeRunner:
                 exception="Empty prompt provided. Skipping run.",
             )
             return
+        
+        if not self._session_active:
+            logger.info("New session detected. Sending brevity command...")
+            self._run_prompt(BREVITY_COMMAND)
+            self._session_active = True
+            self.enable_continuation(True)
+        
         logger.info("start() — prompt length=%d chars", len(initial_prompt))
         self._alive = True
         self._prepare_workspace()
@@ -276,6 +295,10 @@ class OpencodeRunner:
         message = _coerce_str(message, "message (send)")
         if not self._alive:
             raise RuntimeError("OpencodeRunner has been stopped.")
+        
+        if self._session_active:
+            self.enable_continuation(True)
+        
         logger.info("send() — message length=%d chars", len(message))
         self._run_prompt(message)
 
