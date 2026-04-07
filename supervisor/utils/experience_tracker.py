@@ -147,7 +147,8 @@ def _atomic_write(path: Path, content: str) -> None:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(content)
         os.replace(tmp_path, str(path))
-    except Exception:
+    except Exception as exc:
+        logger.error("Failed to write experience file %s: %s", path, exc)
         try:
             os.unlink(tmp_path)
         except OSError:

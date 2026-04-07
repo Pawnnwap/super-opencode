@@ -76,8 +76,8 @@ def estimate_tokens(text: str) -> int:
     if enc is not None:
         try:
             return max(1, len(enc.encode(text)))
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("tiktoken encode failed, falling back to char estimate: %s", exc)
     return max(1, len(text) // _CHARS_PER_TOKEN)
 
 

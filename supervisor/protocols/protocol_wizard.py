@@ -8,7 +8,11 @@ Used by the Streamlit UI (wizard_page.py).
 
 from __future__ import annotations
 
+import logging
+
 from openai import OpenAI
+
+logger = logging.getLogger(__name__)
 
 from supervisor.protocols.protocol import Protocol, parse_protocol_text
 from supervisor.protocols.protocol_analyzer import ProtocolAnalysis, ProtocolAnalyzer
@@ -151,7 +155,8 @@ class ProtocolWizard:
         )
         try:
             return analyzer.analyze_text(temp_text)
-        except Exception:
+        except Exception as exc:
+            logger.warning("Protocol analysis failed for raw sections: %s", exc)
             return None
 
     def analyze_refined(self, refined_md: str) -> ProtocolAnalysis | None:
@@ -161,5 +166,6 @@ class ProtocolWizard:
         analyzer = ProtocolAnalyzer()
         try:
             return analyzer.analyze_text(refined_md)
-        except Exception:
+        except Exception as exc:
+            logger.warning("Protocol analysis failed for refined markdown: %s", exc)
             return None

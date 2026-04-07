@@ -17,10 +17,13 @@ Archive structure:
 from __future__ import annotations
 
 import json
+import logging
 import shutil
 import time
 from dataclasses import dataclass
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 from supervisor.utils.file_permissions import remove_file_readonly
 from supervisor.utils.path_filters import should_skip_path
@@ -67,8 +70,8 @@ class WorkspaceArchiver:
         if counter_file.exists():
             try:
                 remove_file_readonly(str(counter_file))
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("Could not remove read-only on counter file %s: %s", counter_file, exc)
         counter_file.write_text(str(self._archive_counter), encoding="utf-8")
 
     def _get_archive_subdir(self, filename: str) -> str:
@@ -179,6 +182,7 @@ class WorkspaceArchiver:
             )
 
         except Exception as exc:
+            logger.error("Archive failed for workspace %s: %s", self.workspace, exc, exc_info=True)
             if archive_path.exists():
                 shutil.rmtree(archive_path, ignore_errors=True)
             return ArchiveResult(

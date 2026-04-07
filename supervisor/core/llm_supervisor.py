@@ -1127,12 +1127,21 @@ class LLMSupervisor:
     ) -> SupervisorVerdict:
         import time
 
-        from openai import APIError, InternalServerError, OpenAIError
+        from openai import (
+            APIConnectionError,
+            APIError,
+            APITimeoutError,
+            InternalServerError,
+            OpenAIError,
+            RateLimitError,
+        )
 
         max_retries = 5
         empty_choices_retries = 0
         max_empty_choices_retries = 3
         attempt = 0
+        transient_attempt = 0
+        max_transient_retries = 4
         working_messages = list(messages)
         using_backup = False
 
@@ -1159,6 +1168,25 @@ class LLMSupervisor:
                 empty_choices_retries = 0
                 reply = strip_thinking_blocks(response.choices[0].message.content or "")
                 break
+            except (RateLimitError, APIConnectionError, APITimeoutError) as exc:
+                if transient_attempt >= max_transient_retries:
+                    logger.error(
+                        "Transient API error after %d retries, giving up: %s",
+                        max_transient_retries,
+                        exc,
+                    )
+                    raise
+                wait = min(60, 5 * (2 ** transient_attempt))
+                logger.warning(
+                    "Transient API error %s (attempt %d/%d), retrying after %ds",
+                    type(exc).__name__,
+                    transient_attempt + 1,
+                    max_transient_retries,
+                    wait,
+                )
+                time.sleep(wait)
+                transient_attempt += 1
+                continue
             except (APIError, OpenAIError) as exc:
                 if not using_backup and self._model_backup:
                     logger.warning(

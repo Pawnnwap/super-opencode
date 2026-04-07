@@ -1,8 +1,11 @@
+import logging
 import threading
 import time
 import uuid
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from services.state_store import JobStateStore
 from supervisor.core.loop import SupervisorLoop
@@ -164,6 +167,7 @@ class JobManager:
         except Exception as e:
             import traceback
             error_msg = f"Worker error: {e!s}\n{traceback.format_exc()}"
+            logger.error("Job %s failed: %s", job_id, e, exc_info=True)
             self.store.append_log(job_id, {"level": "error", "msg": error_msg})
             self._update_state(job_id, "FAILED", report=report_content if "report_content" in locals() else "")
         finally:
@@ -199,8 +203,8 @@ class JobManager:
             if p.exists():
                 try:
                     return p.read_text(encoding="utf-8")
-                except Exception:
-                    pass
+                except OSError as exc:
+                    logger.warning("Could not read report file %s: %s", p, exc)
         return ""
 
     def _serialize_config(self, config: SupervisorConfig) -> dict[str, Any]:

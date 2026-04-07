@@ -13,10 +13,13 @@ Also integrates .gitignore patterns when available.
 
 from __future__ import annotations
 
+import logging
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 IGNORE_FILE = ".opencodeignore"
 GITIGNORE_FILE = ".gitignore"
@@ -58,7 +61,11 @@ class IgnoreMatcher:
             content = ignore_file.read_text(encoding="utf-8")
             self.parse_patterns(content.splitlines())
             return True
-        except Exception:
+        except OSError as exc:
+            logger.warning("Could not read ignore file %s: %s", ignore_file, exc)
+            return False
+        except Exception as exc:
+            logger.warning("Unexpected error loading ignore file %s: %s", ignore_file, exc)
             return False
 
     def load_from_workspace(self, workspace: Path) -> bool:
