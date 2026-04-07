@@ -1,11 +1,27 @@
 """File operation utilities."""
 
+import logging
 import shutil
+import time
+from pathlib import Path
+from typing import Optional
 from pathlib import Path
 
 
-def safe_read_text(path: Path, default: str = "") -> str:
-    """Read text from a file, returning *default* on any error.
+import logging
+import shutil
+from pathlib import Path
+from typing import Optional
+
+
+def safe_read_text(
+    path: Path,
+    default: str = "",
+    max_size: int = 10 * 1024 * 1024,  # 10MB default limit
+    encodings: list[str] | None = None,
+    retries: int = 3,
+) -> str:
+    """Read text from a file with robust error handling.
 
     Parameters
     ----------
@@ -13,6 +29,12 @@ def safe_read_text(path: Path, default: str = "") -> str:
         Filesystem path to read.
     default:
         Value returned when the file does not exist or cannot be read.
+    max_size:
+        Maximum file size in bytes to read (prevents memory issues).
+    encodings:
+        List of encodings to try (default: ["utf-8", "latin-1"]).
+    retries:
+        Number of retry attempts for transient errors.
 
     Returns
     -------
@@ -20,11 +42,46 @@ def safe_read_text(path: Path, default: str = "") -> str:
         File contents or *default*.
 
     """
-    try:
-        if path.exists():
-            return path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
-        pass
+    if encodings is None:
+        encodings = ["utf-8", "latin-1"]
+
+    for attempt in range(retries + 1):
+        try:
+            if not path.exists():
+                return default
+
+            # Check file size to prevent memory issues
+            stat = path.stat()
+            if stat.st_size > max_size:
+                logging.warning(f"File {path} exceeds max_size ({max_size} bytes), returning default")
+                return default
+
+            # Try each encoding in sequence
+            for i, encoding in enumerate(encodings):
+                try:
+                    content = path.read_text(encoding=encoding)
+                    if i > 0:
+                        logging.info(f"Used fallback encoding {encoding} for file {path}")
+                    return content
+                except UnicodeDecodeError:
+                    if i == len(encodings) - 1:
+                        # Last encoding failed, log and return default
+                        logging.warning(f"All encodings failed for file {path}, returning default")
+                        return default
+                    # Continue to next encoding
+                    continue
+
+        except PermissionError as e:
+            logging.warning(f"Permission denied reading {path}: {e}")
+            if attempt == retries:
+                return default
+            time.sleep(0.1 * (attempt + 1))  # Exponential backoff
+        except OSError as e:
+            logging.warning(f"OS error reading {path}: {e}")
+            if attempt == retries:
+                return default
+            time.sleep(0.1 * (attempt + 1))
+
     return default
 
 
