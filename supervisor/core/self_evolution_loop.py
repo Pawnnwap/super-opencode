@@ -13,8 +13,7 @@ import time
 from collections.abc import Generator
 from pathlib import Path
 
-from supervisor.analyzers.codebase_analyzer import (CodebaseSnapshot,
-                                                    snapshot_codebase)
+from supervisor.analyzers.codebase_analyzer import CodebaseSnapshot, snapshot_codebase
 from supervisor.core.llm_supervisor import LLMSupervisor
 from supervisor.core.loop_base import BaseLoop, Event, LoopState, _ev
 from supervisor.runners.test_runner import OcTestRunner, RunTestResult
@@ -54,7 +53,7 @@ class SelfEvolutionLoop(BaseLoop):
 
     # ------------------------------------------------------------------ #
 
-    def _run(self) -> Generator[Event, None, None]:
+    def _run(self) -> Generator[Event]:
         yield _ev("info", "📸  Snapshotting codebase…")
         self._pre_snapshot = self._cached_snapshot
 
@@ -92,7 +91,7 @@ class SelfEvolutionLoop(BaseLoop):
 
     # ------------------------------------------------------------------ #
 
-    def _on_successful_output(self, output: str) -> Generator[Event, None, None]:
+    def _on_successful_output(self, output: str) -> Generator[Event]:
         self._iteration += 1
         yield _ev(
             "info",
@@ -140,10 +139,10 @@ class SelfEvolutionLoop(BaseLoop):
     def _get_verdict(self, output: str, progress) -> SupervisorVerdict:
         return self.supervisor.judge(output)
 
-    def _handle_failure(self, last_output: str) -> Generator[Event, None, None]:
+    def _handle_failure(self, last_output: str) -> Generator[Event]:
         yield from super()._handle_failure(last_output)
 
-    def _rollback(self) -> Generator[Event, None, None]:
+    def _rollback(self) -> Generator[Event]:
         if self._best_archive:
             restored = self.archiver.restore_archive(self._best_archive)
             yield _ev(
@@ -152,7 +151,7 @@ class SelfEvolutionLoop(BaseLoop):
         else:
             yield _ev("warn", "No archive to roll back to.")
 
-    def _evolution_summary(self) -> Generator[Event, None, None]:
+    def _evolution_summary(self) -> Generator[Event]:
         success = self._state == LoopState.ENDED_SUCCESS
         yield _ev(
             "success" if success else "error",

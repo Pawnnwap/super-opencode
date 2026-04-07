@@ -30,10 +30,11 @@ def sanitize_event_message(msg: object) -> str:
     -------
     str
         A string-safe representation of the payload.
+
     """
     if isinstance(msg, str):
         return msg
-    if isinstance(msg, (list, dict)): 
+    if isinstance(msg, (list, dict)):
         return json.dumps(msg, ensure_ascii=False, separators=(", ", ": "))
     if msg is None:
         return ""

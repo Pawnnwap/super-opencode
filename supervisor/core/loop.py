@@ -67,7 +67,7 @@ class SupervisorLoop(BaseLoop):
 
     # ------------------------------------------------------------------ #
 
-    def _run(self) -> Generator[Event, None, None]:
+    def _run(self) -> Generator[Event]:
         import time
 
         yield _ev("info", "Archiving previous workspace state...")
@@ -109,7 +109,7 @@ class SupervisorLoop(BaseLoop):
                 "error", "Run ended with failures. See failure_report.md in workspace.",
             )
 
-    def _run_plan_mode(self) -> Generator[Event, None, None]:
+    def _run_plan_mode(self) -> Generator[Event]:
         """Run the plan phase for the configured number of rounds.
 
         A dedicated ``OpencodeRunner`` with ``agent="plan"`` handles all plan
@@ -254,7 +254,7 @@ class SupervisorLoop(BaseLoop):
     def get_step_summary(self) -> dict:
         return self.runner.get_step_summary()
 
-    def _on_successful_output(self, output: str) -> Generator[Event, None, None]:
+    def _on_successful_output(self, output: str) -> Generator[Event]:
         yield from super()._on_successful_output(output)
         yield from self._check_and_update_snapshot()
         yield from []
@@ -279,11 +279,11 @@ class SupervisorLoop(BaseLoop):
             safe_msg = alignment.reinforcement_message + safe_msg
         return safe_msg
 
-    def _handle_failure(self, last_output: str) -> Generator[Event, None, None]:
+    def _handle_failure(self, last_output: str) -> Generator[Event]:
         time.sleep(3)
         yield from super()._handle_failure(last_output)
 
-    def _on_final_failure(self, output: str) -> Generator[Event, None, None]:
+    def _on_final_failure(self, output: str) -> Generator[Event]:
         yield from super()._on_final_failure(output)
         report = self.supervisor.report_final_status(
             reason=f"opencode failed {self._failures} consecutive times",
@@ -297,7 +297,7 @@ class SupervisorLoop(BaseLoop):
         )
     # Override run_streaming to update state when stopping the runner
 
-    def run_streaming(self) -> Generator[Event, None, None]:
+    def run_streaming(self) -> Generator[Event]:
         try:
             yield from super().run_streaming()
         except KeyboardInterrupt:

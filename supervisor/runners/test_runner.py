@@ -49,7 +49,7 @@ class RunTestResult:
         parts.append(f"({self.duration_s:.1f}s)")
         return "  ".join(parts)
 
-    def delta(self, baseline: "RunTestResult") -> str:
+    def delta(self, baseline: RunTestResult) -> str:
         """Human-readable diff vs a baseline."""
         dp = self.passed - baseline.passed
         df = self.failed - baseline.failed
@@ -66,7 +66,7 @@ class RunTestResult:
             parts.append(f"syntax_errors {ds:+d}")
         return ", ".join(parts) if parts else "no change"
 
-    def is_regression_vs(self, baseline: "RunTestResult") -> bool:
+    def is_regression_vs(self, baseline: RunTestResult) -> bool:
         """Return True if this result is strictly worse than baseline."""
         more_failures = (self.failed + self.errors) > (
             baseline.failed + baseline.errors

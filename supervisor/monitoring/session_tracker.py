@@ -13,13 +13,15 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 
-from supervisor.monitoring.token_estimator import (TokenEstimate,
-                                                   estimate_request_tokens,
-                                                   estimate_tokens,
-                                                   get_threshold_for_fraction,
-                                                   truncate_prompt,
-                                                   truncate_with_fallback,
-                                                   warn_if_exceeds_limit)
+from supervisor.monitoring.token_estimator import (
+    TokenEstimate,
+    estimate_request_tokens,
+    estimate_tokens,
+    get_threshold_for_fraction,
+    truncate_prompt,
+    truncate_with_fallback,
+    warn_if_exceeds_limit,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +95,7 @@ class SessionTracker:
             tokens: Current estimated token count.
             files_read: List of files loaded into context.
             prompt_head: First 100 chars of the current prompt.
+
         """
         self._current = tokens
         if files_read is not None:
@@ -250,7 +253,7 @@ class SessionTracker:
         conversation_history: str = "",
     ) -> str:
         return truncate_with_fallback(
-            text, max_tokens, system_prompt, conversation_history
+            text, max_tokens, system_prompt, conversation_history,
         )
 
     # -- Session state access --

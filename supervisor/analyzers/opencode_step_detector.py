@@ -227,7 +227,7 @@ class OpencodeStepDetector:
                     pass
         return None
 
-    def detect_steps(self, output: str) -> Generator[Step, None, None]:
+    def detect_steps(self, output: str) -> Generator[Step]:
         lines = output.split("\n")
         current_step = self._progress.current_step
         current_phase = self._progress.phase
@@ -273,7 +273,7 @@ class OpencodeStepDetector:
         self._progress.current_step = current_step
         self._progress.phase = current_phase
 
-    def process_output(self, output: str) -> Generator[dict, None, None]:
+    def process_output(self, output: str) -> Generator[dict]:
         self._buffer += output
 
         for step_event in self.detect_steps(output):

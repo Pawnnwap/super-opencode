@@ -7,8 +7,7 @@ from enum import Enum, auto
 from pathlib import Path
 
 from supervisor.utils.experience_tracker import update_experience
-from supervisor.utils.text_utils import (sanitize_event_message,
-                                         strip_thinking_blocks)
+from supervisor.utils.text_utils import sanitize_event_message, strip_thinking_blocks
 
 logger = logging.getLogger(__name__)
 
@@ -73,8 +72,7 @@ class BaseLoop:
         self._init_components(agent=agent)
 
     def _init_components(self, agent: str = ""):
-        from supervisor.analyzers.opencode_step_detector import \
-            OpencodeStepDetector
+        from supervisor.analyzers.opencode_step_detector import OpencodeStepDetector
         from supervisor.monitoring.session_tracker import SessionTracker
         from supervisor.runners.opencode_runner import OpencodeRunner
         from supervisor.workspace.workspace_guard import WorkspaceGuard
@@ -91,7 +89,7 @@ class BaseLoop:
         self.guard = WorkspaceGuard(self.config.workspace, self.config.protected_files)
         self._step_detector = OpencodeStepDetector()
 
-    def _run_python_scanner(self) -> Generator[Event, None, None]:
+    def _run_python_scanner(self) -> Generator[Event]:
         """Run python_scanner.py on workspace if .py files exist and not yet run."""
         import os
 
@@ -137,7 +135,7 @@ class BaseLoop:
 
         return
 
-    def run_streaming(self) -> Generator[Event, None, None]:
+    def run_streaming(self) -> Generator[Event]:
         if self.config and getattr(self.config, "enable_python_scanner", True):
             yield from self._run_python_scanner()
         try:
@@ -175,7 +173,7 @@ class BaseLoop:
             return True
         return False
 
-    def _check_and_update_snapshot(self) -> Generator[Event, None, None]:
+    def _check_and_update_snapshot(self) -> Generator[Event]:
         """Check if codebase changed and update supervisor if so."""
         if self._refresh_codebase_snapshot():
             yield _ev("info", "Codebase has evolved; updating context...")
@@ -183,10 +181,10 @@ class BaseLoop:
             self.supervisor.update_system_prompt(new_preamble)
         yield from []
 
-    def _run(self) -> Generator[Event, None, None]:
+    def _run(self) -> Generator[Event]:
         raise NotImplementedError("Subclasses must implement _run()")
 
-    def _apply_protection(self) -> Generator[Event, None, None]:
+    def _apply_protection(self) -> Generator[Event]:
         yield _ev("info", "🔒  Setting read-only protection on critical files…")
         protected_dirs = [
             str(self.config.workspace / d)
@@ -205,7 +203,7 @@ class BaseLoop:
         else:
             yield _ev("info", "No protected paths found to lock")
 
-    def _remove_protection(self) -> Generator[Event, None, None]:
+    def _remove_protection(self) -> Generator[Event]:
         yield _ev("info", "🔓  Removing read-only protection from critical files…")
         if hasattr(self, "_all_protected") and self._all_protected:
             unprotected = self.guard.remove_readonly_protection(self._all_protected)
@@ -217,11 +215,11 @@ class BaseLoop:
         else:
             yield _ev("info", "No protected paths to unlock")
 
-    def _on_successful_output(self, output: str) -> Generator[Event, None, None]:
+    def _on_successful_output(self, output: str) -> Generator[Event]:
         """Hook for subclasses to do something before context monitor updates."""
         yield from []
 
-    def _handle_failure(self, output: str) -> Generator[Event, None, None]:
+    def _handle_failure(self, output: str) -> Generator[Event]:
         self._failures += 1
         retries_remaining = max(0, self.config.max_retries - self._failures)
 
@@ -243,8 +241,8 @@ class BaseLoop:
         )
         self.runner.start(self._restart_prompt())
 
-    def _on_final_failure(self, output: str) -> Generator[Event, None, None]:
-        failure_reason = self._last_feedback if self._last_feedback else "Reached max retries"
+    def _on_final_failure(self, output: str) -> Generator[Event]:
+        failure_reason = self._last_feedback or "Reached max retries"
         update_experience(self.config.workspace, failed=[failure_reason])
         yield from []
         yield from []
@@ -279,7 +277,7 @@ class BaseLoop:
         """Hook to append alignment warnings etc."""
         return safe_msg
 
-    def _do_judgement(self, output: str) -> Generator[Event, None, None]:
+    def _do_judgement(self, output: str) -> Generator[Event]:
         progress = self.runner.get_step_progress()
 
         augmented_output, abort = yield from self._pre_judge(output, progress)
@@ -321,7 +319,7 @@ class BaseLoop:
         self,
         initial_output: str,
         initial_timed_out: bool,
-    ) -> Generator[Event, None, None]:
+    ) -> Generator[Event]:
         output = initial_output
         timed_out = initial_timed_out
 
@@ -372,7 +370,7 @@ class BaseLoop:
 
             output, timed_out = self.runner.read_output()
 
-    def _handle_session_continuity(self) -> Generator[Event, None, None]:
+    def _handle_session_continuity(self) -> Generator[Event]:
         """Decide whether to continue the current opencode session or restart.
 
         When context is below the continuation threshold, enable --continue
@@ -412,7 +410,7 @@ class BaseLoop:
             return time_since_last_step < (self.config.timeout * 0.8)
         return False
 
-    def _handle_active_progress_timeout(self, progress) -> Generator[Event, None, None]:
+    def _handle_active_progress_timeout(self, progress) -> Generator[Event]:
         ext_count = self._timeout_extension_count + 1
         activity_state = self.runner.get_activity_state()
         wait_msg = (
@@ -427,7 +425,7 @@ class BaseLoop:
             f"Timeout extension {ext_count}/{self._max_timeout_extensions} — continuing...",
         )
 
-    def _emit_heartbeat(self, progress) -> Generator[Event, None, None]:
+    def _emit_heartbeat(self, progress) -> Generator[Event]:
         heartbeat_data = {
             "current_step": progress.current_step,
             "total_steps_estimate": progress.total_steps_estimate,
@@ -441,7 +439,7 @@ class BaseLoop:
             **heartbeat_data,
         )
 
-    def _emit_step_events(self, output: str) -> Generator[Event, None, None]:
+    def _emit_step_events(self, output: str) -> Generator[Event]:
         for event in self.runner.get_step_events(output):
             lvl = event.get("level", "info")
             if lvl == "step":
@@ -471,7 +469,7 @@ class BaseLoop:
                     **progress_event,
                 )
 
-    def _do_compaction(self) -> Generator[Event, None, None]:
+    def _do_compaction(self) -> Generator[Event]:
         yield _ev(
             "warn",
             f"Context at {self.ctx_monitor.fraction * 100:.0f}% — compacting.",
@@ -495,7 +493,7 @@ class BaseLoop:
         self.ctx_monitor.reset()
         yield _ev("info", "Compaction prompt with deletion permissions sent.")
 
-    def _update_context_monitor(self) -> Generator[Event, None, None]:
+    def _update_context_monitor(self) -> Generator[Event]:
         files_read = self.runner.get_files_read()
         self.ctx_monitor.update(
             self.runner.estimated_context_tokens,
@@ -514,7 +512,7 @@ class BaseLoop:
                 f"({self.ctx_monitor.fraction * 100:.0f}%). {advice['recommendation']}.\n\n{file_info}",
             )
 
-    def _emit_token_warnings(self) -> Generator[Event, None, None]:
+    def _emit_token_warnings(self) -> Generator[Event]:
         warnings = self.supervisor.get_token_warnings()
         if warnings:
             files_read = self.runner.get_files_read()
@@ -527,7 +525,7 @@ class BaseLoop:
                 yield _ev("warn", f"⚠️ Token warning: {warning}\n\n{file_info}")
             self.supervisor.clear_token_warnings()
 
-    def _forced_summary(self, last_output: str) -> Generator[Event, None, None]:
+    def _forced_summary(self, last_output: str) -> Generator[Event]:
         yield _ev("info", "Writing summary.md…")
         report = self.supervisor.report_final_status(
             reason="forced summarization",
@@ -546,7 +544,7 @@ class BaseLoop:
         self,
         opencode_output: str,
         step_context=None,
-    ) -> Generator[Event, None, None]:
+    ) -> Generator[Event]:
         suggestions, chosen_paths = self.supervisor.generate_suggestions(
             opencode_output=opencode_output,
             step_context=step_context,

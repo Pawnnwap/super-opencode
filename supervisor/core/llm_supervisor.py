@@ -10,13 +10,14 @@ from pathlib import Path
 
 from openai import OpenAI
 
-from supervisor.monitoring.session_tracker import (estimate_request_tokens,
-                                                   truncate_with_fallback,
-                                                   warn_if_exceeds_limit)
+from supervisor.monitoring.session_tracker import (
+    estimate_request_tokens,
+    truncate_with_fallback,
+    warn_if_exceeds_limit,
+)
 from supervisor.monitoring.token_estimator import should_truncate
 from supervisor.protocols.protocol import Protocol
-from supervisor.protocols.protocol_analyzer import (ProtocolAnalysis,
-                                                    ProtocolAnalyzer)
+from supervisor.protocols.protocol_analyzer import ProtocolAnalysis, ProtocolAnalyzer
 from supervisor.utils.text_utils import strip_thinking_blocks
 from supervisor.workspace.ignore_patterns import IgnoreMatcher
 
@@ -484,8 +485,7 @@ class LLMSupervisor:
         """
         try:
             from supervisor.monitoring.session_tracker import SessionTracker
-            from supervisor.utils.experience_tracker import \
-                read_experience_capped
+            from supervisor.utils.experience_tracker import read_experience_capped
 
             experience_text = read_experience_capped(self._workspace, max_chars=10000)
             if not experience_text.strip():
@@ -682,8 +682,10 @@ class LLMSupervisor:
         current_summary: str = "",
         step_context: StepContext | None = None,
     ) -> tuple[str, list[str]]:
-        from supervisor.prompts.templates import (build_context_blocks,
-                                                  build_step_context)
+        from supervisor.prompts.templates import (
+            build_context_blocks,
+            build_step_context,
+        )
 
         protected_files, chosen_paths = self._read_protected_files_for_suggestions()
         protected_context = ""

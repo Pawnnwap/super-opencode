@@ -24,7 +24,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from supervisor.workspace.opencodeignore_handler import (
-    load_opencodeignore_patterns, should_ignore)
+    load_opencodeignore_patterns,
+    should_ignore,
+)
 
 if TYPE_CHECKING:
     from supervisor.workspace.ignore_patterns import IgnoreMatcher

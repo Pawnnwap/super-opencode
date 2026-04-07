@@ -18,6 +18,7 @@ def safe_read_text(path: Path, default: str = "") -> str:
     -------
     str
         File contents or *default*.
+
     """
     try:
         if path.exists():

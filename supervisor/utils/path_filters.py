@@ -7,8 +7,8 @@ every module does not need its own duplicate constants and logic.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
 
 # Canonical set of directories that should always be skipped during
 # workspace traversal (codebase analysis, archiving, vulnerability
@@ -23,7 +23,7 @@ DEFAULT_IGNORE_DIRS: frozenset[str] = frozenset(
         ".mypy_cache",
         ".checkpoints",
         ".archive",
-    }
+    },
 )
 
 # Directory-name prefixes that should be skipped.
@@ -50,6 +50,7 @@ def should_skip_path(
     -------
     bool
         ``True`` when any component of the path matches an ignore rule.
+
     """
     p = Path(path)
     parts = p.parts
@@ -82,6 +83,7 @@ def filter_dir_entries(entries: Iterable[str]) -> list[str]:
     -------
     list[str]
         Subset of *entries* that are not in the ignore set.
+
     """
     return [
         e

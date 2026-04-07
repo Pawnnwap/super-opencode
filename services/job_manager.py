@@ -119,10 +119,9 @@ class JobManager:
                         event = {"level": "info", "msg": event}
                     else:
                         event = {"level": "info", "msg": sanitize_event_message(event)}
-                else:
-                    # Sanitize msg field in dict events before logging
-                    if "msg" in event:
-                        event["msg"] = sanitize_event_message(event["msg"])
+                # Sanitize msg field in dict events before logging
+                elif "msg" in event:
+                    event["msg"] = sanitize_event_message(event["msg"])
                 self.store.append_log(job_id, event)
 
                 # Capture report if it's emitted as an event

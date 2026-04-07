@@ -1,4 +1,3 @@
-
 INIT_PROMPT_TEMPLATE = """\
 Here is your protocol:
 
@@ -219,7 +218,7 @@ def build_init_prompt(
     if plan_output_section:
         parts.append(plan_output_section)
     parts.append(
-        build_workspace_footer(workspace, extra_instructions, protected_files_desc)
+        build_workspace_footer(workspace, extra_instructions, protected_files_desc),
     )
     return "\n".join(parts)
 
