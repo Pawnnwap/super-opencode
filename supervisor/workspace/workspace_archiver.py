@@ -16,7 +16,6 @@ Archive structure:
 
 from __future__ import annotations
 
-from supervisor.utils.path_filters import should_skip_path
 import json
 import shutil
 import time
@@ -24,6 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from supervisor.utils.path_filters import should_skip_path
 from supervisor.workspace.opencodeignore_handler import (
     load_opencodeignore_patterns,
     should_ignore,
@@ -100,7 +100,7 @@ class WorkspaceArchiver:
         if not path.is_file():
             return False
         rel = path.relative_to(self.workspace)
-        parts = rel.parts
+        rel.parts
         if should_skip_path(path, extra_dirs=_ARCHIVE_EXTRA_IGNORE_DIRS):
             return False
         if ignore_matcher and ignore_matcher.matches(path):

@@ -4,14 +4,6 @@ import logging
 import shutil
 import time
 from pathlib import Path
-from typing import Optional
-from pathlib import Path
-
-
-import logging
-import shutil
-from pathlib import Path
-from typing import Optional
 
 
 def safe_read_text(

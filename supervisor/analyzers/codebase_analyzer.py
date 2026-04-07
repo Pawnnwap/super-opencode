@@ -12,12 +12,13 @@ exactly what it is judging before it asks opencode to modify code.
 
 from __future__ import annotations
 
-from supervisor.utils.path_filters import should_skip_path
 import ast
 import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
+
+from supervisor.utils.path_filters import should_skip_path
 
 if TYPE_CHECKING:
     from supervisor.workspace.ignore_patterns import IgnoreMatcher

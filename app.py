@@ -22,6 +22,7 @@ from supervisor.protocols.meta_protocol_builder import (
     MetaProtocolBuilder,
     write_meta_protocol,
 )
+from supervisor.protocols.protocol import parse_protocol_text
 from supervisor.protocols.protocol_analyzer import ProtocolAnalyzer, Severity
 from supervisor.protocols.protocol_wizard import ProtocolWizard
 from supervisor.utils.config import SupervisorConfig
@@ -30,8 +31,9 @@ from supervisor.utils.text_utils import sanitize_event_message
 _UPGRADE_SETTINGS_FILE = Path.home() / ".opencode_supervisor_settings.json"
 
 
-def _should_skip_upgrade():
-    """Check env var and config file to decide whether to skip upgrade."""
+# ── Upgrade helpers ──────────────────────────────────────────────────────── #
+
+def _should_skip_upgrade() -> bool:
     if os.environ.get("OPENCODE_SKIP_UPGRADE") == "1":
         return True
     try:
@@ -45,71 +47,35 @@ def _should_skip_upgrade():
 
 
 def _auto_upgrade_opencode():
-    """Run choco upgrade opencode -y on Windows with admin privileges."""
     if sys.platform != "win32":
         print("[opencode-upgrade] Skipping upgrade: not on Windows", file=sys.stderr)
         return
     if _should_skip_upgrade():
-        print(
-            "[opencode-upgrade] Skipping upgrade: disabled via config/env var",
-            file=sys.stderr,
-        )
+        print("[opencode-upgrade] Skipping upgrade: disabled via config/env var", file=sys.stderr)
         return
     try:
-        print(
-            "[opencode-upgrade] Running: choco upgrade opencode -y (with admin elevation)",
-            file=sys.stderr,
-        )
+        print("[opencode-upgrade] Running: choco upgrade opencode -y (with admin elevation)", file=sys.stderr)
         proc = subprocess.Popen(
-            [
-                "powershell",
-                "-Command",
-                "Start-Process choco -ArgumentList 'upgrade','opencode','-y' -Verb RunAs -Wait",
-            ],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
+            ["powershell", "-Command",
+             "Start-Process choco -ArgumentList 'upgrade','opencode','-y' -Verb RunAs -Wait"],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
         )
         stdout, stderr = proc.communicate(timeout=120)
         if stdout:
             print(f"[opencode-upgrade] stdout: {stdout.strip()}", file=sys.stderr)
         if stderr:
             print(f"[opencode-upgrade] stderr: {stderr.strip()}", file=sys.stderr)
-        if proc.returncode == 0:
-            print("[opencode-upgrade] Upgrade completed successfully.", file=sys.stderr)
-        else:
-            print(
-                f"[opencode-upgrade] Upgrade exited with code {proc.returncode}. Continuing startup.",
-                file=sys.stderr,
-            )
+        code_msg = "successfully" if proc.returncode == 0 else f"with code {proc.returncode}. Continuing startup."
+        print(f"[opencode-upgrade] Upgrade completed {code_msg}.", file=sys.stderr)
     except subprocess.TimeoutExpired:
-        print(
-            "[opencode-upgrade] Upgrade timed out after 120 seconds. Continuing startup.",
-            file=sys.stderr,
-        )
+        print("[opencode-upgrade] Upgrade timed out after 120 seconds. Continuing startup.", file=sys.stderr)
     except FileNotFoundError:
-        print(
-            "[opencode-upgrade] 'powershell' command not found. Continuing startup.",
-            file=sys.stderr,
-        )
+        print("[opencode-upgrade] 'powershell' command not found. Continuing startup.", file=sys.stderr)
     except Exception as e:
-        print(
-            f"[opencode-upgrade] Unexpected error: {e}. Continuing startup.",
-            file=sys.stderr,
-        )
+        print(f"[opencode-upgrade] Unexpected error: {e}. Continuing startup.", file=sys.stderr)
 
 
-# ── End auto-upgrade block ──────────────────────────────────────────────── #
-
-
-# ── supervisor package imports (all at top level — never lazy) ──────────── #
-
-# ── Job Manager instance (cached across reruns) ───────────────────────── #
-# This instance handles long-running jobs in background threads and
-# persists status to disk to handle browser refreshes/disconnections.
-# Using @st.cache_resource ensures _active_jobs survives Streamlit reruns.
-
+# ── Job Manager ──────────────────────────────────────────────────────────── #
 
 @st.cache_resource
 def _get_job_manager():
@@ -119,7 +85,8 @@ def _get_job_manager():
 job_manager = _get_job_manager()
 
 
-# ── page config ──────────────────────────────────────────────────────────── #
+# ── Page config & CSS ────────────────────────────────────────────────────── #
+
 st.set_page_config(
     page_title="opencode Supervisor",
     page_icon="🤖",
@@ -127,15 +94,10 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# ── Run upgrade exactly once per Streamlit session ───────────────────────── #
-# st.session_state persists across reruns (page switches, widget interactions)
-# but is reset when the browser tab is closed or the server restarts.
-# Using a flag here prevents the upgrade from firing on every script rerun.
 if not st.session_state.get("_upgrade_done"):
     _auto_upgrade_opencode()
     st.session_state["_upgrade_done"] = True
 
-# ── custom CSS constants ─────────────────────────────────────────────────── #
 CUSTOM_CSS = """
 <style>
 @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;600&family=Syne:wght@400;700;800&display=swap');
@@ -145,57 +107,26 @@ html, body, [class*="css"] {
     background-color: #0d0f14;
     color: #c9d1d9;
 }
-
-/* sidebar */
-section[data-testid="stSidebar"] {
-    background: #0a0c10;
-    border-right: 1px solid #21262d;
-}
-
-/* headings */
+section[data-testid="stSidebar"] { background: #0a0c10; border-right: 1px solid #21262d; }
 h1 { font-family: 'Syne', sans-serif; font-weight: 800; color: #58a6ff; letter-spacing: -1px; }
 h2 { font-family: 'Syne', sans-serif; font-weight: 700; color: #79c0ff; }
 h3 { font-family: 'Syne', sans-serif; font-weight: 600; color: #9ecbff; }
-
-/* text areas & inputs */
 textarea, input[type="text"], input[type="number"], input[type="password"] {
     font-family: 'JetBrains Mono', monospace !important;
-    background: #161b22 !important;
-    color: #e6edf3 !important;
-    border: 1px solid #30363d !important;
-    border-radius: 6px !important;
+    background: #161b22 !important; color: #e6edf3 !important;
+    border: 1px solid #30363d !important; border-radius: 6px !important;
 }
-
-/* buttons */
 button[kind="primary"], .stButton > button {
-    background: #1f6feb !important;
-    border: none !important;
-    color: #fff !important;
-    font-family: 'JetBrains Mono', monospace !important;
-    font-weight: 600 !important;
-    border-radius: 6px !important;
-    padding: 0.4rem 1.2rem !important;
-    transition: background 0.15s;
+    background: #1f6feb !important; border: none !important; color: #fff !important;
+    font-family: 'JetBrains Mono', monospace !important; font-weight: 600 !important;
+    border-radius: 6px !important; padding: 0.4rem 1.2rem !important; transition: background 0.15s;
 }
-button[kind="primary"]:hover, .stButton > button:hover {
-    background: #388bfd !important;
-}
-
-/* log terminal box */
+button[kind="primary"]:hover, .stButton > button:hover { background: #388bfd !important; }
 .log-box {
-    background: #0d1117;
-    border: 1px solid #21262d;
-    border-radius: 8px;
-    padding: 1rem 1.2rem;
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 0.78rem;
-    line-height: 1.7;
-    max-height: 520px;
-    overflow-y: auto;
-    white-space: pre-wrap;
-    word-break: break-word;
+    background: #0d1117; border: 1px solid #21262d; border-radius: 8px;
+    padding: 1rem 1.2rem; font-family: 'JetBrains Mono', monospace; font-size: 0.78rem;
+    line-height: 1.7; max-height: 520px; overflow-y: auto; white-space: pre-wrap; word-break: break-word;
 }
-
 .log-info              { color: #8b949e; }
 .log-warn              { color: #e3b341; }
 .log-error             { color: #f85149; }
@@ -209,70 +140,29 @@ button[kind="primary"]:hover, .stButton > button:hover {
 .log-step_progress     { color: #a5d6ff; white-space: pre-wrap; }
 .log-heartbeat         { color: #39d353; white-space: pre-wrap; font-style: italic; }
 .log-rule { color: #21262d; display:block; }
-
-/* progress bar */
-div[data-testid="stProgress"] > div > div {
-    background-color: #21262d !important;
-}
-div[data-testid="stProgress"] > div > div > div {
-    background: linear-gradient(90deg, #1f6feb, #58a6ff) !important;
-}
-
-/* section cards */
-.card {
-    background: #161b22;
-    border: 1px solid #21262d;
-    border-radius: 10px;
-    padding: 1.2rem 1.5rem;
-    margin-bottom: 1rem;
-}
-
-/* status pill */
-.pill {
-    display: inline-block;
-    padding: 2px 12px;
-    border-radius: 999px;
-    font-size: 0.75rem;
-    font-family: 'JetBrains Mono', monospace;
-    font-weight: 600;
-    margin-left: 8px;
-}
+div[data-testid="stProgress"] > div > div { background-color: #21262d !important; }
+div[data-testid="stProgress"] > div > div > div { background: linear-gradient(90deg, #1f6feb, #58a6ff) !important; }
+.card { background: #161b22; border: 1px solid #21262d; border-radius: 10px; padding: 1.2rem 1.5rem; margin-bottom: 1rem; }
+.pill { display: inline-block; padding: 2px 12px; border-radius: 999px; font-size: 0.75rem; font-family: 'JetBrains Mono', monospace; font-weight: 600; margin-left: 8px; }
 .pill-idle    { background:#21262d; color:#8b949e; }
 .pill-running { background:#1f6feb22; color:#58a6ff; border: 1px solid #1f6feb55; }
 .pill-success { background:#23863633; color:#3fb950; border: 1px solid #23863655; }
 .pill-failure { background:#da363333; color:#f85149; border: 1px solid #da363355; }
-
-/* protocol preview */
 .proto-preview {
-    background: #0d1117;
-    border-left: 3px solid #1f6feb;
-    padding: 0.8rem 1rem;
-    border-radius: 0 6px 6px 0;
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 0.78rem;
-    white-space: pre-wrap;
-    color: #c9d1d9;
+    background: #0d1117; border-left: 3px solid #1f6feb; padding: 0.8rem 1rem;
+    border-radius: 0 6px 6px 0; font-family: 'JetBrains Mono', monospace;
+    font-size: 0.78rem; white-space: pre-wrap; color: #c9d1d9;
 }
-
-/* expander content wrapper */
-.expander-content {
-    padding: 0.5rem 0;
-}
-
-div[data-testid="stExpander"] {
-    border: 1px solid #21262d !important;
-    background: #161b22 !important;
-    border-radius: 8px !important;
-}
+.expander-content { padding: 0.5rem 0; }
+div[data-testid="stExpander"] { border: 1px solid #21262d !important; background: #161b22 !important; border-radius: 8px !important; }
 </style>
 """
-
-# ── custom CSS  (dark terminal aesthetic) ────────────────────────────────── #
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
 
-# ── UI helper functions ──────────────────────────────────────────────────── #
-def render_expander_section(title, content_func):
+# ── UI Utilities ─────────────────────────────────────────────────────────── #
+
+def render_expander_section(title: str, content_func) -> None:
     """Render a standardized expander section with consistent styling."""
     with st.expander(title, expanded=False):
         st.markdown("<div class='expander-content'>", unsafe_allow_html=True)
@@ -282,73 +172,61 @@ def render_expander_section(title, content_func):
 
 def _clear_page_state(target_page: str) -> None:
     """Clear UI state from other pages when navigating to a new page."""
-    # Clear custom model form state when leaving wizard page
     if target_page != "wizard":
-        st.session_state.show_custom_model_form = False
-        st.session_state.custom_service_name = ""
-        st.session_state.custom_base_url = ""
-        st.session_state.custom_api_key = ""
-        st.session_state.custom_model_names = ""
-    # Clear wizard-specific state when navigating away
-    if target_page == "wizard":
-        pass  # wizard is the default page, keep its state
-    # Clear run-specific query params when navigating away from run page
+        for key in ("show_custom_model_form", "custom_service_name",
+                    "custom_base_url", "custom_api_key", "custom_model_names"):
+            st.session_state[key] = "" if key != "show_custom_model_form" else False
     if target_page != "run":
         st.query_params.pop("run_job_id", None)
-    # Clear evolution-specific query params when navigating away from evolve page
     if target_page != "evolve":
         st.query_params.pop("evo_job_id", None)
 
 
-def render_file_block(title, body, language="python"):
-    """Render a file block with title and code content."""
+def render_file_block(title: str, body: str, language: str = "python") -> None:
     st.markdown(f"### {title}")
     st.code(body, language=language)
 
 
-# ── session state defaults ────────────────────────────────────────────────── #
+def _safe_logs(status: dict) -> list[dict]:
+    """Return logs list from a job status dict, guarding against null."""
+    return status.get("logs") or []
 
 
-# ── Helper functions for custom model configuration ───────────────────────── #
+def _redirect_if_locked(page: str, warning: str) -> None:
+    """Redirect to wizard with a warning if connectivity tests haven't passed."""
+    st.session_state.page = "wizard"
+    st.session_state["_redirect_warning"] = warning
+    st.rerun()
+
+
+# ── opencode config helpers ──────────────────────────────────────────────── #
+
 def _find_opencode_config_dir() -> Path | None:
-    """Find a directory containing .config/opencode under user's home."""
     home = Path.home()
-    # Fix 3: use os.path.join instead of / operator for string path concatenation
     config_dir = Path(os.path.join(str(home), ".config", "opencode"))
     if config_dir.exists() and config_dir.is_dir():
         return config_dir
-
-    # On Windows, also check AppData/Local equivalent
     if sys.platform == "win32":
         config_dir_win = Path(os.path.join(str(home), "AppData", "Local", "opencode"))
         if config_dir_win.exists() and config_dir_win.is_dir():
             return config_dir_win
-
-    # Try to create the standard location
     config_dir.mkdir(parents=True, exist_ok=True)
     return config_dir
 
 
 def _get_opencode_config_file(config_dir: Path) -> Path:
-    """Get the opencode.json file, creating it if it doesn't exist."""
     opencode_json = Path(os.path.join(str(config_dir), "opencode.json"))
     config_json = Path(os.path.join(str(config_dir), "config.json"))
 
-    # Prefer opencode.json if it exists
     if opencode_json.exists():
         target_file = opencode_json
     elif config_json.exists():
         target_file = config_json
     else:
-        # Create empty opencode.json with correct structure
         default_content = {"$schema": "https://opencode.ai/config.json", "provider": {}}
-        opencode_json.write_text(
-            json.dumps(default_content, indent=2),
-            encoding="utf-8",
-        )
+        opencode_json.write_text(json.dumps(default_content, indent=2), encoding="utf-8")
         target_file = opencode_json
 
-    # Inject MCP session
     try:
         content = json.loads(target_file.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, FileNotFoundError):
@@ -357,28 +235,17 @@ def _get_opencode_config_file(config_dir: Path) -> Path:
     if "mcp" not in content:
         content["mcp"] = {}
 
-    hashline_path = str(Path(__file__).parent.resolve() / "mcp_server" / "hashline.py")
-    hashline_path = hashline_path.replace("\\", "/")
-
-    mcp_hashline_config = {
-        "type": "local",
-        "command": ["python", hashline_path],
-        "enabled": True,
-        "environment": {},
-    }
-
+    hashline_path = str(Path(__file__).parent.resolve() / "mcp_server" / "hashline.py").replace("\\", "/")
+    mcp_hashline_config = {"type": "local", "command": ["python", hashline_path], "enabled": True, "environment": {}}
     desired_permissions = {"read": "deny", "edit": "deny"}
 
     dirty = False
-
     if content["mcp"].get("hashline") != mcp_hashline_config:
         content["mcp"]["hashline"] = mcp_hashline_config
         dirty = True
-
     if content.get("permission") != desired_permissions:
         content["permission"] = desired_permissions
         dirty = True
-
     if dirty:
         target_file.write_text(json.dumps(content, indent=2), encoding="utf-8")
 
@@ -386,219 +253,141 @@ def _get_opencode_config_file(config_dir: Path) -> Path:
 
 
 def _add_custom_provider_to_config(
-    config_file: Path,
-    service_name: str,
-    base_url: str,
-    api_key: str,
-    model_names: list[str],
-):
-    """Add a new provider entry to the opencode config file."""
+    config_file: Path, service_name: str, base_url: str, api_key: str, model_names: list[str],
+) -> None:
     try:
         content = json.loads(config_file.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, FileNotFoundError):
         content = {"$schema": "https://opencode.ai/config.json", "provider": {}}
-
-    if "provider" not in content:
-        content["provider"] = {}
-
-    # Build models dict from provided model names
-    models_dict = {name.strip(): {} for name in model_names if name.strip()}
-
-    # Create the new provider entry using the correct structure
-    new_provider = {
+    content.setdefault("provider", {})[service_name] = {
         "npm": "@ai-sdk/openai-compatible",
         "options": {"baseURL": base_url, "apiKey": api_key},
-        "models": models_dict,
+        "models": {name.strip(): {} for name in model_names if name.strip()},
     }
-
-    content["provider"][service_name] = new_provider
-
     config_file.write_text(json.dumps(content, indent=2), encoding="utf-8")
 
 
 def _fetch_opencode_models(exe: str = "opencode") -> list[str]:
-    """Run 'opencode models' and return the list of model identifiers."""
     try:
-        proc = subprocess.run(
-            [exe, "models"],
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
+        proc = subprocess.run([exe, "models"], capture_output=True, text=True, timeout=15)
         if proc.returncode == 0:
-            return [
-                line.strip()
-                for line in proc.stdout.strip().splitlines()
-                if line.strip()
-            ]
+            return [line.strip() for line in proc.stdout.strip().splitlines() if line.strip()]
     except Exception:
         pass
     return []
 
 
-# ── Ensure MCP Config is injected on startup ──────────────────────────────── #
+# ── SupervisorConfig factory ─────────────────────────────────────────────── #
+
+def _build_supervisor_config(protocol_path: Path, workspace: Path, **overrides) -> SupervisorConfig:
+    """Build a SupervisorConfig from session state, with optional overrides."""
+    defaults = dict(
+        protocol_path=protocol_path,
+        workspace=workspace,
+        max_retries=int(st.session_state.max_retries),
+        context_threshold=st.session_state.context_threshold / 100.0,
+        opencode_model=st.session_state.opencode_model or None,
+        opencode_model_backup=st.session_state.opencode_model_backup or None,
+        opencode_executable=st.session_state.opencode_executable,
+        supervisor_model=st.session_state.supervisor_model or "gpt-4o",
+        supervisor_model_backup=st.session_state.supervisor_model_backup or None,
+        timeout=int(st.session_state.timeout) * 60,
+        protected_files=tuple(st.session_state.get("protected_files", [])),
+        max_tokens=int(st.session_state.max_tokens),
+        enable_python_scanner=bool(st.session_state.enable_python_scanner),
+    )
+    defaults.update(overrides)
+    return SupervisorConfig(**defaults)
+
+
+# ── Startup initialisation ───────────────────────────────────────────────── #
+
 if not st.session_state.get("_mcp_config_done"):
     _mcp_dir = _find_opencode_config_dir()
     if _mcp_dir:
         _get_opencode_config_file(_mcp_dir)
     st.session_state["_mcp_config_done"] = True
 
-
-# Load persisted settings first — used as defaults below
 _persisted = load_settings()
 
 defaults = {
-    "page": "wizard",
-    "protocol_md": "",
-    "log_events": [],
-    "run_state": "idle",
-    "final_report": "",
-    "wizard_step": 0,
-    "raw_input": "",
-    "raw_target": "",
-    "raw_restrictions": "",
-    "openai_key": "",
-    "base_url": "",
-    "workspace": "",
-    "supervisor_model": "",
-    "supervisor_model_backup": "",
-    "opencode_model": "",
-    "opencode_model_backup": "",
-    "opencode_executable": "",
-    "max_retries": 3,
-    "context_threshold": 60,
-    "max_tokens": 150000,
-    "timeout": 120,
-    "plan_mode_rounds": 1,
-    "protected_files": [],
-    "_last_workspace": "",
-    # self-evolution page
-    "evo_goal": "",
-    "evo_extra_restrictions": "",
-    "evo_meta_protocol_md": "",
-    "evo_log_events": [],
-    "evo_run_state": "idle",
-    "evo_report": "",
-    "evo_wizard_step": 0,
-    "self_evolution_verbose": False,
-    "verbose_log": True,
-    # internal state for live run
-    "_run_heartbeat": 0,
-    # internal state for self-evolution
-    "_evo_heartbeat": 0,
-    # connectivity test flags
-    "opencode_test_passed": False,
-    "supervisor_test_passed": False,
-    "opencode_models": [],
-    "enable_python_scanner": True,
+    "page": "wizard", "protocol_md": "", "log_events": [], "run_state": "idle",
+    "final_report": "", "wizard_step": 0, "raw_input": "", "raw_target": "",
+    "raw_restrictions": "", "openai_key": "", "base_url": "", "workspace": "",
+    "supervisor_model": "", "supervisor_model_backup": "", "opencode_model": "",
+    "opencode_model_backup": "", "opencode_executable": "", "max_retries": 3,
+    "context_threshold": 60, "max_tokens": 150000, "timeout": 120,
+    "plan_mode_rounds": 1, "protected_files": [], "_last_workspace": "",
+    "evo_goal": "", "evo_extra_restrictions": "", "evo_meta_protocol_md": "",
+    "evo_log_events": [], "evo_run_state": "idle", "evo_report": "",
+    "evo_wizard_step": 0, "self_evolution_verbose": False, "verbose_log": True,
+    "_run_heartbeat": 0, "_evo_heartbeat": 0,
+    "opencode_test_passed": False, "supervisor_test_passed": False,
+    "opencode_models": [], "enable_python_scanner": True,
 }
 for k, v in defaults.items():
     if k not in st.session_state:
-        # Use persisted value if available, else default
         st.session_state[k] = _persisted.get(k, v)
 
-# ── Fetch opencode models once per session ──────────────────────────────── #
 if not st.session_state["opencode_models"]:
     st.session_state["opencode_models"] = _fetch_opencode_models()
 
-# ── sidebar navigation ────────────────────────────────────────────────────── #
+
+# ── Sidebar ──────────────────────────────────────────────────────────────── #
+
+_PILL_MAP = {
+    "PENDING":   '<span class="pill pill-idle">queued…</span>',
+    "RUNNING":   '<span class="pill pill-running">running</span>',
+    "SUCCESS":   '<span class="pill pill-success">done ✓</span>',
+    "FAILED":    '<span class="pill pill-failure">failed ✗</span>',
+    "CANCELLED": '<span class="pill pill-failure">cancelled ⏹</span>',
+}
+
+
+def _any_job_running() -> bool:
+    return any(
+        job_manager.get_job_status(jid) and job_manager.get_job_status(jid).get("state") == "RUNNING"
+        for jid in job_manager.store.list_jobs()
+    )
+
+
+def _evo_job_passed() -> bool:
+    for jid in job_manager.store.list_jobs():
+        status = job_manager.get_job_status(jid)
+        if status and status.get("type") == "evolve" and status.get("state") == "SUCCESS":
+            for log in reversed(_safe_logs(status)):
+                msg = log.get("msg", "")
+                if msg and ("Tests: All passed" in msg or log.get("level") == "success"):
+                    return True
+    return False
+
+
 with st.sidebar:
     st.markdown("## 🤖 opencode<br>**Supervisor**", unsafe_allow_html=True)
     st.markdown("---")
 
-    pill_map = {
-        "PENDING": '<span class="pill pill-idle">queued…</span>',
-        "RUNNING": '<span class="pill pill-running">running</span>',
-        "SUCCESS": '<span class="pill pill-success">done ✓</span>',
-        "FAILED": '<span class="pill pill-failure">failed ✗</span>',
-        "CANCELLED": '<span class="pill pill-failure">cancelled ⏹</span>',
-    }
-
-    # Retrieve current job IDs from query params
-    run_job_id = st.query_params.get("run_job_id")
-    evo_job_id = st.query_params.get("evo_job_id")
-
-    if run_job_id:
-        status = job_manager.get_job_status(run_job_id)
-        if status:
-            st.markdown(
-                f"**Live Run** {pill_map.get(status['state'], '')}",
-                unsafe_allow_html=True,
-            )
-
-    if evo_job_id:
-        status = job_manager.get_job_status(evo_job_id)
-        if status:
-            st.markdown(
-                f"**Self-evo** {pill_map.get(status['state'], '')}",
-                unsafe_allow_html=True,
-            )
+    for param_key, label in (("run_job_id", "**Live Run**"), ("evo_job_id", "**Self-evo**")):
+        jid = st.query_params.get(param_key)
+        if jid:
+            s = job_manager.get_job_status(jid)
+            if s:
+                st.markdown(f"{label} {_PILL_MAP.get(s['state'], '')}", unsafe_allow_html=True)
 
     st.markdown("---")
 
-    pages = {
-        "wizard": "① Protocol Wizard",
-        "run": "② Live Run",
-        "evolve": "③ Self-Evolution",
-    }
     tests_passed = (
-        st.session_state.opencode_test_passed
-        and st.session_state.supervisor_test_passed
+        st.session_state.opencode_test_passed and st.session_state.supervisor_test_passed
+        or _any_job_running()
+        or _evo_job_passed()
     )
 
-    run_job_id = st.query_params.get("run_job_id")
-    evo_job_id = st.query_params.get("evo_job_id")
-
-    is_running = False
-    for jid in job_manager.store.list_jobs():
-        status = job_manager.get_job_status(jid)
-        if status and status.get("state") == "RUNNING":
-            is_running = True
-            break
-
-    if is_running:
-        tests_passed = True
-    else:
-        # Check if any completed self-evolution job had passing tests
-        evo_passed = False
-        for jid in job_manager.store.list_jobs():
-            status = job_manager.get_job_status(jid)
-            if (
-                status
-                and status.get("type") == "evolve"
-                and status.get("state") == "SUCCESS"
-            ):
-                logs = status.get("logs") or []
-                # Check for test pass indicators in logs
-                for log in reversed(logs):
-                    msg = log.get("msg", "")
-                    level = log.get("level", "")
-                    # Look for "Tests: All passed" or success level events
-                    if msg and ("Tests: All passed" in msg or level == "success"):
-                        evo_passed = True
-                        break
-        if evo_passed:
-            tests_passed = True
-
-    for key, label in pages.items():
+    for key, label in {"wizard": "① Protocol Wizard", "run": "② Live Run", "evolve": "③ Self-Evolution"}.items():
         locked = key != "wizard" and not tests_passed
         active = st.session_state.page == key
         if locked:
-            if st.button(
-                f"🔒 {label}",
-                key=f"nav_{key}",
-                use_container_width=True,
-                disabled=True,
-            ):
-                pass
-        elif st.button(
-            label,
-            key=f"nav_{key}",
-            use_container_width=True,
-            type="primary" if active else "secondary",
-        ):
-            st.session_state._prev_page = key
-            # Clear page-specific UI state on navigation
+            st.button(f"🔒 {label}", key=f"nav_{key}", use_container_width=True, disabled=True)
+        elif st.button(label, key=f"nav_{key}", use_container_width=True,
+                       type="primary" if active else "secondary"):
             _clear_page_state(key)
             st.session_state.page = key
             st.rerun()
@@ -606,61 +395,32 @@ with st.sidebar:
     if not tests_passed:
         st.caption("🔒 Run & Self-Evolution locked — pass connectivity tests first.")
 
-    # ── Add Custom Model for Opencode (sidebar, wizard page only) ───────── #
+    # Custom model form (wizard page only)
     if st.session_state.page == "wizard":
         st.markdown("---")
         st.markdown("### 🤖 Add Custom Model for Opencode")
-
-        # Initialize session state for custom model form
         if "show_custom_model_form" not in st.session_state:
             st.session_state.show_custom_model_form = False
-
         if st.button("➕ Add Custom Model for Opencode", key="btn_add_custom_model"):
             st.session_state.show_custom_model_form = True
 
         if st.session_state.show_custom_model_form:
             st.markdown("**Custom Service Configuration**")
-
-            service_name = st.text_input(
-                "Service name",
-                key="custom_service_name",
-                placeholder="my-custom-service",
-                help="Prefix with slash when using, e.g. /my-service",
-            )
-
-            base_url = st.text_input(
-                "Base URL",
-                key="custom_base_url",
-                placeholder="https://api.example.com/v1",
-            )
-
-            api_key = st.text_input(
-                "API key",
-                key="custom_api_key",
-                type="password",
-                placeholder="sk-...",
-            )
-
-            # Fix 2: Add model names input
+            service_name = st.text_input("Service name", key="custom_service_name",
+                                         placeholder="my-custom-service")
+            base_url = st.text_input("Base URL", key="custom_base_url",
+                                     placeholder="https://api.example.com/v1")
+            api_key = st.text_input("API key", key="custom_api_key",
+                                    type="password", placeholder="sk-...")
             st.markdown("**Model names** *(one per line)*")
             model_names_input = st.text_area(
-                "Model names",
-                key="custom_model_names",
-                height=100,
+                "Model names", key="custom_model_names", height=100,
                 placeholder="qwen3-coder-plus\nqwen3-max\nkimi-k2-0905",
                 label_visibility="collapsed",
-                help="Enter one model name per line. These will be added under the provider's models key.",
             )
-
             if st.button("💾 Save Service", key="btn_save_custom_service"):
-                model_names = [
-                    m.strip() for m in model_names_input.splitlines() if m.strip()
-                ]
-                if (
-                    not service_name.strip()
-                    or not base_url.strip()
-                    or not api_key.strip()
-                ):
+                model_names = [m.strip() for m in model_names_input.splitlines() if m.strip()]
+                if not service_name.strip() or not base_url.strip() or not api_key.strip():
                     st.error("Please fill in service name, base URL, and API key.")
                 elif not model_names:
                     st.error("Please enter at least one model name.")
@@ -668,28 +428,18 @@ with st.sidebar:
                     try:
                         config_dir = _find_opencode_config_dir()
                         if config_dir is None:
-                            st.error(
-                                "Could not find or create opencode config directory.",
-                            )
+                            st.error("Could not find or create opencode config directory.")
                         else:
                             config_file = _get_opencode_config_file(config_dir)
                             _add_custom_provider_to_config(
-                                config_file,
-                                service_name.strip(),
-                                base_url.strip(),
-                                api_key.strip(),
-                                model_names,
+                                config_file, service_name.strip(), base_url.strip(),
+                                api_key.strip(), model_names,
                             )
                             st.success("✅ Service saved successfully!")
-                            st.info(
-                                f"Models can now be referenced as `{service_name.strip()}/<model-name>`",
-                            )
+                            st.info(f"Models can now be referenced as `{service_name.strip()}/<model-name>`")
                             st.session_state.show_custom_model_form = False
-                            # Clear the form inputs
-                            st.session_state.custom_service_name = ""
-                            st.session_state.custom_base_url = ""
-                            st.session_state.custom_api_key = ""
-                            st.session_state.custom_model_names = ""
+                            for k in ("custom_service_name", "custom_base_url", "custom_api_key", "custom_model_names"):
+                                st.session_state[k] = ""
                     except Exception as e:
                         st.error(f"Failed to save service: {e}")
 
@@ -697,22 +447,11 @@ with st.sidebar:
     st.caption("streamlit · opencode")
 
 
-# ═══════════════════════════════════════════════════════════════════════════ #
-# PAGE 1 — Protocol Wizard                                                    #
-# ═══════════════════════════════════════════════════════════════════════════ #
+# ── Connectivity tests ───────────────────────────────────────────────────── #
 
-
-# ═══════════════════════════════════════════════════════════════════════════ #
-# Connectivity tests                                                          #
-# ═══════════════════════════════════════════════════════════════════════════ #
-
-
-def _run_with_timeout(fn, seconds=30):
-    """Run fn() in a daemon thread; raise TimeoutError if it exceeds `seconds`."""
+def _run_with_timeout(fn, seconds: int = 30):
     import threading
-
-    result = []
-    error = []
+    result, error = [], []
 
     def worker():
         try:
@@ -723,40 +462,32 @@ def _run_with_timeout(fn, seconds=30):
     t = threading.Thread(target=worker, daemon=True)
     t.start()
     t.join(timeout=seconds)
-
     if t.is_alive():
         raise TimeoutError(f"Timed out after {seconds}s")
-
     if error:
         raise error[0]
-
     return result[0]
 
 
-def test_opencode():
+def test_opencode() -> tuple[bool, str]:
     import tempfile
-
     from supervisor.runners.opencode_runner import OpencodeRunner, find_opencode
 
     workspace = Path(tempfile.gettempdir()) / "opencode_test_dummy"
-    workspace.mkdir(exist_ok=True)  # Ensure dummy dir exists
-
+    workspace.mkdir(exist_ok=True)
     try:
         exe = find_opencode(st.session_state.opencode_executable or "")
     except FileNotFoundError as e:
         return False, str(e)
 
     runner = OpencodeRunner(
-        workspace=workspace,
-        opencode_model=st.session_state.opencode_model,
-        opencode_executable=exe,
-        opencode_model_backup=st.session_state.opencode_model_backup,
+        workspace=workspace, opencode_model=st.session_state.opencode_model,
+        opencode_executable=exe, opencode_model_backup=st.session_state.opencode_model_backup,
         timeout=30,
     )
 
     def _inner():
         runner.start("hi")
-        # Ensure we don't hang indefinitely reading output
         output, timed_out = runner.read_output(timeout=25)
         if timed_out:
             return False, "opencode timed out reading output."
@@ -766,7 +497,6 @@ def test_opencode():
         return False, f"opencode returned an error.\n{diag}"
 
     try:
-        # Give the wrapper a slightly longer timeout than the internal read timeout
         return _run_with_timeout(_inner, seconds=30)
     except TimeoutError:
         return False, "opencode test timed out."
@@ -779,22 +509,16 @@ def test_opencode():
             pass
 
 
-def test_supervisor():
+def test_supervisor() -> tuple[bool, str]:
     if not st.session_state.openai_key:
         return False, "API key is not set."
-
     model = st.session_state.supervisor_model or "gpt-4o"
-    client = OpenAI(
-        api_key=st.session_state.openai_key,
-        base_url=st.session_state.base_url or None,
-        timeout=25.0,  # connection + read timeout on the socket
-    )
+    client = OpenAI(api_key=st.session_state.openai_key,
+                    base_url=st.session_state.base_url or None, timeout=25.0)
 
     def _inner():
         resp = client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": "hi"}],
-        )
+            model=model, messages=[{"role": "user", "content": "hi"}])
         text = resp.choices[0].message.content or ""
         if text.strip():
             return True, f"Supervisor responded: {text.strip()[:120]}"
@@ -808,10 +532,172 @@ def test_supervisor():
         return False, f"Supervisor test failed: {exc}"
 
 
-def page_wizard():
+def _render_connectivity_tests() -> None:
+    """Render the connectivity test section (shared by wizard page)."""
+    st.markdown("---")
+    st.markdown("### 🔌 Connectivity Tests")
+    both_passed = st.session_state.opencode_test_passed and st.session_state.supervisor_test_passed
+    if both_passed:
+        st.success("✅ Both opencode and supervisor connectivity tests passed.")
+    else:
+        st.info("Run the tests below to verify opencode and supervisor are reachable.")
+
+    col_t1, col_t2, col_t3 = st.columns(3)
+
+    def _do_test_opencode():
+        with st.spinner("Testing opencode…"):
+            ok, msg = test_opencode()
+        st.session_state.opencode_test_passed = ok
+        (st.success if ok else st.error)(f"{'✅' if ok else '❌'} Test opencode: {msg}")
+
+    def _do_test_supervisor():
+        with st.spinner("Testing supervisor…"):
+            ok, msg = test_supervisor()
+        st.session_state.supervisor_test_passed = ok
+        (st.success if ok else st.error)(f"{'✅' if ok else '❌'} Test Supervisor: {msg}")
+
+    with col_t1:
+        if st.button("▶  Run Tests", type="primary", key="btn_run_tests"):
+            if not st.session_state.workspace:
+                st.error("Set a workspace path before running tests.")
+            else:
+                _do_test_opencode()
+                _do_test_supervisor()
+    with col_t2:
+        if st.button("🧪 Test opencode", key="btn_test_opencode"):
+            if not st.session_state.workspace:
+                st.error("Set a workspace path before testing.")
+            else:
+                _do_test_opencode()
+    with col_t3:
+        if st.button("🧪 Test Supervisor", key="btn_test_supervisor"):
+            if not st.session_state.openai_key:
+                st.error("Set an API key before testing.")
+            else:
+                _do_test_supervisor()
+
+
+# ── Protocol quality analysis ────────────────────────────────────────────── #
+
+def _render_quality_metrics(analysis) -> None:
+    """Render the four quality metric columns (shared between raw/refined views)."""
+    col1, col2, col3, col4 = st.columns(4)
+    with col1: st.metric("Overall", f"{analysis.overall_score:.0%}")
+    with col2: st.metric("INPUT", f"{analysis.input_score.overall:.0%}")
+    with col3: st.metric("TARGET", f"{analysis.target_score.overall:.0%}")
+    with col4: st.metric("RESTRICTIONS", f"{analysis.restrictions_score.overall:.0%}")
+
+
+def _render_quality_analysis(raw_input: str, raw_target: str, raw_restrictions: str) -> None:
+    analyzer = ProtocolAnalyzer()
+    temp_text = (
+        f"## INPUT\n\n{raw_input}\n\n"
+        f"## TARGET\n\n{raw_target}\n\n"
+        f"## RESTRICTIONS\n\n{raw_restrictions}\n"
+    )
+    try:
+        analysis = analyzer.analyze_text(temp_text)
+    except Exception:
+        st.caption("Complete all three sections to see quality scores.")
+        return
+
+    _render_quality_metrics(analysis)
+
+    if analysis.issues:
+        st.caption(f"Found {len(analysis.issues)} issue(s)")
+        for issue in analysis.issues[:5]:
+            icon = {"error": "❌", "warning": "⚠️", "info": "ℹ️"}[issue.severity.value]
+            st.caption(f"{icon} [{issue.section}] {issue.message}")
+
+
+def _render_refined_quality_analysis(refined_md: str) -> None:
+    analyzer = ProtocolAnalyzer()
+    try:
+        analysis = analyzer.analyze_text(refined_md)
+    except Exception as e:
+        st.warning(f"Cannot analyze protocol: {e}")
+        return
+
+    rating_colors = {"excellent": "🟢", "good": "🟡", "fair": "🟠", "poor": "🔴"}
+    color = rating_colors.get(analysis.quality_rating, "⚪")
+
+    _render_quality_metrics(analysis)
+    st.caption(f"{color} Quality: {analysis.quality_rating}")
+
+    if analysis.issues:
+        errors   = [i for i in analysis.issues if i.severity == Severity.ERROR]
+        warnings = [i for i in analysis.issues if i.severity == Severity.WARNING]
+        infos    = [i for i in analysis.issues if i.severity == Severity.INFO]
+
+        if errors:
+            st.error(f"{len(errors)} error(s) found")
+            for issue in errors:
+                st.caption(f"❌ [{issue.section}] {issue.message}")
+                if issue.suggestion:
+                    st.caption(f"   → {issue.suggestion}")
+        if warnings:
+            st.warning(f"{len(warnings)} warning(s)")
+            for issue in warnings:
+                st.caption(f"⚠️ [{issue.section}] {issue.message}")
+        if infos:
+            def _suggestions_content():
+                for issue in infos:
+                    st.caption(f"ℹ️ [{issue.section}] {issue.message}")
+                    if issue.suggestion:
+                        st.caption(f"   → {issue.suggestion}")
+            render_expander_section(f"{len(infos)} suggestion(s)", _suggestions_content)
+
+
+# ── Existing-protocol reuse banner ──────────────────────────────────────── #
+
+def _render_existing_protocol_banner(
+    proto_path: Path,
+    state_key: str,
+    reuse_label: str = "♻️  Use existing protocol.md",
+    on_reuse=None,
+) -> bool:
+    """
+    If ``proto_path`` exists and ``st.session_state[state_key]`` is falsy,
+    show a reuse / ignore banner.  Returns True if the banner was shown.
+    ``on_reuse`` is an optional callable invoked when the user clicks Reuse.
+    """
+    if not (proto_path.exists() and not st.session_state.get(state_key)):
+        return False
+
+    existing_text = proto_path.read_text(encoding="utf-8")
+    fname = proto_path.name
+    st.info(f"📄 An existing `{fname}` was found.")
+    col_reuse, col_ignore, _ = st.columns([1, 1, 3])
+    with col_reuse:
+        if st.button(reuse_label, type="primary", key=f"btn_reuse_{state_key}"):
+            if on_reuse:
+                on_reuse(existing_text)
+            else:
+                st.session_state[state_key] = existing_text
+                st.rerun()
+    with col_ignore:
+        st.button("✏️  Write new one", key=f"btn_ignore_{state_key}")
+    with st.expander(f"Preview existing {fname}"):
+        st.code(existing_text[:1500], language="markdown")
+    st.markdown("---")
+    return True
+
+
+# ═══════════════════════════════════════════════════════════════════════════ #
+# PAGE 1 — Protocol Wizard                                                    #
+# ═══════════════════════════════════════════════════════════════════════════ #
+
+def _save_protocol() -> None:
+    workspace = Path(st.session_state.workspace)
+    workspace.mkdir(parents=True, exist_ok=True)
+    proto_path = workspace / "protocol.md"
+    proto_path.write_text(st.session_state.protocol_md, encoding="utf-8")
+    st.session_state.protocol_saved_path = str(proto_path)
+
+
+def page_wizard() -> None:
     from supervisor.runners.opencode_runner import find_opencode
 
-    # Show redirect warning if set by router (e.g. locked page redirect)
     if st.session_state.get("_redirect_warning"):
         st.warning(st.session_state.pop("_redirect_warning"))
 
@@ -827,241 +713,142 @@ def page_wizard():
         st.error(str(e))
         st.stop()
 
-    # ── config panel ──────────────────────────────────────────────────── #
+    # ── Configuration expander ─────────────────────────────────────────── #
     with st.expander("⚙️  Configuration", expanded=st.session_state.wizard_step == 0):
         col1, col2 = st.columns(2)
         with col1:
             st.session_state.openai_key = st.text_input(
-                "API Key",
-                key="cfg_openai_key",
-                value=st.session_state.openai_key,
-                type="password",
-                placeholder="sk-…",
-            )
+                "API Key", key="cfg_openai_key", value=st.session_state.openai_key,
+                type="password", placeholder="sk-…")
             st.session_state.base_url = st.text_input(
-                "Base URL (leave blank for OpenAI)",
-                key="cfg_base_url",
-                value=st.session_state.base_url,
-                placeholder="e.g. http://localhost:11434/v1",
-            )
+                "Base URL (leave blank for OpenAI)", key="cfg_base_url",
+                value=st.session_state.base_url, placeholder="e.g. http://localhost:11434/v1")
             st.session_state.workspace = st.text_input(
-                "Workspace path (absolute)",
-                key="cfg_workspace",
-                value=st.session_state.workspace,
-                placeholder="/home/user/myproject",
-            )
-            if st.session_state.workspace != st.session_state.get(
-                "_last_workspace",
-                "",
-            ):
+                "Workspace path (absolute)", key="cfg_workspace",
+                value=st.session_state.workspace, placeholder="/home/user/myproject")
+            if st.session_state.workspace != st.session_state.get("_last_workspace", ""):
                 st.session_state.protected_files = []
                 st.session_state._last_workspace = st.session_state.workspace
             st.session_state.supervisor_model = st.text_input(
-                "Supervisor / wizard model",
-                key="cfg_supervisor_model",
+                "Supervisor / wizard model", key="cfg_supervisor_model",
                 value=st.session_state.supervisor_model,
-                placeholder="e.g. gpt-4o, claude-3-5-sonnet, mistral-large",
-            )
+                placeholder="e.g. gpt-4o, claude-3-5-sonnet, mistral-large")
             st.session_state.supervisor_model_backup = st.text_input(
-                "Supervisor model backup",
-                key="cfg_supervisor_model_backup",
+                "Supervisor model backup", key="cfg_supervisor_model_backup",
                 value=st.session_state.supervisor_model_backup,
-                placeholder="e.g. gpt-4o-mini (used when primary fails)",
-            )
+                placeholder="e.g. gpt-4o-mini (used when primary fails)")
+
         with col2:
-            # Dynamic model list from 'opencode models' command
             models = st.session_state.get("opencode_models", [])
             if models:
-                # Determine default index
                 current = st.session_state.get("opencode_model", "")
                 default_idx = models.index(current) if current in models else 0
-                selected = st.selectbox(
-                    "Model",
-                    options=models,
-                    index=default_idx,
+                st.session_state.opencode_model = st.selectbox(
+                    "Model", options=models, index=default_idx,
                     key="cfg_opencode_model_select",
-                    help="Models returned by 'opencode models'",
-                )
-                st.session_state.opencode_model = selected
+                    help="Models returned by 'opencode models'")
             else:
                 st.warning("No models returned by 'opencode models'.")
                 st.session_state.opencode_model = st.text_input(
-                    "opencode model",
-                    key="cfg_opencode_model_fallback",
-                    value=st.session_state.opencode_model,
-                )
-            # Backup model droplist — excludes the currently selected main model
-            backup_models = (
-                [m for m in models if m != st.session_state.opencode_model]
-                if models
-                else []
-            )
+                    "opencode model", key="cfg_opencode_model_fallback",
+                    value=st.session_state.opencode_model)
+
+            backup_models = [m for m in models if m != st.session_state.opencode_model] if models else []
             if backup_models:
                 backup_current = st.session_state.get("opencode_model_backup", "")
-                backup_default_idx = (
-                    backup_models.index(backup_current)
-                    if backup_current in backup_models
-                    else 0
-                )
-                backup_selected = st.selectbox(
-                    "opencode model backup",
-                    options=backup_models,
-                    index=backup_default_idx,
+                backup_default_idx = backup_models.index(backup_current) if backup_current in backup_models else 0
+                st.session_state.opencode_model_backup = st.selectbox(
+                    "opencode model backup", options=backup_models, index=backup_default_idx,
                     key="cfg_opencode_model_backup_select",
-                    help="Fallback model used when the primary model fails",
-                )
-                st.session_state.opencode_model_backup = backup_selected
+                    help="Fallback model used when the primary model fails")
             else:
                 st.session_state.opencode_model_backup = st.text_input(
-                    "opencode model backup",
-                    key="cfg_opencode_model_backup",
+                    "opencode model backup", key="cfg_opencode_model_backup",
                     value=st.session_state.opencode_model_backup,
-                    placeholder="e.g. /my-provider/backup-model (used when primary fails)",
-                )
+                    placeholder="e.g. /my-provider/backup-model (used when primary fails)")
 
             def _refresh_models():
                 st.session_state["opencode_models"] = _fetch_opencode_models()
-
-            st.button(
-                "🔄 Refresh models",
-                key="btn_refresh_models",
-                on_click=_refresh_models,
-            )
+            st.button("🔄 Refresh models", key="btn_refresh_models", on_click=_refresh_models)
 
             st.session_state.max_retries = st.number_input(
-                "Max retries",
-                key="cfg_max_retries",
-                min_value=1,
-                max_value=20,
-                value=int(st.session_state.max_retries),
-            )
+                "Max retries", key="cfg_max_retries", min_value=1, max_value=20,
+                value=int(st.session_state.max_retries))
             st.session_state.context_threshold = st.slider(
-                "Context compaction threshold (%)",
-                20,
-                95,
-                key="cfg_ctx_threshold",
-                value=int(st.session_state.context_threshold),
-            )
+                "Context compaction threshold (%)", 20, 95, key="cfg_ctx_threshold",
+                value=int(st.session_state.context_threshold))
             st.session_state.max_tokens = st.number_input(
-                "Max tokens (model context window)",
-                key="cfg_max_tokens",
-                min_value=1000,
-                max_value=1000000,
-                value=int(st.session_state.max_tokens),
-                step=1000,
-            )
+                "Max tokens (model context window)", key="cfg_max_tokens",
+                min_value=1000, max_value=1000000,
+                value=int(st.session_state.max_tokens), step=1000)
             st.session_state.timeout = st.number_input(
-                "Timeout (min)",
-                key="cfg_timeout",
-                min_value=1,
-                max_value=999,
-                value=min(max(int(st.session_state.timeout), 1), 999),
-            )
+                "Timeout (min)", key="cfg_timeout", min_value=1, max_value=999,
+                value=min(max(int(st.session_state.timeout), 1), 999))
             st.session_state.enable_python_scanner = st.toggle(
-                "Enable Python scanner",
-                key="cfg_enable_python_scanner",
+                "Enable Python scanner", key="cfg_enable_python_scanner",
                 value=bool(st.session_state.enable_python_scanner),
-                help="Run the Python vulnerability scanner before each live run",
-            )
+                help="Run the Python vulnerability scanner before each live run")
+
+        # Protected files sub-expander
         with st.expander("🛡️  Protected Files", expanded=False):
             st.caption("Files that opencode cannot modify or delete")
             protected = st.session_state.get("protected_files", [])
             if not isinstance(protected, list):
                 protected = []
-
-            workspace_path = (
-                Path(st.session_state.workspace) if st.session_state.workspace else None
-            )
+            workspace_path = Path(st.session_state.workspace) if st.session_state.workspace else None
             all_files = []
             if workspace_path and workspace_path.exists():
                 try:
-
-                    # Use shared path filtering utility instead of custom functions
                     from supervisor.utils.path_filters import should_skip_path
-
-                    all_files = sorted(
-                        [
-                            str(f.relative_to(workspace_path)).replace("\\", "/")
-                            for f in workspace_path.rglob("*")
-                            if f.is_file()
-                            and not should_skip_path(f, extra_dirs=["debug"])  # Include debug dirs in skip list
-                        ],
-                    )
+                    all_files = sorted([
+                        str(f.relative_to(workspace_path)).replace("\\", "/")
+                        for f in workspace_path.rglob("*")
+                        if f.is_file() and not should_skip_path(f, extra_dirs=["debug"])
+                    ])
                 except Exception:
                     pass
 
-            current_protected_set = set(protected)
-            available_files = [f for f in all_files if f not in current_protected_set]
-
+            available_files = [f for f in all_files if f not in set(protected)]
             st.markdown("**Add protected files:**")
             selected_to_add = st.multiselect(
-                "Select files to protect",
-                options=available_files,
-                key="protected_files_multiselect",
-                label_visibility="collapsed",
-                placeholder="Choose files from workspace...",
-            )
+                "Select files to protect", options=available_files,
+                key="protected_files_multiselect", label_visibility="collapsed",
+                placeholder="Choose files from workspace...")
             if selected_to_add:
-                new_protected = list(set(protected) | set(selected_to_add))
-                st.session_state.protected_files = new_protected
+                st.session_state.protected_files = list(set(protected) | set(selected_to_add))
                 st.rerun()
-
             if protected:
                 st.success(f"{len(protected)} file(s) protected")
                 for pf in protected:
-                    col1, col2 = st.columns([4, 1])
-                    with col1:
-                        st.code(pf, language=None)
-                    with col2:
+                    col_pf1, col_pf2 = st.columns([4, 1])
+                    with col_pf1: st.code(pf, language=None)
+                    with col_pf2:
                         if st.button("✕", key=f"remove_pf_{pf}"):
-                            st.session_state.protected_files = [
-                                x for x in protected if x != pf
-                            ]
+                            st.session_state.protected_files = [x for x in protected if x != pf]
                             st.rerun()
 
+        # Ignore patterns sub-expander
         with st.expander("🚫 Ignore Patterns (.opencodeignore)", expanded=False):
-            from supervisor.workspace.ignore_patterns import (
-                IGNORE_FILE,
-                write_ignore_file,
-            )
-
-            st.caption(
-                "Files matching these patterns will be excluded from context retrieval",
-            )
-
-            ws_path = (
-                Path(st.session_state.workspace) if st.session_state.workspace else None
-            )
+            from supervisor.workspace.ignore_patterns import IGNORE_FILE, write_ignore_file
+            st.caption("Files matching these patterns will be excluded from context retrieval")
+            ws_path = Path(st.session_state.workspace) if st.session_state.workspace else None
             if not ws_path or not ws_path.exists():
                 st.warning("Set a valid workspace path to edit .opencodeignore")
             else:
-                current_ignore_content = ""
                 ignore_file_path = ws_path / IGNORE_FILE
+                current_ignore_content = ""
                 if ignore_file_path.exists():
                     try:
-                        current_ignore_content = ignore_file_path.read_text(
-                            encoding="utf-8",
-                        )
+                        current_ignore_content = ignore_file_path.read_text(encoding="utf-8")
                     except Exception:
                         pass
-
                 new_ignore_content = st.text_area(
-                    "Ignore patterns",
-                    value=current_ignore_content,
-                    height=200,
+                    "Ignore patterns", value=current_ignore_content, height=200,
                     key="ignore_patterns_editor",
                     placeholder=(
-                        "# Patterns to ignore (one per line)\n"
-                        "# Examples:\n"
-                        "# *.pyc           # ignore all .pyc files\n"
-                        "# debug*          # ignore files starting with debug\n"
-                        "# *test.py        # ignore files ending with test.py\n"
-                        "# build/          # ignore entire build directory\n"
-                        "# **/*.log        # ignore all .log files\n"
-                    ),
-                    label_visibility="collapsed",
-                )
-
+                        "# Patterns to ignore (one per line)\n# Examples:\n"
+                        "# *.pyc\n# debug*\n# *test.py\n# build/\n# **/*.log\n"
+                    ), label_visibility="collapsed")
                 if new_ignore_content != current_ignore_content:
                     if st.button("Save Ignore Patterns", key="save_ignore_patterns"):
                         try:
@@ -1070,46 +857,31 @@ def page_wizard():
                             st.rerun()
                         except Exception as e:
                             st.error(f"Failed to save: {e}")
-
                 if ignore_file_path.exists():
-                    st.caption(
-                        f"Found existing {IGNORE_FILE} with {len(current_ignore_content.splitlines())} patterns",
-                    )
+                    st.caption(f"Found existing {IGNORE_FILE} with {len(current_ignore_content.splitlines())} patterns")
 
                 st.markdown("---")
-                suggest_disabled = not (
-                    st.session_state.workspace
-                    and Path(st.session_state.workspace).exists()
-                )
-                if st.button(
-                    "Suggest and Apply Ignore Patterns",
-                    key="btn_suggest_ignore",
-                    disabled=suggest_disabled,
-                ):
+                suggest_disabled = not (st.session_state.workspace and Path(st.session_state.workspace).exists())
+                if st.button("Suggest and Apply Ignore Patterns", key="btn_suggest_ignore",
+                             disabled=suggest_disabled):
                     try:
                         ws = Path(st.session_state.workspace)
-                        all_entries = sorted(
-                            [
-                                str(p.relative_to(ws)).replace("\\", "/")
-                                for p in ws.rglob("*")
-                                if str(p.relative_to(ws)) != ".opencodeignore"
-                            ],
-                        )
+                        all_entries = sorted([
+                            str(p.relative_to(ws)).replace("\\", "/")
+                            for p in ws.rglob("*")
+                            if str(p.relative_to(ws)) != ".opencodeignore"
+                        ])
                         file_list_str = "\n".join(all_entries)
                         truncation_note = ""
-                        token_count = SessionTracker.estimate_tokens(file_list_str)
-                        if token_count > 100000:
+                        if SessionTracker.estimate_tokens(file_list_str) > 100000:
                             all_entries = all_entries[:1000]
                             file_list_str = "\n".join(all_entries)
                             truncation_note = (
                                 "Note: The file list was truncated to the first 1,000 entries "
                                 "due to token limits."
                             )
-
-                        client = OpenAI(
-                            api_key=st.session_state.openai_key,
-                            base_url=st.session_state.base_url or None,
-                        )
+                        client = OpenAI(api_key=st.session_state.openai_key,
+                                        base_url=st.session_state.base_url or None)
                         model = st.session_state.supervisor_model or "gpt-4o"
                         system_msg = (
                             "You are an expert in writing .gitignore files. "
@@ -1118,224 +890,82 @@ def page_wizard():
                             "artifacts, dependency directories, cache files, and other "
                             "files that should not be modified by an autonomous coding "
                             "agent. The patterns should be in gitignore format. Only "
-                            "output the patterns, one per line. Do not include any "
-                            "explanations."
+                            "output the patterns, one per line. Do not include any explanations."
                         )
                         user_msg = (
                             f"The workspace contains the following files and directories:\n\n"
-                            f"{file_list_str}\n\n"
-                            f"{truncation_note}\n\n"
-                            f"Generate a .opencodeignore file that ignores common build "
-                            f"artifacts, dependency directories, cache files, and other "
-                            f"files that should not be modified by an autonomous coding "
-                            f"agent. The patterns should be in gitignore format. Only "
-                            f"output the patterns, one per line. Do not include any "
-                            f"explanations."
+                            f"{file_list_str}\n\n{truncation_note}\n\n"
+                            "Generate a .opencodeignore file that ignores common build "
+                            "artifacts, dependency directories, cache files, and other "
+                            "files that should not be modified by an autonomous coding "
+                            "agent. The patterns should be in gitignore format. Only "
+                            "output the patterns, one per line. Do not include any explanations."
                         )
                         response = client.chat.completions.create(
                             model=model,
-                            messages=[
-                                {"role": "system", "content": system_msg},
-                                {"role": "user", "content": user_msg},
-                            ],
+                            messages=[{"role": "system", "content": system_msg},
+                                      {"role": "user", "content": user_msg}],
                         )
                         generated_patterns = response.choices[0].message.content.strip()
-
-                        st.text_area(
-                            "Generated .opencodeignore patterns",
-                            value=generated_patterns,
-                            height=300,
-                            key="generated_ignore_patterns",
-                            disabled=True,
-                        )
-                        ignore_file_path.write_text(
-                            generated_patterns,
-                            encoding="utf-8",
-                        )
-                        st.toast(
-                            "Ignore patterns generated and saved to .opencodeignore.",
-                        )
+                        st.text_area("Generated .opencodeignore patterns", value=generated_patterns,
+                                     height=300, key="generated_ignore_patterns", disabled=True)
+                        ignore_file_path.write_text(generated_patterns, encoding="utf-8")
+                        st.toast("Ignore patterns generated and saved to .opencodeignore.")
                     except Exception as e:
                         st.error(f"Failed to generate ignore patterns: {e}")
 
-    # Auto-save settings to disk whenever the config panel is shown
     save_settings()
+    _render_connectivity_tests()
 
-    # ── connectivity tests ────────────────────────────────────────────────── #
-    st.markdown("---")
-    st.markdown("### 🔌 Connectivity Tests")
-
-    both_passed = (
-        st.session_state.opencode_test_passed
-        and st.session_state.supervisor_test_passed
-    )
-    if both_passed:
-        st.success("✅ Both opencode and supervisor connectivity tests passed.")
-    else:
-        st.info("Run the tests below to verify opencode and supervisor are reachable.")
-
-    col_t1, col_t2, col_t3 = st.columns(3)
-
-    with col_t1:
-        if st.button("▶  Run Tests", type="primary", key="btn_run_tests"):
-            if not st.session_state.workspace:
-                st.error("Set a workspace path before running tests.")
-            else:
-                with st.spinner("Testing opencode…"):
-                    ok, msg = test_opencode()
-                if ok:
-                    st.session_state.opencode_test_passed = True
-                    st.success(f"✅ Test opencode: {msg}")
-                else:
-                    st.session_state.opencode_test_passed = False
-                    st.error(f"❌ Test opencode: {msg}")
-
-                with st.spinner("Testing supervisor…"):
-                    ok2, msg2 = test_supervisor()
-                if ok2:
-                    st.session_state.supervisor_test_passed = True
-                    st.success(f"✅ Test Supervisor: {msg2}")
-                else:
-                    st.session_state.supervisor_test_passed = False
-                    st.error(f"❌ Test Supervisor: {msg2}")
-
-    with col_t2:
-        if st.button("🧪 Test opencode", key="btn_test_opencode"):
-            if not st.session_state.workspace:
-                st.error("Set a workspace path before testing.")
-            else:
-                with st.spinner("Testing opencode…"):
-                    ok, msg = test_opencode()
-                if ok:
-                    st.session_state.opencode_test_passed = True
-                    st.success(f"✅ {msg}")
-                else:
-                    st.session_state.opencode_test_passed = False
-                    st.error(f"❌ {msg}")
-
-    with col_t3:
-        if st.button("🧪 Test Supervisor", key="btn_test_supervisor"):
-            if not st.session_state.openai_key:
-                st.error("Set an API key before testing.")
-            else:
-                with st.spinner("Testing supervisor…"):
-                    ok, msg = test_supervisor()
-                if ok:
-                    st.session_state.supervisor_test_passed = True
-                    st.success(f"✅ {msg}")
-                else:
-                    st.session_state.supervisor_test_passed = False
-                    st.error(f"❌ {msg}")
-
-    # ── existing protocol.md detection ───────────────────────────────────── #
-    workspace_path = (
-        Path(st.session_state.workspace) if st.session_state.workspace else None
-    )
+    # Existing protocol.md banner
+    workspace_path = Path(st.session_state.workspace) if st.session_state.workspace else None
     if workspace_path:
-        existing_proto = workspace_path / "protocol.md"
-        if existing_proto.exists() and not st.session_state.protocol_md:
-            existing_text = existing_proto.read_text(encoding="utf-8")
-            st.info("📄 An existing `protocol.md` was found in your workspace.")
-            col_reuse, col_ignore, _ = st.columns([1, 1, 3])
-            with col_reuse:
-                if st.button(
-                    "♻️  Use existing protocol.md",
-                    type="primary",
-                    key="btn_reuse_proto",
-                ):
-                    st.session_state.protocol_md = existing_text
-                    st.session_state.wizard_step = 1
-                    st.rerun()
-            with col_ignore:
-                if st.button("✏️  Write new one", key="btn_ignore_proto"):
-                    pass  # just fall through to the form
-            with st.expander("Preview existing protocol.md"):
-                st.code(existing_text[:1500], language="markdown")
-            st.markdown("---")
+        def _on_reuse_protocol(text: str):
+            st.session_state.protocol_md = text
+            st.session_state.wizard_step = 1
+            st.rerun()
+        _render_existing_protocol_banner(
+            workspace_path / "protocol.md", "protocol_md",
+            on_reuse=_on_reuse_protocol)
 
-    # ── three-section form ─────────────────────────────────────────────── #
+    # ── Three-section form ─────────────────────────────────────────────── #
     st.markdown("### ✍️ Draft your protocol")
 
-    st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.markdown("**INPUT** — what already exists / what the agent starts with")
-    st.text_area(
-        "input_area",
-        key="raw_input",
-        height=120,
-        placeholder="e.g. A Python repo is at ./src. The main entry point is main.py.",
-        label_visibility="collapsed",
-    )
-    st.markdown("</div>", unsafe_allow_html=True)
+    for section_key, label, height, placeholder in [
+        ("raw_input", "**INPUT** — what already exists / what the agent starts with", 120,
+         "e.g. A Python repo is at ./src. The main entry point is main.py."),
+        ("raw_target", "**TARGET** — concrete, testable deliverables", 140,
+         "e.g.\n1. Build a FastAPI server in src/main.py with GET /health and POST /echo\n"
+         "2. Add requirements.txt\n3. All tests in ./tests/ must pass"),
+        ("raw_restrictions", "**RESTRICTIONS** — hard rules the agent must not break", 100,
+         "e.g.\n- Don't touch files outside ./src\n- No system package installs\n- Keep code under 300 lines"),
+    ]:
+        st.markdown(f'<div class="card">', unsafe_allow_html=True)
+        st.markdown(label)
+        st.text_area(section_key, key=section_key, height=height,
+                     placeholder=placeholder, label_visibility="collapsed")
+        st.markdown("</div>", unsafe_allow_html=True)
 
-    st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.markdown("**TARGET** — concrete, testable deliverables")
-    st.text_area(
-        "target_area",
-        key="raw_target",
-        height=140,
-        placeholder=(
-            "e.g.\n"
-            "1. Build a FastAPI server in src/main.py with GET /health and POST /echo\n"
-            "2. Add requirements.txt\n"
-            "3. All tests in ./tests/ must pass"
-        ),
-        label_visibility="collapsed",
-    )
-    st.markdown("</div>", unsafe_allow_html=True)
-
-    st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.markdown("**RESTRICTIONS** — hard rules the agent must not break")
-    st.text_area(
-        "restrictions_area",
-        key="raw_restrictions",
-        height=100,
-        placeholder=(
-            "e.g.\n"
-            "- Don't touch files outside ./src\n"
-            "- No system package installs\n"
-            "- Keep code under 300 lines"
-        ),
-        label_visibility="collapsed",
-    )
-    st.markdown("</div>", unsafe_allow_html=True)
-
-    # ── live quality analysis ─────────────────────────────────────────── #
-    if (
-        st.session_state.raw_input.strip()
-        or st.session_state.raw_target.strip()
-        or st.session_state.raw_restrictions.strip()
-    ):
-
-        def _quality_preview_content():
-            _render_quality_analysis(
+    if any(st.session_state.get(k, "").strip() for k in ("raw_input", "raw_target", "raw_restrictions")):
+        render_expander_section(
+            "📊 Protocol Quality Preview",
+            lambda: _render_quality_analysis(
                 st.session_state.raw_input,
                 st.session_state.raw_target,
                 st.session_state.raw_restrictions,
-            )
+            ),
+        )
 
-        render_expander_section("📊 Protocol Quality Preview", _quality_preview_content)
-
-    # ── refine button ──────────────────────────────────────────────────── #
-    refine_clicked = st.button("✨  Refine with AI", type="primary")
-
-    if refine_clicked:
-        missing = []
-        if not st.session_state.openai_key:
-            missing.append("OpenAI API Key")
-        if not st.session_state.workspace:
-            missing.append("Workspace path")
-        if not st.session_state.raw_input.strip():
-            missing.append("INPUT section")
-        if not st.session_state.raw_target.strip():
-            missing.append("TARGET section")
-        if not st.session_state.raw_restrictions.strip():
-            missing.append("RESTRICTIONS section")
-
+    if st.button("✨  Refine with AI", type="primary"):
+        missing = [label for key, label in [
+            ("openai_key", "OpenAI API Key"), ("workspace", "Workspace path"),
+            ("raw_input", "INPUT section"), ("raw_target", "TARGET section"),
+            ("raw_restrictions", "RESTRICTIONS section"),
+        ] if not st.session_state.get(key, "").strip()]
         if missing:
             st.error(f"Please fill in: {', '.join(missing)}")
         else:
             apply_api_config()
-
             with st.spinner("Asking supervisor to refine your protocol…"):
                 wizard = ProtocolWizard(model=st.session_state.supervisor_model)
                 try:
@@ -1350,27 +980,15 @@ def page_wizard():
                 except Exception as exc:
                     st.error(f"Refinement failed: {exc}")
 
-    # ── preview & accept ──────────────────────────────────────────────── #
     if st.session_state.wizard_step == 1 and st.session_state.protocol_md:
         st.markdown("---")
         st.markdown("### 📄 Refined `protocol.md`")
         st.markdown("*Review and edit below, then accept.*")
-
-        edited = st.text_area(
-            "proto_edit",
-            key="protocol_md",
-            height=300,
-            label_visibility="collapsed",
-        )
-
-        def _quality_analysis_content():
-            _render_refined_quality_analysis(st.session_state.protocol_md)
-
+        st.text_area("proto_edit", key="protocol_md", height=300, label_visibility="collapsed")
         render_expander_section(
             "📊 Protocol Quality Analysis",
-            _quality_analysis_content,
+            lambda: _render_refined_quality_analysis(st.session_state.protocol_md),
         )
-
         col_a, col_b, _ = st.columns([1, 1, 3])
         with col_a:
             if st.button("✅  Accept & Save", type="primary"):
@@ -1382,437 +1000,22 @@ def page_wizard():
                 st.rerun()
 
 
-def _render_quality_analysis(raw_input: str, raw_target: str, raw_restrictions: str):
-    """Render real-time quality analysis of raw protocol sections."""
-    analyzer = ProtocolAnalyzer()
-    temp_text = (
-        f"## INPUT\n\n{raw_input}\n\n"
-        f"## TARGET\n\n{raw_target}\n\n"
-        f"## RESTRICTIONS\n\n{raw_restrictions}\n"
-    )
-    try:
-        analysis = analyzer.analyze_text(temp_text)
-    except Exception:
-        st.caption("Complete all three sections to see quality scores.")
-        return
-
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        st.metric("Overall", f"{analysis.overall_score:.0%}")
-    with col2:
-        st.metric("INPUT", f"{analysis.input_score.overall:.0%}")
-    with col3:
-        st.metric("TARGET", f"{analysis.target_score.overall:.0%}")
-    with col4:
-        st.metric("RESTRICTIONS", f"{analysis.restrictions_score.overall:.0%}")
-
-    if analysis.issues:
-        st.caption(f"Found {len(analysis.issues)} issue(s)")
-        for issue in analysis.issues[:5]:
-            icon = {"error": "❌", "warning": "⚠️", "info": "ℹ️"}[issue.severity.value]
-            st.caption(f"{icon} [{issue.section}] {issue.message}")
-
-
-def _render_refined_quality_analysis(refined_md: str):
-    """Render quality analysis for a refined protocol markdown."""
-    analyzer = ProtocolAnalyzer()
-    try:
-        analysis = analyzer.analyze_text(refined_md)
-    except Exception as e:
-        st.warning(f"Cannot analyze protocol: {e}")
-        return
-
-    rating_colors = {
-        "excellent": "🟢",
-        "good": "🟡",
-        "fair": "🟠",
-        "poor": "🔴",
-    }
-    color = rating_colors.get(analysis.quality_rating, "⚪")
-
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        st.metric("Overall", f"{analysis.overall_score:.0%}")
-    with col2:
-        st.metric("INPUT", f"{analysis.input_score.overall:.0%}")
-    with col3:
-        st.metric("TARGET", f"{analysis.target_score.overall:.0%}")
-    with col4:
-        st.metric("RESTRICTIONS", f"{analysis.restrictions_score.overall:.0%}")
-
-    st.caption(f"{color} Quality: {analysis.quality_rating}")
-
-    if analysis.issues:
-        errors = [i for i in analysis.issues if i.severity == Severity.ERROR]
-        warnings = [i for i in analysis.issues if i.severity == Severity.WARNING]
-        infos = [i for i in analysis.issues if i.severity == Severity.INFO]
-
-        if errors:
-            st.error(f"{len(errors)} error(s) found")
-            for issue in errors:
-                st.caption(f"❌ [{issue.section}] {issue.message}")
-                if issue.suggestion:
-                    st.caption(f"   → {issue.suggestion}")
-
-        if warnings:
-            st.warning(f"{len(warnings)} warning(s)")
-            for issue in warnings:
-                st.caption(f"⚠️ [{issue.section}] {issue.message}")
-
-        if infos:
-
-            def _suggestions_content():
-                for issue in infos:
-                    st.caption(f"ℹ️ [{issue.section}] {issue.message}")
-                    if issue.suggestion:
-                        st.caption(f"   → {issue.suggestion}")
-
-            render_expander_section(f"{len(infos)} suggestion(s)", _suggestions_content)
-
-
-def _save_protocol():
-    workspace = Path(st.session_state.workspace)
-    workspace.mkdir(parents=True, exist_ok=True)
-    proto_path = workspace / "protocol.md"
-    proto_path.write_text(st.session_state.protocol_md, encoding="utf-8")
-    st.session_state.protocol_saved_path = str(proto_path)
-
-
 # ═══════════════════════════════════════════════════════════════════════════ #
-# PAGE 2 — Live Run                                                           #
+# Shared log rendering                                                        #
 # ═══════════════════════════════════════════════════════════════════════════ #
 
-
-def page_run():
-    st.markdown("# Live Run")
-
-    # Check for existing job in query params
-    job_id = st.query_params.get("run_job_id")
-
-    if not job_id:
-        for jid in job_manager.store.list_jobs():
-            status = job_manager.get_job_status(jid)
-            if (
-                status
-                and status.get("type") == "run"
-                and status.get("state") == "RUNNING"
-            ):
-                job_id = jid
-                st.query_params["run_job_id"] = job_id
-                st.rerun()
-                return
-
-    if job_id:
-        _show_run_status_screen(job_id)
-    else:
-        _show_run_setup_screen()
-
-
-def _show_run_setup_screen():
-    # Pre-flight check
-    workspace = Path(st.session_state.workspace) if st.session_state.workspace else None
-    if not workspace:
-        st.warning("Please set a workspace path in the configuration.")
-        return
-
-    if not workspace.exists():
-        st.error(f"Workspace directory does not exist: {workspace}")
-        return
-
-    proto_path = workspace / "protocol.md"
-    if not proto_path.exists():
-        st.error(f"**protocol.md not found** in workspace: `{workspace}`")
-        st.info("Please generate a protocol.md file before starting a live run.")
-        return
-
-    st.markdown(
-        f"**Workspace:** `{workspace}`  \n"
-        f"**Protocol:** `{proto_path}`  \n"
-        f"**Supervisor model:** `{st.session_state.supervisor_model}`",
-    )
-
-    col1, col2 = st.columns([2, 1])
-    with col1:
-        plan_rounds = st.number_input(
-            "Plan mode rounds",
-            min_value=0,
-            max_value=10,
-            value=int(st.session_state.plan_mode_rounds),
-            key="run_plan_mode_rounds_setup",
-            help="Number of planning rounds before execution",
-        )
-        enable_scanner = st.toggle(
-            "Enable Python scanner",
-            value=bool(st.session_state.enable_python_scanner),
-            key="run_enable_python_scanner_setup",
-            help="Run the Python vulnerability scanner before execution",
-        )
-    with col2:
-        if st.button(
-            "▶  Start Live Run",
-            type="primary",
-            use_container_width=True,
-            key="start_live_run_button",
-        ):
-            st.session_state.plan_mode_rounds = plan_rounds
-            st.session_state.enable_python_scanner = enable_scanner
-            job_id = _enqueue_run_job()
-            st.query_params["run_job_id"] = job_id
-            st.rerun()
-
-
-def _enqueue_run_job() -> str:
-    save_settings()
-    apply_api_config()
-
-    workspace = Path(st.session_state.workspace)
-    proto_path = workspace / "protocol.md"
-
-    config = SupervisorConfig(
-        protocol_path=proto_path,
-        workspace=workspace,
-        max_retries=int(st.session_state.max_retries),
-        context_threshold=st.session_state.context_threshold / 100.0,
-        opencode_model=st.session_state.opencode_model or None,
-        opencode_model_backup=st.session_state.opencode_model_backup or None,
-        opencode_executable=st.session_state.opencode_executable,
-        supervisor_model=st.session_state.supervisor_model or "gpt-4o",
-        supervisor_model_backup=st.session_state.supervisor_model_backup or None,
-        timeout=int(st.session_state.timeout) * 60,
-        protected_files=tuple(st.session_state.get("protected_files", [])),
-        max_tokens=int(st.session_state.max_tokens),
-        plan_mode_rounds=int(st.session_state.plan_mode_rounds),
-        enable_python_scanner=bool(st.session_state.enable_python_scanner),
-    )
-
-    return job_manager.enqueue_job("run", config)
-
-
-def _show_run_status_screen(job_id: str):
-    status = job_manager.get_job_status(job_id)
-    if not status:
-        st.error(f"Job {job_id} not found.")
-        if st.button("Back to Setup"):
-            del st.query_params["run_job_id"]
-            st.rerun()
-        return
-
-    state = status["state"]
-
-    # Header with status and control buttons
-    col_h1, col_h2, col_h3 = st.columns([3, 1, 1])
-    with col_h1:
-        st.markdown(f"### Job: `{job_id}`")
-    with col_h2:
-        if state == "RUNNING":
-            if st.button("⏹ Stop", use_container_width=True):
-                job_manager.cancel_job(job_id)
-                st.rerun()
-        elif st.button("🗑 Clear", use_container_width=True):
-            del st.query_params["run_job_id"]
-            st.rerun()
-    with col_h3:
-        if st.button("🔄 Refresh", use_container_width=True):
-            st.rerun()
-
-    # Layout for logs and info
-    col_main, col_side = st.columns([2, 1])
-
-    # Safely retrieve logs — the job store may persist logs as null
-    logs = status.get("logs") or []
-
-    with col_main:
-        _render_step_progress(logs, state)
-        st.markdown("#### 🖥️ Live Log")
-        _render_events(logs, "— waiting for logs —", show_verbose=True, page_key="run")
-
-    with col_side:
-        st.markdown("#### ℹ️ Details")
-        st.markdown(f"**State:** {state}")
-        st.markdown(
-            f"**Started:** {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(status.get('updated_at', 0)))}",
-        )
-        sup_model = st.session_state.get("supervisor_model", "") or "(not set)"
-        oc_model = st.session_state.get("opencode_model", "") or "(not set)"
-        st.markdown(f"**Supervisor model:** `{sup_model}`")
-        st.markdown(f"**Opencode model:** `{oc_model}`")
-
-        # Token usage if available
-        _render_token_usage_bar(logs, int(st.session_state.max_tokens))
-
-        if status.get("report"):
-            st.markdown("#### 📊 Report")
-            with st.expander("View Report", expanded=True):
-                st.markdown(status["report"])
-                st.download_button(
-                    "⬇ Download",
-                    data=status["report"],
-                    file_name=f"report_{job_id}.md",
-                    mime="text/markdown",
-                )
-
-    # Auto-refresh loop must be at the end so UI renders first.
-    # Use try/finally so the sleep+rerun always fires even if the render above
-    # raised (Streamlit will surface the error on the next rerun).
-    if state == "RUNNING":
-        st.info(
-            "🏃 Job is running in background. You can safely close this tab or refresh.",
-        )
-        try:
-            time.sleep(2)
-        finally:
-            st.rerun()
-
-
-def _render_token_usage_bar(logs: list[dict], max_tokens: int):
-    """Simplified token usage bar for the status screen."""
-    import re
-
-    latest_current = 0
-    latest_fraction = 0.0
-    found = False
-
-    for ev in logs:
-        if not isinstance(ev, dict):
-            continue
-        msg = ev.get("msg") or ""
-        if "context usage" in msg.lower():
-            match = re.search(r"(\d[\d,]*)\s*/\s*(\d[\d,]*)\s*tokens", msg)
-            if match:
-                current = int(match.group(1).replace(",", ""))
-                max_t = int(match.group(2).replace(",", ""))
-                fraction = current / max_t if max_t > 0 else 0
-                if fraction >= latest_fraction:
-                    latest_fraction = fraction
-                    latest_current = current
-                    found = True
-
-    if found:
-        color = (
-            "🔴" if latest_fraction > 0.9 else "🟡" if latest_fraction > 0.7 else "🟢"
-        )
-        st.progress(
-            min(latest_fraction, 1.0),
-            text=f"{color} {latest_current:,} / {max_tokens:,} tokens",
-        )
-
-
-def _render_step_progress(logs: list[dict], run_state: str, is_evolution: bool = False):
-    """Render progress bar, step history, and heartbeats."""
-    # Guard: logs may be None if the job store persisted a null value
-    if not logs:
-        logs = []
-
-    step_events = [
-        e
-        for e in logs
-        if isinstance(e, dict) and e.get("level") in ("step", "phase_transition")
-    ]
-    progress_events = [
-        e for e in logs if isinstance(e, dict) and e.get("level") == "step_progress"
-    ]
-    heartbeat_events = [
-        e for e in logs if isinstance(e, dict) and e.get("level") == "heartbeat"
-    ]
-
-    process_label = (
-        "Evolution process active" if is_evolution else "Background process active"
-    )
-
-    if run_state == "RUNNING":
-        heartbeat_count = len(heartbeat_events)
-        status_col1, status_col2, status_col3 = st.columns([3, 1, 1])
-        with status_col1:
-            st.markdown(f"🟢 **{process_label}**")
-        with status_col2:
-            st.caption(f"💓 {heartbeat_count} heartbeat(s)")
-        with status_col3:
-            st.caption(f"🧭 {len(step_events)} step(s)")
-        if progress_events:
-            last_progress = progress_events[-1]
-            msg = last_progress.get("msg") or ""
-
-            def _progress_content():
-                st.caption(msg)
-
-            render_expander_section("📊 Progress", _progress_content)
-    elif progress_events:
-        last_progress = progress_events[-1]
-        msg = last_progress.get("msg") or ""
-
-        progress_col1, progress_col2, progress_col3 = st.columns([3, 1, 1])
-        with progress_col1:
-            st.caption(f"📊 {msg}")
-        with progress_col2:
-            step_count = len(step_events)
-            st.caption(f"🧭 {step_count} step(s)")
-        with progress_col3:
-            last_heartbeat = heartbeat_events[-1] if heartbeat_events else None
-            if last_heartbeat:
-                st.caption("🟢 active")
-
-        progress_val = 0.0
-        if progress_events:
-            ev = progress_events[-1]
-            if "percentage" in ev and ev["percentage"] is not None:
-                try:
-                    progress_val = float(ev["percentage"])
-                except (TypeError, ValueError):
-                    progress_val = 0.0
-            else:
-                # Fallback: parse "XX%" from the message string
-                parts = (ev.get("msg") or "").split()
-                for p in parts:
-                    candidate = p.replace("%", "").replace(".", "")
-                    if candidate.isdigit():
-                        try:
-                            progress_val = float(p.replace("%", ""))
-                            break
-                        except ValueError:
-                            pass
-
-        if progress_val > 0:
-            progress_col1, progress_col2 = st.columns([4, 1])
-            with progress_col1:
-                st.progress(progress_val / 100.0, text=f"{progress_val:.0f}% complete")
-            with progress_col2:
-                pass
-
-        if step_events:
-            with st.expander("📍 Step History", expanded=False):
-                for ev in step_events[-5:]:
-                    lvl = ev.get("level", "")
-                    if lvl == "step":
-                        st.caption(f"• {(ev.get('msg') or '')[:80]}")
-                    elif lvl == "phase_transition":
-                        st.caption(f"⚡ {ev.get('msg') or ''}")
-
-
-def _esc(t: str) -> str:
-    """HTML-escape a string. Accepts any type and coerces to str first.
-
-    Root cause of the original crash: log events emitted by background
-    threads (or deserialized from JSON by the job store) can carry
-    ``msg=None`` when the key is present but explicitly set to null.
-    ``ev.get("msg", "")`` returns ``""`` only when the key is *absent*;
-    if the key exists with value ``None`` the default is ignored and
-    ``None`` is returned — which then crashes ``.replace()``.
-
-    All call sites in ``_render_events`` and ``_render_step_progress``
-    now use ``ev.get("msg") or ""`` (falsy-coerce) so ``None`` becomes
-    ``""``.  This function also coerces defensively as a last line of
-    defence.
-    """
+def _esc(t) -> str:
+    """HTML-escape, safely coercing None/non-str."""
     if t is None:
         return ""
     return str(t).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
 _BLOCK_META = {
-    "opencode_prompt": ("hdr-oc-prompt", "▶ PROMPT → opencode"),
-    "opencode_output": ("hdr-oc-output", "◀ OUTPUT ← opencode"),
-    "supervisor_response": ("hdr-sv-response", "🧠 SUPERVISOR"),
-    "supervisor_read_files": ("hdr-sv-read", "📂 SUPERVISOR READ FILES"),
+    "opencode_prompt":      ("hdr-oc-prompt",    "▶ PROMPT → opencode"),
+    "opencode_output":      ("hdr-oc-output",    "◀ OUTPUT ← opencode"),
+    "supervisor_response":  ("hdr-sv-response",  "🧠 SUPERVISOR"),
+    "supervisor_read_files":("hdr-sv-read",      "📂 SUPERVISOR READ FILES"),
 }
 
 
@@ -1823,165 +1026,344 @@ def _render_events(
     show_verbose: bool = True,
     page_key: str = "default",
 ) -> None:
-    """Render log events into a styled terminal box.
-
-    Parameters
-    ----------
-    events:
-        List of log event dicts.  May be ``None`` (job store persists
-        ``logs: null``) — handled gracefully.
-    empty_msg:
-        Placeholder text shown when there are no events.
-    skip:
-        Set of log-level strings to exclude from rendering.
-    show_verbose:
-        Whether to render the verbose toggle widget.
-    page_key:
-        A stable, unique string per call-site (e.g. ``"run"`` or
-        ``"evo"``) used to build the Streamlit widget key for the
-        verbose toggle.  Without this, both the run page and the evo
-        page emit a toggle with the same key, causing a ``DuplicateWidgetID``
-        error when both are rendered in the same rerun.
-
-    """
-    # Guard: job store may persist logs as null
-    if not events:
-        events = []
-
+    events = events or []
     skip = skip or set()
     verbose = st.session_state.get("verbose_log", True)
 
     if show_verbose:
-        # Use a stable, page-scoped key to avoid DuplicateWidgetID when
-        # both run and evo pages are rendered in the same Streamlit session.
-        toggle_key = f"vtoggle_{page_key}"
         st.session_state.verbose_log = st.toggle(
-            "Verbose log",
-            value=verbose,
-            key=toggle_key,
-        )
+            "Verbose log", value=verbose, key=f"vtoggle_{page_key}")
         verbose = st.session_state.verbose_log
 
     if not events:
         st.markdown(
             f'<div class="log-box"><span class="log-info">{_esc(empty_msg)}</span></div>',
-            unsafe_allow_html=True,
-        )
+            unsafe_allow_html=True)
         return
 
     st.caption(f"Debug: Got {len(events)} events to render.")
     lines_html: list[str] = []
 
     for ev in events[-600:]:
-        # Skip malformed entries that aren't dicts
         if not isinstance(ev, dict):
             continue
-
         lvl = ev.get("level") or "info"
         if lvl in skip:
             continue
-
-        # KEY FIX: always coerce msg to str — ev.get("msg", "") returns None
-        # when the key exists but its value is explicitly null in JSON.
-        # Also handles any residual list/dict payloads from pre-sanitization logs.
-        raw_msg = ev.get("msg") or ""
-        msg = sanitize_event_message(raw_msg)
+        msg = sanitize_event_message(ev.get("msg") or "")
 
         if lvl in _BLOCK_META:
+            hdr_cls, hdr_label = _BLOCK_META[lvl]
             if not verbose:
-                # Compact summary line instead of full content
                 preview = _esc(str(msg)[:120].replace("\n", " "))
-                hdr_cls, hdr_label = _BLOCK_META[lvl]
                 lines_html.append(
                     f'<span class="{hdr_cls}">{hdr_label}</span>'
-                    + f'<span class="log-info" style="opacity:0.6"> {preview}…</span>\n',
-                )
-                continue
-
-            # Verbose: full block with header
-            hdr_cls, hdr_label = _BLOCK_META[lvl]
-            lines_html.append(
-                f'<span class="log-rule">{"─" * 60}</span>\n'
-                + f'<span class="{hdr_cls}">{hdr_label}</span>\n'
-                + f'<span class="log-{_esc(lvl)}">{_esc(msg)}</span>\n',
-            )
+                    f'<span class="log-info" style="opacity:0.6"> {preview}…</span>\n')
+            else:
+                lines_html.append(
+                    f'<span class="log-rule">{"─" * 60}</span>\n'
+                    f'<span class="{hdr_cls}">{hdr_label}</span>\n'
+                    f'<span class="log-{_esc(lvl)}">{_esc(msg)}</span>\n')
         else:
             lines_html.append(f'<span class="log-{_esc(lvl)}">{_esc(msg)}</span>\n')
 
-    body = "".join(lines_html)
-    st.markdown(f'<div class="log-box">{body}</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="log-box">{"".join(lines_html)}</div>', unsafe_allow_html=True)
+
+
+def _render_token_usage_bar(logs: list[dict], max_tokens: int) -> None:
+    import re
+    latest_current, latest_fraction, found = 0, 0.0, False
+    for ev in logs:
+        if not isinstance(ev, dict):
+            continue
+        msg = ev.get("msg") or ""
+        if "context usage" in msg.lower():
+            match = re.search(r"(\d[\d,]*)\s*/\s*(\d[\d,]*)\s*tokens", msg)
+            if match:
+                current = int(match.group(1).replace(",", ""))
+                max_t   = int(match.group(2).replace(",", ""))
+                fraction = current / max_t if max_t > 0 else 0
+                if fraction >= latest_fraction:
+                    latest_fraction, latest_current, found = fraction, current, True
+    if found:
+        color = "🔴" if latest_fraction > 0.9 else "🟡" if latest_fraction > 0.7 else "🟢"
+        st.progress(min(latest_fraction, 1.0),
+                    text=f"{color} {latest_current:,} / {max_tokens:,} tokens")
+
+
+def _render_step_progress(logs: list[dict], run_state: str, is_evolution: bool = False) -> None:
+    logs = logs or []
+    step_events     = [e for e in logs if isinstance(e, dict) and e.get("level") in ("step", "phase_transition")]
+    progress_events = [e for e in logs if isinstance(e, dict) and e.get("level") == "step_progress"]
+    heartbeat_events= [e for e in logs if isinstance(e, dict) and e.get("level") == "heartbeat"]
+    process_label   = "Evolution process active" if is_evolution else "Background process active"
+
+    if run_state == "RUNNING":
+        c1, c2, c3 = st.columns([3, 1, 1])
+        with c1: st.markdown(f"🟢 **{process_label}**")
+        with c2: st.caption(f"💓 {len(heartbeat_events)} heartbeat(s)")
+        with c3: st.caption(f"🧭 {len(step_events)} step(s)")
+        if progress_events:
+            render_expander_section("📊 Progress", lambda: st.caption(progress_events[-1].get("msg") or ""))
+    elif progress_events:
+        last_progress = progress_events[-1]
+        c1, c2, c3 = st.columns([3, 1, 1])
+        with c1: st.caption(f"📊 {last_progress.get('msg') or ''}")
+        with c2: st.caption(f"🧭 {len(step_events)} step(s)")
+        with c3:
+            if heartbeat_events: st.caption("🟢 active")
+
+        progress_val = 0.0
+        if "percentage" in last_progress and last_progress["percentage"] is not None:
+            try:
+                progress_val = float(last_progress["percentage"])
+            except (TypeError, ValueError):
+                pass
+        else:
+            for p in (last_progress.get("msg") or "").split():
+                candidate = p.replace("%", "").replace(".", "")
+                if candidate.isdigit():
+                    try:
+                        progress_val = float(p.replace("%", ""))
+                        break
+                    except ValueError:
+                        pass
+
+        if progress_val > 0:
+            c1, _ = st.columns([4, 1])
+            with c1:
+                st.progress(progress_val / 100.0, text=f"{progress_val:.0f}% complete")
+
+        if step_events:
+            with st.expander("📍 Step History", expanded=False):
+                for ev in step_events[-5:]:
+                    if ev.get("level") == "step":
+                        st.caption(f"• {(ev.get('msg') or '')[:80]}")
+                    elif ev.get("level") == "phase_transition":
+                        st.caption(f"⚡ {ev.get('msg') or ''}")
+
+
+# ── Shared job status screen ─────────────────────────────────────────────── #
+
+class JobStatusScreen:
+    """
+    Renders the status screen for a running or completed job.
+    Encapsulates the duplicated pattern between run and evo pages.
+    """
+
+    def __init__(
+        self,
+        job_id: str,
+        title: str,
+        page_key: str,
+        query_param: str,
+        report_filename_prefix: str,
+        running_message: str,
+        is_evolution: bool = False,
+    ):
+        self.job_id = job_id
+        self.title = title
+        self.page_key = page_key
+        self.query_param = query_param
+        self.report_filename_prefix = report_filename_prefix
+        self.running_message = running_message
+        self.is_evolution = is_evolution
+
+    def render(self) -> None:
+        status = job_manager.get_job_status(self.job_id)
+        if not status:
+            st.error(f"Job {self.job_id} not found.")
+            if st.button("Back to Setup"):
+                del st.query_params[self.query_param]
+                st.rerun()
+            return
+
+        state = status["state"]
+        logs  = _safe_logs(status)
+
+        # Header row
+        col_h1, col_h2, col_h3 = st.columns([3, 1, 1])
+        with col_h1:
+            st.markdown(f"### {self.title}: `{self.job_id}`")
+        with col_h2:
+            if state == "RUNNING":
+                if st.button("⏹ Stop", use_container_width=True, key=f"stop_{self.page_key}"):
+                    job_manager.cancel_job(self.job_id)
+                    st.rerun()
+            elif st.button("🗑 Clear", use_container_width=True, key=f"clear_{self.page_key}"):
+                del st.query_params[self.query_param]
+                st.rerun()
+        with col_h3:
+            if st.button("🔄 Refresh", use_container_width=True, key=f"refresh_{self.page_key}"):
+                st.rerun()
+
+        col_main, col_side = st.columns([2, 1])
+        with col_main:
+            _render_step_progress(logs, state, is_evolution=self.is_evolution)
+            st.markdown(f"#### 🖥️ {'Evolution' if self.is_evolution else 'Live'} Log")
+            _render_events(logs, "— waiting for logs —", show_verbose=True, page_key=self.page_key)
+
+        with col_side:
+            st.markdown("#### ℹ️ Details")
+            st.markdown(f"**State:** {state}")
+            st.markdown(
+                f"**Started:** {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(status.get('updated_at', 0)))}")
+            sup_model = st.session_state.get("supervisor_model", "") or "(not set)"
+            oc_model  = st.session_state.get("opencode_model", "")  or "(not set)"
+            st.markdown(f"**Supervisor model:** `{sup_model}`")
+            st.markdown(f"**Opencode model:** `{oc_model}`")
+            _render_token_usage_bar(logs, int(st.session_state.max_tokens))
+
+            if status.get("report"):
+                report_title = "📊 Evolution Report" if self.is_evolution else "📊 Report"
+                st.markdown(f"#### {report_title}")
+                with st.expander("View Report", expanded=True):
+                    st.markdown(status["report"])
+                    st.download_button(
+                        "⬇ Download", data=status["report"],
+                        file_name=f"{self.report_filename_prefix}_{self.job_id}.md",
+                        mime="text/markdown")
+
+        if state == "RUNNING":
+            st.info(f"{'🧬' if self.is_evolution else '🏃'} {self.running_message}")
+            try:
+                time.sleep(2)
+            finally:
+                st.rerun()
 
 
 # ═══════════════════════════════════════════════════════════════════════════ #
-# Self-Evolution                                                              #
+# PAGE 2 — Live Run                                                           #
 # ═══════════════════════════════════════════════════════════════════════════ #
 
-
-def page_evolve():
-    st.markdown("# Self-Evolution")
-
-    # Check for existing job in query params
-    job_id = st.query_params.get("evo_job_id")
-
+def page_run() -> None:
+    st.markdown("# Live Run")
+    job_id = st.query_params.get("run_job_id")
     if not job_id:
         for jid in job_manager.store.list_jobs():
-            status = job_manager.get_job_status(jid)
-            if (
-                status
-                and status.get("type") == "evolve"
-                and status.get("state") == "RUNNING"
-            ):
-                job_id = jid
-                st.query_params["evo_job_id"] = job_id
+            s = job_manager.get_job_status(jid)
+            if s and s.get("type") == "run" and s.get("state") == "RUNNING":
+                st.query_params["run_job_id"] = jid
                 st.rerun()
                 return
-
     if job_id:
-        _show_evo_status_screen(job_id)
+        JobStatusScreen(
+            job_id=job_id, title="Job", page_key="run",
+            query_param="run_job_id", report_filename_prefix="report",
+            running_message="Job is running in background. You can safely close this tab or refresh.",
+        ).render()
+    else:
+        _show_run_setup_screen()
+
+
+def _show_run_setup_screen() -> None:
+    workspace = Path(st.session_state.workspace) if st.session_state.workspace else None
+    if not workspace:
+        st.warning("Please set a workspace path in the configuration.")
+        return
+    if not workspace.exists():
+        st.error(f"Workspace directory does not exist: {workspace}")
+        return
+    proto_path = workspace / "protocol.md"
+    if not proto_path.exists():
+        st.error(f"**protocol.md not found** in workspace: `{workspace}`")
+        st.info("Please generate a protocol.md file before starting a live run.")
+        return
+
+    st.markdown(
+        f"**Workspace:** `{workspace}`  \n"
+        f"**Protocol:** `{proto_path}`  \n"
+        f"**Supervisor model:** `{st.session_state.supervisor_model}`")
+
+    col1, col2 = st.columns([2, 1])
+    with col1:
+        plan_rounds = st.number_input(
+            "Plan mode rounds", min_value=0, max_value=10,
+            value=int(st.session_state.plan_mode_rounds),
+            key="run_plan_mode_rounds_setup",
+            help="Number of planning rounds before execution")
+        enable_scanner = st.toggle(
+            "Enable Python scanner", value=bool(st.session_state.enable_python_scanner),
+            key="run_enable_python_scanner_setup",
+            help="Run the Python vulnerability scanner before execution")
+    with col2:
+        if st.button("▶  Start Live Run", type="primary",
+                     use_container_width=True, key="start_live_run_button"):
+            st.session_state.plan_mode_rounds = plan_rounds
+            st.session_state.enable_python_scanner = enable_scanner
+            save_settings()
+            apply_api_config()
+            config = _build_supervisor_config(
+                proto_path, workspace,
+                plan_mode_rounds=int(plan_rounds))
+            job_id = job_manager.enqueue_job("run", config)
+            st.query_params["run_job_id"] = job_id
+            st.rerun()
+
+
+# ═══════════════════════════════════════════════════════════════════════════ #
+# PAGE 3 — Self-Evolution                                                     #
+# ═══════════════════════════════════════════════════════════════════════════ #
+
+def page_evolve() -> None:
+    st.markdown("# Self-Evolution")
+    job_id = st.query_params.get("evo_job_id")
+    if not job_id:
+        for jid in job_manager.store.list_jobs():
+            s = job_manager.get_job_status(jid)
+            if s and s.get("type") == "evolve" and s.get("state") == "RUNNING":
+                st.query_params["evo_job_id"] = jid
+                st.rerun()
+                return
+    if job_id:
+        JobStatusScreen(
+            job_id=job_id, title="Evolution Job", page_key="evo",
+            query_param="evo_job_id", report_filename_prefix="evo_report",
+            running_message="Evolution in progress...", is_evolution=True,
+        ).render()
     else:
         _show_evo_setup_screen()
 
 
-def _show_evo_setup_screen():
+def _show_evo_setup_screen() -> None:
     st.markdown(
         "Point the supervisor + opencode at **this codebase itself**. "
         "Describe what you want improved or debugged — the system will "
         "auto-generate a `meta_protocol.md` from the live source tree, "
-        "then run the full supervisor loop.",
-    )
+        "then run the full supervisor loop.")
 
     if not st.session_state.openai_key:
-        st.warning(
-            "Enter your OpenAI API key in the Protocol Wizard config panel first.",
-        )
+        st.warning("Enter your OpenAI API key in the Protocol Wizard config panel first.")
         return
 
     repo_root = Path(__file__).parent.resolve()
     st.info(f"**Repo root (workspace):** `{repo_root}`")
 
-    # Step 0 — define the evolution goal
+    # Existing meta_protocol.md banner
+    def _on_reuse_meta(text: str):
+        try:
+            proto = parse_protocol_text(text)
+            st.session_state.evo_goal = proto.target_section
+            st.session_state.evo_extra_restrictions = proto.restrictions_section
+            st.rerun()
+        except Exception as e:
+            st.error(f"Failed to parse meta_protocol.md: {e}")
+
+    _render_existing_protocol_banner(
+        repo_root / "meta_protocol.md", "evo_meta_protocol_md",
+        reuse_label="♻️  Use existing meta_protocol.md",
+        on_reuse=_on_reuse_meta)
+
     if st.session_state.evo_wizard_step == 0:
         st.markdown("### 🎯 What do you want to evolve?")
-
-        st.markdown('<div class="card">', unsafe_allow_html=True)
-        st.markdown("**Evolution goal**")
-        st.text_area(
-            "evo_goal_input",
-            key="evo_goal",
-            height=130,
-            label_visibility="collapsed",
-        )
-        st.markdown("</div>", unsafe_allow_html=True)
-
-        st.markdown('<div class="card">', unsafe_allow_html=True)
-        st.markdown("**Extra restrictions**")
-        st.text_area(
-            "evo_restrictions_input",
-            key="evo_extra_restrictions",
-            height=80,
-            label_visibility="collapsed",
-        )
-        st.markdown("</div>", unsafe_allow_html=True)
+        for section_key, label, height in [
+            ("evo_goal", "**Evolution goal**", 130),
+            ("evo_extra_restrictions", "**Extra restrictions**", 80),
+        ]:
+            st.markdown(f'<div class="card">', unsafe_allow_html=True)
+            st.markdown(label)
+            st.text_area(section_key, key=section_key, height=height, label_visibility="collapsed")
+            st.markdown("</div>", unsafe_allow_html=True)
 
         col_gen, col_snap, _ = st.columns([1, 1, 3])
         with col_gen:
@@ -1993,20 +1375,18 @@ def _show_evo_setup_screen():
                     snap = snapshot_codebase(repo_root)
                     st.code(snap.tree())
 
-    # Step 1 — review and launch
     elif st.session_state.evo_wizard_step == 1:
         st.markdown("### 📄 Generated `meta_protocol.md`")
-        st.text_area(
-            "evo_proto_edit",
-            key="evo_meta_protocol_md",
-            height=340,
-            label_visibility="collapsed",
-        )
-
+        st.text_area("evo_proto_edit", key="evo_meta_protocol_md",
+                     height=340, label_visibility="collapsed")
         col_a, col_b, _ = st.columns([1, 1, 2])
         with col_a:
             if st.button("🚀 Launch Evolution", type="primary"):
-                job_id = _enqueue_evo_job(repo_root)
+                save_settings()
+                apply_api_config()
+                proto_path = write_meta_protocol(st.session_state.evo_meta_protocol_md, repo_root)
+                config = _build_supervisor_config(proto_path, repo_root)
+                job_id = job_manager.enqueue_job("evolve", config)
                 st.query_params["evo_job_id"] = job_id
                 st.rerun()
         with col_b:
@@ -2015,7 +1395,7 @@ def _show_evo_setup_screen():
                 st.rerun()
 
 
-def _generate_meta_protocol(repo_root: Path):
+def _generate_meta_protocol(repo_root: Path) -> None:
     apply_api_config()
     with st.spinner("Generating meta_protocol.md..."):
         snap = snapshot_codebase(repo_root)
@@ -2033,137 +1413,29 @@ def _generate_meta_protocol(repo_root: Path):
             st.error(f"Generation failed: {exc}")
 
 
-def _enqueue_evo_job(repo_root: Path) -> str:
-    save_settings()
-    apply_api_config()
-    proto_path = write_meta_protocol(st.session_state.evo_meta_protocol_md, repo_root)
-
-    config = SupervisorConfig(
-        protocol_path=proto_path,
-        workspace=repo_root,
-        max_retries=int(st.session_state.max_retries),
-        context_threshold=st.session_state.context_threshold / 100.0,
-        opencode_model=st.session_state.opencode_model or None,
-        opencode_model_backup=st.session_state.opencode_model_backup or None,
-        opencode_executable=st.session_state.opencode_executable,
-        supervisor_model=st.session_state.supervisor_model or "gpt-4o",
-        supervisor_model_backup=st.session_state.supervisor_model_backup or None,
-        timeout=int(st.session_state.timeout) * 60,
-        protected_files=tuple(st.session_state.get("protected_files", [])),
-        max_tokens=int(st.session_state.max_tokens),
-        enable_python_scanner=bool(st.session_state.enable_python_scanner),
-    )
-    return job_manager.enqueue_job("evolve", config)
-
-
-def _show_evo_status_screen(job_id: str):
-    status = job_manager.get_job_status(job_id)
-    if not status:
-        st.error(f"Job {job_id} not found.")
-        if st.button("Back to Setup"):
-            del st.query_params["evo_job_id"]
-            st.rerun()
-        return
-
-    state = status["state"]
-
-    col_h1, col_h2, col_h3 = st.columns([3, 1, 1])
-    with col_h1:
-        st.markdown(f"### Evolution Job: `{job_id}`")
-    with col_h2:
-        if state == "RUNNING":
-            if st.button("⏹ Stop", use_container_width=True):
-                job_manager.cancel_job(job_id)
-                st.rerun()
-        elif st.button("🗑 Clear", use_container_width=True):
-            del st.query_params["evo_job_id"]
-            st.rerun()
-    with col_h3:
-        if st.button("🔄 Refresh", use_container_width=True):
-            st.rerun()
-
-    # Safely retrieve logs — the job store may persist logs as null
-    logs = status.get("logs") or []
-
-    col_main, col_side = st.columns([2, 1])
-    with col_main:
-        _render_step_progress(logs, state, is_evolution=True)
-        st.markdown("#### 🖥️ Evolution Log")
-        _render_events(logs, "— waiting for logs —", show_verbose=True, page_key="evo")
-
-    with col_side:
-        st.markdown("#### ℹ️ Details")
-        st.markdown(f"**State:** {state}")
-        st.markdown(
-            f"**Started:** {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(status.get('updated_at', 0)))}",
-        )
-        sup_model = st.session_state.get("supervisor_model", "") or "(not set)"
-        oc_model = st.session_state.get("opencode_model", "") or "(not set)"
-        st.markdown(f"**Supervisor model:** `{sup_model}`")
-        st.markdown(f"**Opencode model:** `{oc_model}`")
-
-        _render_token_usage_bar(logs, int(st.session_state.max_tokens))
-
-        if status.get("report"):
-            st.markdown("#### 📊 Evolution Report")
-            with st.expander("View Report", expanded=True):
-                st.markdown(status["report"])
-                st.download_button(
-                    "⬇ Download",
-                    data=status["report"],
-                    file_name=f"evo_report_{job_id}.md",
-                )
-
-    if state == "RUNNING":
-        st.info("🧬 Evolution in progress...")
-        try:
-            time.sleep(2)
-        finally:
-            st.rerun()
-
-
-# Router
+# ═══════════════════════════════════════════════════════════════════════════ #
+# Router                                                                      #
 # ═══════════════════════════════════════════════════════════════════════════ #
 
-
-page = st.session_state.page
-if page == "report":
-    page = "run"
+if st.session_state.page == "report":
     st.session_state.page = "run"
+
 _tests_ok = (
     st.session_state.opencode_test_passed and st.session_state.supervisor_test_passed
+    or _any_job_running()
 )
 
-run_job_id = st.query_params.get("run_job_id")
-evo_job_id = st.query_params.get("evo_job_id")
+_LOCKED_PAGES = {"run", "evolve"}
+page = st.session_state.page
 
-is_running = False
-for jid in job_manager.store.list_jobs():
-    status = job_manager.get_job_status(jid)
-    if status and status.get("state") == "RUNNING":
-        is_running = True
-        break
-
-if is_running:
-    _tests_ok = True
-
-if page == "wizard":
+if page in _LOCKED_PAGES and not _tests_ok:
+    _redirect_if_locked(
+        page,
+        f"🔒 {page.title()} is locked. Pass connectivity tests on the Protocol Wizard page first.",
+    )
+elif page == "wizard":
     page_wizard()
 elif page == "run":
-    if not _tests_ok:
-        st.session_state.page = "wizard"
-        st.session_state["_redirect_warning"] = (
-            "🔒 Live Run is locked. Pass connectivity tests on the Protocol Wizard page first."
-        )
-        st.rerun()
-    else:
-        page_run()
+    page_run()
 elif page == "evolve":
-    if not _tests_ok:
-        st.session_state.page = "wizard"
-        st.session_state["_redirect_warning"] = (
-            "🔒 Self-Evolution is locked. Pass connectivity tests on the Protocol Wizard page first."
-        )
-        st.rerun()
-    else:
-        page_evolve()
+    page_evolve()

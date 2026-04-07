@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from supervisor.utils.file_ops import safe_read_text
 import logging
 import time
 from collections.abc import Generator
@@ -8,6 +7,7 @@ from enum import Enum, auto
 from pathlib import Path
 
 from supervisor.utils.experience_tracker import update_experience
+from supervisor.utils.file_ops import safe_read_text
 from supervisor.utils.text_utils import sanitize_event_message, strip_thinking_blocks
 
 logger = logging.getLogger(__name__)
