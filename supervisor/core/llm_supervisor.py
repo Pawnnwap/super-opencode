@@ -10,13 +10,14 @@ from pathlib import Path
 
 from openai import OpenAI
 
-from supervisor.monitoring.session_tracker import (estimate_request_tokens,
-                                                   truncate_with_fallback,
-                                                   warn_if_exceeds_limit)
+from supervisor.monitoring.session_tracker import (
+    estimate_request_tokens,
+    truncate_with_fallback,
+    warn_if_exceeds_limit,
+)
 from supervisor.monitoring.token_estimator import should_truncate
 from supervisor.protocols.protocol import Protocol
-from supervisor.protocols.protocol_analyzer import (ProtocolAnalysis,
-                                                    ProtocolAnalyzer)
+from supervisor.protocols.protocol_analyzer import ProtocolAnalysis, ProtocolAnalyzer
 from supervisor.utils.text_utils import strip_thinking_blocks
 from supervisor.workspace.ignore_patterns import IgnoreMatcher
 
@@ -240,7 +241,7 @@ class LLMSupervisor:
         if SessionTracker.estimate_tokens(listing) > available_tokens:
             # We must truncate the listing
             listing = SessionTracker.truncate_prompt(
-                listing, available_tokens, preserve_end_ratio=0.0
+                listing, available_tokens, preserve_end_ratio=0.0,
             )
 
         from supervisor.prompts import FILE_SELECTION_PROMPT
@@ -484,8 +485,7 @@ class LLMSupervisor:
         """
         try:
             from supervisor.monitoring.session_tracker import SessionTracker
-            from supervisor.utils.experience_tracker import \
-                read_experience_capped
+            from supervisor.utils.experience_tracker import read_experience_capped
 
             experience_text = read_experience_capped(self._workspace, max_chars=10000)
             if not experience_text.strip():
@@ -495,7 +495,7 @@ class LLMSupervisor:
             budget = int(self._max_tokens * 0.1)
             if SessionTracker.estimate_tokens(experience_text) > budget:
                 experience_text = SessionTracker.truncate_prompt(
-                    experience_text, budget, preserve_end_ratio=0.0
+                    experience_text, budget, preserve_end_ratio=0.0,
                 )
 
             return (
@@ -1167,7 +1167,7 @@ class LLMSupervisor:
                     continue
                 if isinstance(exc, InternalServerError):
                     code = getattr(exc, "code", None) or getattr(
-                        exc, "status_code", None
+                        exc, "status_code", None,
                     )
                     body = str(exc)
                     if code != 511 and "max tokens" not in body.lower():

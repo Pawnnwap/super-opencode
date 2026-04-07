@@ -246,7 +246,7 @@ def _apply_edits(working: list[str], edits: list[dict[str, Any]]) -> None:
 
         else:
             raise ValueError(
-                f"Unknown op '{op}'. Must be: replace | replace_range | delete | append | prepend"
+                f"Unknown op '{op}'. Must be: replace | replace_range | delete | append | prepend",
             )
 
 
@@ -290,13 +290,14 @@ def _hashline_write(
         status : "created" | "overwritten"
         path   : resolved absolute path
         lines  : number of lines written
+
     """
     resolved = Path(path).resolve()
 
     if resolved.exists() and not overwrite:
         raise FileExistsError(
             f"File already exists: {resolved}  —  pass overwrite=true to replace it, "
-            "or use `hashline edit` to modify it in place."
+            "or use `hashline edit` to modify it in place.",
         )
 
     resolved.parent.mkdir(parents=True, exist_ok=True)
@@ -331,6 +332,7 @@ def _hashline_edit(
         status   : "written" | "dry_run" | "auto_retried"
         patches  : number of refs auto-corrected (only when auto_retried)
         diff     : unified diff string (key omitted if no changes)
+
     """
     resolved = Path(path).resolve()
     if not resolved.exists():

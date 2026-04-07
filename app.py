@@ -18,8 +18,10 @@ from services.job_manager import JobManager
 from services.settings import apply_api_config, load_settings, save_settings
 from supervisor.analyzers.codebase_analyzer import snapshot_codebase
 from supervisor.monitoring.session_tracker import SessionTracker
-from supervisor.protocols.meta_protocol_builder import (MetaProtocolBuilder,
-                                                        write_meta_protocol)
+from supervisor.protocols.meta_protocol_builder import (
+    MetaProtocolBuilder,
+    write_meta_protocol,
+)
 from supervisor.protocols.protocol_analyzer import ProtocolAnalyzer, Severity
 from supervisor.protocols.protocol_wizard import ProtocolWizard
 from supervisor.utils.config import SupervisorConfig
@@ -328,7 +330,6 @@ def _find_opencode_config_dir() -> Path | None:
 
 def _get_opencode_config_file(config_dir: Path) -> Path:
     """Get the opencode.json file, creating it if it doesn't exist."""
-
     opencode_json = Path(os.path.join(str(config_dir), "opencode.json"))
     config_json = Path(os.path.join(str(config_dir), "config.json"))
 
@@ -734,8 +735,7 @@ def _run_with_timeout(fn, seconds=30):
 def test_opencode():
     import tempfile
 
-    from supervisor.runners.opencode_runner import (OpencodeRunner,
-                                                    find_opencode)
+    from supervisor.runners.opencode_runner import OpencodeRunner, find_opencode
 
     workspace = Path(tempfile.gettempdir()) / "opencode_test_dummy"
     workspace.mkdir(exist_ok=True)  # Ensure dummy dir exists
@@ -1032,7 +1032,9 @@ def page_wizard():
 
         with st.expander("🚫 Ignore Patterns (.opencodeignore)", expanded=False):
             from supervisor.workspace.ignore_patterns import (
-                IGNORE_FILE, write_ignore_file)
+                IGNORE_FILE,
+                write_ignore_file,
+            )
 
             st.caption(
                 "Files matching these patterns will be excluded from context retrieval",
@@ -1851,6 +1853,7 @@ def _render_events(
         verbose toggle.  Without this, both the run page and the evo
         page emit a toggle with the same key, causing a ``DuplicateWidgetID``
         error when both are rendered in the same rerun.
+
     """
     # Guard: job store may persist logs as null
     if not events:

@@ -19,13 +19,15 @@ import time
 from collections.abc import Callable, Generator
 from pathlib import Path
 
-from supervisor.analyzers.opencode_step_detector import (OpencodeStepDetector,
-                                                         PhaseTransition, Step,
-                                                         StepProgress)
+from supervisor.analyzers.opencode_step_detector import (
+    OpencodeStepDetector,
+    PhaseTransition,
+    Step,
+    StepProgress,
+)
 from supervisor.prompts.commands import BREVITY_COMMAND
 from supervisor.utils.text_utils import strip_thinking_blocks
-from supervisor.workspace.workspace_archiver import (ArchiveResult,
-                                                     WorkspaceArchiver)
+from supervisor.workspace.workspace_archiver import ArchiveResult, WorkspaceArchiver
 
 logger = logging.getLogger(__name__)
 
@@ -204,10 +206,10 @@ class OpencodeRunner:
         # Coerce model strings — a float like 3.5 from a number widget is the
         # most common source of the "unsupported operand type(s) for +: float and str" error.
         raw_model = _coerce_str(opencode_model, "opencode_model")
-        self.opencode_model: str | None = raw_model if raw_model else None
+        self.opencode_model: str | None = raw_model or None
 
         raw_backup = _coerce_str(opencode_model_backup, "opencode_model_backup")
-        self.opencode_model_backup: str | None = raw_backup if raw_backup else None
+        self.opencode_model_backup: str | None = raw_backup or None
 
         self.opencode_executable = _coerce_str(opencode_executable, "opencode_executable")
         self.agent = _coerce_str(agent, "agent")

@@ -13,8 +13,7 @@ import time
 from collections.abc import Generator
 from pathlib import Path
 
-from supervisor.analyzers.codebase_analyzer import (CodebaseSnapshot,
-                                                    snapshot_codebase)
+from supervisor.analyzers.codebase_analyzer import CodebaseSnapshot, snapshot_codebase
 from supervisor.core.llm_supervisor import LLMSupervisor
 from supervisor.core.loop_base import BaseLoop, Event, LoopState, _ev
 from supervisor.runners.test_runner import OcTestRunner, RunTestResult
