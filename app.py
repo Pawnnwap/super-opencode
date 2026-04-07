@@ -976,27 +976,15 @@ def page_wizard():
             if workspace_path and workspace_path.exists():
                 try:
 
-                    def is_in_dot_dir(path: Path, workspace: Path) -> bool:
-                        rel = path.relative_to(workspace)
-                        for part in rel.parts[:-1]:
-                            if part.startswith("."):
-                                return True
-                        return False
-
-                    def contains_debug_dir(path: Path, workspace: Path) -> bool:
-                        rel = path.relative_to(workspace)
-                        for part in rel.parts[:-1]:
-                            if "debug" in part.lower():
-                                return True
-                        return False
+                    # Use shared path filtering utility instead of custom functions
+                    from supervisor.utils.path_filters import should_skip_path
 
                     all_files = sorted(
                         [
                             str(f.relative_to(workspace_path)).replace("\\", "/")
                             for f in workspace_path.rglob("*")
                             if f.is_file()
-                            and not is_in_dot_dir(f, workspace_path)
-                            and not contains_debug_dir(f, workspace_path)
+                            and not should_skip_path(f, extra_dirs=["debug"])  # Include debug dirs in skip list
                         ],
                     )
                 except Exception:

@@ -16,6 +16,7 @@ Archive structure:
 
 from __future__ import annotations
 
+from supervisor.utils.path_filters import should_skip_path
 import json
 import shutil
 import time
@@ -32,18 +33,10 @@ if TYPE_CHECKING:
     from supervisor.workspace.ignore_patterns import IgnoreMatcher
 
 _ARCHIVE_DIR = ".archive"
-_ARCHIVE_IGNORE_DIRS = {
-    ".git",
-    ".venv",
-    "venv",
-    "node_modules",
-    ".mypy_cache",
+_ARCHIVE_EXTRA_IGNORE_DIRS = {
     "_deps",
     ". Dune",
-    "__pycache__",
-    ".checkpoints",
 }
-_ARCHIVE_IGNORE_PREFIXES = (".",)
 _ARCHIVE_SUBDIRS = {
     "code": {".py", ".md", ".toml", ".cfg", ".ini", ".yaml", ".yml", ".txt", ".rst"},
     "results": {".json", ".html", ".csv", ".xml"},
@@ -108,11 +101,7 @@ class WorkspaceArchiver:
             return False
         rel = path.relative_to(self.workspace)
         parts = rel.parts
-        if any(
-            part in _ARCHIVE_IGNORE_DIRS
-            or any(part.startswith(p) for p in _ARCHIVE_IGNORE_PREFIXES)
-            for part in parts
-        ):
+        if should_skip_path(path, extra_dirs=_ARCHIVE_EXTRA_IGNORE_DIRS):
             return False
         if ignore_matcher and ignore_matcher.matches(path):
             return False
