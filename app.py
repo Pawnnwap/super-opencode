@@ -179,6 +179,9 @@ button[kind="primary"]:hover, .stButton > button:hover { background: #388bfd !im
 .log-step_progress     { color: #a5d6ff; white-space: pre-wrap; }
 .log-heartbeat         { color: #39d353; white-space: pre-wrap; font-style: italic; }
 .log-rule { color: #21262d; display:block; }
+.log-block-hdr { color: #58a6ff; font-weight: 600; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.5px; }
+.log-supervisor_suggestions { color: #d2a8ff; white-space: pre-wrap; }
+.log-log-plan_phase { color: #79c0ff; font-style: italic; white-space: pre-wrap; }
 div[data-testid="stProgress"] > div > div { background-color: #21262d !important; }
 div[data-testid="stProgress"] > div > div > div { background: linear-gradient(90deg, #1f6feb, #58a6ff) !important; }
 .card { background: #161b22; border: 1px solid #21262d; border-radius: 10px; padding: 1.2rem 1.5rem; margin-bottom: 1rem; }
@@ -201,14 +204,6 @@ st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
 # ── UI Utilities ─────────────────────────────────────────────────────────── #
 
-def render_expander_section(title: str, content_func) -> None:
-    """Render a standardized expander section with consistent styling."""
-    with st.expander(title, expanded=False):
-        st.markdown("<div class='expander-content'>", unsafe_allow_html=True)
-        content_func()
-        st.markdown("</div>", unsafe_allow_html=True)
-
-
 def _clear_page_state(target_page: str) -> None:
     """Clear UI state from other pages when navigating to a new page."""
     if target_page != "wizard":
@@ -219,11 +214,6 @@ def _clear_page_state(target_page: str) -> None:
         st.query_params.pop("run_job_id", None)
     if target_page != "evolve":
         st.query_params.pop("evo_job_id", None)
-
-
-def render_file_block(title: str, body: str, language: str = "python") -> None:
-    st.markdown(f"### {title}")
-    st.code(body, language=language)
 
 
 def _safe_logs(status: dict) -> list[dict]:
@@ -455,6 +445,10 @@ def _any_job_running() -> bool:
     )
 
 
+# Compute once per render cycle so sidebar and router share the result.
+_jobs_running = _any_job_running()
+
+
 def _evo_job_passed() -> bool:
     for jid in job_manager.store.list_jobs():
         status = job_manager.get_job_status(jid)
@@ -481,7 +475,7 @@ with st.sidebar:
 
     tests_passed = (
         (st.session_state.opencode_test_passed and st.session_state.supervisor_test_passed)
-        or _any_job_running()
+        or _jobs_running
         or _evo_job_passed()
     )
 
@@ -745,12 +739,11 @@ def _render_refined_quality_analysis(refined_md: str) -> None:
             for issue in warnings:
                 st.caption(f"⚠️ [{issue.section}] {issue.message}")
         if infos:
-            def _suggestions_content():
+            with st.expander(f"{len(infos)} suggestion(s)"):
                 for issue in infos:
                     st.caption(f"ℹ️ [{issue.section}] {issue.message}")
                     if issue.suggestion:
                         st.caption(f"   → {issue.suggestion}")
-            render_expander_section(f"{len(infos)} suggestion(s)", _suggestions_content)
 
 
 # ── Existing-protocol reuse banner ──────────────────────────────────────── #
@@ -1054,14 +1047,12 @@ def page_wizard() -> None:
         st.markdown("</div>", unsafe_allow_html=True)
 
     if any(st.session_state.get(k, "").strip() for k in ("raw_input", "raw_target", "raw_restrictions")):
-        render_expander_section(
-            "📊 Protocol Quality Preview",
-            lambda: _render_quality_analysis(
+        with st.expander("📊 Protocol Quality Preview"):
+            _render_quality_analysis(
                 st.session_state.raw_input,
                 st.session_state.raw_target,
                 st.session_state.raw_restrictions,
-            ),
-        )
+            )
 
     if st.button("✨  Refine with AI", type="primary"):
         missing = [label for key, label in [
@@ -1092,10 +1083,8 @@ def page_wizard() -> None:
         st.markdown("### 📄 Refined `protocol.md`")
         st.markdown("*Review and edit below, then accept.*")
         st.text_area("proto_edit", key="protocol_md", height=300, label_visibility="collapsed")
-        render_expander_section(
-            "📊 Protocol Quality Analysis",
-            lambda: _render_refined_quality_analysis(st.session_state.protocol_md),
-        )
+        with st.expander("📊 Protocol Quality Analysis"):
+            _render_refined_quality_analysis(st.session_state.protocol_md)
         col_a, col_b, _ = st.columns([1, 1, 3])
         with col_a:
             if st.button("✅  Accept & Save", type="primary"):
@@ -1118,11 +1107,11 @@ def _esc(t) -> str:
     return str(t).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
-_BLOCK_META = {
-    "opencode_prompt": ("hdr-oc-prompt", "▶ PROMPT → opencode"),
-    "opencode_output": ("hdr-oc-output", "◀ OUTPUT ← opencode"),
-    "supervisor_response": ("hdr-sv-response", "🧠 SUPERVISOR"),
-    "supervisor_read_files": ("hdr-sv-read", "📂 SUPERVISOR READ FILES"),
+_BLOCK_LABELS = {
+    "opencode_prompt": "▶ PROMPT → opencode",
+    "opencode_output": "◀ OUTPUT ← opencode",
+    "supervisor_response": "🧠 SUPERVISOR",
+    "supervisor_read_files": "📂 SUPERVISOR READ FILES",
 }
 
 
@@ -1148,7 +1137,6 @@ def _render_events(
             unsafe_allow_html=True)
         return
 
-    st.caption(f"Debug: Got {len(events)} events to render.")
     lines_html: list[str] = []
 
     for ev in events[-600:]:
@@ -1159,17 +1147,17 @@ def _render_events(
             continue
         msg = sanitize_event_message(ev.get("msg") or "")
 
-        if lvl in _BLOCK_META:
-            hdr_cls, hdr_label = _BLOCK_META[lvl]
+        if lvl in _BLOCK_LABELS:
+            hdr_label = _BLOCK_LABELS[lvl]
             if not verbose:
                 preview = _esc(str(msg)[:120].replace("\n", " "))
                 lines_html.append(
-                    f'<span class="{hdr_cls}">{hdr_label}</span>'
+                    f'<span class="log-block-hdr">{hdr_label}</span>'
                     f'<span class="log-info" style="opacity:0.6"> {preview}…</span>\n')
             else:
                 lines_html.append(
                     f'<span class="log-rule">{"─" * 60}</span>\n'
-                    f'<span class="{hdr_cls}">{hdr_label}</span>\n'
+                    f'<span class="log-block-hdr">{hdr_label}</span>\n'
                     f'<span class="log-{_esc(lvl)}">{_esc(msg)}</span>\n')
         else:
             lines_html.append(f'<span class="log-{_esc(lvl)}">{_esc(msg)}</span>\n')
@@ -1211,7 +1199,8 @@ def _render_step_progress(logs: list[dict], run_state: str, is_evolution: bool =
         with c2: st.caption(f"💓 {len(heartbeat_events)} heartbeat(s)")
         with c3: st.caption(f"🧭 {len(step_events)} step(s)")
         if progress_events:
-            render_expander_section("📊 Progress", lambda: st.caption(progress_events[-1].get("msg") or ""))
+            with st.expander("📊 Progress"):
+                st.caption(progress_events[-1].get("msg") or "")
     elif progress_events:
         last_progress = progress_events[-1]
         c1, c2, c3 = st.columns([3, 1, 1])

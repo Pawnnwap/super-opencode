@@ -22,6 +22,7 @@ class JobStateStore:
         state["job_id"] = job_id
         state["updated_at"] = time.time()
         path = self._get_job_path(job_id)
+        self.store_dir.mkdir(parents=True, exist_ok=True)
         with open(path, "w", encoding="utf-8") as f:
             json.dump(state, f, indent=2)
 
@@ -39,6 +40,7 @@ class JobStateStore:
     def append_log(self, job_id: str, log_event: dict[str, Any]):
         """Append a log event to the job's log file."""
         path = self._get_logs_path(job_id)
+        self.store_dir.mkdir(parents=True, exist_ok=True)
         with open(path, "a", encoding="utf-8") as f:
             f.write(json.dumps(log_event) + "\n")
 

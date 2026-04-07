@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import os
 import re
-import stat
-import subprocess
 from collections.abc import Iterable
 from pathlib import Path
 from typing import TYPE_CHECKING
+
+from supervisor.utils.file_permissions import remove_file_readonly, set_file_readonly
 
 if TYPE_CHECKING:
     from supervisor.workspace.ignore_patterns import IgnoreMatcher
@@ -350,16 +349,8 @@ class WorkspaceGuard:
 
     @staticmethod
     def _set_file_readonly(path_str: str) -> None:
-        if os.name == "nt":
-            subprocess.run(["attrib", "+r", path_str], check=False, capture_output=True)
-        else:
-            current = os.stat(path_str).st_mode
-            os.chmod(path_str, current & ~stat.S_IWUSR & ~stat.S_IWGRP & ~stat.S_IWOTH)
+        set_file_readonly(path_str)
 
     @staticmethod
     def _remove_file_readonly(path_str: str) -> None:
-        if os.name == "nt":
-            subprocess.run(["attrib", "-r", path_str], check=False, capture_output=True)
-        else:
-            current = os.stat(path_str).st_mode
-            os.chmod(path_str, current | stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH)
+        remove_file_readonly(path_str)

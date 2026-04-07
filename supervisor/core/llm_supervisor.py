@@ -19,6 +19,7 @@ from supervisor.monitoring.token_estimator import should_truncate
 from supervisor.protocols.protocol import Protocol
 from supervisor.protocols.protocol_analyzer import ProtocolAnalysis, ProtocolAnalyzer
 from supervisor.utils.file_ops import safe_read_text
+from supervisor.utils.path_filters import DEFAULT_IGNORE_DIRS, DEFAULT_IGNORE_PREFIXES
 from supervisor.utils.text_utils import strip_thinking_blocks
 from supervisor.workspace.ignore_patterns import IgnoreMatcher
 
@@ -32,20 +33,8 @@ _OPENCODE_GENERATED_MD: set[str] = {
     "evolution_report.md",
 }
 
-_SKIP_DIRS = {
-    ".git",
-    ".venv",
-    "venv",
-    "node_modules",
-    "__pycache__",
-    ".checkpoints",
-    ".archive",
-    ".opencode",
-    ".mypy_cache",
-    ".pytest_cache",
-    "opencode_supervisor.egg-info",
-}
-_SKIP_DIR_PREFIXES = (".",)
+_SKIP_DIRS = DEFAULT_IGNORE_DIRS | {".opencode", "opencode_supervisor.egg-info"}
+_SKIP_DIR_PREFIXES = DEFAULT_IGNORE_PREFIXES
 
 
 @dataclass
@@ -600,17 +589,19 @@ class LLMSupervisor:
 
         context_info = ""
         if step_context is not None:
+            from supervisor.prompts.templates import build_step_context
+
             phases_str = (
                 ", ".join(step_context.completed_phases)
                 if step_context.completed_phases
                 else "none"
             )
-            context_info = (
-                "--- Step Context ---\n"
-                f"Current step: {step_context.current_step}/{step_context.total_steps_estimate}\n"
-                f"Current phase: {step_context.phase}\n"
-                f"Completed phases: {phases_str}\n\n"
-            )
+            context_info = build_step_context(
+                step_context.current_step,
+                step_context.total_steps_estimate,
+                step_context.phase,
+                phases_str,
+            ) + "\n"
 
         experience_context = self._build_experience_context()
         msg = JUDGE_PLAN_PROMPT.format(

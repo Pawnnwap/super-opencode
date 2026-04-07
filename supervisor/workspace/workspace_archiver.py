@@ -21,16 +21,10 @@ import shutil
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
 
+from supervisor.utils.file_permissions import remove_file_readonly
 from supervisor.utils.path_filters import should_skip_path
-from supervisor.workspace.opencodeignore_handler import (
-    load_opencodeignore_patterns,
-    should_ignore,
-)
-
-if TYPE_CHECKING:
-    from supervisor.workspace.ignore_patterns import IgnoreMatcher
+from supervisor.workspace.ignore_patterns import IgnoreMatcher
 
 _ARCHIVE_DIR = ".archive"
 _ARCHIVE_EXTRA_IGNORE_DIRS = {
@@ -71,15 +65,8 @@ class WorkspaceArchiver:
         self.archive_root.mkdir(parents=True, exist_ok=True)
         counter_file = self.archive_root / ".archive_counter"
         if counter_file.exists():
-            import os
-            import stat
             try:
-                if os.name == "nt":
-                    import subprocess
-                    subprocess.run(["attrib", "-r", str(counter_file)], check=False, capture_output=True)
-                else:
-                    current = os.stat(counter_file).st_mode
-                    os.chmod(counter_file, current | stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH)
+                remove_file_readonly(str(counter_file))
             except Exception:
                 pass
         counter_file.write_text(str(self._archive_counter), encoding="utf-8")
@@ -95,20 +82,18 @@ class WorkspaceArchiver:
         self,
         path: Path,
         ignore_matcher: IgnoreMatcher | None = None,
-        opencodeignore_patterns: list[str] | None = None,
+        workspace_ignore: IgnoreMatcher | None = None,
     ) -> bool:
         if not path.is_file():
             return False
-        rel = path.relative_to(self.workspace)
-        rel.parts
         if should_skip_path(path, extra_dirs=_ARCHIVE_EXTRA_IGNORE_DIRS):
             return False
         if ignore_matcher and ignore_matcher.matches(path):
             return False
-        if opencodeignore_patterns and should_ignore(rel, opencodeignore_patterns):
-            return False
-        if path == self.archive_root:
-            return False
+        if workspace_ignore:
+            rel = path.relative_to(self.workspace)
+            if workspace_ignore.matches(str(rel)):
+                return False
         return True
 
     def archive_workspace(
@@ -142,7 +127,8 @@ class WorkspaceArchiver:
         archive_name = f"run_{ts}_{self._archive_counter:04d}_{slug}"
         archive_path = self.archive_root / archive_name
 
-        opencodeignore_patterns = load_opencodeignore_patterns(self.workspace)
+        workspace_ignore = IgnoreMatcher(self.workspace)
+        workspace_ignore.load_from_workspace(self.workspace)
 
         try:
             self.archive_root.mkdir(parents=True, exist_ok=True)
@@ -167,16 +153,12 @@ class WorkspaceArchiver:
                     if (
                         src.exists()
                         and src.is_file()
-                        and self._should_archive(
-                            src, ignore_matcher, opencodeignore_patterns,
-                        )
+                        and self._should_archive(src, ignore_matcher, workspace_ignore)
                     ):
                         _archive_file(src)
             else:
                 for src in sorted(self.workspace.rglob("*")):
-                    if self._should_archive(
-                        src, ignore_matcher, opencodeignore_patterns,
-                    ):
+                    if self._should_archive(src, ignore_matcher, workspace_ignore):
                         _archive_file(src)
 
             metadata = {

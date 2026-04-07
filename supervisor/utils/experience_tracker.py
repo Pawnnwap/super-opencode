@@ -41,31 +41,33 @@ def update_experience(
     if not content:
         content = f"{_HEADER_WORKED}\n\n{_HEADER_FAILED}\n"
 
-    parts = content.split(_HEADER_FAILED)
+    # Split on the Failed header only (maxsplit=1 prevents re-splitting on body text)
+    parts = content.split(_HEADER_FAILED, maxsplit=1)
     if len(parts) == 1:
         content = f"{_HEADER_WORKED}\n\n{_HEADER_FAILED}\n"
-        parts = content.split(_HEADER_FAILED)
+        parts = content.split(_HEADER_FAILED, maxsplit=1)
 
-    worked_section = parts[0]
-    failed_section = parts[1] if len(parts) > 1 else ""
+    # before_failed already contains the _HEADER_WORKED line; after_failed is
+    # the body text that follows _HEADER_FAILED (no header prefix).
+    before_failed = parts[0]
+    after_failed = parts[1] if len(parts) > 1 else "\n"
 
     if worked:
-        worked_items = [f"- {item}" for item in worked]
-        if worked_section.strip():
-            worked_section = worked_section.rstrip() + "\n" + "\n".join(worked_items) + "\n"
-        else:
-            worked_section = "\n".join(worked_items) + "\n"
+        worked_items = "\n".join(f"- {item}" for item in worked)
+        before_failed = before_failed.rstrip() + "\n" + worked_items + "\n"
 
     if failed:
-        failed_items = [f"- {item}" for item in failed]
-        if failed_section.strip():
-            failed_section = failed_section.rstrip() + "\n" + "\n".join(failed_items) + "\n"
-        else:
-            failed_section = "\n".join(failed_items) + "\n"
+        failed_items = "\n".join(f"- {item}" for item in failed)
+        after_failed = after_failed.rstrip() + "\n" + failed_items + "\n"
 
-    new_content = f"{worked_section}{_HEADER_WORKED}{_HEADER_FAILED}{failed_section}"
-    new_content = new_content.replace(f"{_HEADER_WORKED}{_HEADER_FAILED}", f"{_HEADER_WORKED}\n\n{_HEADER_FAILED}\n")
-    new_content = new_content.replace(f"{_HEADER_FAILED}", f"\n{_HEADER_FAILED}\n")
+    # Reconstruct: before_failed already has the Worked header; append the
+    # Failed header + body without duplicating any header.
+    worked_body = before_failed.rstrip()
+    failed_body = after_failed.strip()
+    if failed_body:
+        new_content = f"{worked_body}\n\n{_HEADER_FAILED}\n\n{failed_body}\n"
+    else:
+        new_content = f"{worked_body}\n\n{_HEADER_FAILED}\n"
     _atomic_write(path, new_content)
 
 
