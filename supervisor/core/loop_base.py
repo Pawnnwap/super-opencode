@@ -123,13 +123,25 @@ class BaseLoop:
         )
 
         try:
+            import concurrent.futures
+
             from supervisor.vulnerability.python_scanner import scan
 
-            scan(
-                target=str(workspace),
-                autofix_first=True,
-                print_output=False,
-            )
+            _SCAN_TIMEOUT = 300  # 5-minute hard ceiling for the whole scan
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _pool:
+                _future = _pool.submit(
+                    scan,
+                    target=str(workspace),
+                    autofix_first=True,
+                    print_output=False,
+                )
+                try:
+                    _future.result(timeout=_SCAN_TIMEOUT)
+                except concurrent.futures.TimeoutError:
+                    yield _ev("warn", f"python_scanner timed out after {_SCAN_TIMEOUT}s, continuing")
+                    return
+
             yield _ev("info", "python_scanner completed")
         except Exception as e:
             yield _ev("warn", f"python_scanner failed: {e}")

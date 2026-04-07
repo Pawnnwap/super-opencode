@@ -43,11 +43,6 @@ def _get_tiktoken_encoder():
     return _tiktoken_encoder
 
 
-def get_warning_thresholds() -> list[float]:
-    """Return the graduated warning threshold fractions."""
-    return list(_WARNING_THRESHOLDS)
-
-
 def get_threshold_for_fraction(fraction: float) -> float | None:
     """Return the highest warning threshold that the given fraction has crossed, or None."""
     crossed = [t for t in _WARNING_THRESHOLDS if fraction >= t]
@@ -96,12 +91,6 @@ def estimate_request_tokens(
         conversation_history=hist_tokens,
         user_input=user_tokens,
     )
-
-
-def should_warn(estimate: TokenEstimate, max_tokens: int) -> bool:
-    """Check if estimated tokens approach the model's maximum."""
-    threshold = int(max_tokens * _WARN_AT_FRACTION)
-    return estimate.total >= threshold
 
 
 def should_truncate(estimate: TokenEstimate, max_tokens: int) -> bool:

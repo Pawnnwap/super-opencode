@@ -13,8 +13,6 @@ _HEADING_RE = re.compile(
 
 PROTECTED_PATHS_RESTRICTION = "- Do not delete or modify the .opencode directory or its contents\n- Do not delete or rename the .checkpoints directory\n- Do not delete or rename the archive directory"
 
-_OPENCODE_RESTRICTION = "- Do not delete or modify the .opencode directory or its contents"
-
 
 @dataclass
 class Protocol:

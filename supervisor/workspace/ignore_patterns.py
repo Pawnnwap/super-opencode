@@ -22,7 +22,6 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 IGNORE_FILE = ".opencodeignore"
-GITIGNORE_FILE = ".gitignore"
 
 _DEFAULT_PATTERNS = {
     ".git",
@@ -182,102 +181,9 @@ class IgnoreMatcher:
         self._regex_cache.clear()
 
 
-def load_ignore_matcher(workspace: Path) -> IgnoreMatcher:
-    """Create an IgnoreMatcher and load patterns from workspace."""
-    matcher = IgnoreMatcher(workspace)
-    matcher.load_from_workspace(workspace)
-    return matcher
-
-
-def get_default_ignore_dirs() -> set[str]:
-    """Return default directories that should be ignored."""
-    return _DEFAULT_PATTERNS.copy()
-
-
-def create_ignore_file(workspace: Path, content: str = "") -> Path:
-    """Create a .opencodeignore file in the workspace."""
-    ignore_path = workspace / IGNORE_FILE
-    if not ignore_path.exists():
-        ignore_path.write_text(content, encoding="utf-8")
-    return ignore_path
-
-
-def read_ignore_file(workspace: Path) -> str | None:
-    """Read the .opencodeignore file content. Returns None if not found."""
-    ignore_path = workspace / IGNORE_FILE
-    if ignore_path.exists():
-        return ignore_path.read_text(encoding="utf-8")
-    return None
-
-
 def write_ignore_file(workspace: Path, content: str) -> Path:
     """Write content to .opencodeignore file."""
     ignore_path = workspace / IGNORE_FILE
     ignore_path.write_text(content, encoding="utf-8")
     return ignore_path
 
-
-def load_gitignore_patterns(workspace: Path) -> list[str]:
-    """Load patterns from .gitignore file.
-
-    Args:
-        workspace: Path to the workspace root.
-
-    Returns:
-        List of pattern strings from .gitignore, or empty list if not found.
-
-    """
-    gitignore_path = workspace / GITIGNORE_FILE
-    if not gitignore_path.exists():
-        return []
-    try:
-        content = gitignore_path.read_text(encoding="utf-8")
-        patterns: list[str] = []
-        for line in content.splitlines():
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            patterns.append(line)
-        return patterns
-    except (OSError, UnicodeDecodeError):
-        return []
-
-
-def load_combined_ignore_matcher(workspace: Path) -> IgnoreMatcher:
-    """Create an IgnoreMatcher with patterns from both .gitignore and .opencodeignore.
-
-    Both sets of patterns are combined into a single matcher.
-    Patterns from .opencodeignore are added after .gitignore patterns.
-
-    Args:
-        workspace: Path to the workspace root.
-
-    Returns:
-        IgnoreMatcher with combined patterns.
-
-    """
-    matcher = IgnoreMatcher(workspace)
-
-    # Collect all lines from both files
-    all_lines: list[str] = []
-
-    # Load .gitignore patterns first
-    gitignore_path = workspace / GITIGNORE_FILE
-    if gitignore_path.exists():
-        try:
-            content = gitignore_path.read_text(encoding="utf-8")
-            all_lines.extend(content.splitlines())
-        except (OSError, UnicodeDecodeError):
-            pass
-
-    # Load .opencodeignore patterns (these are added on top)
-    opencodeignore_path = workspace / IGNORE_FILE
-    if opencodeignore_path.exists():
-        try:
-            content = opencodeignore_path.read_text(encoding="utf-8")
-            all_lines.extend(content.splitlines())
-        except (OSError, UnicodeDecodeError):
-            pass
-
-    matcher.parse_patterns(all_lines)
-    return matcher

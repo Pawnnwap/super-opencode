@@ -72,24 +72,3 @@ def should_skip_path(
             return True
     return False
 
-
-def filter_dir_entries(entries: Iterable[str]) -> list[str]:
-    """Return only the directory entries that should be traversed.
-
-    Parameters
-    ----------
-    entries:
-        Directory entry names (e.g. from ``os.listdir`` or ``os.walk``).
-
-    Returns
-    -------
-    list[str]
-        Subset of *entries* that are not in the ignore set.
-
-    """
-    return [
-        e
-        for e in entries
-        if e not in DEFAULT_IGNORE_DIRS
-        and not any(e.startswith(p) for p in DEFAULT_IGNORE_PREFIXES)
-    ]

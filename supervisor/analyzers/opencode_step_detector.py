@@ -321,15 +321,3 @@ class OpencodeStepDetector:
         self._last_phase = StepPhase.UNKNOWN
         self._buffer = ""
         self._char_offset = 0
-
-
-def create_step_detector(
-    on_step: Callable[[Step], None] | None = None,
-    on_transition: Callable[[PhaseTransition], None] | None = None,
-    on_progress: Callable[[StepProgress], None] | None = None,
-) -> OpencodeStepDetector:
-    return OpencodeStepDetector(
-        step_callback=on_step,
-        transition_callback=on_transition,
-        progress_callback=on_progress,
-    )
