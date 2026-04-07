@@ -207,7 +207,6 @@ marimo/_lsp/
 __marimo__/
 
 # Opencode
-.opencode
 .checkpoints
 .archive
 tests

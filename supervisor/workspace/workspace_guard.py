@@ -14,9 +14,8 @@ if TYPE_CHECKING:
 
 _PATH_RE = re.compile(r"""(?:^|\s)(/?(?:[\w.\-]+/)+[\w.\-]*)""")
 
-_PROTECTED_DIRS = {".opencode", ".checkpoints", ".archive", "archive"}
-_PROTECTED_DIR_PREFIXES = (".",)
-_PROTECTED_FILES = {".opencoderc", ".opencode", ".opencodeignore"}
+_PROTECTED_DIRS = {".checkpoints", ".archive", "archive"}
+_PROTECTED_FILES = {".opencoderc", ".opencodeignore"}
 
 
 class WorkspaceGuard:
@@ -65,10 +64,6 @@ class WorkspaceGuard:
 
         for protected in _PROTECTED_DIRS:
             if protected in parts:
-                return True
-
-        for part in parts:
-            if any(part.startswith(p) for p in _PROTECTED_DIR_PREFIXES):
                 return True
 
         for protected in _PROTECTED_FILES:
