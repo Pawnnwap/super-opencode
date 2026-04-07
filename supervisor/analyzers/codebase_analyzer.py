@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from supervisor.workspace.ignore_patterns import IgnoreMatcher
 
-_IGNORE_EXTS = {".pyc", ".pyo", ".egg-info", ".DS_Store"}
+_IGNORE_EXTS = {".pyc", ".pyo", ".egg-info", ".DS_Store", ".bak", ".isorted"}
 _MAX_FILE_CHARS = 6_000
 
 

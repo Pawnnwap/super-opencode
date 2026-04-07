@@ -21,6 +21,7 @@ DEFAULT_IGNORE_DIRS: frozenset[str] = frozenset(
         "node_modules",
         "__pycache__",
         ".mypy_cache",
+        ".checkpoint",
         ".checkpoints",
         ".archive",
     },
