@@ -506,6 +506,7 @@ class LLMSupervisor:
         return ""
 
     def judge(self, opencode_output: str) -> SupervisorVerdict:
+        experience_context = self._build_experience_context()
         protected_context, feedback_context = self._get_evaluation_context()
 
         msg = (
@@ -513,16 +514,19 @@ class LLMSupervisor:
             "Evaluate it against the protocol.\n"
             "If ALL targets are met say 'all targets met'.\n"
             "Otherwise give clear, actionable feedback.\n\n"
+            f"{experience_context}"
             f"{feedback_context}"
             f"{protected_context}"
-            f"--- opencode output ---\n{opencode_output}\n--- end ---"
+            f"--- opencode output ---\n{opencode_output}\n"
+            "--- end ---"
         )
         history_msg = (
             "opencode just produced the following output. "
             "Evaluate it against the protocol.\n"
             "If ALL targets are met say 'all targets met'.\n"
             "Otherwise give clear, actionable feedback.\n\n"
-            f"--- opencode output ---\n{opencode_output}\n--- end ---"
+            f"--- opencode output ---\n{opencode_output}\n"
+            "--- end ---"
         )
         return self._chat(msg, history_content=history_msg)
 
@@ -661,7 +665,6 @@ class LLMSupervisor:
         self,
         reason: str,
         opencode_output: str,
-        workspace: Path,
     ) -> str:
         msg = (
             f"Run ending. Reason: {reason}\n\n"
@@ -679,6 +682,8 @@ class LLMSupervisor:
         current_summary: str = "",
         step_context: StepContext | None = None,
     ) -> tuple[str, list[str]]:
+        from supervisor.prompts.templates import build_step_context, build_context_blocks
+
         protected_files, chosen_paths = self._read_protected_files_for_suggestions()
         protected_context = ""
         if protected_files:
@@ -691,17 +696,18 @@ class LLMSupervisor:
                 + "\n\n"
             )
 
-        context_info = ""
+        step_context_block = ""
         if step_context:
             phases_str = (
                 ", ".join(step_context.completed_phases)
                 if step_context.completed_phases
                 else "none"
             )
-            context_info = (
-                f"Current step: {step_context.current_step}/{step_context.total_steps_estimate}\n"
-                f"Current phase: {step_context.phase}\n"
-                f"Completed phases: {phases_str}\n\n"
+            step_context_block = build_step_context(
+                step_context.current_step,
+                step_context.total_steps_estimate,
+                step_context.phase,
+                phases_str,
             )
 
         summary_context = (
@@ -710,35 +716,39 @@ class LLMSupervisor:
             else ""
         )
 
+        PREAMBLE = (
+            "Based on the opencode output below and the current implementation status,\n"
+            "generate actionable suggestions for improving the code or approach.\n"
+            "Focus on:\n"
+            "1. Code quality improvements\n"
+            "2. Potential bugs or edge cases\n"
+            "3. Performance optimizations\n"
+            "4. Better patterns or practices\n"
+            "5. Missing tests or error handling\n\n"
+        )
+        POSTSCRIPT = (
+            "Output ONLY the suggestions in a clear, actionable format. "
+            "If no suggestions are needed, output 'No suggestions at this time.'"
+        )
+
+        context_blocks = build_context_blocks("", "", protected_context)
         msg = (
-            "Based on the opencode output below and the current implementation status,\n"
-            "generate actionable suggestions for improving the code or approach.\n"
-            "Focus on:\n"
-            "1. Code quality improvements\n"
-            "2. Potential bugs or edge cases\n"
-            "3. Performance optimizations\n"
-            "4. Better patterns or practices\n"
-            "5. Missing tests or error handling\n\n"
-            f"--- Step Context ---\n{context_info}"
-            f"{protected_context}"
-            f"--- opencode output ---\n{opencode_output}\n--- end ---{summary_context}\n\n"
-            "Output ONLY the suggestions in a clear, actionable format. "
-            "If no suggestions are needed, output 'No suggestions at this time.'"
+            f"{PREAMBLE}"
+            f"--- Step Context ---\n{step_context_block}"
+            f"{context_blocks}"
+            f"--- opencode output ---\n"
+            f"{opencode_output}\n--- end ---{summary_context}\n\n"
+            f"{POSTSCRIPT}"
         )
+
+        history_step_context = build_step_context(0, 0, "unknown", "none") if step_context else ""
         history_msg = (
-            "Based on the opencode output below and the current implementation status,\n"
-            "generate actionable suggestions for improving the code or approach.\n"
-            "Focus on:\n"
-            "1. Code quality improvements\n"
-            "2. Potential bugs or edge cases\n"
-            "3. Performance optimizations\n"
-            "4. Better patterns or practices\n"
-            "5. Missing tests or error handling\n\n"
-            f"--- Step Context ---\n{context_info}"
-            f"--- opencode output ---\n{opencode_output}\n--- end ---{summary_context}\n\n"
-            "Output ONLY the suggestions in a clear, actionable format. "
-            "If no suggestions are needed, output 'No suggestions at this time.'"
+            f"{PREAMBLE}"
+            f"--- Step Context ---\n{history_step_context}"
+            f"--- opencode output ---\n"
+            f"{opencode_output}\n--- end ---{summary_context}\n\n"
         )
+
         return self._chat(msg, history_content=history_msg).raw, chosen_paths
 
     def analyze_protocol(

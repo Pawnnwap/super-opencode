@@ -49,6 +49,7 @@ class BaseLoop:
         self._step_history: list[dict] = []
         self._state = LoopState.RUNNING
         self._failures = 0
+        self._last_feedback: str = ""
         self._cached_snapshot = None
         self._python_scanner_ran: bool = False
 
@@ -241,7 +242,9 @@ class BaseLoop:
         self.runner.start(self._restart_prompt())
 
     def _on_final_failure(self, output: str) -> Generator[Event, None, None]:
-        update_experience(self.config.workspace, failed=["Reached max retries"])
+        failure_reason = self._last_feedback if self._last_feedback else "Reached max retries"
+        update_experience(self.config.workspace, failed=[failure_reason])
+        yield from []
         yield from []
 
     def _get_step_context(self, progress) -> StepContext:
@@ -290,8 +293,11 @@ class BaseLoop:
 
         if verdict.all_targets_met:
             self._state = LoopState.ENDED_SUCCESS
+            lesson = self._extract_lesson_from_verdict(verdict.raw)
             if self._failures == 0:
-                update_experience(self.config.workspace, worked=["Successfully met all targets"])
+                update_experience(self.config.workspace, worked=[lesson])
+                return
+            update_experience(self.config.workspace, worked=["Successfully met all targets"])
             return
 
         vuln_scan = self.scan_for_vulnerabilities()
@@ -300,6 +306,7 @@ class BaseLoop:
 
         safe_msg = yield from self._post_judge_feedback(safe_msg, actual_output)
 
+        self._last_feedback = safe_msg
         yield _ev("opencode_prompt", safe_msg)
         self.runner.send(safe_msg)
 
@@ -523,7 +530,6 @@ class BaseLoop:
         report = self.supervisor.report_final_status(
             reason="forced summarization",
             opencode_output=last_output,
-            workspace=self.config.workspace,
         )
         (self.config.workspace / "summary.md").write_text(report, encoding="utf-8")
         yield _ev("info", "summary.md written.")
@@ -597,6 +603,19 @@ class BaseLoop:
         cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
         cleaned = cleaned.strip()
         return cleaned
+
+    def _extract_lesson_from_verdict(self, raw: str) -> str:
+        lines = raw.strip().splitlines()
+        for line in lines:
+            line_lower = line.lower().strip()
+            if not line_lower:
+                continue
+            if line_lower.startswith(("lesson:", "strategy:", "summary:")):
+                return line.split(":", 1)[1].strip()
+        content = raw.strip()
+        if len(content) > 100:
+            content = content[:100] + "..."
+        return content
 
     def _write(self, text: str, filename: str) -> None:
         """Write text to a file in the workspace."""

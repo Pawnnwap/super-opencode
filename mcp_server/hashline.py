@@ -223,7 +223,11 @@ def _apply_edits(working: list[str], edits: list[dict[str, Any]]) -> None:
             start_idx = start_no - 1
             if edit.get("end_pos"):
                 end_no, _ = _parse_ref(edit["end_pos"])
-                end_idx = end_no   # exclusive slice end
+                # end_pos is INCLUSIVE. Because line numbers are 1-based and start_idx = start_no - 1,
+                # the slice working[start_idx:end_no] naturally covers lines start_no..end_no inclusive.
+                # Example: replace lines 3-5 -> working[2:5] -> indices 2,3,4 (lines 3,4,5) ✓
+                # Do NOT change end_no to end_no+1 — that would make it exclusive and skip the last line.
+                end_idx = end_no
             else:
                 end_idx = start_idx + 1
             working[start_idx:end_idx] = edit.get("lines") or []
@@ -486,10 +490,27 @@ HASHLINE_EDIT_TOOL = Tool(
                         "op": {
                             "type": "string",
                             "enum": ["replace", "replace_range", "delete", "append", "prepend"],
-                            "description": "Operation type.",
+                            "description": (
+                                "Operation type:\n"
+                                "  replace       — Replace a single line at pos with lines[].\n"
+                                "  replace_range — Replace lines from pos to end_pos (BOTH INCLUSIVE) with lines[]. "
+                                "Use this to swap out an entire block; do NOT use append/prepend for block replacement "
+                                "or the old block will remain as a duplicate.\n"
+                                "  delete        — Delete the single line at pos.\n"
+                                "  append        — Insert lines[] AFTER pos (does not remove pos).\n"
+                                "  prepend       — Insert lines[] BEFORE pos (does not remove pos)."
+                            ),
                         },
                         "pos": {"type": "string", "description": "LINE#ID of target line, e.g. '42#VKB'."},
-                        "end_pos": {"type": "string", "description": "LINE#ID of range end (replace_range only)."},
+                        "end_pos": {
+                            "type": "string",
+                            "description": (
+                                "LINE#ID of the LAST line to replace — INCLUSIVE. "
+                                "Example: to replace lines 10 through 15 entirely, set "
+                                "pos='10#...' and end_pos='15#...'. Line 15 is replaced, not kept. "
+                                "Required for replace_range; omit for single-line replace."
+                            ),
+                        },
                         "lines": {"type": "array", "items": {"type": "string"}, "description": "Lines to insert/replace (omit for delete)."},
                     },
                 },

@@ -288,7 +288,6 @@ class SupervisorLoop(BaseLoop):
         report = self.supervisor.report_final_status(
             reason=f"opencode failed {self._failures} consecutive times",
             opencode_output=output,
-            workspace=self.config.workspace,
         )
         self._write(report, "failure_report.md")
         yield _ev(

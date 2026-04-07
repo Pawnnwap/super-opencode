@@ -210,7 +210,6 @@ class SelfEvolutionLoop(BaseLoop):
         narrative = self.supervisor.report_final_status(
             reason="self-evolution completed" if success else "self-evolution failed",
             opencode_output="\n".join(lines),
-            workspace=self.config.workspace,
         )
         lines += ["\n---\n", narrative]
         report = "\n".join(lines)
