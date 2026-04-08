@@ -13,7 +13,7 @@ from supervisor.utils.text_utils import sanitize_event_message, strip_thinking_b
 logger = logging.getLogger(__name__)
 
 try:
-    from supervisor.vulnerability.python_scanner import scan as _vuln_scan
+    from vulnerability.python_scanner import scan as _vuln_scan
 
     logger.info("Vulnerability scanner imported successfully")
 except ImportError:
@@ -125,7 +125,7 @@ class BaseLoop:
         try:
             import concurrent.futures
 
-            from supervisor.vulnerability.python_scanner import scan
+            from vulnerability.python_scanner import scan
 
             _SCAN_TIMEOUT = 300  # 5-minute hard ceiling for the whole scan
 
