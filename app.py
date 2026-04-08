@@ -981,7 +981,6 @@ def page_wizard() -> None:
                                         base_url=st.session_state.base_url or None)
                         model = st.session_state.supervisor_model or "gpt-4o"
                         system_msg = (
-                            "You are an expert in writing .gitignore files. "
                             "Given a list of files and directories in a workspace, "
                             "generate a .opencodeignore file that ignores common build "
                             "artifacts, dependency directories, cache files, and other "

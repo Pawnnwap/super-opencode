@@ -15,7 +15,7 @@ The .archive/ directory preserves historical versions — do not modify it.
 Begin."""
 
 SELF_EVOLUTION_INIT_PROMPT_TEMPLATE = """\
-You are modifying the codebase you live in. Read the protocol carefully.
+Modify the codebase you live in. Read the protocol carefully.
 
 PROTOCOL:
 {protocol_text}
@@ -81,7 +81,7 @@ Review the plan below and provide actionable feedback to refine it. Do NOT decla
 Provide specific, concise feedback to improve the plan before implementation begins."""
 
 FILE_SELECTION_PROMPT = """\
-You are selecting the {top_k} most relevant source files to read before generating code-improvement suggestions.
+Select the {top_k} most relevant source files to read before generating code-improvement suggestions.
 
 ## Protocol target
 {protocol_target}
@@ -108,7 +108,7 @@ The supervisor has identified the following files as outdated, unused, or safe t
 
 {file_list}
 
-You are granted permission to DELETE these files ONLY if:
+DELETE these files ONLY if:
 1. The file is confirmed outdated (e.g., backup files, old versions, temp files)
 2. The file is unused by any current code
 3. The file is not a core module or essential configuration
@@ -120,7 +120,7 @@ Generate instructions for the agent to:
 4. Retain any foundational/fallback code it may reference
 5. Write summary.md to the workspace with: current status, key decisions, remaining tasks and future directions
 
-Output ONLY the instruction text to send to opencode, including explicit permission to delete the listed files."""
+Output ONLY the instruction text to send to opencode, including explicit permission to delete listed files."""
 
 PROTOCOL_VIOLATION_TEMPLATE = """\
 

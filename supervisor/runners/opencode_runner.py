@@ -696,8 +696,8 @@ class OpencodeRunner:
             else self.workspace
         )
         inquiry = (
-            f"You are working in workspace: {workspace_rel}\n\n"
-            f"I have identified the following files that may be outdated or unused:\n"
+            f"Workspace: {workspace_rel}\n\n"
+            f"Following files may be outdated or unused:\n"
         )
         for i, candidate in enumerate(candidates, 1):
             inquiry += f"  {i}. {candidate}\n"
@@ -707,8 +707,8 @@ class OpencodeRunner:
             "that should be archived. These files will be moved to .archive/ "
             "instead of being deleted, preserving historical versions.\n"
             "Consider:\n"
-            "- Files that are clearly temporary, backup, or cache files\n"
-            "- Files that are not referenced by other code\n"
+            "- Files clearly temporary, backup, or cache files\n"
+            "- Files not referenced by other code\n"
             "- Files that appear to be duplicate or superseded versions\n"
             "- Any __pycache__ directories\n\n"
             "IMPORTANT: Never select protected paths (.opencode/, .checkpoints/, .archive/) "

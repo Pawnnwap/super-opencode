@@ -37,7 +37,7 @@ class WorkspaceGuard:
                 violations.append(candidate)
 
         preamble = (
-            f"[WORKSPACE RESTRICTION] You may only operate inside: {self.workspace}\n\n"
+            f"[WORKSPACE RESTRICTION] Only operate inside: {self.workspace}\n\n"
         )
         return preamble + message, violations
 

@@ -47,17 +47,16 @@ def _append_required_target(md: str) -> str:
 
 
 _WIZARD_SYSTEM = """\
-You are a technical project-management assistant.
-Your job is to help a user write a clean, unambiguous protocol.md
-for an autonomous coding agent called opencode.
+Write clean, unambiguous protocol.md
+for coding agent called opencode.
 
-The protocol has exactly three sections:
+Protocol has 3 sections:
 
   ## INPUT        — what already exists / what the agent is given
   ## TARGET       — numbered, testable deliverables the agent must produce
   ## RESTRICTIONS — hard rules the agent must never violate
 
-When the user gives you raw notes for any section, you must:
+When user gives you raw notes for any section, you must:
 1. Rewrite them in precise, imperative language.
 2. Make deliverables concrete and testable (good: "All pytest tests pass";
    bad: "the code should work").

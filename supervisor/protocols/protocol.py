@@ -23,7 +23,7 @@ class Protocol:
 
     def as_system_prompt(self, workspace: Path) -> str:
         return (
-            "You are a strict supervisor for an autonomous coding agent called opencode.\n"
+            "Strictly supervise coding agent (opencode).\n"
             "Evaluate its output against the protocol below. "
             "Give clear, actionable feedback when targets are not met.\n"
             "When ALL targets are met, say exactly: 'all targets met'.\n\n"

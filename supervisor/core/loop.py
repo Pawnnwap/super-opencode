@@ -141,16 +141,16 @@ class SupervisorLoop(BaseLoop):
         ws = self.config.workspace.resolve()
         protected_files_desc = self.guard.get_all_protected_files_description()
         plan_prompt = (
-            "@explore You are in PLAN MODE. Do NOT create, modify, or delete any files yet.\n\n"
-            "Read the protocol below carefully and produce a detailed implementation plan:\n"
-            "  1. Break the work into concrete, ordered steps.\n"
+            "@explore PLAN MODE. Do NOT create, modify, or delete any files.\n\n"
+            "Read protocol below and produce detailed implementation plan:\n"
+            "  1. Break work into concrete, ordered steps.\n"
             "  2. Identify dependencies between steps.\n"
             "  3. Flag any ambiguities or risks in the requirements.\n"
             "  4. Do NOT write or edit any source files during this phase.\n\n"
             f"PROTOCOL:\n{protocol_text}\n\n"
-            f"Your project root (cwd) is: {ws}\n"
+            f"Project root (cwd) is: {ws}\n"
             f"{protected_files_desc}\n"
-            "Output your plan now."
+            "Output plan now."
         )
 
         last_feedback: str = ""
@@ -238,7 +238,7 @@ class SupervisorLoop(BaseLoop):
             self._plan_context = (
                 "## Agreed plan from plan phase\n\n"
                 f"{last_feedback}\n\n"
-                "Implement the above plan now. You may create and modify files freely."
+                "Implement above plan. Create and modify files freely."
             )
             self._last_plan = last_plan_output
             self._last_supervisor_feedback = last_feedback
