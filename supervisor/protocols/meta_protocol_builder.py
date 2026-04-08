@@ -21,10 +21,9 @@ from supervisor.protocols.protocol_wizard import _append_required_target
 from supervisor.utils.text_utils import strip_thinking_blocks
 
 _BUILDER_SYSTEM = """\
-You are a technical architect writing a protocol.md for an autonomous
-coding agent that will modify the very codebase it lives in.
+Write protocol.md for coding agent to modify the codebase it lives in.
 
-The protocol has exactly three sections in this order:
+The protocol has 3 sections in this order:
   ## INPUT        — factual description of what currently exists
   ## TARGET       — numbered, testable, concrete deliverables
   ## RESTRICTIONS — hard rules for safe self-modification
