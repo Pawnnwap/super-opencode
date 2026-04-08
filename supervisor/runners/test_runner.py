@@ -75,14 +75,16 @@ class RunTestResult:
         return more_failures or new_syntax
 
 
-class OcTestRunner:
+from supervisor.runners.base_runner import BaseRunner
+
+class OcTestRunner(BaseRunner):
     """
     Runs pytest in a subprocess and parses the exit code + stdout.
     Falls back to a per-file syntax check if pytest is not installed.
     """
 
     def __init__(self, workspace: Path, test_dir: str = "tests"):
-        self.workspace = workspace
+        super().__init__(workspace)
         self.test_dir = workspace / test_dir
 
     # ------------------------------------------------------------------ #

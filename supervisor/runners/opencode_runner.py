@@ -152,7 +152,9 @@ class RunResult:
 # ── Runner ────────────────────────────────────────────────────────────────── #
 
 
-class OpencodeRunner:
+from supervisor.runners.base_runner import BaseRunner
+
+class OpencodeRunner(BaseRunner):
     """One send()/start() call = one  opencode run "<prompt>"  subprocess.
     stdin is always DEVNULL so opencode never tries to open a TUI or wait for input.
     Supports --continue flag for session continuity when context allows.
@@ -171,6 +173,7 @@ class OpencodeRunner:
         on_transition: Callable[[PhaseTransition], None] | None = None,
         on_progress: Callable[[StepProgress], None] | None = None,
     ):
+        super().__init__(workspace)
         # ── Coerce and validate all user-supplied string inputs up front ── #
         # Log raw types so we immediately know if a UI widget passed the wrong type
         logger.debug(
@@ -221,7 +224,6 @@ class OpencodeRunner:
 
         self._last_result: RunResult | None = None
         self._chars_exchanged: int = 0
-        self._alive: bool = False
         self._process: subprocess.Popen | None = None
         self._archiver = WorkspaceArchiver(workspace)
         self._session_active: bool = False
@@ -264,7 +266,8 @@ class OpencodeRunner:
         initial_prompt = coerce_str(initial_prompt, "initial_prompt (start)")
         if not initial_prompt:
             raise EmptyPromptError("Empty prompt provided to opencode.")
-
+        
+        self._alive = True
         if not self._session_active:
             logger.info("New session detected. Sending brevity command...")
             self._run_prompt(BREVITY_COMMAND)
@@ -276,14 +279,33 @@ class OpencodeRunner:
         message = coerce_str(message, "message (send)")
         if not message:
             raise EmptyPromptError("Empty message provided to opencode.")
-        if not self._alive:
-            raise RuntimeError("OpencodeRunner has been stopped.")
-
-        if self._session_active:
-            self.enable_continuation(True)
-
-        logger.info("send() — message length=%d chars", len(message))
-        self._run_prompt(message)
+        
+        max_retries = 5
+        base_wait = 30
+        
+        for attempt in range(max_retries + 1):
+            if self._alive:
+                if self._session_active:
+                    self.enable_continuation(True)
+                
+                logger.info("send() — message length=%d chars", len(message))
+                self._run_prompt(message)
+                return
+            
+            if attempt == max_retries:
+                state_info = f"alive={self._alive}, session_active={self._session_active}"
+                error_msg = (
+                    f"OpencodeRunner has been stopped. (Operation: send, State: {state_info}, "
+                    f"Retries: {attempt}/{max_retries})"
+                )
+                raise RuntimeError(error_msg)
+            
+            wait_time = base_wait * (2 ** attempt)
+            logger.warning(
+                "OpencodeRunner is stopped. Retrying send operation (attempt %d/%d) in %ds...",
+                attempt + 1, max_retries, wait_time
+            )
+            time.sleep(wait_time)
 
     def read_output(self, timeout: int | None = None) -> tuple[str, bool]:
         if self._last_result is None:
@@ -377,7 +399,7 @@ class OpencodeRunner:
                                         "Error killing process %s: %s", pid, e,
                                     )
                     if not found_processes:
-                        logger.debug("No processes found with fallback method")
+                        logger.debug("No chocolatey/opencode processes found to kill (fallback)")
                 except Exception as e:
                     logger.warning("Fallback process scan failed: %s", e)
             else:
@@ -395,10 +417,6 @@ class OpencodeRunner:
                     logger.warning("Unix pkill failed: %s", e)
         except Exception as e:
             logger.warning("Error in chocolatey process killing: %s", e)
-
-    @property
-    def is_alive(self) -> bool:
-        return self._alive
 
     @property
     def estimated_context_tokens(self) -> int:
