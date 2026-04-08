@@ -214,9 +214,10 @@ class SelfEvolutionLoop(BaseLoop):
         lines += ["\n---\n", narrative]
         report = "\n".join(lines)
 
-        rp = self.config.workspace / "evolution_report.md"
-        rp.write_text(report, encoding="utf-8")
-        yield _ev("info", "evolution_report.md written.")
+        if self._write(report, "evolution_report.md"):
+            yield _ev("info", "evolution_report.md written.")
+        else:
+            yield _ev("warn", "Could not write evolution_report.md due to permission errors.")
         yield _ev("report", report)
 
     # ------------------------------------------------------------------ #

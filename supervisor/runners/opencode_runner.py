@@ -26,7 +26,7 @@ from supervisor.analyzers.opencode_step_detector import (
     StepProgress,
 )
 from supervisor.prompts.commands import BREVITY_COMMAND
-from supervisor.utils.text_utils import strip_thinking_blocks
+from supervisor.utils.text_utils import strip_thinking_blocks, coerce_str
 from supervisor.workspace.workspace_archiver import ArchiveResult, WorkspaceArchiver
 
 logger = logging.getLogger(__name__)
@@ -50,25 +50,11 @@ _WINDOWS_EXTRA_DIRS = [
 _DOT_MODEL_FILE = Path(__file__).parent.parent / ".opencode_model"
 
 
-def _coerce_str(value: object, field_name: str) -> str:
-    """Coerce *value* to a stripped string, logging a warning when the raw type
-    is not already ``str`` so the caller knows where bad data entered the system.
 
-    Returns an empty string for ``None`` and falsy values.
-    """
-    if value is None:
-        return ""
-    if not isinstance(value, str):
-        logger.warning(
-            "Type coercion: field '%s' received %r (type=%s) — expected str. "
-            "Converting automatically. Check the caller / UI widget that produced this value.",
-            field_name,
-            value,
-            type(value).__name__,
-        )
-        value = str(value)
-    return value.strip()
 
+class EmptyPromptError(Exception):
+    """Raised when an empty prompt is provided to OpencodeRunner."""
+    pass
 
 def find_opencode(explicit: str = "") -> str:
     """Locate the opencode executable by running 'where opencode' and picking
@@ -76,7 +62,7 @@ def find_opencode(explicit: str = "") -> str:
 
     Raises FileNotFoundError with actionable instructions if nothing is found.
     """
-    explicit = _coerce_str(explicit, "opencode_executable (find_opencode arg)")
+    explicit = coerce_str(explicit, "opencode_executable (find_opencode arg)")
 
     if explicit:
         p = Path(explicit)
@@ -205,14 +191,14 @@ class OpencodeRunner:
 
         # Coerce model strings — a float like 3.5 from a number widget is the
         # most common source of the "unsupported operand type(s) for +: float and str" error.
-        raw_model = _coerce_str(opencode_model, "opencode_model")
+        raw_model = coerce_str(opencode_model, "opencode_model")
         self.opencode_model: str | None = raw_model or None
 
-        raw_backup = _coerce_str(opencode_model_backup, "opencode_model_backup")
+        raw_backup = coerce_str(opencode_model_backup, "opencode_model_backup")
         self.opencode_model_backup: str | None = raw_backup or None
 
-        self.opencode_executable = _coerce_str(opencode_executable, "opencode_executable")
-        self.agent = _coerce_str(agent, "agent")
+        self.opencode_executable = coerce_str(opencode_executable, "opencode_executable")
+        self.agent = coerce_str(agent, "agent")
 
         # timeout must be an int; guard against float from UI sliders
         if not isinstance(timeout, int):
@@ -275,27 +261,21 @@ class OpencodeRunner:
     # ------------------------------------------------------------------ #
 
     def start(self, initial_prompt: str) -> None:
-        initial_prompt = _coerce_str(initial_prompt, "initial_prompt (start)")
+        initial_prompt = coerce_str(initial_prompt, "initial_prompt (start)")
         if not initial_prompt:
-            logger.warning("Empty prompt provided to opencode. Skipping run.")
-            self._last_result = RunResult(
-                exception="Empty prompt provided. Skipping run.",
-            )
-            return
+            raise EmptyPromptError("Empty prompt provided to opencode.")
 
         if not self._session_active:
             logger.info("New session detected. Sending brevity command...")
             self._run_prompt(BREVITY_COMMAND)
             self._session_active = True
             self.enable_continuation(True)
-
-        logger.info("start() — prompt length=%d chars", len(initial_prompt))
-        self._alive = True
-        self._prepare_workspace()
         self._run_prompt(initial_prompt)
 
     def send(self, message: str) -> None:
-        message = _coerce_str(message, "message (send)")
+        message = coerce_str(message, "message (send)")
+        if not message:
+            raise EmptyPromptError("Empty message provided to opencode.")
         if not self._alive:
             raise RuntimeError("OpencodeRunner has been stopped.")
 
@@ -444,7 +424,7 @@ class OpencodeRunner:
 
     def _run_prompt(self, prompt: str) -> None:
         # Defensive coercion — should already be clean but belt-and-suspenders
-        prompt = _coerce_str(prompt, "prompt (_run_prompt)")
+        prompt = coerce_str(prompt, "prompt (_run_prompt)")
 
         exe = find_opencode(self.opencode_executable)
         using_backup = False
@@ -612,13 +592,13 @@ class OpencodeRunner:
         resolved values are logged at DEBUG level so any future type surprises
         are immediately visible in the log.
         """
-        exe = _coerce_str(exe, "exe (_build_cmd)")
-        prompt = _coerce_str(prompt, "prompt (_build_cmd)")
-        agent = _coerce_str(self.agent, "self.agent (_build_cmd)")
+        exe = coerce_str(exe, "exe (_build_cmd)")
+        prompt = coerce_str(prompt, "prompt (_build_cmd)")
+        agent = coerce_str(self.agent, "self.agent (_build_cmd)")
 
         # Resolve model with explicit coercion at every step
-        raw_model_arg = _coerce_str(model, "model arg (_build_cmd)")
-        raw_self_model = _coerce_str(self.opencode_model, "self.opencode_model (_build_cmd)")
+        raw_model_arg = coerce_str(model, "model arg (_build_cmd)")
+        raw_self_model = coerce_str(self.opencode_model, "self.opencode_model (_build_cmd)")
         resolved_model = raw_model_arg or raw_self_model
 
         if not resolved_model and _DOT_MODEL_FILE.exists():

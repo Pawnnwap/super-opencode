@@ -544,7 +544,7 @@ class BaseLoop:
             reason="forced summarization",
             opencode_output=last_output,
         )
-        (self.config.workspace / "summary.md").write_text(report, encoding="utf-8")
+        self._write(report, "summary.md")
         yield _ev("info", "summary.md written.")
 
     def _sanitize_feedback(self, feedback: str) -> Generator[Event, None, str]:
@@ -626,9 +626,14 @@ class BaseLoop:
             content = content[:100] + "..."
         return content
 
-    def _write(self, text: str, filename: str) -> None:
-        """Write text to a file in the workspace."""
-        (self.config.workspace / filename).write_text(text, encoding="utf-8")
+    def _write(self, text: str, filename: str) -> bool:
+        """Write text to a file in the workspace. Returns True if successful."""
+        try:
+            (self.config.workspace / filename).write_text(text, encoding="utf-8")
+            return True
+        except (PermissionError, OSError) as e:
+            logger.warning(f"Failed to write {filename} to workspace: {e}")
+            return False
 
     def scan_for_vulnerabilities(self) -> str | None:
         """Run vulnerability scan on workspace Python files, return formatted results or None."""

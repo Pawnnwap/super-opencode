@@ -45,3 +45,25 @@ def sanitize_event_message(msg: object) -> str:
     if not isinstance(result, str):
         result = repr(msg)
     return result
+
+
+def coerce_str(value: object, field_name: str) -> str:
+    """Coerce *value* to a stripped string, logging a warning when the raw type
+    is not already ``str`` so the caller knows where bad data entered the system.
+
+    Returns an empty string for ``None`` and falsy values.
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        logger.warning(
+            "Type coercion: field '%s' received %r (type=%s) — expected str. "
+            "Converting automatically. Check the caller / UI widget that produced this value.",
+            field_name,
+            value,
+            type(value).__name__,
+        )
+        value = str(value)
+    return value.strip()
