@@ -718,7 +718,8 @@ class OpencodeRunner(BaseRunner):
         logger.info(
             "Sending cleanup inquiry to opencode for %d candidates", len(candidates),
         )
-        self.send(inquiry)
+        for _ in self.send(inquiry):
+            pass
 
     def identify_cleanup_candidates(self) -> list[str]:
         """Identify files that might be outdated or unused."""

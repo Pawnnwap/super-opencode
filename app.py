@@ -586,7 +586,8 @@ def test_opencode() -> tuple[bool, str]:
     )
 
     def _inner():
-        runner.start("hi")
+        for _ in runner.start("hi"):
+            pass
         output, timed_out = runner.read_output(timeout=25)
         if timed_out:
             return False, "opencode timed out reading output."
