@@ -9,6 +9,7 @@ import os
 import subprocess
 import sys
 import time
+import tempfile
 from pathlib import Path
 
 import streamlit as st
@@ -207,9 +208,7 @@ st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 def _clear_page_state(target_page: str) -> None:
     """Clear UI state from other pages when navigating to a new page."""
     if target_page != "wizard":
-        for key in ("show_custom_model_form", "custom_service_name",
-                    "custom_base_url", "custom_api_key", "custom_model_names"):
-            st.session_state[key] = "" if key != "show_custom_model_form" else False
+        st.session_state.show_custom_model_form = False
     if target_page != "run":
         st.query_params.pop("run_job_id", None)
     if target_page != "evolve":
@@ -251,36 +250,62 @@ def _find_opencode_config_dir() -> Path:
     config_dir.mkdir(parents=True, exist_ok=True)
     return config_dir
 
+def _atomic_write_json(path: Path, content: dict) -> None:
+    """Atomically write JSON to a file with proper error handling."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", dir=path.parent, delete=False, 
+            encoding="utf-8", suffix=".tmp"
+        ) as tmp:
+            json.dump(content, tmp, indent=2)
+            tmp_path = Path(tmp.name)
+        tmp_path.replace(path)  # Atomic on POSIX
+    except (PermissionError, OSError) as e:
+        if 'tmp_path' in locals() and tmp_path.exists():
+            tmp_path.unlink(missing_ok=True)
+        raise
 
 def _get_opencode_config_file(config_dir: Path) -> Path:
-    """Manages the config file (opencode.json or config.json).
-    Ensures hashline MCP and permissions are correctly set.
-    """
-    opencode_json = config_dir / "opencode.json"
-    config_json = config_dir / "config.json"
-
-    # Identify which file to use
-    if opencode_json.exists():
-        target_file = opencode_json
-    elif config_json.exists():
-        target_file = config_json
-    else:
-        # Create default if neither exists
-        target_file = opencode_json
-        default_content = {"$schema": "https://opencode.ai/config.json", "provider": {}}
-        target_file.write_text(json.dumps(default_content, indent=2), encoding="utf-8")
-
+    """Manages the config file, ensuring hashline MCP and permissions are set."""
+    
+    # Standardize on ONE filename to avoid confusion
+    target_file = config_dir / "opencode.json"
+    
+    # Optional: migrate old config.json if it exists
+    old_file = config_dir / "config.json"
+    if old_file.exists() and not target_file.exists():
+        try:
+            old_file.rename(target_file)
+        except Exception:
+            pass  # Fallback: just use config.json
+    
+    target_file.parent.mkdir(parents=True, exist_ok=True)
+    
+    # Read existing config
     try:
         content = json.loads(target_file.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, FileNotFoundError):
+    except FileNotFoundError:
         content = {"$schema": "https://opencode.ai/config.json", "provider": {}}
-
-    # Ensure MCP and Permission structure
-    if "mcp" not in content:
+    except json.JSONDecodeError as e:
+        st.warning(f"Config JSON invalid, resetting: {e}")
+        content = {"$schema": "https://opencode.ai/config.json", "provider": {}}
+    except PermissionError:
+        raise PermissionError(f"Cannot read config: {target_file}")
+    
+    # Validate root is a dict
+    if not isinstance(content, dict):
+        raise TypeError(f"Config must be a JSON object, got {type(content).__name__}")
+    
+    dirty = False
+    
+    # Ensure MCP section exists and is a dict
+    if "mcp" not in content or not isinstance(content["mcp"], dict):
         content["mcp"] = {}
-
-    # Setup for Hashline MCP
-    # Use forward slashes for cross-platform JSON compatibility
+        dirty = True
+    
+    # Configure Hashline MCP
     hashline_path = str(Path(__file__).parent.resolve() / "mcp_server" / "hashline.py").replace("\\", "/")
     mcp_hashline_config = {
         "type": "local",
@@ -288,20 +313,22 @@ def _get_opencode_config_file(config_dir: Path) -> Path:
         "enabled": True,
         "environment": {},
     }
-    desired_permissions = {"read": "deny", "edit": "deny"}
-
-    dirty = False
+    
     if content["mcp"].get("hashline") != mcp_hashline_config:
         content["mcp"]["hashline"] = mcp_hashline_config
         dirty = True
-
+    
+    # Set permissions
+    desired_permissions = {"read": "deny", "edit": "deny"}
     if content.get("permission") != desired_permissions:
         content["permission"] = desired_permissions
         dirty = True
-
+    
+    # Atomic write if changed
     if dirty:
-        target_file.write_text(json.dumps(content, indent=2), encoding="utf-8")
-
+        _atomic_write_json(target_file, content)
+        st.info(f"✓ Config updated: {target_file.name}")  # Optional UI feedback
+    
     return target_file
 
 
@@ -313,17 +340,39 @@ def _add_custom_provider_to_config(
     model_names: list[str],
 ) -> None:
     """Adds a custom provider to the specified config file."""
+    
+    if not service_name.strip():
+        raise ValueError("service_name cannot be empty")
+    if not base_url:
+        raise ValueError("base_url cannot be empty")
+    
+    # Read
     try:
         content = json.loads(config_file.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, FileNotFoundError):
+    except FileNotFoundError:
         content = {"$schema": "https://opencode.ai/config.json", "provider": {}}
-
-    content.setdefault("provider", {})[service_name] = {
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Invalid JSON: {e}") from e
+    except PermissionError:
+        raise PermissionError(f"Cannot read: {config_file}")
+    
+    if not isinstance(content, dict):
+        raise TypeError(f"Config root must be object, got {type(content).__name__}")
+    
+    content.setdefault("provider", {})
+    if not isinstance(content["provider"], dict):
+        raise TypeError("'provider' must be an object")
+    
+    valid_models = {name.strip(): {} for name in model_names if name.strip()}
+    
+    content["provider"][service_name] = {
         "npm": "@ai-sdk/openai-compatible",
         "options": {"baseURL": base_url, "apiKey": api_key},
-        "models": {name.strip(): {} for name in model_names if name.strip()},
+        "models": valid_models,
     }
-    config_file.write_text(json.dumps(content, indent=2), encoding="utf-8")
+    
+    # Atomic write using shared helper
+    _atomic_write_json(config_file, content)
 
 
 def _fetch_opencode_models(exe: str = "opencode") -> list[str]:
@@ -533,11 +582,13 @@ with st.sidebar:
                                 config_file, service_name.strip(), base_url.strip(),
                                 api_key.strip(), model_names,
                             )
-                            st.success("✅ Service saved successfully!")
+                            first_model = f"{service_name.strip()}/{model_names[0]}"
+                            st.session_state.opencode_model = first_model
+                            save_settings()
+                            st.success(f"Service saved! Model '{first_model}' selected and persisted.")
                             st.info(f"Models can now be referenced as `{service_name.strip()}/<model-name>`")
                             st.session_state.show_custom_model_form = False
-                            for k in ("custom_service_name", "custom_base_url", "custom_api_key", "custom_model_names"):
-                                st.session_state[k] = ""
+                            st.rerun()
                     except Exception as e:
                         st.error(f"Failed to save service: {e}")
 
@@ -568,8 +619,6 @@ def _run_with_timeout(fn, seconds: int = 30):
 
 
 def test_opencode() -> tuple[bool, str]:
-    import tempfile
-
     from supervisor.runners.opencode_runner import OpencodeRunner, find_opencode
 
     workspace = Path(tempfile.gettempdir()) / "opencode_test_dummy"

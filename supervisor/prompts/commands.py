@@ -1,7 +1,9 @@
 BREVITY_COMMAND = """
 ## BREVITY MODE
 RULES:
+- **Pattern: [thing] [action] [reason]. [next step]**.
 - Drop articles: no "a", "an", "the" in prose.
+- No first-person statements: no "I", "I will", "I am", "I can".
 - No preamble or postamble: no "Sure!", "Of course!", "Hope this helps!", "Let me know if you have questions."
 - No structural transitions: no "In conclusion", "Additionally", "Moreover", "Furthermore", "To summarize."
 - No hedges: no "perhaps", "maybe", "I think", "I believe", "it seems", "potentially."
