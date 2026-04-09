@@ -230,23 +230,8 @@ def _redirect_if_locked(page: str, warning: str) -> None:
 # ── opencode config helpers ──────────────────────────────────────────────── #
 
 def _find_opencode_config_dir() -> Path:
-    """Locates the OpenCode configuration directory based on the OS.
-    If it doesn't exist, it creates it in the standard location.
-    """
-    home = Path.home()
-
-    # 1. Check for Unix-style/Standard config path
-    config_dir = home / ".config" / "opencode"
-
-    # 2. Check for Windows-specific AppData path if on Win32
-    if sys.platform == "win32":
-        win_config = home / "AppData" / "Local" / "opencode"
-        if win_config.exists() and win_config.is_dir():
-            return win_config
-        # If neither exists, we'll default to creating the .config path
-        # or stick to win_config. Let's stick to the Windows standard for creation:
-        config_dir = win_config
-
+    """Always uses ~/.config/opencode regardless of platform."""
+    config_dir = Path.home() / ".config" / "opencode"
     config_dir.mkdir(parents=True, exist_ok=True)
     return config_dir
 
