@@ -78,7 +78,7 @@ class SelfEvolutionLoop(BaseLoop):
             yield _ev("info", "🚀  Starting opencode for self-evolution…")
             init_prompt = self._init_prompt()
             yield _ev("opencode_prompt", init_prompt)
-            self.runner.start(init_prompt)
+            yield from self.runner.start(init_prompt)
             self._last_step_time = time.time()
             output, timed_out = self.runner.read_output()
 
@@ -118,7 +118,7 @@ class SelfEvolutionLoop(BaseLoop):
             )
             safe_rollback, _ = self.guard.sanitize_message(msg)
             yield _ev("opencode_prompt", safe_rollback)
-            self.runner.send(safe_rollback)
+            yield from self.runner.send(safe_rollback)
             return None, True
 
         archive_label = f"iter-{self._iteration}-step-{progress.current_step}"
