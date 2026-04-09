@@ -94,7 +94,7 @@ class SupervisorLoop(BaseLoop):
             init_prompt = self._init_prompt()
             yield _ev("opencode_prompt", init_prompt)  # ← full prompt visible
             self.runner.reset_step_detector()
-            self.runner.start(init_prompt)
+            yield from self.runner.start(init_prompt)
             self._last_step_time = time.time()
             output, timed_out = self.runner.read_output()
 
@@ -177,7 +177,7 @@ class SupervisorLoop(BaseLoop):
             plan_runner.reset_step_detector()
             if round_num > 1:
                 plan_runner.enable_continuation(True)
-            plan_runner.start(prompt)
+            yield from plan_runner.start(prompt)
             output, timed_out = plan_runner.read_output()
 
             if timed_out or not output.strip():

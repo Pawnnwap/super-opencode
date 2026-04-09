@@ -266,17 +266,18 @@ class OpencodeRunner(BaseRunner):
         self._step_detector.reset()
 
 
-    def start(self, initial_prompt: str) -> None:
+    def start(self, initial_prompt: str) -> Generator[dict, None, None]:
         initial_prompt = _validate_message(initial_prompt, "initial_prompt (start)")
         self._alive = True
         if not self._session_active:
             logger.info("New session detected. Sending brevity command...")
-            self._run_prompt(BREVITY_COMMAND)
+            yield {"level": "info", "msg": "New session detected. Sending brevity command..."}
+            yield from self._run_prompt(BREVITY_COMMAND)
             self._session_active = True
             self.enable_continuation(True)
-        self._run_prompt(initial_prompt)
+        yield from self._run_prompt(initial_prompt)
 
-    def send(self, message: str) -> None:
+    def send(self, message: str) -> Generator[dict, None, None]:
         message = _validate_message(message, "message (send)")
         max_retries = 5
         base_wait = 30
@@ -287,9 +288,8 @@ class OpencodeRunner(BaseRunner):
                     self.enable_continuation(True)
                 
                 logger.info("send() — message length=%d chars", len(message))
-                self._run_prompt(message)
+                yield from self._run_prompt(message)
                 return
-            
             if attempt == max_retries:
                 state_info = f"alive={self._alive}, session_active={self._session_active}"
                 error_msg = (
@@ -438,7 +438,7 @@ class OpencodeRunner(BaseRunner):
             )
             logger.info("Created .opencode/config.json in workspace")
 
-    def _run_prompt(self, prompt: str) -> None:
+    def _run_prompt(self, prompt: str) -> Generator[dict, None, None]:
         # Defensive coercion — should already be clean but belt-and-suspenders
         prompt = coerce_str(prompt, "prompt (_run_prompt)")
 
@@ -461,7 +461,9 @@ class OpencodeRunner(BaseRunner):
             )
 
             cmd = self._build_cmd(exe, prompt, model=model_for_cmd)
-            logger.info("CMD: %s", " ".join(cmd))
+            msg = f"Running opencode command: {' '.join(cmd)}"
+            logger.info(msg)
+            yield {"level": "info", "msg": msg}
 
             use_shell = sys.platform == "win32" and exe.lower().endswith(
                 (".cmd", ".bat", ".ps1"),

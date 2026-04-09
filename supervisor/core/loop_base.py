@@ -252,7 +252,7 @@ class BaseLoop:
             "info",
             f"Retrying… (attempt {self._failures}/{self.config.max_retries})",
         )
-        self.runner.start(self._restart_prompt())
+        yield from self.runner.start(self._restart_prompt())
 
     def _on_final_failure(self, output: str) -> Generator[Event]:
         failure_reason = self._last_feedback or "Reached max retries"
@@ -321,7 +321,7 @@ class BaseLoop:
 
         self._last_feedback = safe_msg
         yield _ev("opencode_prompt", safe_msg)
-        self.runner.send(safe_msg)
+        yield from self.runner.send(safe_msg)
 
         yield from self._yield_suggestions(
             actual_output,
@@ -408,7 +408,7 @@ class BaseLoop:
             self.ctx_monitor.reset()
             restart_prompt = self._get_restart_prompt_for_continuation()
             yield _ev("opencode_prompt", restart_prompt)
-            self.runner.start(restart_prompt)
+            yield from self.runner.start(restart_prompt)
             self.runner.mark_session_active()
 
     def _should_extend_timeout(self, progress) -> bool:
@@ -502,7 +502,7 @@ class BaseLoop:
             strip_thinking_blocks(deletion_permission.feedback),
         )
         yield _ev("opencode_prompt", msg)
-        self.runner.send(msg)
+        yield from self.runner.send(msg)
         self.ctx_monitor.reset()
         yield _ev("info", "Compaction prompt with deletion permissions sent.")
 
