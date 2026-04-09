@@ -52,9 +52,7 @@ _DOT_MODEL_FILE = Path(__file__).parent.parent / ".opencode_model"
 
 
 
-class EmptyPromptError(Exception):
-    """Raised when an empty prompt is provided to OpencodeRunner."""
-    pass
+
 
 def find_opencode(explicit: str = "") -> str:
     """Locate the opencode executable by running 'where opencode' and picking
@@ -151,6 +149,13 @@ class RunResult:
 
 # ── Runner ────────────────────────────────────────────────────────────────── #
 
+
+def _validate_message(message: str, context: str = "message") -> str:
+    """Validate message is non-empty after coercion. Raises ValueError if empty/whitespace-only."""
+    message = coerce_str(message, context)
+    if not message:
+        raise ValueError(f"Empty {context} provided to opencode. A non-empty message is required.")
+    return message
 
 from supervisor.runners.base_runner import BaseRunner
 
@@ -260,13 +265,9 @@ class OpencodeRunner(BaseRunner):
     def reset_step_detector(self) -> None:
         self._step_detector.reset()
 
-    # ------------------------------------------------------------------ #
 
     def start(self, initial_prompt: str) -> None:
-        initial_prompt = coerce_str(initial_prompt, "initial_prompt (start)")
-        if not initial_prompt:
-            raise EmptyPromptError("Empty prompt provided to opencode.")
-        
+        initial_prompt = _validate_message(initial_prompt, "initial_prompt (start)")
         self._alive = True
         if not self._session_active:
             logger.info("New session detected. Sending brevity command...")
@@ -276,10 +277,7 @@ class OpencodeRunner(BaseRunner):
         self._run_prompt(initial_prompt)
 
     def send(self, message: str) -> None:
-        message = coerce_str(message, "message (send)")
-        if not message:
-            raise EmptyPromptError("Empty message provided to opencode.")
-        
+        message = _validate_message(message, "message (send)")
         max_retries = 5
         base_wait = 30
         
