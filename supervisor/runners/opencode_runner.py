@@ -6,6 +6,11 @@ Drives opencode via its non-interactive CLI:
 
 - stdin=DEVNULL  → guarantees no TTY, no interactive prompts
 - All permissions auto-approved in `run` mode
+
+IMPORTANT: All prompts passed to opencode must be wrapped in double quotes.
+This is enforced by the `quote_prompt` utility function to ensure proper
+shell command execution across all platforms (Windows, Linux, macOS).
+Internal double quotes in prompts are escaped by doubling them.
 """
 
 from __future__ import annotations
@@ -26,7 +31,7 @@ from supervisor.analyzers.opencode_step_detector import (
     StepProgress,
 )
 from supervisor.prompts.commands import BREVITY_COMMAND
-from supervisor.utils.text_utils import strip_thinking_blocks, coerce_str
+from supervisor.utils.text_utils import strip_thinking_blocks, coerce_str, quote_prompt
 from supervisor.workspace.workspace_archiver import ArchiveResult, WorkspaceArchiver
 
 logger = logging.getLogger(__name__)
@@ -644,7 +649,7 @@ class OpencodeRunner(BaseRunner):
         if self._use_continue:
             cmd.append("--continue")
 
-        cmd.append(prompt)
+        cmd.append(quote_prompt(prompt))
 
         if resolved_model:
             cmd += ["--model", resolved_model]

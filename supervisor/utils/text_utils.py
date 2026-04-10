@@ -67,3 +67,18 @@ def coerce_str(value: object, field_name: str) -> str:
         )
         value = str(value)
     return value.strip()
+
+
+def quote_prompt(prompt: str) -> str:
+    """Wrap prompt in double quotes for shell command execution.
+    
+    Escapes internal double quotes by doubling them (Windows convention).
+    Ensures prompt is properly surrounded by quotation marks at start and end.
+    """
+    if prompt is None:
+        return '""'
+    prompt = coerce_str(prompt, 'prompt (quote_prompt)')
+    if not prompt:
+        return '""'
+    escaped = prompt.replace('"', '""')
+    return f'"{escaped}"'
