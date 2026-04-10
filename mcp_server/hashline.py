@@ -281,12 +281,20 @@ def _apply_edits(working: list[str], edits: list[dict[str, Any]]) -> None:
             )
 
 
-def _write_atomic(resolved: Path, content: str) -> None:
-    """Write content via temp file + os.replace (atomic on POSIX)."""
+def _write_atomic(resolved: Path, content: str, *, exclusive: bool = False) -> None:
+    """Write content via temp file + os.replace (atomic on POSIX).
+    
+    If exclusive=True, fails if the destination file already exists.
+    """
     fd, tmp_path = tempfile.mkstemp(dir=resolved.parent, prefix=".hashline_tmp_")
+    os.close(fd)  # close raw fd; write via Path.write_text instead
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(content)
+        Path(tmp_path).write_text(content, encoding="utf-8")
+        if exclusive:
+            # O_CREAT|O_EXCL is atomic — raises FileExistsError if target exists
+            dest_fd = os.open(str(resolved), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.close(dest_fd)
+            os.unlink(str(resolved))
         os.replace(tmp_path, resolved)
     except Exception:
         try:
@@ -451,26 +459,6 @@ def _hashline_write(
     overwrite: bool = False,
     autofix: bool = False,
 ) -> dict[str, Any]:
-    """Create a new file from lines, atomically.
-
-    Refuses to overwrite an existing file unless overwrite=True.
-    Parent directories are created automatically.
-
-    Parameters
-    ----------
-    autofix : bool
-        When True, runs safe style/security fixers (isort, autopep8,
-        pyupgrade, ruff) on the newly written file.  Unused-import and
-        dead-code fixers are always skipped — they require whole-codebase
-        context that hashline write does not have.
-
-    Returns
-    -------
-    status   : "created" | "overwritten"
-    path     : resolved absolute path
-    lines    : number of lines written
-    autofix  : dict with "applied" list and "skipped" reason (when autofix=True)
-    """
     resolved = Path(path).resolve()
 
     if resolved.exists() and not overwrite:
@@ -482,11 +470,12 @@ def _hashline_write(
     resolved.parent.mkdir(parents=True, exist_ok=True)
     status = "overwritten" if resolved.exists() else "created"
 
-    content = "\n".join(lines)
-    if lines:  # preserve trailing newline convention
+    normalized = [ln.rstrip("\r\n") for ln in lines]
+    content = "\n".join(normalized)
+    if normalized:
         content += "\n"
 
-    _write_atomic(resolved, content)
+    _write_atomic(resolved, content, exclusive=not overwrite)
 
     result: dict[str, Any] = {
         "status": status,
