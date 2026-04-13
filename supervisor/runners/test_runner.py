@@ -18,6 +18,8 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from supervisor.runners.base_runner import BaseRunner
+
 
 @dataclass
 class RunTestResult:
@@ -73,9 +75,6 @@ class RunTestResult:
         )
         new_syntax = len(self.syntax_errors) > len(baseline.syntax_errors)
         return more_failures or new_syntax
-
-
-from supervisor.runners.base_runner import BaseRunner
 
 
 class OcTestRunner(BaseRunner):

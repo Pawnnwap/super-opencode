@@ -18,6 +18,10 @@ from supervisor.core.llm_supervisor import LLMSupervisor
 from supervisor.core.loop_base import BaseLoop, Event, LoopState, _ev
 from supervisor.runners.test_runner import OcTestRunner, RunTestResult
 from supervisor.utils.config import SupervisorConfig
+from supervisor.utils.experience_tracker import (
+    get_experience_context,
+    update_experience,
+)
 from supervisor.workspace.workspace_archiver import ArchiveResult
 
 logger = logging.getLogger(__name__)
@@ -89,8 +93,6 @@ class SelfEvolutionLoop(BaseLoop):
             self.runner.stop()
             yield from self._evolution_summary()
 
-    # ------------------------------------------------------------------ #
-
     def _on_successful_output(self, output: str) -> Generator[Event]:
         self._iteration += 1
         yield _ev(
@@ -99,6 +101,10 @@ class SelfEvolutionLoop(BaseLoop):
         )
         yield from super()._on_successful_output(output)
         yield from self._check_and_update_snapshot()
+        update_experience(
+            self.config.workspace,
+            worked=[f"Iteration {self._iteration} output processed successfully"],
+        )
 
     def _pre_judge(self, output: str, progress) -> Generator[Event, None, tuple[str | None, bool]]:
         yield _ev("info", f"🧪  Running tests (step {progress.current_step})…")
@@ -106,11 +112,16 @@ class SelfEvolutionLoop(BaseLoop):
         self._last_result = result
         yield _ev("info", f"Tests: {result.summary()}")
 
+        experience_ctx = get_experience_context(self.config.workspace)
+        if experience_ctx.strip():
+            yield _ev("info", "Experience context loaded for judgment.")
+
         if self._baseline and result.is_regression_vs(self._baseline):
             yield _ev("warn", "⚠️  Regression — rolling back.")
             yield from self._rollback()
+            insights = self._extract_regression_insights(experience_ctx)
             msg = (
-                f"Your changes introduced a regression.\n"
+                f"Regression detected. {insights}\n"
                 f"Delta: {result.delta(self._baseline)}\n"
                 f"Step progress: {progress.current_step}/{progress.total_steps_estimate}\n"
                 f"Output:\n{result.output[-800:]}\n\n"
@@ -119,6 +130,7 @@ class SelfEvolutionLoop(BaseLoop):
             safe_rollback, _ = self.guard.sanitize_message(msg)
             yield _ev("opencode_prompt", safe_rollback)
             yield from self.runner.send(safe_rollback)
+            update_experience(self.config.workspace, failed=[f"Regression at step {progress.current_step}: {result.delta(self._baseline)}"])
             return None, True
 
         archive_label = f"iter-{self._iteration}-step-{progress.current_step}"
@@ -150,6 +162,18 @@ class SelfEvolutionLoop(BaseLoop):
             )
         else:
             yield _ev("warn", "No archive to roll back to.")
+
+    def _extract_regression_insights(self, experience_ctx: str) -> str:
+        if not experience_ctx.strip():
+            return ""
+        lines = experience_ctx.splitlines()
+        relevant = []
+        for line in lines:
+            if "failed" in line.lower() or "regression" in line.lower() or "violation" in line.lower():
+                relevant.append(line.strip())
+        if not relevant:
+            return ""
+        return "Modifying previous changes caused issues. " + " | ".join(relevant[:3]) + ". Try alternative approach."
 
     def _evolution_summary(self) -> Generator[Event]:
         success = self._state == LoopState.ENDED_SUCCESS

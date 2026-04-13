@@ -71,4 +71,3 @@ def should_skip_path(
         if any(part.startswith(prefix) for prefix in prefixes):
             return True
     return False
-

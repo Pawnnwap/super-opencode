@@ -5,13 +5,13 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-logger = logging.getLogger(__name__)
-
 from services.state_store import JobStateStore
 from supervisor.core.loop import SupervisorLoop
 from supervisor.core.self_evolution_loop import SelfEvolutionLoop
 from supervisor.utils.config import SupervisorConfig
 from supervisor.utils.text_utils import sanitize_event_message
+
+logger = logging.getLogger(__name__)
 
 
 class JobManager:

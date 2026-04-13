@@ -8,8 +8,8 @@ import json
 import os
 import subprocess
 import sys
-import time
 import tempfile
+import time
 from pathlib import Path
 
 import streamlit as st
@@ -235,29 +235,30 @@ def _find_opencode_config_dir() -> Path:
     config_dir.mkdir(parents=True, exist_ok=True)
     return config_dir
 
+
 def _atomic_write_json(path: Path, content: dict) -> None:
     """Atomically write JSON to a file with proper error handling."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    
+
     try:
         with tempfile.NamedTemporaryFile(
-            mode="w", dir=path.parent, delete=False, 
-            encoding="utf-8", suffix=".tmp"
+            mode="w", dir=path.parent, delete=False,
+            encoding="utf-8", suffix=".tmp",
         ) as tmp:
             json.dump(content, tmp, indent=2)
             tmp_path = Path(tmp.name)
         tmp_path.replace(path)  # Atomic on POSIX
-    except (PermissionError, OSError) as e:
-        if 'tmp_path' in locals() and tmp_path.exists():
+    except (PermissionError, OSError):
+        if "tmp_path" in locals() and tmp_path.exists():
             tmp_path.unlink(missing_ok=True)
         raise
 
+
 def _get_opencode_config_file(config_dir: Path) -> Path:
     """Manages the config file, ensuring hashline MCP and permissions are set."""
-    
     # Standardize on ONE filename to avoid confusion
     target_file = config_dir / "opencode.json"
-    
+
     # Optional: migrate old config.json if it exists
     old_file = config_dir / "config.json"
     if old_file.exists() and not target_file.exists():
@@ -265,9 +266,9 @@ def _get_opencode_config_file(config_dir: Path) -> Path:
             old_file.rename(target_file)
         except Exception:
             pass  # Fallback: just use config.json
-    
+
     target_file.parent.mkdir(parents=True, exist_ok=True)
-    
+
     # Read existing config
     try:
         content = json.loads(target_file.read_text(encoding="utf-8"))
@@ -278,18 +279,18 @@ def _get_opencode_config_file(config_dir: Path) -> Path:
         content = {"$schema": "https://opencode.ai/config.json", "provider": {}}
     except PermissionError:
         raise PermissionError(f"Cannot read config: {target_file}")
-    
+
     # Validate root is a dict
     if not isinstance(content, dict):
         raise TypeError(f"Config must be a JSON object, got {type(content).__name__}")
-    
+
     dirty = False
-    
+
     # Ensure MCP section exists and is a dict
     if "mcp" not in content or not isinstance(content["mcp"], dict):
         content["mcp"] = {}
         dirty = True
-    
+
     # Configure Hashline MCP
     hashline_path = str(Path(__file__).parent.resolve() / "mcp_server" / "hashline.py").replace("\\", "/")
     mcp_hashline_config = {
@@ -298,22 +299,22 @@ def _get_opencode_config_file(config_dir: Path) -> Path:
         "enabled": True,
         "environment": {},
     }
-    
+
     if content["mcp"].get("hashline") != mcp_hashline_config:
         content["mcp"]["hashline"] = mcp_hashline_config
         dirty = True
-    
+
     # Set permissions
     desired_permissions = {"read": "deny", "edit": "deny"}
     if content.get("permission") != desired_permissions:
         content["permission"] = desired_permissions
         dirty = True
-    
+
     # Atomic write if changed
     if dirty:
         _atomic_write_json(target_file, content)
         st.info(f"✓ Config updated: {target_file.name}")  # Optional UI feedback
-    
+
     return target_file
 
 
@@ -325,12 +326,11 @@ def _add_custom_provider_to_config(
     model_names: list[str],
 ) -> None:
     """Adds a custom provider to the specified config file."""
-    
     if not service_name.strip():
         raise ValueError("service_name cannot be empty")
     if not base_url:
         raise ValueError("base_url cannot be empty")
-    
+
     # Read
     try:
         content = json.loads(config_file.read_text(encoding="utf-8"))
@@ -340,22 +340,22 @@ def _add_custom_provider_to_config(
         raise ValueError(f"Invalid JSON: {e}") from e
     except PermissionError:
         raise PermissionError(f"Cannot read: {config_file}")
-    
+
     if not isinstance(content, dict):
         raise TypeError(f"Config root must be object, got {type(content).__name__}")
-    
+
     content.setdefault("provider", {})
     if not isinstance(content["provider"], dict):
         raise TypeError("'provider' must be an object")
-    
+
     valid_models = {name.strip(): {} for name in model_names if name.strip()}
-    
+
     content["provider"][service_name] = {
         "npm": "@ai-sdk/openai-compatible",
         "options": {"baseURL": base_url, "apiKey": api_key},
         "models": valid_models,
     }
-    
+
     # Atomic write using shared helper
     _atomic_write_json(config_file, content)
 
@@ -733,6 +733,7 @@ def _render_protocol_quality(text: str, detailed: bool = False) -> None:
         When True, show per-severity breakdowns with suggestions (used for
         the refined protocol view).  When False, show a compact issue list
         (used for the draft quality preview).
+
     """
     analyzer = ProtocolAnalyzer()
     try:
@@ -1078,7 +1079,7 @@ def page_wizard() -> None:
             _render_protocol_quality(
                 f"## INPUT\n\n{st.session_state.raw_input}\n\n"
                 f"## TARGET\n\n{st.session_state.raw_target}\n\n"
-                f"## RESTRICTIONS\n\n{st.session_state.raw_restrictions}\n"
+                f"## RESTRICTIONS\n\n{st.session_state.raw_restrictions}\n",
             )
 
     if st.button("✨  Refine with AI", type="primary"):

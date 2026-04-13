@@ -11,6 +11,7 @@ Experience data informs future evolution decisions and step planning.
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
@@ -22,9 +23,42 @@ logger = logging.getLogger(__name__)
 _HEADER_WORKED = "## What Worked"
 _HEADER_FAILED = "## What Failed"
 _HEADER_SUMMARIES = "## Evolution Summaries"
-
+_CACHE_DIR = ".opencode"
+_CACHE_FILENAME = "experience_cache.json"
 
 _EXPERIENCE_CACHE: dict[str, dict[str, Any]] = {}
+
+
+def _get_cache_path(workspace: Path) -> Path:
+    return workspace / _CACHE_DIR / _CACHE_FILENAME
+
+
+def _ensure_cache_dir(workspace: Path) -> None:
+    cache_dir = workspace / _CACHE_DIR
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+
+def _load_cache_from_file(workspace: Path) -> dict[str, Any] | None:
+    cache_path = _get_cache_path(workspace)
+    if not cache_path.exists():
+        return None
+    try:
+        with cache_path.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+            return data
+    except (json.JSONDecodeError, OSError) as e:
+        logger.warning("Failed to load experience cache from %s: %s", cache_path, e)
+        return None
+
+
+def _save_cache_to_file(workspace: Path, cache: dict[str, Any]) -> None:
+    _ensure_cache_dir(workspace)
+    cache_path = _get_cache_path(workspace)
+    try:
+        with cache_path.open("w", encoding="utf-8") as f:
+            json.dump(cache, f, indent=2)
+    except OSError as e:
+        logger.warning("Failed to save experience cache to %s: %s", cache_path, e)
 
 
 @dataclass
@@ -103,11 +137,22 @@ class ExperienceInsight:
 def _get_cache(workspace: Path) -> dict[str, Any]:
     key = str(workspace)
     if key not in _EXPERIENCE_CACHE:
-        _EXPERIENCE_CACHE[key] = {
-            "worked": [],
-            "failed": [],
-            "summaries": [],
-        }
+        loaded = _load_cache_from_file(workspace)
+        if loaded:
+            summaries = []
+            for s in loaded.get("summaries", []):
+                if isinstance(s, dict):
+                    summaries.append(EvolutionSummary.from_dict(s))
+                elif isinstance(s, EvolutionSummary):
+                    summaries.append(s)
+            loaded["summaries"] = summaries
+            _EXPERIENCE_CACHE[key] = loaded
+        else:
+            _EXPERIENCE_CACHE[key] = {
+                "worked": [],
+                "failed": [],
+                "summaries": [],
+            }
     return _EXPERIENCE_CACHE[key]
 
 
@@ -124,9 +169,24 @@ def _build_markdown_from_cache(workspace: Path) -> str:
         parts.append(summary.to_markdown())
     return "\n".join(parts) + "\n"
 
+
 def init_experience_file(workspace: Path) -> Path:
     _get_cache(workspace)
     return workspace / _EXPERIENCE_FILE
+
+
+def _serialize_cache_for_save(cache: dict[str, Any]) -> dict[str, Any]:
+    summaries = []
+    for s in cache.get("summaries", []):
+        if isinstance(s, EvolutionSummary):
+            summaries.append(s.to_dict())
+        elif isinstance(s, dict):
+            summaries.append(s)
+    return {
+        "worked": cache.get("worked", []),
+        "failed": cache.get("failed", []),
+        "summaries": summaries,
+    }
 
 
 def update_experience(
@@ -139,6 +199,7 @@ def update_experience(
         cache["worked"].extend(worked)
     if failed:
         cache["failed"].extend(failed)
+    _save_cache_to_file(workspace, _serialize_cache_for_save(cache))
     logger.info("Updated experience: worked=%s, failed=%s", worked, failed)
 
 
@@ -147,6 +208,7 @@ def log_evolution_summary(workspace: Path, summary: EvolutionSummary) -> None:
     if not summary.timestamp:
         summary.timestamp = datetime.now(UTC).isoformat()
     cache["summaries"].append(summary)
+    _save_cache_to_file(workspace, _serialize_cache_for_save(cache))
     logger.info("Logged evolution summary: %s [%s]", summary.goal or "unnamed", summary.outcome)
 
 
@@ -332,6 +394,3 @@ def read_experience_capped(workspace: Path, max_chars: int = 10000) -> str:
     kept_failed = list(reversed(kept_failed))
 
     return "\n".join([worked_header] + kept_worked + [failed_header] + kept_failed)
-
-
-

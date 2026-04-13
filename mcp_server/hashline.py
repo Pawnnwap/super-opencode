@@ -283,7 +283,7 @@ def _apply_edits(working: list[str], edits: list[dict[str, Any]]) -> None:
 
 def _write_atomic(resolved: Path, content: str, *, exclusive: bool = False) -> None:
     """Write content via temp file + os.replace (atomic on POSIX).
-    
+
     If exclusive=True, fails if the destination file already exists.
     """
     fd, tmp_path = tempfile.mkstemp(dir=resolved.parent, prefix=".hashline_tmp_")
@@ -418,10 +418,10 @@ def _autofix_ruff(filepath: str) -> _FixSummary:
 
 # Ordered list — applied in this sequence after every write/edit.
 _PARTIAL_FIXERS: list[tuple[str, Any]] = [
-    ("isort",     _autofix_isort),
-    ("autopep8",  _autofix_autopep8),
+    ("isort", _autofix_isort),
+    ("autopep8", _autofix_autopep8),
     ("pyupgrade", _autofix_pyupgrade),
-    ("ruff",      _autofix_ruff),
+    ("ruff", _autofix_ruff),
 ]
 
 # Documented explanation surfaced in the autofix result payload.

@@ -23,11 +23,12 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-logger = logging.getLogger(__name__)
-
 from supervisor.utils.file_permissions import remove_file_readonly
 from supervisor.utils.path_filters import should_skip_path
 from supervisor.workspace.ignore_patterns import IgnoreMatcher
+
+logger = logging.getLogger(__name__)
+
 
 _ARCHIVE_DIR = ".archive"
 _ARCHIVE_EXTRA_IGNORE_DIRS = {

@@ -186,4 +186,3 @@ def write_ignore_file(workspace: Path, content: str) -> Path:
     ignore_path = workspace / IGNORE_FILE
     ignore_path.write_text(content, encoding="utf-8")
     return ignore_path
-

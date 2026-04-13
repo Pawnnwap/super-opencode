@@ -249,6 +249,8 @@ def build_judge_prompt(
         postscript,
     ]
     return "\n".join(parts)
+
+
 def build_plan_judge_prompt(
     opencode_output: str,
     plan_round: int,

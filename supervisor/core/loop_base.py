@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import logging
 import time
@@ -793,5 +793,3 @@ class BaseLoop:
         result = "\n".join(lines)
         logger.info("Vulnerability scan results formatted: %d issue(s)", len(findings))
         return result
-
-

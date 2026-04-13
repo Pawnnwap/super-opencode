@@ -31,6 +31,7 @@ from supervisor.analyzers.opencode_step_detector import (
     StepProgress,
 )
 from supervisor.prompts.commands import BREVITY_COMMAND
+from supervisor.runners.base_runner import BaseRunner
 from supervisor.utils.text_utils import coerce_str, quote_prompt, strip_thinking_blocks
 from supervisor.workspace.workspace_archiver import ArchiveResult, WorkspaceArchiver
 
@@ -53,12 +54,6 @@ _WINDOWS_EXTRA_DIRS = [
 ]
 
 _DOT_MODEL_FILE = Path(__file__).parent.parent / ".opencode_model"
-
-
-
-
-
-
 
 
 def find_opencode(explicit: str = "") -> str:
@@ -164,8 +159,6 @@ def _validate_message(message: str, context: str = "message") -> str | None:
         logger.warning("Empty message provided to opencode (%s). Returning None to trigger graceful handling.", context)
         return None
     return message
-
-from supervisor.runners.base_runner import BaseRunner
 
 
 class OpencodeRunner(BaseRunner):
@@ -274,7 +267,6 @@ class OpencodeRunner(BaseRunner):
     def reset_step_detector(self) -> None:
         self._step_detector.reset()
 
-
     def start(self, initial_prompt: str) -> Generator[dict]:
         validated = _validate_message(initial_prompt, "initial_prompt (start)")
         if validated is None:
@@ -294,12 +286,12 @@ class OpencodeRunner(BaseRunner):
         resolved_message = validated if validated is not None else "Continue based on the current context and proceed."
         max_retries = 5
         base_wait = 30
-        
+
         for attempt in range(max_retries + 1):
             if self._alive:
                 if self._session_active:
                     self.enable_continuation(True)
-                
+
                 logger.info("send() — message length=%d chars", len(resolved_message))
                 yield from self._run_prompt(resolved_message)
                 return
@@ -310,7 +302,7 @@ class OpencodeRunner(BaseRunner):
                     f"Retries: {attempt}/{max_retries})"
                 )
                 raise RuntimeError(error_msg)
-            
+
             wait_time = base_wait * (2 ** attempt)
             logger.warning(
                 "OpencodeRunner is stopped. Retrying send operation (attempt %d/%d) in %ds...",
