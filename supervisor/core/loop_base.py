@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import logging
 import time
@@ -6,7 +6,12 @@ from collections.abc import Generator
 from enum import Enum, auto
 from pathlib import Path
 
-from supervisor.utils.experience_tracker import update_experience
+from supervisor.utils.experience_tracker import (
+    EvolutionSummary,
+    get_experience_context,
+    log_evolution_summary,
+    update_experience,
+)
 from supervisor.utils.file_ops import safe_read_text
 from supervisor.utils.text_utils import sanitize_event_message, strip_thinking_blocks
 
@@ -613,6 +618,64 @@ class BaseLoop:
         cleaned = cleaned.strip()
         return cleaned
 
+    def _build_evolution_summary(
+        self,
+        outcome: str,
+        goal: str = "",
+        key_changes: list[str] | None = None,
+        challenges: list[str] | None = None,
+        solutions: list[str] | None = None,
+        violations: list[str] | None = None,
+    ) -> EvolutionSummary:
+        progress = self.runner.get_step_progress() if self.runner else None
+        return EvolutionSummary(
+            goal=goal,
+            outcome=outcome,
+            key_changes=key_changes or [],
+            test_baseline=getattr(self, "_baseline", None),
+            test_final=getattr(self, "_last_result", None),
+            test_delta="",
+            regressions_count=0,
+            iterations=getattr(self, "_iteration", 0),
+            final_step=progress.current_step if progress else 0,
+            total_steps=progress.total_steps_estimate if progress else 0,
+            final_phase=progress.phase.name.lower() if progress else "",
+            challenges=challenges or [],
+            solutions=solutions or [],
+            violations=violations or [],
+            archive_path=str(getattr(self, "_best_archive", "")),
+        )
+
+    def _record_structured_success(
+        self,
+        verdict_raw: str,
+        goal: str = "",
+        key_changes: list[str] | None = None,
+        challenges: list[str] | None = None,
+        solutions: list[str] | None = None,
+    ) -> None:
+        summary = self._build_evolution_summary(
+            outcome="success",
+            goal=goal,
+            key_changes=key_changes,
+            challenges=challenges,
+            solutions=solutions,
+        )
+        log_evolution_summary(self.config.workspace, summary)
+
+    def _record_structured_failure(
+        self,
+        failure_reason: str,
+        goal: str = "",
+        challenges: list[str] | None = None,
+    ) -> None:
+        summary = self._build_evolution_summary(
+            outcome="failure",
+            goal=goal,
+            challenges=challenges or [failure_reason],
+        )
+        log_evolution_summary(self.config.workspace, summary)
+
     def _extract_lesson_from_verdict(self, raw: str) -> str:
         lines = raw.strip().splitlines()
         for line in lines:
@@ -731,3 +794,5 @@ class BaseLoop:
         result = "\n".join(lines)
         logger.info("Vulnerability scan results formatted: %d issue(s)", len(findings))
         return result
+
+
