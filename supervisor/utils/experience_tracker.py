@@ -172,7 +172,7 @@ def _build_markdown_from_cache(workspace: Path) -> str:
 
 def init_experience_file(workspace: Path) -> Path:
     _get_cache(workspace)
-    return workspace / _EXPERIENCE_FILE
+    return _get_cache_path(workspace)
 
 
 def _serialize_cache_for_save(cache: dict[str, Any]) -> dict[str, Any]:

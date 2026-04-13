@@ -146,6 +146,8 @@ class SelfEvolutionLoop(BaseLoop):
 
         test_info = f"Step {progress.current_step}/{progress.total_steps_estimate} | Phase: {progress.phase.name.lower()} | Tests: {result.summary()}"
         augmented = f"{output}\n\n--- evolution progress ---\n{test_info}\n\n--- test output ---\n{result.output[-400:]}"
+        if experience_ctx.strip():
+            augmented += f"\n\n--- experience context ---\n{experience_ctx}"
         return augmented, False
 
     def _get_verdict(self, output: str, progress) -> SupervisorVerdict:
@@ -257,12 +259,19 @@ class SelfEvolutionLoop(BaseLoop):
         )
         ws = self.config.workspace.resolve()
         protected_files_desc = ""
-        return SELF_EVOLUTION_INIT_PROMPT_TEMPLATE.format(
+
+        experience_ctx = get_experience_context(self.config.workspace)
+        experience_note = ""
+        if experience_ctx.strip():
+            experience_note = f"\n\n--- Previous Evolution Experience ---\n{experience_ctx}\n"
+
+        prompt = SELF_EVOLUTION_INIT_PROMPT_TEMPLATE.format(
             protocol_text=text,
-            baseline_note=baseline_note,
+            baseline_note=baseline_note + experience_note,
             workspace=ws,
             protected_files_desc=protected_files_desc,
         )
+        return prompt
 
     def _restart_prompt(self) -> str:
         summary, text = self._get_restart_context()
