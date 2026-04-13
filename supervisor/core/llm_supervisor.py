@@ -121,6 +121,7 @@ class LLMSupervisor:
         self._compact_intermediate_steps = compact_intermediate_steps
         self._ignore_matcher = IgnoreMatcher(workspace)
         self._ignore_matcher.load_from_workspace(workspace)
+        self._last_opencode_output: str | None = None
 
     def _get_model_limit_for_model(self, model: str) -> int:
         """Get token limit for a specific model (handles backup model)."""
@@ -504,28 +505,14 @@ class LLMSupervisor:
         return ""
 
     def judge(self, opencode_output: str) -> SupervisorVerdict:
+        from supervisor.prompts.templates import build_context_blocks, build_judge_prompt
+
         experience_context = self._build_experience_context()
         protected_context, feedback_context = self._get_evaluation_context()
 
-        msg = (
-            "opencode just produced the following output. "
-            "Evaluate it against the protocol.\n"
-            "If ALL targets are met say 'all targets met'.\n"
-            "Otherwise give clear, actionable feedback.\n\n"
-            f"{experience_context}"
-            f"{feedback_context}"
-            f"{protected_context}"
-            f"--- opencode output ---\n{opencode_output}\n"
-            "--- end ---"
-        )
-        history_msg = (
-            "opencode just produced the following output. "
-            "Evaluate it against the protocol.\n"
-            "If ALL targets are met say 'all targets met'.\n"
-            "Otherwise give clear, actionable feedback.\n\n"
-            f"--- opencode output ---\n{opencode_output}\n"
-            "--- end ---"
-        )
+        context_blocks = build_context_blocks(feedback_context, protected_context, experience_context)
+        msg = build_judge_prompt(opencode_output, context_blocks=context_blocks)
+        history_msg = build_judge_prompt(opencode_output, context_blocks="")
         return self._chat(msg, history_content=history_msg)
 
     def judge_with_step_context(
@@ -534,15 +521,19 @@ class LLMSupervisor:
         step_context: StepContext,
     ) -> SupervisorVerdict:
         from supervisor.prompts import JUDGE_STEP_PROMPT
-
         protected_context, feedback_context = self._get_evaluation_context()
-
         phases_str = (
             ", ".join(step_context.completed_phases)
             if step_context.completed_phases
             else "none"
         )
         experience_context = self._build_experience_context()
+
+        # Token-aware step context omission
+        omit_sc = self._should_omit_step_context(
+            opencode_output, experience_context, feedback_context, protected_context
+        )
+
         msg = JUDGE_STEP_PROMPT.format(
             current_step=step_context.current_step,
             total_steps=step_context.total_steps_estimate,
@@ -554,10 +545,10 @@ class LLMSupervisor:
             opencode_output=opencode_output,
         )
         history_msg = JUDGE_STEP_PROMPT.format(
-            current_step=step_context.current_step,
-            total_steps=step_context.total_steps_estimate,
-            phase=step_context.phase,
-            completed_phases=phases_str,
+            current_step=0 if omit_sc else step_context.current_step,
+            total_steps=0 if omit_sc else step_context.total_steps_estimate,
+            phase="" if omit_sc else step_context.phase,
+            completed_phases="" if omit_sc else phases_str,
             experience_context="",
             feedback_context="",
             protected_context="",
@@ -591,14 +582,12 @@ class LLMSupervisor:
             SupervisorVerdict with feedback to send back to opencode.
 
         """
-        from supervisor.prompts import JUDGE_PLAN_PROMPT
+        from supervisor.prompts.templates import build_context_blocks, build_plan_judge_prompt, build_step_context
 
         protected_context, feedback_context = self._get_evaluation_context()
 
         context_info = ""
         if step_context is not None:
-            from supervisor.prompts.templates import build_step_context
-
             phases_str = (
                 ", ".join(step_context.completed_phases)
                 if step_context.completed_phases
@@ -612,27 +601,25 @@ class LLMSupervisor:
             ) + "\n"
 
         experience_context = self._build_experience_context()
-        msg = JUDGE_PLAN_PROMPT.format(
-            experience_context=experience_context,
-            context_info=context_info,
-            feedback_context=feedback_context,
-            protected_context=protected_context,
-            plan_round=plan_round,
-            total_plan_rounds=total_plan_rounds,
-            opencode_output=opencode_output,
-        )
+        context_blocks = build_context_blocks(feedback_context, protected_context, experience_context)
 
-        history_msg = JUDGE_PLAN_PROMPT.format(
-            experience_context="",
-            context_info=context_info,
-            feedback_context="",
-            protected_context="",
+        msg = build_plan_judge_prompt(
+            opencode_output=opencode_output,
             plan_round=plan_round,
             total_plan_rounds=total_plan_rounds,
+            step_context=context_info,
+            context_blocks=context_blocks,
+        )
+        history_msg = build_plan_judge_prompt(
             opencode_output=opencode_output,
+            plan_round=plan_round,
+            total_plan_rounds=total_plan_rounds,
+            step_context=context_info,
+            context_blocks="",
         )
 
         verdict = self._chat(msg, history_content=history_msg)
+
 
         # Plan mode never terminates early — override all_targets_met so the
         # caller (SupervisorLoop._run_plan_mode) controls the round count.
@@ -1072,6 +1059,11 @@ class LLMSupervisor:
             or not self._compact_intermediate_steps
             or self.should_record_turn(user_content, "user")
         )
+        # Deduplication: skip storing user message when it matches previous opencode output
+        if should_record_user and self._last_opencode_output is not None:
+            if user_content.strip() == self._last_opencode_output.strip():
+                should_record_user = False
+
 
         record_content = (
             history_content if history_content is not None else user_content
@@ -1267,14 +1259,46 @@ class LLMSupervisor:
             self._history.append({"role": "user", "content": record_content})
         self._history.append({"role": "assistant", "content": reply})
 
+        # Track last opencode output for deduplication in next turn
+        self._extract_and_store_opencode_output(record_content, should_record_user)
+
         if len(self._history) > self._max_history_turns * 2:
             if self._compact_intermediate_steps:
                 self.compact_history()
             else:
                 self._history = self._history[:2] + self._history[4:]
-
         all_met = any(p in reply.lower() for p in _DONE_PHRASES)
         return SupervisorVerdict(raw=reply, all_targets_met=all_met, feedback=reply)
+
+    def _should_omit_step_context(
+        self,
+        opencode_output: str,
+        experience_context: str,
+        feedback_context: str,
+        protected_context: str,
+    ) -> bool:
+        """Decide whether to strip step-context from history to save tokens."""
+        history_context = "".join([
+            experience_context, feedback_context, protected_context,
+            opencode_output,
+        ])
+        conv_text = "\n".join(m["content"] for m in self._history if m.get("content"))
+        estimate = estimate_request_tokens(self._system, conv_text, history_context)
+        threshold = int(self._max_tokens * 0.65)
+        return estimate.total > threshold
+
+    def _extract_and_store_opencode_output(self, content: str, should_record: bool) -> None:
+        """Extract opencode output from record_content for deduplication tracking."""
+        if not should_record:
+            return
+        for marker in ("--- opencode output ---", "--- opencode plan output ---"):
+            start = content.find(marker)
+            if start >= 0:
+                output_start = start + len(marker)
+                end_marker = content.find("\n--- end ---", output_start)
+                if end_marker >= 0:
+                    self._last_opencode_output = content[output_start:end_marker].strip()
+                    return
 
     def update_system_prompt(self, new_preamble: str) -> None:
         """Update the extra_system preamble portion of the system prompt.

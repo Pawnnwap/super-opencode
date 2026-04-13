@@ -249,3 +249,39 @@ def build_judge_prompt(
         postscript,
     ]
     return "\n".join(parts)
+def build_plan_judge_prompt(
+    opencode_output: str,
+    plan_round: int,
+    total_plan_rounds: int,
+    step_context: str = "",
+    context_blocks: str = "",
+    preamble: str | None = None,
+    postscript: str = (
+        "Provide specific, concise feedback to improve the plan before implementation begins."
+    ),
+) -> str:
+    """Build a judge-style prompt for plan mode evaluation."""
+    if preamble is None:
+        preamble = (
+            f"opencode is in PLAN MODE (round {plan_round}/{total_plan_rounds}). "
+            "No code changes have been made yet — this is a planning-only phase.\n\n"
+            "Review the plan below and provide actionable feedback to refine it. "
+            "Do NOT declare 'all targets met' during plan mode. Focus on:\n"
+            "  1. Correctness and completeness of the proposed approach\n"
+            "  2. Potential edge cases or missing steps\n"
+            "  3. Alignment with protocol requirements\n"
+            "  4. Sequencing and dependency issues\n"
+        )
+    parts = [preamble, ""]
+    if step_context:
+        parts.append(step_context)
+    if context_blocks:
+        parts.append(context_blocks)
+    parts += [
+        "--- opencode plan output ---",
+        opencode_output,
+        "--- end ---",
+        "",
+        postscript,
+    ]
+    return "\n".join(parts)

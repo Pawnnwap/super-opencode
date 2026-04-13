@@ -11,6 +11,7 @@ from supervisor.prompts.templates import (
                                           build_context_blocks,
                                           build_init_prompt,
                                           build_judge_prompt,
+                                          build_plan_judge_prompt,
                                           build_step_context,
                                           build_workspace_footer,
 )
@@ -28,6 +29,7 @@ __all__ = [
     "build_context_blocks",
     "build_init_prompt",
     "build_judge_prompt",
+    "build_plan_judge_prompt",
     "build_step_context",
     "build_workspace_footer",
 ]
