@@ -77,6 +77,7 @@ class RunTestResult:
 
 from supervisor.runners.base_runner import BaseRunner
 
+
 class OcTestRunner(BaseRunner):
     """
     Runs pytest in a subprocess and parses the exit code + stdout.

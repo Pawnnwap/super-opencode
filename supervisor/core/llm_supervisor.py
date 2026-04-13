@@ -1,6 +1,7 @@
 """supervisor/llm_supervisor.py — OpenAI-powered judge."""
 
 from __future__ import annotations
+
 import logging
 import os
 import re
@@ -36,12 +37,12 @@ def _check_completion_phrases(reply: str, phrases: list[str]) -> bool:
     negation_prefixes = [
         r"not\s+", r"never\s+", r"failed\s+to\s+", r"unable\s+to\s+",
         r"did\s+not\s+", r"does\s+not\s+", r"don't\s+", r"doesn't\s+",
-        r"won't\s+", r"cannot\s+", r"can't\s+"
+        r"won't\s+", r"cannot\s+", r"can't\s+",
     ]
     
     for phrase in phrases:
         # Build regex with word boundaries
-        pattern = r'\b' + re.escape(phrase) + r'\b'
+        pattern = r"\b" + re.escape(phrase) + r"\b"
         
         # Find all matches with their positions
         for match in re.finditer(pattern, reply_lower):
@@ -531,7 +532,10 @@ class LLMSupervisor:
         return ""
 
     def judge(self, opencode_output: str) -> SupervisorVerdict:
-        from supervisor.prompts.templates import build_context_blocks, build_judge_prompt
+        from supervisor.prompts.templates import (
+            build_context_blocks,
+            build_judge_prompt,
+        )
 
         experience_context = self._build_experience_context()
         protected_context, feedback_context = self._get_evaluation_context()
@@ -557,7 +561,7 @@ class LLMSupervisor:
 
         # Token-aware step context omission
         omit_sc = self._should_omit_step_context(
-            opencode_output, experience_context, feedback_context, protected_context
+            opencode_output, experience_context, feedback_context, protected_context,
         )
 
         msg = JUDGE_STEP_PROMPT.format(
@@ -608,7 +612,11 @@ class LLMSupervisor:
             SupervisorVerdict with feedback to send back to opencode.
 
         """
-        from supervisor.prompts.templates import build_context_blocks, build_plan_judge_prompt, build_step_context
+        from supervisor.prompts.templates import (
+            build_context_blocks,
+            build_plan_judge_prompt,
+            build_step_context,
+        )
 
         protected_context, feedback_context = self._get_evaluation_context()
 

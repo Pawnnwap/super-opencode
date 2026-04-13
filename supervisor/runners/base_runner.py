@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 import logging
 from pathlib import Path
 
@@ -9,6 +10,7 @@ class BaseRunner:
     
     Provides common workspace management and lifecycle state.
     """
+
     def __init__(self, workspace: Path):
         self.workspace = workspace
         self._alive = False

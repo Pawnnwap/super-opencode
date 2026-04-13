@@ -8,7 +8,6 @@ from pathlib import Path
 
 from supervisor.utils.experience_tracker import (
     EvolutionSummary,
-    get_experience_context,
     log_evolution_summary,
     update_experience,
 )

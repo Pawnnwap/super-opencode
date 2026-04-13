@@ -77,7 +77,7 @@ def quote_prompt(prompt: str) -> str:
     """
     if prompt is None:
         return '""'
-    prompt = coerce_str(prompt, 'prompt (quote_prompt)')
+    prompt = coerce_str(prompt, "prompt (quote_prompt)")
     if not prompt:
         return '""'
     escaped = prompt.replace('"', '""')

@@ -31,7 +31,7 @@ from supervisor.analyzers.opencode_step_detector import (
     StepProgress,
 )
 from supervisor.prompts.commands import BREVITY_COMMAND
-from supervisor.utils.text_utils import strip_thinking_blocks, coerce_str, quote_prompt
+from supervisor.utils.text_utils import coerce_str, quote_prompt, strip_thinking_blocks
 from supervisor.workspace.workspace_archiver import ArchiveResult, WorkspaceArchiver
 
 logger = logging.getLogger(__name__)
@@ -53,6 +53,8 @@ _WINDOWS_EXTRA_DIRS = [
 ]
 
 _DOT_MODEL_FILE = Path(__file__).parent.parent / ".opencode_model"
+
+
 
 
 
@@ -155,14 +157,16 @@ class RunResult:
 # ── Runner ────────────────────────────────────────────────────────────────── #
 
 
-def _validate_message(message: str, context: str = "message") -> str:
-    """Validate message is non-empty after coercion. Raises ValueError if empty/whitespace-only."""
+def _validate_message(message: str, context: str = "message") -> str | None:
+    """Validate message is non-empty after coercion. Returns None for empty/whitespace instead of raising."""
     message = coerce_str(message, context)
     if not message:
-        raise ValueError(f"Empty {context} provided to opencode. A non-empty message is required.")
+        logger.warning("Empty message provided to opencode (%s). Returning None to trigger graceful handling.", context)
+        return None
     return message
 
 from supervisor.runners.base_runner import BaseRunner
+
 
 class OpencodeRunner(BaseRunner):
     """One send()/start() call = one  opencode run "<prompt>"  subprocess.
@@ -271,8 +275,11 @@ class OpencodeRunner(BaseRunner):
         self._step_detector.reset()
 
 
-    def start(self, initial_prompt: str) -> Generator[dict, None, None]:
-        initial_prompt = _validate_message(initial_prompt, "initial_prompt (start)")
+    def start(self, initial_prompt: str) -> Generator[dict]:
+        validated = _validate_message(initial_prompt, "initial_prompt (start)")
+        if validated is None:
+            logger.warning("Empty initial prompt in start(). Using fallback to continue session.")
+            validated = "Continue based on the current context and proceed with the task."
         self._alive = True
         if not self._session_active:
             logger.info("New session detected. Sending brevity command...")
@@ -280,10 +287,11 @@ class OpencodeRunner(BaseRunner):
             yield from self._run_prompt(BREVITY_COMMAND)
             self._session_active = True
             self.enable_continuation(True)
-        yield from self._run_prompt(initial_prompt)
+        yield from self._run_prompt(validated)
 
-    def send(self, message: str) -> Generator[dict, None, None]:
-        message = _validate_message(message, "message (send)")
+    def send(self, message: str) -> Generator[dict]:
+        validated = _validate_message(message, "message (send)")
+        resolved_message = validated if validated is not None else "Continue based on the current context and proceed."
         max_retries = 5
         base_wait = 30
         
@@ -292,8 +300,8 @@ class OpencodeRunner(BaseRunner):
                 if self._session_active:
                     self.enable_continuation(True)
                 
-                logger.info("send() — message length=%d chars", len(message))
-                yield from self._run_prompt(message)
+                logger.info("send() — message length=%d chars", len(resolved_message))
+                yield from self._run_prompt(resolved_message)
                 return
             if attempt == max_retries:
                 state_info = f"alive={self._alive}, session_active={self._session_active}"
@@ -306,7 +314,7 @@ class OpencodeRunner(BaseRunner):
             wait_time = base_wait * (2 ** attempt)
             logger.warning(
                 "OpencodeRunner is stopped. Retrying send operation (attempt %d/%d) in %ds...",
-                attempt + 1, max_retries, wait_time
+                attempt + 1, max_retries, wait_time,
             )
             time.sleep(wait_time)
 
@@ -443,7 +451,7 @@ class OpencodeRunner(BaseRunner):
             )
             logger.info("Created .opencode/config.json in workspace")
 
-    def _run_prompt(self, prompt: str) -> Generator[dict, None, None]:
+    def _run_prompt(self, prompt: str) -> Generator[dict]:
         # Defensive coercion — should already be clean but belt-and-suspenders
         prompt = coerce_str(prompt, "prompt (_run_prompt)")
 

@@ -353,6 +353,7 @@ def _ensure_fix_tool(package: str, binary: str) -> bool:
 @dataclass
 class _FixSummary:
     """Lightweight record of what each fixer did."""
+
     tool: str
     ok: bool
     note: str = ""
@@ -520,6 +521,7 @@ def _hashline_edit(
     patches  : number of refs auto-corrected (only when auto_retried)
     diff     : unified diff string (key omitted if no changes)
     autofix  : dict with "applied" list and "skipped" reason (when autofix=True and not dry_run)
+
     """
     resolved = Path(path).resolve()
     if not resolved.exists():

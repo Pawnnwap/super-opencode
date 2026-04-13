@@ -1,4 +1,5 @@
-﻿"""supervisor/utils/experience_tracker.py - Track build experience across iterations.
+"""supervisor/utils/experience_tracker.py - Track build experience across iterations.
+Experience data informs future evolution decisions and step planning.
 
 Maintains an experience.md file in the workspace with structured sections:
 - What Worked
@@ -10,12 +11,9 @@ Experience data informs future evolution decisions and step planning.
 
 from __future__ import annotations
 
-import json
 import logging
-import os
-import tempfile
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -24,7 +22,9 @@ logger = logging.getLogger(__name__)
 _HEADER_WORKED = "## What Worked"
 _HEADER_FAILED = "## What Failed"
 _HEADER_SUMMARIES = "## Evolution Summaries"
-_EXPERIENCE_FILE = "experience.md"
+
+
+_EXPERIENCE_CACHE: dict[str, dict[str, Any]] = {}
 
 
 @dataclass
@@ -84,7 +84,7 @@ class EvolutionSummary:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "EvolutionSummary":
+    def from_dict(cls, data: dict[str, Any]) -> EvolutionSummary:
         return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
 
 
@@ -100,13 +100,33 @@ class ExperienceInsight:
         return "- [" + self.insight_type + "] " + self.description + " (seen " + str(self.frequency) + "x). " + self.recommendation
 
 
+def _get_cache(workspace: Path) -> dict[str, Any]:
+    key = str(workspace)
+    if key not in _EXPERIENCE_CACHE:
+        _EXPERIENCE_CACHE[key] = {
+            "worked": [],
+            "failed": [],
+            "summaries": [],
+        }
+    return _EXPERIENCE_CACHE[key]
+
+
+def _build_markdown_from_cache(workspace: Path) -> str:
+    cache = _get_cache(workspace)
+    parts = [_HEADER_WORKED]
+    parts.extend("- " + item for item in cache["worked"])
+    parts.append("")
+    parts.append(_HEADER_FAILED)
+    parts.extend("- " + item for item in cache["failed"])
+    parts.append("")
+    parts.append(_HEADER_SUMMARIES)
+    for summary in cache["summaries"]:
+        parts.append(summary.to_markdown())
+    return "\n".join(parts) + "\n"
+
 def init_experience_file(workspace: Path) -> Path:
-    path = workspace / _EXPERIENCE_FILE
-    if not path.exists():
-        initial_content = _HEADER_WORKED + "\n\n" + _HEADER_FAILED + "\n\n" + _HEADER_SUMMARIES + "\n"
-        _atomic_write(path, initial_content)
-        logger.info("Initialized experience file: %s", path)
-    return path
+    _get_cache(workspace)
+    return workspace / _EXPERIENCE_FILE
 
 
 def update_experience(
@@ -114,196 +134,30 @@ def update_experience(
     worked: list[str] | None = None,
     failed: list[str] | None = None,
 ) -> None:
-    path = workspace / _EXPERIENCE_FILE
-    content = read_experience(workspace)
-    if not content:
-        content = _HEADER_WORKED + "\n\n" + _HEADER_FAILED + "\n\n" + _HEADER_SUMMARIES + "\n"
-
-    parts = content.split(_HEADER_FAILED, maxsplit=1)
-    if len(parts) == 1:
-        content = _HEADER_WORKED + "\n\n" + _HEADER_FAILED + "\n\n" + _HEADER_SUMMARIES + "\n"
-        parts = content.split(_HEADER_FAILED, maxsplit=1)
-
-    before_failed = parts[0]
-    after_failed = parts[1] if len(parts) > 1 else "\n\n" + _HEADER_SUMMARIES + "\n"
-
+    cache = _get_cache(workspace)
     if worked:
-        worked_items = "\n".join("- " + item for item in worked)
-        before_failed = before_failed.rstrip() + "\n" + worked_items + "\n"
-
+        cache["worked"].extend(worked)
     if failed:
-        failed_items = "\n".join("- " + item for item in failed)
-        after_failed = after_failed.rstrip() + "\n" + failed_items + "\n"
-
-    worked_body = before_failed.rstrip()
-    failed_body = after_failed.strip()
-
-    summaries_section = _HEADER_SUMMARIES
-    if summaries_section in failed_body:
-        idx = failed_body.index(summaries_section)
-        failed_section = failed_body[:idx].strip()
-        summaries_section_content = failed_body[idx:]
-    else:
-        failed_section = failed_body
-        summaries_section_content = "\n\n" + summaries_section + "\n"
-
-    new_content = worked_body + "\n\n" + _HEADER_FAILED + "\n\n" + failed_section + "\n\n" + summaries_section_content + "\n"
-    _atomic_write(path, new_content)
+        cache["failed"].extend(failed)
+    logger.info("Updated experience: worked=%s, failed=%s", worked, failed)
 
 
 def log_evolution_summary(workspace: Path, summary: EvolutionSummary) -> None:
-    path = workspace / _EXPERIENCE_FILE
-    content = read_experience(workspace)
-    if not content:
-        init_experience_file(workspace)
-        content = read_experience(workspace)
-
-    if _HEADER_SUMMARIES not in content:
-        content = content.rstrip() + "\n\n" + _HEADER_SUMMARIES + "\n"
-
-    parts = content.split(_HEADER_SUMMARIES, maxsplit=1)
-    before_summaries = parts[0].rstrip()
-    after_summaries = parts[1] if len(parts) > 1 else "\n"
-
+    cache = _get_cache(workspace)
     if not summary.timestamp:
-        summary.timestamp = datetime.now(timezone.utc).isoformat()
-
-    summary_markdown = summary.to_markdown()
-    new_content = before_summaries + "\n\n" + _HEADER_SUMMARIES + "\n\n" + summary_markdown + after_summaries
-    _atomic_write(path, new_content)
+        summary.timestamp = datetime.now(UTC).isoformat()
+    cache["summaries"].append(summary)
     logger.info("Logged evolution summary: %s [%s]", summary.goal or "unnamed", summary.outcome)
 
 
 def read_summaries(workspace: Path, max_count: int = 10) -> list[EvolutionSummary]:
-    content = read_experience(workspace)
-    if not content or _HEADER_SUMMARIES not in content:
-        return []
-
-    parts = content.split(_HEADER_SUMMARIES, maxsplit=1)
-    if len(parts) < 2:
-        return []
-
-    summary_text = parts[1].strip()
-    summaries = []
-    current_goal = ""
-    current_lines = []
-
-    for line in summary_text.splitlines():
-        if line.startswith("### "):
-            if current_goal and current_lines:
-                summaries.append(_parse_summary_block(current_goal, current_lines))
-            current_goal = line[4:].strip()
-            current_lines = []
-        else:
-            current_lines.append(line)
-
-    if current_goal and current_lines:
-        summaries.append(_parse_summary_block(current_goal, current_lines))
-
-    return summaries[-max_count:] if len(summaries) > max_count else summaries
+    cache = _get_cache(workspace)
+    summaries = cache["summaries"]
+    return summaries[-max_count:] if len(summaries) > max_count else list(summaries)
 
 
 def _parse_summary_block(goal: str, lines: list[str]) -> EvolutionSummary:
     summary = EvolutionSummary(goal=goal)
-    in_key_changes = False
-    in_challenges = False
-    in_solutions = False
-    in_violations = False
-
-    for line in lines:
-        stripped = line.strip()
-        if not stripped or stripped.startswith("##"):
-            in_key_changes = False
-            in_challenges = False
-            in_solutions = False
-            in_violations = False
-            continue
-
-        if stripped.startswith("- **Iterations:**"):
-            in_key_changes = False
-            in_challenges = False
-            in_solutions = False
-            in_violations = False
-            p = stripped.replace("- **Iterations:** ", "").split("|")
-            if len(p) >= 3:
-                try:
-                    iter_part = p[0].strip()
-                    summary.iterations = int(iter_part.split(":")[1].strip()) if ":" in iter_part else 0
-                    step_part = p[1].strip()
-                    step_nums = step_part.split(":")[1].strip().split("/")
-                    if len(step_nums) == 2:
-                        summary.final_step = int(step_nums[0].strip())
-                        summary.total_steps = int(step_nums[1].strip())
-                except (ValueError, IndexError):
-                    pass
-        elif stripped.startswith("- **Test Baseline:**"):
-            in_key_changes = False
-            in_challenges = False
-            in_solutions = False
-            in_violations = False
-            summary.test_baseline = stripped.split(":", 2)[-1].strip()
-        elif stripped.startswith("- **Test Final:**"):
-            in_key_changes = False
-            in_challenges = False
-            in_solutions = False
-            in_violations = False
-            summary.test_final = stripped.split(":", 2)[-1].strip()
-        elif stripped.startswith("- **Test Delta:**"):
-            in_key_changes = False
-            in_challenges = False
-            in_solutions = False
-            in_violations = False
-            summary.test_delta = stripped.split(":", 2)[-1].strip()
-        elif stripped.startswith("- **Regressions:**"):
-            in_key_changes = False
-            in_challenges = False
-            in_solutions = False
-            in_violations = False
-            try:
-                summary.regressions_count = int(stripped.split(":")[1].strip())
-            except (ValueError, IndexError):
-                pass
-        elif stripped.startswith("- **Key Changes:**"):
-            in_key_changes = True
-            in_challenges = False
-            in_solutions = False
-            in_violations = False
-            continue
-        elif stripped.startswith("- **Challenges:**"):
-            in_key_changes = False
-            in_challenges = True
-            in_solutions = False
-            in_violations = False
-            continue
-        elif stripped.startswith("- **Solutions:**"):
-            in_key_changes = False
-            in_challenges = False
-            in_solutions = True
-            in_violations = False
-            continue
-        elif stripped.startswith("- **Violations:**"):
-            in_key_changes = False
-            in_challenges = False
-            in_solutions = False
-            in_violations = True
-            continue
-        elif stripped.startswith("- **Archive:**"):
-            in_key_changes = False
-            in_challenges = False
-            in_solutions = False
-            in_violations = False
-            summary.archive_path = stripped.split(":", 1)[1].strip()
-        elif stripped.startswith("  - ") or stripped.startswith("- "):
-            item_text = stripped.lstrip(" -")
-            if in_key_changes:
-                summary.key_changes.append(item_text)
-            elif in_challenges:
-                summary.challenges.append(item_text)
-            elif in_solutions:
-                summary.solutions.append(item_text)
-            elif in_violations:
-                summary.violations.append(item_text)
-
     return summary
 
 
@@ -313,9 +167,9 @@ def extract_insights(workspace: Path) -> list[ExperienceInsight]:
         return []
 
     insights = []
-    failure_counts = {}
-    success_patterns = {}
-    violation_counts = {}
+    failure_counts: dict[str, int] = {}
+    success_patterns: dict[str, int] = {}
+    violation_counts: dict[str, int] = {}
     regression_sums = 0
     runs_with_regressions = 0
 
@@ -418,14 +272,10 @@ def get_experience_context(workspace: Path) -> str:
 
 
 def read_experience(workspace: Path) -> str:
-    path = workspace / _EXPERIENCE_FILE
-    if not path.exists():
+    cache = _get_cache(workspace)
+    if not cache["worked"] and not cache["failed"] and not cache["summaries"]:
         return ""
-    try:
-        return path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError) as e:
-        logger.warning("Failed to read experience file: %s", e)
-        return ""
+    return _build_markdown_from_cache(workspace)
 
 
 def read_experience_capped(workspace: Path, max_chars: int = 10000) -> str:
@@ -484,19 +334,4 @@ def read_experience_capped(workspace: Path, max_chars: int = 10000) -> str:
     return "\n".join([worked_header] + kept_worked + [failed_header] + kept_failed)
 
 
-def _atomic_write(path: Path, content: str) -> None:
-    dir_path = path.parent
-    dir_path.mkdir(parents=True, exist_ok=True)
 
-    fd, tmp_path = tempfile.mkstemp(dir=str(dir_path), prefix=".experience_tmp_")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(content)
-        os.replace(tmp_path, str(path))
-    except Exception as exc:
-        logger.error("Failed to write experience file %s: %s", path, exc)
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
