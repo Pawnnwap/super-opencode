@@ -160,10 +160,12 @@ class BaseLoop:
         except KeyboardInterrupt:
             if self.runner:
                 self.runner.stop()
+            self._state = LoopState.ENDED_FAILURE
             yield _ev("warn", "Interrupted by user.")
         except Exception:
             if self.runner:
                 self.runner.stop()
+            self._state = LoopState.ENDED_FAILURE
             import traceback
 
             yield _ev("error", f"Unhandled exception:\n{traceback.format_exc()}")

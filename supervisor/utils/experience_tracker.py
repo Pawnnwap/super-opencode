@@ -171,7 +171,8 @@ def _build_markdown_from_cache(workspace: Path) -> str:
 
 
 def init_experience_file(workspace: Path) -> Path:
-    _get_cache(workspace)
+    cache = _get_cache(workspace)
+    _save_cache_to_file(workspace, _serialize_cache_for_save(cache))
     return _get_cache_path(workspace)
 
 

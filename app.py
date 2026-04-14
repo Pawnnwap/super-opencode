@@ -4,11 +4,11 @@ Run with:  streamlit run app.py
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import subprocess
 import sys
-import tempfile
 import time
 from pathlib import Path
 
@@ -205,6 +205,56 @@ st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
 # ── UI Utilities ─────────────────────────────────────────────────────────── #
 
+@contextlib.contextmanager
+def _card():
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    yield
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
+def _run_test_with_timeout(test_fn, test_name: str, timeout_seconds: int = 30) -> tuple[bool, str]:
+    try:
+        return _run_with_timeout(test_fn, seconds=timeout_seconds)
+    except TimeoutError:
+        return False, f"{test_name} timed out."
+    except Exception as exc:
+        return False, f"{test_name} failed: {exc}"
+
+
+def _render_test_result(test_name: str, ok: bool, msg: str) -> None:
+    (st.success if ok else st.error)(f"{'\u2705' if ok else '\u274c'} Test {test_name}: {msg}")
+
+
+def _do_test(test_name: str, test_fn, state_key: str) -> None:
+    with st.spinner(f"Testing {test_name}\u2026"):
+        ok, msg = test_fn()
+    st.session_state[state_key] = ok
+    _render_test_result(test_name, ok, msg)
+
+
+def _render_model_selector(label: str, models: list, session_key: str, select_key: str, fallback_key: str,
+                           help_text: str = None, placeholder: str = None, show_warning: bool = True) -> str:
+    if models:
+        current = st.session_state.get(session_key, "")
+        default_idx = models.index(current) if current in models else 0
+        st.session_state[session_key] = st.selectbox(
+            label, options=models, index=default_idx, key=select_key, help=help_text)
+    else:
+        if show_warning:
+            st.warning("No models returned by 'opencode models'.")
+        st.session_state[session_key] = st.text_input(
+            label, key=fallback_key, value=st.session_state.get(session_key, ""), placeholder=placeholder)
+    return st.session_state[session_key]
+
+
+def bound_text_input(label: str, session_key: str, placeholder: str = None, type: str = "default",
+                     help_text: str = None) -> str:
+    st.session_state[session_key] = st.text_input(
+        label, key=f"cfg_{session_key}", value=st.session_state.get(session_key, ""),
+        placeholder=placeholder, type=type, help=help_text)
+    return st.session_state[session_key]
+
+
 def _clear_page_state(target_page: str) -> None:
     """Clear UI state from other pages when navigating to a new page."""
     if target_page != "wizard":
@@ -240,16 +290,14 @@ def _atomic_write_json(path: Path, content: dict) -> None:
     """Atomically write JSON to a file with proper error handling."""
     path.parent.mkdir(parents=True, exist_ok=True)
 
+    tmp_path = path.with_suffix(".tmp")
     try:
-        with tempfile.NamedTemporaryFile(
-            mode="w", dir=path.parent, delete=False,
-            encoding="utf-8", suffix=".tmp",
-        ) as tmp:
+        fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+        with os.fdopen(fd, "w", encoding="utf-8") as tmp:
             json.dump(content, tmp, indent=2)
-            tmp_path = Path(tmp.name)
         tmp_path.replace(path)  # Atomic on POSIX
     except (PermissionError, OSError):
-        if "tmp_path" in locals() and tmp_path.exists():
+        if tmp_path.exists():
             tmp_path.unlink(missing_ok=True)
         raise
 
@@ -428,7 +476,21 @@ def _build_supervisor_config(protocol_path: Path, workspace: Path, **overrides) 
     return SupervisorConfig(**defaults)
 
 
+# ── Workspace isolation helpers ──────────────────────────────────────────── #
+
+
+def _get_all_run_jobs() -> list[dict]:
+    """Get all run jobs sorted by most recent."""
+    jobs = []
+    for jid in job_manager.store.list_jobs():
+        status = job_manager.get_job_status(jid)
+        if status and status.get("type") == "run":
+            jobs.append({"id": jid, "status": status})
+    jobs.sort(key=lambda j: j["status"].get("updated_at", 0), reverse=True)
+    return jobs
+
 # ── Startup initialisation ───────────────────────────────────────────────── #
+
 
 if not st.session_state.get("_mcp_config_done"):
     _mcp_dir = _find_opencode_config_dir()
@@ -479,6 +541,10 @@ def _any_job_running() -> bool:
     )
 
 
+def _render_status_pill(state: str) -> str:
+    return _PILL_MAP.get(state, f'<span class="pill pill-idle">{state}</span>')
+
+
 # Compute once per render cycle so sidebar and router share the result.
 _jobs_running = _any_job_running()
 
@@ -503,7 +569,7 @@ with st.sidebar:
         if jid:
             s = job_manager.get_job_status(jid)
             if s:
-                st.markdown(f"{label} {_PILL_MAP.get(s['state'], '')}", unsafe_allow_html=True)
+                st.markdown(f"{label} {_render_status_pill(s['state'])}", unsafe_allow_html=True)
 
     st.markdown("---")
 
@@ -606,7 +672,7 @@ def _run_with_timeout(fn, seconds: int = 30):
 def test_opencode() -> tuple[bool, str]:
     from supervisor.runners.opencode_runner import OpencodeRunner, find_opencode
 
-    workspace = Path(tempfile.gettempdir()) / "opencode_test_dummy"
+    workspace = Path(os.environ.get("TEMP", os.environ.get("TMPDIR", "/tmp"))) / "opencode_test_dummy"
     workspace.mkdir(exist_ok=True)
     try:
         exe = find_opencode(st.session_state.opencode_executable or "")
@@ -658,12 +724,7 @@ def test_supervisor() -> tuple[bool, str]:
             return True, f"Supervisor responded: {text.strip()[:120]}"
         return False, "Supervisor returned an empty response."
 
-    try:
-        return _run_with_timeout(_inner, seconds=30)
-    except TimeoutError:
-        return False, "Supervisor test timed out."
-    except Exception as exc:
-        return False, f"Supervisor test failed: {exc}"
+    return _run_test_with_timeout(_inner, "Supervisor test")
 
 
 def _render_connectivity_tests() -> None:
@@ -678,37 +739,25 @@ def _render_connectivity_tests() -> None:
 
     col_t1, col_t2, col_t3 = st.columns(3)
 
-    def _do_test_opencode():
-        with st.spinner("Testing opencode…"):
-            ok, msg = test_opencode()
-        st.session_state.opencode_test_passed = ok
-        (st.success if ok else st.error)(f"{'✅' if ok else '❌'} Test opencode: {msg}")
-
-    def _do_test_supervisor():
-        with st.spinner("Testing supervisor…"):
-            ok, msg = test_supervisor()
-        st.session_state.supervisor_test_passed = ok
-        (st.success if ok else st.error)(f"{'✅' if ok else '❌'} Test Supervisor: {msg}")
-
     with col_t1:
-        if st.button("▶  Run Tests", type="primary", key="btn_run_tests"):
+        if st.button("\u25b6  Run Tests", type="primary", key="btn_run_tests"):
             if not st.session_state.workspace:
                 st.error("Set a workspace path before running tests.")
             else:
-                _do_test_opencode()
-                _do_test_supervisor()
+                _do_test("opencode", test_opencode, "opencode_test_passed")
+                _do_test("Supervisor", test_supervisor, "supervisor_test_passed")
     with col_t2:
-        if st.button("🧪 Test opencode", key="btn_test_opencode"):
+        if st.button("\ud83e\uddea Test opencode", key="btn_test_opencode"):
             if not st.session_state.workspace:
                 st.error("Set a workspace path before testing.")
             else:
-                _do_test_opencode()
+                _do_test("opencode", test_opencode, "opencode_test_passed")
     with col_t3:
-        if st.button("🧪 Test Supervisor", key="btn_test_supervisor"):
+        if st.button("\ud83e\uddea Test Supervisor", key="btn_test_supervisor"):
             if not st.session_state.openai_key:
                 st.error("Set an API key before testing.")
             else:
-                _do_test_supervisor()
+                _do_test("Supervisor", test_supervisor, "supervisor_test_passed")
 
 
 # ── Protocol quality analysis ────────────────────────────────────────────── #
@@ -847,55 +896,26 @@ def page_wizard() -> None:
     with st.expander("⚙️  Configuration", expanded=st.session_state.wizard_step == 0):
         col1, col2 = st.columns(2)
         with col1:
-            st.session_state.openai_key = st.text_input(
-                "API Key", key="cfg_openai_key", value=st.session_state.openai_key,
-                type="password", placeholder="sk-…")
-            st.session_state.base_url = st.text_input(
-                "Base URL (leave blank for OpenAI)", key="cfg_base_url",
-                value=st.session_state.base_url, placeholder="e.g. http://localhost:11434/v1")
-            st.session_state.workspace = st.text_input(
-                "Workspace path (absolute)", key="cfg_workspace",
-                value=st.session_state.workspace, placeholder="/home/user/myproject")
+            bound_text_input("API Key", "openai_key", placeholder="sk…", type="password")
+            bound_text_input("Base URL (leave blank for OpenAI)", "base_url", placeholder="e.g. http://localhost:11434/v1")
+            bound_text_input("Workspace path (absolute)", "workspace", placeholder="/home/user/myproject")
             if st.session_state.workspace != st.session_state.get("_last_workspace", ""):
                 st.session_state.protected_files = []
                 st.session_state._last_workspace = st.session_state.workspace
-            st.session_state.supervisor_model = st.text_input(
-                "Supervisor / wizard model", key="cfg_supervisor_model",
-                value=st.session_state.supervisor_model,
-                placeholder="e.g. gpt-4o, claude-3-5-sonnet, mistral-large")
-            st.session_state.supervisor_model_backup = st.text_input(
-                "Supervisor model backup", key="cfg_supervisor_model_backup",
-                value=st.session_state.supervisor_model_backup,
-                placeholder="e.g. gpt-4o-mini (used when primary fails)")
+            bound_text_input("Supervisor / wizard model", "supervisor_model", placeholder="e.g. gpt-4o, claude-3-5-sonnet, mistral-large")
+            bound_text_input("Supervisor model backup", "supervisor_model_backup", placeholder="e.g. gpt-4o-mini (used when primary fails)")
 
         with col2:
             models = st.session_state.get("opencode_models", [])
-            if models:
-                current = st.session_state.get("opencode_model", "")
-                default_idx = models.index(current) if current in models else 0
-                st.session_state.opencode_model = st.selectbox(
-                    "Model", options=models, index=default_idx,
-                    key="cfg_opencode_model_select",
-                    help="Models returned by 'opencode models'")
-            else:
-                st.warning("No models returned by 'opencode models'.")
-                st.session_state.opencode_model = st.text_input(
-                    "opencode model", key="cfg_opencode_model_fallback",
-                    value=st.session_state.opencode_model)
+            _render_model_selector(
+                "Model", models, "opencode_model", "cfg_opencode_model_select", "cfg_opencode_model_fallback",
+                help_text="Models returned by 'opencode models'")
 
             backup_models = [m for m in models if m != st.session_state.opencode_model] if models else []
-            if backup_models:
-                backup_current = st.session_state.get("opencode_model_backup", "")
-                backup_default_idx = backup_models.index(backup_current) if backup_current in backup_models else 0
-                st.session_state.opencode_model_backup = st.selectbox(
-                    "opencode model backup", options=backup_models, index=backup_default_idx,
-                    key="cfg_opencode_model_backup_select",
-                    help="Fallback model used when the primary model fails")
-            else:
-                st.session_state.opencode_model_backup = st.text_input(
-                    "opencode model backup", key="cfg_opencode_model_backup",
-                    value=st.session_state.opencode_model_backup,
-                    placeholder="e.g. /my-provider/backup-model (used when primary fails)")
+            _render_model_selector(
+                "opencode model backup", backup_models, "opencode_model_backup", "cfg_opencode_model_backup_select",
+                "cfg_opencode_model_backup", help_text="Fallback model used when the primary model fails",
+                placeholder="e.g. /my-provider/backup-model (used when primary fails)", show_warning=False)
 
             def _refresh_models():
                 st.session_state["opencode_models"] = _fetch_opencode_models()
@@ -1068,11 +1088,10 @@ def page_wizard() -> None:
         ("raw_restrictions", "**RESTRICTIONS** — hard rules the agent must not break", 100,
          "e.g.\n- Don't touch files outside ./src\n- No system package installs\n- Keep code under 300 lines"),
     ]:
-        st.markdown('<div class="card">', unsafe_allow_html=True)
-        st.markdown(label)
-        st.text_area(section_key, key=section_key, height=height,
-                     placeholder=placeholder, label_visibility="collapsed")
-        st.markdown("</div>", unsafe_allow_html=True)
+        with _card():
+            st.markdown(label)
+            st.text_area(section_key, key=section_key, height=height,
+                         placeholder=placeholder, label_visibility="collapsed")
 
     if any(st.session_state.get(k, "").strip() for k in ("raw_input", "raw_target", "raw_restrictions")):
         with st.expander("📊 Protocol Quality Preview"):
@@ -1355,73 +1374,119 @@ class JobStatusScreen:
                 st.rerun()
 
 
+def _show_task_form(workspace: Path | None) -> None:
+    """Render the new-task form with workspace isolation."""
+    if not workspace:
+        st.warning("Set a workspace path in Configuration first.")
+        return
+    if not workspace.exists():
+        st.error(f"Workspace does not exist: `{workspace}`")
+        return
+    proto_path = workspace / "protocol.md"
+    if not proto_path.exists():
+        st.error("No protocol.md in workspace. Create one via Protocol Wizard first.")
+        return
+
+    with st.expander("Start New Task", expanded=st.session_state.get("_show_task_form", False)):
+        st.markdown(f"**Primary workspace:** `{workspace}`")
+        st.caption("Each task gets its own isolated workspace directory.")
+        col1, col2 = st.columns([2, 1])
+        with col1:
+            plan_rounds = st.number_input(
+                "Plan mode rounds", min_value=0, max_value=10,
+                value=int(st.session_state.plan_mode_rounds),
+                key="task_plan_mode_rounds",
+                help="Number of planning rounds before execution")
+            enable_scanner = st.toggle(
+                "Enable Python scanner", value=bool(st.session_state.enable_python_scanner),
+                key="task_enable_python_scanner",
+                help="Run the Python vulnerability scanner before execution")
+        with col2:
+            if st.button("Start Task", type="primary", use_container_width=True, key="btn_start_task"):
+                st.session_state.plan_mode_rounds = plan_rounds
+                st.session_state.enable_python_scanner = enable_scanner
+                st.session_state._show_task_form = False
+                save_settings()
+                apply_api_config()
+                config = _build_supervisor_config(proto_path, workspace, plan_mode_rounds=int(plan_rounds))
+                job_id = job_manager.enqueue_job("run", config)
+                st.toast(f"Task started: `{job_id}` in `{workspace.name}`")
+                st.rerun()
+
+
+def _render_job_card(job: dict, is_running: bool) -> None:
+    job_id = job["id"]
+    status = job["status"]
+    state = status.get("state", "UNKNOWN")
+    config = status.get("config", {})
+    workspace = config.get("workspace", "")
+    col1, col2, col3 = st.columns([3, 2, 1])
+    with col1:
+        pill = _render_status_pill(state)
+        st.markdown(f"`{job_id}` {pill} ", unsafe_allow_html=True)
+        if workspace:
+            ws_name = Path(workspace).name
+            st.caption(f"Workspace: `{ws_name}`")
+    with col2:
+        if state == "RUNNING":
+            if st.button("Stop", key=f"stop_card_{job_id}"):
+                job_manager.cancel_job(job_id)
+                st.rerun()
+        elif state in ("SUCCESS", "FAILED", "CANCELLED"):
+            if st.button("Delete", key=f"delete_card_{job_id}"):
+                job_manager.store.delete_job(job_id)
+                st.rerun()
+    with col3:
+        if st.button("View", key=f"view_card_{job_id}"):
+            st.query_params["run_job_id"] = job_id
+            st.rerun()
+
+
 # ═══════════════════════════════════════════════════════════════════════════ #
 # PAGE 2 — Live Run                                                           #
 # ═══════════════════════════════════════════════════════════════════════════ #
 
+
 def page_run() -> None:
     st.markdown("# Live Run")
     job_id = st.query_params.get("run_job_id")
-    if not job_id:
-        for jid in job_manager.store.list_jobs():
-            s = job_manager.get_job_status(jid)
-            if s and s.get("type") == "run" and s.get("state") == "RUNNING":
-                st.query_params["run_job_id"] = jid
-                st.rerun()
-                return
     if job_id:
-        JobStatusScreen(
-            job_id=job_id, title="Job", page_key="run",
-            query_param="run_job_id", report_filename_prefix="report",
-            running_message="Job is running in background. You can safely close this tab or refresh.",
-        ).render()
-    else:
-        _show_run_setup_screen()
-
-
-def _show_run_setup_screen() -> None:
-    workspace = Path(st.session_state.workspace) if st.session_state.workspace else None
-    if not workspace:
-        st.warning("Please set a workspace path in the configuration.")
-        return
-    if not workspace.exists():
-        st.error(f"Workspace directory does not exist: {workspace}")
-        return
-    proto_path = workspace / "protocol.md"
-    if not proto_path.exists():
-        st.error(f"**protocol.md not found** in workspace: `{workspace}`")
-        st.info("Please generate a protocol.md file before starting a live run.")
-        return
-
-    st.markdown(
-        f"**Workspace:** `{workspace}`  \n"
-        f"**Protocol:** `{proto_path}`  \n"
-        f"**Supervisor model:** `{st.session_state.supervisor_model}`")
-
-    col1, col2 = st.columns([2, 1])
-    with col1:
-        plan_rounds = st.number_input(
-            "Plan mode rounds", min_value=0, max_value=10,
-            value=int(st.session_state.plan_mode_rounds),
-            key="run_plan_mode_rounds_setup",
-            help="Number of planning rounds before execution")
-        enable_scanner = st.toggle(
-            "Enable Python scanner", value=bool(st.session_state.enable_python_scanner),
-            key="run_enable_python_scanner_setup",
-            help="Run the Python vulnerability scanner before execution")
-    with col2:
-        if st.button("▶  Start Live Run", type="primary",
-                     use_container_width=True, key="start_live_run_button"):
-            st.session_state.plan_mode_rounds = plan_rounds
-            st.session_state.enable_python_scanner = enable_scanner
-            save_settings()
-            apply_api_config()
-            config = _build_supervisor_config(
-                proto_path, workspace,
-                plan_mode_rounds=int(plan_rounds))
-            job_id = job_manager.enqueue_job("run", config)
-            st.query_params["run_job_id"] = job_id
+        if st.button("Back to Task List", key="btn_back_to_list"):
+            st.query_params.pop("run_job_id", None)
             st.rerun()
+        JobStatusScreen(
+            job_id=job_id, title="Task", page_key="run_view",
+            query_param="run_job_id", report_filename_prefix="report",
+            running_message="Task running. You can safely close this tab or refresh.",
+        ).render()
+        return
+
+    workspace = Path(st.session_state.workspace) if st.session_state.workspace else None
+
+    st.markdown("Manage multiple concurrent tasks with isolated workspaces.")
+    col_nav, col_new = st.columns([3, 1])
+    with col_new:
+        if st.button("New Task", type="primary", key="btn_new_task"):
+            st.session_state._show_task_form = True
+            st.rerun()
+    st.markdown("---")
+    all_run_jobs = _get_all_run_jobs()
+    if not all_run_jobs:
+        st.info("No run tasks yet. Click **New Task** to start one.")
+    else:
+        running_jobs = [j for j in all_run_jobs if j["status"].get("state") == "RUNNING"]
+        completed_jobs = [j for j in all_run_jobs if j["status"].get("state") != "RUNNING"]
+        if running_jobs:
+            st.markdown("### Active Tasks")
+            for job in running_jobs:
+                _render_job_card(job, is_running=True)
+        if completed_jobs:
+            with st.expander("### Completed Tasks", expanded=False):
+                for job in completed_jobs[:10]:
+                    _render_job_card(job, is_running=False)
+        st.markdown("---")
+
+    _show_task_form(workspace)
 
 
 # ═══════════════════════════════════════════════════════════════════════════ #
@@ -1483,10 +1548,9 @@ def _show_evo_setup_screen() -> None:
             ("evo_goal", "**Evolution goal**", 130),
             ("evo_extra_restrictions", "**Extra restrictions**", 80),
         ]:
-            st.markdown('<div class="card">', unsafe_allow_html=True)
-            st.markdown(label)
-            st.text_area(section_key, key=section_key, height=height, label_visibility="collapsed")
-            st.markdown("</div>", unsafe_allow_html=True)
+            with _card():
+                st.markdown(label)
+                st.text_area(section_key, key=section_key, height=height, label_visibility="collapsed")
 
         col_gen, col_snap, _ = st.columns([1, 1, 3])
         with col_gen:

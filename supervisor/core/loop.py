@@ -296,21 +296,6 @@ class SupervisorLoop(BaseLoop):
             f"All {self.config.max_retries} {'retry' if self.config.max_retries == 1 else 'retries'} exhausted. "
             f"Run terminated after {self._failures} failures.\n\n{report}",
         )
-    # Override run_streaming to update state when stopping the runner
-
-    def run_streaming(self) -> Generator[Event]:
-        try:
-            yield from super().run_streaming()
-        except KeyboardInterrupt:
-            self.runner.stop()
-            self._state = LoopState.ENDED_FAILURE
-            yield _ev("warn", "Interrupted by user.")
-        except Exception:
-            import traceback
-
-            self.runner.stop()
-            self._state = LoopState.ENDED_FAILURE
-            yield _ev("error", f"Unhandled exception:\n{traceback.format_exc()}")
 
     def _init_prompt(self) -> str:
         from supervisor.prompts import INIT_PROMPT_TEMPLATE
