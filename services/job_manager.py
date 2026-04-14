@@ -24,6 +24,14 @@ class JobManager:
 
     def enqueue_job(self, job_type: str, config: SupervisorConfig) -> str:
         """Submit a job to be executed in the background."""
+        new_workspace = Path(config.workspace).resolve()
+        for jid in self.store.list_jobs():
+            state = self.store.get_job_state(jid)
+            if state and state.get("state") == "RUNNING":
+                existing_workspace = Path(state.get("config", {}).get("workspace", "")).resolve()
+                if existing_workspace == new_workspace:
+                    raise ValueError(f"Another task is already running in this workspace: {new_workspace}")
+
         job_id = f"{job_type}_{uuid.uuid4().hex[:8]}"
         stop_event = threading.Event()
 

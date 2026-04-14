@@ -1409,9 +1409,12 @@ def _show_task_form(workspace: Path | None) -> None:
                 save_settings()
                 apply_api_config()
                 config = _build_supervisor_config(proto_path, workspace, plan_mode_rounds=int(plan_rounds))
-                job_id = job_manager.enqueue_job("run", config)
-                st.toast(f"Task started: `{job_id}` in `{workspace.name}`")
-                st.rerun()
+                try:
+                    job_id = job_manager.enqueue_job("run", config)
+                    st.toast(f"Task started: `{job_id}` in `{workspace.name}`")
+                    st.rerun()
+                except ValueError as e:
+                    st.toast(f"❌ {e}")
 
 
 def _render_job_card(job: dict, is_running: bool) -> None:
@@ -1573,9 +1576,12 @@ def _show_evo_setup_screen() -> None:
                 apply_api_config()
                 proto_path = write_meta_protocol(st.session_state.evo_meta_protocol_md, repo_root)
                 config = _build_supervisor_config(proto_path, repo_root)
-                job_id = job_manager.enqueue_job("evolve", config)
-                st.query_params["evo_job_id"] = job_id
-                st.rerun()
+                try:
+                    job_id = job_manager.enqueue_job("evolve", config)
+                    st.query_params["evo_job_id"] = job_id
+                    st.rerun()
+                except ValueError as e:
+                    st.toast(f"❌ {e}")
         with col_b:
             if st.button("🔄 Regenerate"):
                 st.session_state.evo_wizard_step = 0
