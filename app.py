@@ -747,13 +747,13 @@ def _render_connectivity_tests() -> None:
                 _do_test("opencode", test_opencode, "opencode_test_passed")
                 _do_test("Supervisor", test_supervisor, "supervisor_test_passed")
     with col_t2:
-        if st.button("\ud83e\uddea Test opencode", key="btn_test_opencode"):
+        if st.button("Test opencode", key="btn_test_opencode"):
             if not st.session_state.workspace:
                 st.error("Set a workspace path before testing.")
             else:
                 _do_test("opencode", test_opencode, "opencode_test_passed")
     with col_t3:
-        if st.button("\ud83e\uddea Test Supervisor", key="btn_test_supervisor"):
+        if st.button("Test Supervisor", key="btn_test_supervisor"):
             if not st.session_state.openai_key:
                 st.error("Set an API key before testing.")
             else:
