@@ -235,6 +235,7 @@ class OpencodeRunner(BaseRunner):
         self._archiver = WorkspaceArchiver(workspace)
         self._session_active: bool = False
         self._use_continue: bool = False
+        self._session_id: str | None = None
 
         if step_detector is not None:
             self._step_detector = step_detector
@@ -277,6 +278,10 @@ class OpencodeRunner(BaseRunner):
             logger.info("New session detected. Sending brevity command...")
             yield {"level": "info", "msg": "New session detected. Sending brevity command..."}
             yield from self._run_prompt(BREVITY_COMMAND)
+            self._session_id = self._fetch_latest_session_id()
+            if self._session_id:
+                logger.info("Session ID captured: %s", self._session_id)
+                yield {"level": "info", "msg": f"Session ID captured: {self._session_id}"}
             self._session_active = True
             self.enable_continuation(True)
         yield from self._run_prompt(validated)
@@ -604,6 +609,30 @@ class OpencodeRunner(BaseRunner):
     def reset_session(self) -> None:
         self._session_active = False
         self._use_continue = False
+        self._session_id = None
+
+    def _fetch_latest_session_id(self) -> str | None:
+        """Run `opencode session list` and return the most recently updated session ID."""
+        try:
+            exe = find_opencode(self.opencode_executable)
+            result = subprocess.run(
+                [exe, "session", "list"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                cwd=str(self.workspace),
+                timeout=10,
+            )
+            for line in result.stdout.splitlines():
+                stripped = line.strip()
+                if stripped.startswith("ses_"):
+                    session_id = stripped.split()[0]
+                    logger.info("Captured session ID: %s", session_id)
+                    return session_id
+        except Exception as exc:
+            logger.warning("Failed to fetch session ID: %s", exc)
+        return None
 
     def reset_context_counter(self) -> None:
         self._chars_exchanged = 0
@@ -647,7 +676,10 @@ class OpencodeRunner(BaseRunner):
             cmd += ["--agent", agent]
 
         if self._use_continue:
-            cmd.append("--continue")
+            if self._session_id:
+                cmd += ["--session", self._session_id]
+            else:
+                cmd.append("--continue")
 
         cmd.append(quote_prompt(prompt))
 
