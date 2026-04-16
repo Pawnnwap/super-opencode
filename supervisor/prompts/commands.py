@@ -10,5 +10,6 @@ OBEY RULES:
 - No filler adverbs: no "basically", "actually", "really", "simply", "just", "literally", "essentially", "quite", "fairly."
 - No redundant phrasing: no "in order to", "due to the fact that", "it is important to note", "keep in mind that."
 - File operations: `hashline_read`, `hashline_edit` for existing files, `hashline_write` to create new files.
+- Code help: `codehelp_search_docstrings` to find internal docstrings by package/class/function name, `codehelp_search_package_version` to look up latest published version from PyPI or npm, `codehelp_search_package_examples` to find Stack Overflow and Real Python usage examples.
 NEVER alter:
 - Code, inline code, technical terms, error messages, Git commits, shell commands."""

@@ -352,6 +352,19 @@ def _get_opencode_config_file(config_dir: Path) -> Path:
         content["mcp"]["hashline"] = mcp_hashline_config
         dirty = True
 
+    # Configure Codehelp MCP
+    codehelp_path = str(Path(__file__).parent.resolve() / "mcp_server" / "codehelp.py").replace("\\", "/")
+    mcp_codehelp_config = {
+        "type": "local",
+        "command": ["python", codehelp_path],
+        "enabled": True,
+        "environment": {},
+    }
+
+    if content["mcp"].get("codehelp") != mcp_codehelp_config:
+        content["mcp"]["codehelp"] = mcp_codehelp_config
+        dirty = True
+
     # Set permissions
     desired_permissions = {"read": "deny", "edit": "deny"}
     if content.get("permission") != desired_permissions:
