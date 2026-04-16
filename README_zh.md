@@ -103,8 +103,9 @@ pip install -e . --force-reinstall
 pip install -r requirements.txt
 ```
 
-所有依赖均在 `pyproject.toml` 中定义：`openai`、`streamlit`、`tiktoken`、`pytest`、`cryptography`、`rich` 和 `psutil`。
+所有依赖均在 `pyproject.toml` 中定义：`openai`、`streamlit`、`tiktoken`、`pytest`、`cryptography`、`rich`、`psutil` 和 `mcp`。
 
+> **MCP 服务器：** `mcp` 包是 hashline 和 codehelp MCP 服务器（`mcp_server/hashline.py` 和 `mcp_server/codehelp.py`）的必需依赖。这些服务器为 opencode 提供哈希锚定文件编辑和代码辅助工具。
 ---
 
 ## 运行应用程序
@@ -243,7 +244,8 @@ tests/                              测试套件（pytest）
   test_session_tracker.py           SessionTracker 测试
   test_experience_tracker.py        ExperienceTracker 测试
 mcp_server/
-  hashline.py                       哈希锚定文件编辑的 MCP 服务器（hashline_read, hashline_edit）
+  hashline.py                       哈希锚定文件编辑的 MCP 服务器（hashline_read, hashline_edit, hashline_write）
+  codehelp.py                       代码辅助 MCP 服务器（文档字符串搜索、包版本查询、示例查找）
 ```
 
 ---
@@ -413,6 +415,19 @@ Token 估算在可用时使用 `tiktoken`（o200k_base 编码），
 
 哈希锚定 MCP 服务器在启动时自动配置到 opencode 的 `opencode.json` 中，
 因此 opencode 在系统提示中接收哈希锚定编辑指令。
+
+
+## 代码辅助 MCP 服务器
+
+系统包含第二个 MCP 服务器（`mcp_server/codehelp.py`），提供
+代码辅助和文档查找工具：
+
+- **search_docstrings** — 搜索本地代码库中包、模块、类、函数或方法的文档字符串
+- **search_package_version** — 查询 PyPI/npm 的最新发布版本、发布日期和文档 URL
+- **search_package_examples** — 查找 Stack Overflow 和 Real Python 的使用示例和最佳实践
+
+这些工具在启动时自动配置到 opencode 的 `opencode.json` 中，
+使 opencode 能够在不离开上下文窗口的情况下查找文档和示例。
 
 ---
 

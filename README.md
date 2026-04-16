@@ -106,8 +106,11 @@ pip install -r requirements.txt
 ```
 
 All dependencies are defined in `pyproject.toml`: `openai`, `streamlit`,
-`tiktoken`, `pytest`, `cryptography`, `rich`, and `psutil`.
+`tiktoken`, `pytest`, `cryptography`, `rich`, `psutil`, and `mcp`.
 
+> **MCP servers:** The `mcp` package is required for the hashline and codehelp
+> MCP servers (`mcp_server/hashline.py` and `mcp_server/codehelp.py`). These
+> servers provide hash-anchored file editing and code assistance tools to opencode.
 ---
 
 ## Running the Application
@@ -257,7 +260,8 @@ tests/                              Test suite (pytest)
   test_session_tracker.py           Tests for SessionTracker
   test_experience_tracker.py        Tests for ExperienceTracker
 mcp_server/
-  hashline.py                       MCP server for hash-anchored file editing (hashline_read, hashline_edit)
+  hashline.py                       MCP server for hash-anchored file editing (hashline_read, hashline_edit, hashline_write)
+  codehelp.py                       MCP server for code assistance (docstring search, package version, usage examples)
 ```
 
 ---
@@ -419,6 +423,25 @@ line number and content. This enables:
 The hashline MCP server is automatically configured in opencode's
 `opencode.json` on startup, so opencode receives hash-anchored editing
 instructions as part of its system prompt.
+
+
+---
+
+## Code Assistance MCP Server
+
+The system includes a second MCP server (`mcp_server/codehelp.py`) that provides
+tools for code assistance and documentation lookup:
+
+- **search_docstrings** — search local codebase for docstrings of packages,
+  modules, classes, functions, or methods
+- **search_package_version** — query PyPI/npm for latest published versions,
+  release dates, and documentation URLs
+- **search_package_examples** — find Stack Overflow and Real Python usage
+  examples and best practices
+
+These tools are automatically configured in opencode's `opencode.json` on
+startup, enabling opencode to look up documentation and examples without
+leaving the context window.
 
 ## Plan Mode
 
