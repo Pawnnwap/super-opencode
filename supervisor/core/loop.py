@@ -166,9 +166,9 @@ class SupervisorLoop(BaseLoop):
             if last_feedback:
                 prompt = (
                     f"[plan mode — round {round_num}/{total}]\n\n"
-                    "Supervisor feedback on your previous plan:\n"
+                    "Supervisor feedback on previous plan:\n"
                     f"{last_feedback}\n\n"
-                    "Revise your plan accordingly. Remember: do NOT modify any files."
+                    "Revise plan accordingly. Do NOT modify any files."
                 )
             else:
                 prompt = plan_prompt
@@ -238,7 +238,7 @@ class SupervisorLoop(BaseLoop):
             self._plan_context = (
                 "## Agreed plan from plan phase\n\n"
                 f"{last_feedback}\n\n"
-                "Implement above plan. Create and modify files freely."
+                "Implement above plan. Create and modify files."
             )
             self._last_plan = last_plan_output
             self._last_supervisor_feedback = last_feedback
