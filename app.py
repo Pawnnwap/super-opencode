@@ -492,6 +492,68 @@ def _build_supervisor_config(protocol_path: Path, workspace: Path, **overrides) 
 # ── Workspace isolation helpers ──────────────────────────────────────────── #
 
 
+def _clean_workspace_artifacts(workspace: Path) -> dict:
+    """Recursively delete Python/tool artifact files and dirs under workspace.
+
+    Targets (all safe to delete — regenerated automatically):
+      Files:  *.isorted  *.pyc  *.pyo
+      Dirs:   __pycache__  .pytest_cache  .ruff_cache  *.egg-info
+
+    Every directory in the tree is visited — no folder is ever skipped.
+    Uses topdown=True so that target dirs are pruned from the walk *after*
+    deletion: os.walk never tries to descend into an already-deleted dir,
+    and all other dirs are fully traversed regardless of name or attributes.
+    OS errors on individual entries are collected and skipped so the rest of
+    the tree is always processed.
+    """
+    import shutil
+
+    # File suffix targets (lowercase for case-insensitive check on Windows)
+    _FILE_SUFFIXES = {".isorted", ".pyc", ".pyo"}
+    # Exact dir name targets
+    _DIR_NAMES = {"__pycache__", ".pytest_cache", ".ruff_cache"}
+
+    removed_files: list[str] = []
+    removed_dirs: list[str] = []
+    errors: list[str] = []
+
+    if not workspace.is_dir():
+        return {"skipped": True, "reason": "workspace does not exist or is not a directory"}
+
+    def _on_walk_error(err: OSError) -> None:
+        errors.append(f"walk: {err}")
+
+    for dirpath, dirnames, filenames in os.walk(str(workspace), topdown=True, onerror=_on_walk_error):
+        # ── target dirs: delete and prune so walk never descends into them ──
+        to_delete = [d for d in dirnames if d in _DIR_NAMES or d.endswith(".egg-info")]
+        for dname in to_delete:
+            dpath = Path(dirpath) / dname
+            try:
+                shutil.rmtree(dpath, ignore_errors=False)
+                removed_dirs.append(str(dpath))
+            except OSError as e:
+                errors.append(f"dir {dpath}: {e}")
+        # Prune only the dirs we deleted; everything else is visited normally
+        dirnames[:] = [d for d in dirnames if d not in to_delete]
+
+        # ── target files ────────────────────────────────────────────────────
+        for fname in filenames:
+            if Path(fname).suffix.lower() in _FILE_SUFFIXES:
+                fpath = Path(dirpath) / fname
+                try:
+                    fpath.unlink()
+                    removed_files.append(str(fpath))
+                except OSError as e:
+                    errors.append(f"file {fpath}: {e}")
+
+    return {
+        "workspace": str(workspace),
+        "removed_files": len(removed_files),
+        "removed_dirs": len(removed_dirs),
+        "errors": errors,
+    }
+
+
 def _get_all_run_jobs() -> list[dict]:
     """Get all run jobs sorted by most recent."""
     jobs = []
@@ -510,6 +572,12 @@ if not st.session_state.get("_mcp_config_done"):
     if _mcp_dir:
         _get_opencode_config_file(_mcp_dir)
     st.session_state["_mcp_config_done"] = True
+
+if not st.session_state.get("_artifact_clean_done"):
+    _ws = st.session_state.get("workspace", "")
+    if _ws:
+        _clean_workspace_artifacts(Path(_ws))
+    st.session_state["_artifact_clean_done"] = True
 
 _persisted = load_settings()
 
@@ -915,6 +983,12 @@ def page_wizard() -> None:
             if st.session_state.workspace != st.session_state.get("_last_workspace", ""):
                 st.session_state.protected_files = []
                 st.session_state._last_workspace = st.session_state.workspace
+                st.session_state["_artifact_clean_done"] = False  # re-run clean on next rerun
+            if not st.session_state.get("_artifact_clean_done"):
+                _ws = st.session_state.get("workspace", "")
+                if _ws:
+                    _clean_workspace_artifacts(Path(_ws))
+                st.session_state["_artifact_clean_done"] = True
             bound_text_input("Supervisor / wizard model", "supervisor_model", placeholder="e.g. gpt-4o, claude-3-5-sonnet, mistral-large")
             bound_text_input("Supervisor model backup", "supervisor_model_backup", placeholder="e.g. gpt-4o-mini (used when primary fails)")
 
