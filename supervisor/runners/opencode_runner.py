@@ -754,10 +754,17 @@ class OpencodeRunner(BaseRunner):
             else:
                 cmd.append("--continue")
 
-        cmd.append(quote_prompt(prompt) if use_shell else prompt)
-
         if resolved_model:
             cmd += ["--model", resolved_model]
+
+        # End-of-flags separator: everything after `--` is treated as the
+        # positional message, even if it starts with `-` / `--`. Without this,
+        # prompts beginning with "--" (or even containing a token like "--help"
+        # as the first word) get misparsed as unknown flags, and opencode falls
+        # back to printing the `run` subcommand help to stderr instead of
+        # executing the prompt.
+        cmd.append("--")
+        cmd.append(quote_prompt(prompt) if use_shell else prompt)
 
         return cmd
 
