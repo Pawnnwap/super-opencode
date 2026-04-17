@@ -31,6 +31,44 @@ def _get_model_token_limit(model: str) -> int:
     return 128_000
 
 
+_TOKEN_LIMIT_ERROR_MARKERS = (
+    "range of input length",
+    "input length",
+    "input token count",
+    "maximum number of tokens",
+    "maximum context length",
+    "context length exceeded",
+    "context_length_exceeded",
+    "max tokens",
+    "exceeds the maximum",
+    "too many tokens",
+    "token count exceeds",
+    "prompt is too long",
+    "request too large",
+    "reduce the length",
+)
+
+
+def _is_token_limit_error(exc: Exception) -> bool:
+    """Return True when the error indicates the prompt exceeded the model's token limit."""
+    message = str(exc).lower()
+    if any(marker in message for marker in _TOKEN_LIMIT_ERROR_MARKERS):
+        return True
+    body = getattr(exc, "body", None)
+    if isinstance(body, dict):
+        err = body.get("error") if isinstance(body.get("error"), dict) else body
+        code = str(err.get("code", "")) if isinstance(err, dict) else ""
+        status = str(err.get("status", "")) if isinstance(err, dict) else ""
+        msg = str(err.get("message", "")).lower() if isinstance(err, dict) else ""
+        if status == "INVALID_ARGUMENT" and any(
+            marker in msg for marker in _TOKEN_LIMIT_ERROR_MARKERS
+        ):
+            return True
+        if code in {"context_length_exceeded", "string_above_max_length"}:
+            return True
+    return False
+
+
 def _check_completion_phrases(reply: str, phrases: list[str]) -> bool:
     """Check if any completion phrase appears positively in the reply."""
     reply_lower = reply.lower()
@@ -156,6 +194,26 @@ class LLMSupervisor:
     def _get_model_limit_for_model(self, model: str) -> int:
         """Get token limit for a specific model (handles backup model)."""
         return _get_model_token_limit(model)
+
+    @staticmethod
+    def _extract_token_limit_from_error(exc: Exception) -> int | None:
+        """Extract the numeric token limit from a provider error message, if present."""
+        text = str(exc)
+        body = getattr(exc, "body", None)
+        if isinstance(body, dict):
+            err = body.get("error") if isinstance(body.get("error"), dict) else body
+            if isinstance(err, dict):
+                text = f"{text} {err.get('message', '')}"
+        match = re.search(r"(\d{4,7})", text)
+        if not match:
+            return None
+        try:
+            value = int(match.group(1))
+        except ValueError:
+            return None
+        if 1024 <= value <= 10_000_000:
+            return value
+        return None
 
     def read_protected_files(self) -> dict[str, str]:
         """Read all protected files and return their content as a dict mapping path to content."""
@@ -1133,15 +1191,17 @@ class LLMSupervisor:
             )
 
         if self._truncation_enabled and should_truncate(estimate, self._max_tokens):
-            user_content = truncate_with_fallback(
+            original_total = estimate.total
+            user_content = self._fit_request_to_budget(user_content)
+            new_estimate = estimate_request_tokens(
+                self._system,
+                "\n".join(m["content"] for m in self._history if m.get("content")),
                 user_content,
-                self._max_tokens,
-                system_prompt=self._system,
-                conversation_history=conv_text,
             )
             trunc_warning = (
                 f"Prompt truncated to fit within token limit. "
-                f"Original: {estimate.total} tokens, Max available: {int(self._max_tokens * (1.0 - 0.25))} tokens"
+                f"Original: {original_total} tokens, New: {new_estimate.total} tokens, "
+                f"Max available: {int(self._max_tokens * (1.0 - 0.25))} tokens"
             )
             logger.warning(trunc_warning)
             self._token_warnings.append(trunc_warning)
@@ -1226,18 +1286,20 @@ class LLMSupervisor:
                 transient_attempt += 1
                 continue
             except BadRequestError as exc:
-                error_msg = str(exc)
-                if "Range of input length" in error_msg or "input length" in error_msg.lower():
+                if _is_token_limit_error(exc):
                     if token_limit_retry >= max_token_limit_retries:
                         logger.error(
                             "BadRequestError: input length exceeds model limit after %d retries",
                             max_token_limit_retries,
                         )
                         raise
-                    current_limit = self._get_model_limit_for_model(current_model)
+                    current_limit = self._extract_token_limit_from_error(exc) or self._get_model_limit_for_model(current_model)
                     old_count = len(working_messages)
                     working_messages = self._truncate_messages_for_limit(working_messages, current_limit)
                     new_count = len(working_messages)
+                    if new_count >= old_count:
+                        working_messages = self._truncate_older_turns(working_messages)
+                        new_count = len(working_messages)
                     token_limit_retry += 1
                     logger.warning(
                         "BadRequestError (input length) retry %d/%d: truncated messages from %d to %d for limit %d",
@@ -1344,6 +1406,74 @@ class LLMSupervisor:
         self._system = self._system_base
         if new_preamble:
             self._system += f"\n\n{new_preamble}"
+
+    def _fit_request_to_budget(self, user_content: str) -> str:
+        """Proactively shrink self._history and user_content to fit within token budget.
+
+        Mutates self._history in place by dropping the oldest turns first, then
+        truncates the tail of individual oversized messages, and finally falls back
+        to truncating user_content. Returns the (possibly truncated) user_content.
+        """
+        from supervisor.monitoring.token_estimator import (
+            estimate_tokens,
+            truncate_prompt,
+        )
+
+        available = int(self._max_tokens * 0.75)
+        system_tokens = estimate_tokens(self._system)
+        budget = max(available - system_tokens, self._max_tokens // 8)
+
+        def _msg_tokens(msg: dict) -> int:
+            return estimate_tokens(msg.get("content", ""))
+
+        history_tokens = sum(_msg_tokens(m) for m in self._history)
+        user_tokens = estimate_tokens(user_content)
+
+        if history_tokens + user_tokens <= budget:
+            return user_content
+
+        # Phase 1: drop oldest turns until we fit, preserving the very first turn
+        # (initial task prompt) and the most recent exchanges.
+        dropped_any = False
+        while self._history and history_tokens + user_tokens > budget:
+            # Always keep at least the last assistant/user pair to retain continuity.
+            if len(self._history) <= 2:
+                break
+            # Drop the oldest message (index 0). If that drops a standalone user,
+            # also drop its paired assistant response to keep alignment.
+            removed = self._history.pop(0)
+            history_tokens -= _msg_tokens(removed)
+            dropped_any = True
+            if (
+                removed.get("role") == "user"
+                and self._history
+                and self._history[0].get("role") == "assistant"
+            ):
+                removed2 = self._history.pop(0)
+                history_tokens -= _msg_tokens(removed2)
+
+        # Phase 2: per-message truncation of any oversized remaining entry.
+        per_msg_cap = max(budget // 4, 2_000)
+        if history_tokens + user_tokens > budget:
+            for msg in self._history:
+                if _msg_tokens(msg) > per_msg_cap:
+                    original = msg.get("content", "")
+                    msg["content"] = truncate_prompt(original, per_msg_cap)
+            history_tokens = sum(_msg_tokens(m) for m in self._history)
+
+        # Phase 3: truncate user_content if still over budget.
+        if history_tokens + user_tokens > budget:
+            remaining_for_user = max(budget - history_tokens, budget // 4)
+            user_content = truncate_prompt(user_content, remaining_for_user)
+
+        if dropped_any:
+            logger.warning(
+                "Proactively trimmed history to fit budget (%d tokens, %d messages left)",
+                budget,
+                len(self._history),
+            )
+
+        return user_content
 
     @staticmethod
     def _truncate_older_turns(messages: list[dict]) -> list[dict]:
