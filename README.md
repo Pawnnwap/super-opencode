@@ -33,29 +33,44 @@ Key capabilities:
 
 ---
 
-## Windows Installation
+## Installing opencode
 
-### Installing Chocolatey
+### Installing Node.js / npm
 
-If you don't have Chocolatey installed, run the following command in an **Administrator** PowerShell:
+opencode is distributed as an npm package. If you don't have Node.js installed, download
+and install the LTS release from the [official Node.js site](https://nodejs.org/).
+This provides the `npm` command on every supported platform (Windows, macOS, Linux).
 
-```powershell
-Set-ExecutionPolicy Bypass -Scope Process -Force; [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072; iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
-```
-
-For more details, see the [Chocolatey installation page](https://chocolatey.org/install).
-
-### Installing opencode
-
-To install opencode on Windows using Chocolatey:
+Verify the install:
 
 ```bash
-choco install opencode
+node --version
+npm --version
 ```
 
-The executable is installed to `C:\ProgramData\chocolatey\bin\opencode.exe`.
+### Installing opencode via npm
 
-For UI configuration, use the path `C:\ProgramData\chocolatey\bin\opencode.exe`.
+```bash
+npm install -g opencode-ai
+```
+
+This places the `opencode` executable on your PATH via the npm global bin directory:
+
+- **Windows:** `%AppData%\npm\opencode.cmd`  (typically `C:\Users\<you>\AppData\Roaming\npm\opencode.cmd`)
+- **macOS / Linux:** `$(npm prefix -g)/bin/opencode`
+
+Run `where opencode` (Windows) or `which opencode` (macOS/Linux) to see the resolved
+path. That path is what you enter in the UI's "opencode executable" field if you want
+to override auto-detection — leaving it blank lets the supervisor locate it automatically.
+
+### Upgrading opencode
+
+```bash
+npm install -g opencode-ai@latest
+```
+
+The Streamlit app also runs this command automatically on startup (disable via
+`OPENCODE_SKIP_UPGRADE=1` or `skip_upgrade: true` in `~/.opencode_supervisor_settings.json`).
 
 ---
 

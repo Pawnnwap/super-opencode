@@ -48,29 +48,23 @@ def _should_skip_upgrade() -> bool:
 
 
 def _auto_upgrade_opencode():
-    if sys.platform != "win32":
-        print("[opencode-upgrade] Skipping upgrade: not on Windows", file=sys.stderr)
-        return
-
     if _should_skip_upgrade():
         print("[opencode-upgrade] Skipping upgrade: disabled via config/env var", file=sys.stderr)
         return
 
     try:
         home_dir = str(Path.home())
-        print("[opencode-upgrade] Running: choco upgrade opencode -y (with admin elevation)", file=sys.stderr)
+        print("[opencode-upgrade] Running: npm install -g opencode-ai@latest", file=sys.stderr)
         proc = subprocess.Popen(
-            [
-                "powershell", "-Command",
-                "Start-Process choco -ArgumentList 'upgrade','opencode','-y' -Verb RunAs -Wait",
-            ],
+            "npm install -g opencode-ai@latest",
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
             cwd=home_dir,
+            shell=True,
         )
-        stdout, stderr = proc.communicate(timeout=120)
+        stdout, stderr = proc.communicate(timeout=180)
         if stdout:
             print(f"[opencode-upgrade] stdout: {stdout.strip()}", file=sys.stderr)
         if stderr:
@@ -80,38 +74,62 @@ def _auto_upgrade_opencode():
         print(f"[opencode-upgrade] Upgrade completed {code_msg}.", file=sys.stderr)
 
     except subprocess.TimeoutExpired:
-        print("[opencode-upgrade] Upgrade timed out after 120 seconds. Continuing startup.", file=sys.stderr)
+        print("[opencode-upgrade] Upgrade timed out after 180 seconds. Continuing startup.", file=sys.stderr)
     except FileNotFoundError:
-        print("[opencode-upgrade] 'powershell' command not found. Continuing startup.", file=sys.stderr)
+        print("[opencode-upgrade] 'npm' command not found — install Node.js to enable auto-upgrade. Continuing startup.", file=sys.stderr)
     except Exception as e:
         print(f"[opencode-upgrade] Unexpected error: {e}. Continuing startup.", file=sys.stderr)
 
 
 def _auto_upgrade_dcp():
-    if sys.platform != "win32":
-        print("[dcp-upgrade] Skipping upgrade: not on Windows", file=sys.stderr)
-        return
-
     if _should_skip_upgrade():
         print("[dcp-upgrade] Skipping upgrade: disabled via config/env var", file=sys.stderr)
         return
 
+    home_dir = os.path.expanduser("~")
+
+    # Resolve the opencode executable so we don't rely on PATH — same reason
+    # as _fetch_opencode_models. Streamlit may have been launched with a PATH
+    # that doesn't include the freshly npm-installed bin directory.
+    from supervisor.runners.opencode_runner import find_opencode
     try:
-        print("[dcp-upgrade] Spawning background upgrade window...", file=sys.stderr)
-        cmd_string = 'start "" cmd /c "opencode plugin @tarquinen/opencode-dcp@latest --global"'
-        home_dir = os.path.expanduser("~")
+        opencode_exe = find_opencode("")
+    except FileNotFoundError:
+        print("[dcp-upgrade] opencode executable not found — install via 'npm install -g opencode-ai' first. Continuing startup.", file=sys.stderr)
+        return
 
-        subprocess.Popen(
-            cmd_string,
-            shell=True,
-            cwd=home_dir,
-            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
-        )
+    try:
+        if sys.platform == "win32":
+            print("[dcp-upgrade] Spawning detached background upgrade window...", file=sys.stderr)
+            # cmd.exe parses `start` itself. Quote the exe path in case it
+            # contains spaces (e.g. "C:\\Program Files\\...").
+            cmd_string = (
+                f'start "" cmd /c ""{opencode_exe}" plugin '
+                '@tarquinen/opencode-dcp@latest --global"'
+            )
+            subprocess.Popen(
+                cmd_string,
+                shell=True,
+                cwd=home_dir,
+                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+            )
+        else:
+            print("[dcp-upgrade] Launching detached background upgrade...", file=sys.stderr)
+            subprocess.Popen(
+                [opencode_exe, "plugin", "@tarquinen/opencode-dcp@latest", "--global"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                cwd=home_dir,
+                start_new_session=True,
+            )
 
-        print("[dcp-upgrade] Upgrade window launched. It will close on completion.", file=sys.stderr)
+        print("[dcp-upgrade] Upgrade launched. Streamlit startup continues.", file=sys.stderr)
 
+    except FileNotFoundError:
+        print(f"[dcp-upgrade] Failed to launch '{opencode_exe}'. Continuing startup.", file=sys.stderr)
     except Exception as e:
-        print(f"[dcp-upgrade] Unexpected error spawning window: {e}", file=sys.stderr)
+        print(f"[dcp-upgrade] Unexpected error spawning background process: {e}", file=sys.stderr)
 
 
 # ── Job Manager ──────────────────────────────────────────────────────────── #
@@ -339,11 +357,19 @@ def _get_opencode_config_file(config_dir: Path) -> Path:
         content["mcp"] = {}
         dirty = True
 
+    # Resolve the exact Python interpreter running Streamlit. This avoids two
+    # Linux-compat pitfalls with a bare "python":
+    #   1. Many distros ship only `python3`, so `python` on PATH is missing.
+    #   2. Even if `python` resolves, it may not be the venv that has `mcp`,
+    #      `tiktoken`, etc. installed for these MCP servers.
+    # sys.executable is also correct on Windows (venv or system install).
+    python_cmd = sys.executable or "python"
+
     # Configure Hashline MCP
     hashline_path = str(Path(__file__).parent.resolve() / "mcp_server" / "hashline.py").replace("\\", "/")
     mcp_hashline_config = {
         "type": "local",
-        "command": ["python", hashline_path],
+        "command": [python_cmd, hashline_path],
         "enabled": True,
         "environment": {},
     }
@@ -356,7 +382,7 @@ def _get_opencode_config_file(config_dir: Path) -> Path:
     codehelp_path = str(Path(__file__).parent.resolve() / "mcp_server" / "codehelp.py").replace("\\", "/")
     mcp_codehelp_config = {
         "type": "local",
-        "command": ["python", codehelp_path],
+        "command": [python_cmd, codehelp_path],
         "enabled": True,
         "environment": {},
     }
@@ -421,18 +447,31 @@ def _add_custom_provider_to_config(
     _atomic_write_json(config_file, content)
 
 
-def _fetch_opencode_models(exe: str = "opencode") -> list[str]:
+def _fetch_opencode_models(exe: str = "") -> list[str]:
     """Fetches available models. Runs from Home Dir to avoid EPERM on project files.
+
+    Resolves the opencode executable via ``find_opencode`` so that freshly
+    npm-installed opencodes (Linux: ``~/.npm-global/bin``, Windows:
+    ``%AppData%\\npm``) are picked up even when the Streamlit process's
+    PATH was captured before the install.
     """
+    from supervisor.runners.opencode_runner import find_opencode
+
+    try:
+        resolved_exe = find_opencode(exe)
+    except FileNotFoundError:
+        print("[opencode-models] opencode executable not found — skipping model fetch.", file=sys.stderr)
+        return []
+
     home_dir = str(Path.home())
     try:
         proc = subprocess.run(
-            [exe, "models"],
+            [resolved_exe, "models"],
             capture_output=True,
             text=True,
             timeout=15,
             cwd=home_dir,  # Run from home to avoid local file locks
-            shell=(sys.platform == "win32"),
+            shell=(sys.platform == "win32" and resolved_exe.lower().endswith((".cmd", ".bat", ".ps1"))),
         )
 
         if proc.returncode != 0:
@@ -459,7 +498,7 @@ def _fetch_opencode_models(exe: str = "opencode") -> list[str]:
     except subprocess.TimeoutExpired:
         print("[opencode-models] Request timed out after 15s.", file=sys.stderr)
     except FileNotFoundError:
-        print(f"[opencode-models] Executable '{exe}' not found in PATH.", file=sys.stderr)
+        print(f"[opencode-models] Executable '{resolved_exe}' not found.", file=sys.stderr)
     except Exception as e:
         print(f"[opencode-models] Unexpected error: {e}", file=sys.stderr)
 
@@ -767,7 +806,11 @@ def test_opencode() -> tuple[bool, str]:
     )
 
     def _inner():
-        for _ in runner.start("hi"):
+        # Skip start()'s full session prelude (brevity command + session list +
+        # real prompt = 3 opencode invocations). For a connectivity check we
+        # only need one round-trip.
+        runner._alive = True
+        for _ in runner._run_prompt("hi"):
             pass
         output, timed_out = runner.read_output(timeout=25)
         if timed_out:

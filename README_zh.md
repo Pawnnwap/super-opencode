@@ -33,29 +33,43 @@
 
 ---
 
-## Windows 安装
+## 安装 opencode
 
-### 安装 Chocolatey
+### 安装 Node.js / npm
 
-如果尚未安装 Chocolatey，请在**管理员** PowerShell 中运行以下命令：
+opencode 以 npm 包形式分发。如果尚未安装 Node.js，请从 [Node.js 官方网站](https://nodejs.org/)
+下载并安装 LTS 版本。安装后即可在所有受支持平台（Windows、macOS、Linux）上使用 `npm` 命令。
 
-```powershell
-Set-ExecutionPolicy Bypass -Scope Process -Force; [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072; iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
-```
-
-更多详情请参阅 [Chocolatey 安装页面](https://chocolatey.org/install)。
-
-### 安装 opencode
-
-使用 Chocolatey 在 Windows 上安装 opencode：
+验证安装：
 
 ```bash
-choco install opencode
+node --version
+npm --version
 ```
 
-可执行文件安装到 `C:\ProgramData\chocolatey\bin\opencode.exe`。
+### 通过 npm 安装 opencode
 
-对于 UI 配置，请使用路径 `C:\ProgramData\chocolatey\bin\opencode.exe`。
+```bash
+npm install -g opencode-ai
+```
+
+该命令会将 `opencode` 可执行文件放入 npm 全局 bin 目录，确保其位于 PATH 中：
+
+- **Windows：** `%AppData%\npm\opencode.cmd`（通常为 `C:\Users\<你>\AppData\Roaming\npm\opencode.cmd`）
+- **macOS / Linux：** `$(npm prefix -g)/bin/opencode`
+
+运行 `where opencode`（Windows）或 `which opencode`（macOS/Linux）可查看实际路径。
+如果希望覆盖自动检测，可将该路径填入 UI 的 "opencode executable" 字段；留空则由
+supervisor 自动定位。
+
+### 升级 opencode
+
+```bash
+npm install -g opencode-ai@latest
+```
+
+Streamlit 应用在启动时也会自动运行此命令（可通过 `OPENCODE_SKIP_UPGRADE=1` 环境变量
+或 `~/.opencode_supervisor_settings.json` 中的 `skip_upgrade: true` 关闭）。
 
 ---
 

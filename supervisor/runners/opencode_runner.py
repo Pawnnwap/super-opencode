@@ -39,7 +39,13 @@ logger = logging.getLogger(__name__)
 
 # ── Executable resolution ─────────────────────────────────────────────────── #
 
-_NAMES = ["opencode", "opencode.exe", "opencode.cmd", "opencode.bat"]
+_NAMES = (
+    # Windows: executable variants FIRST — the extensionless file npm creates
+    # is a Bash launcher that can't be run via subprocess (WinError 193).
+    ["opencode.cmd", "opencode.exe", "opencode.bat", "opencode"]
+    if sys.platform == "win32"
+    else ["opencode", "opencode.exe", "opencode.cmd", "opencode.bat"]
+)
 
 _WINDOWS_EXTRA_DIRS = [
     Path.home() / "AppData" / "Local" / "opencode",
@@ -57,10 +63,14 @@ _DOT_MODEL_FILE = Path(__file__).parent.parent / ".opencode_model"
 
 
 def find_opencode(explicit: str = "") -> str:
-    """Locate the opencode executable by running 'where opencode' and picking
-    the result that contains 'chocolatey\\bin'.
+    """Locate the opencode executable installed via npm.
 
-    Raises FileNotFoundError with actionable instructions if nothing is found.
+    Resolution order:
+      1. Explicit path argument, if it exists.
+      2. ``where opencode`` / ``which opencode`` output (first existing match).
+      3. Known npm install directories (global prefix, AppData\\Roaming\\npm, etc.).
+
+    Raises FileNotFoundError with actionable npm-based instructions if nothing is found.
     """
     explicit = coerce_str(explicit, "opencode_executable (find_opencode arg)")
 
@@ -74,23 +84,75 @@ def find_opencode(explicit: str = "") -> str:
             explicit,
         )
 
+    lookup_cmd = "where" if sys.platform == "win32" else "which"
     try:
         result = subprocess.run(
-            ["where", "opencode"], capture_output=True, text=True, check=True,
+            [lookup_cmd, "opencode"], capture_output=True, text=True, check=True,
         )
-        for line in result.stdout.splitlines():
-            if "chocolatey\\bin" in line.lower():
-                path = line.strip()
-                if Path(path).is_file():
-                    logger.info("Found opencode.exe at %s", path)
-                    return path
-    except subprocess.CalledProcessError:
+        candidates = [
+            line.strip() for line in result.stdout.splitlines() if line.strip()
+        ]
+        # On Windows, `where` often returns both the extensionless Bash-style
+        # launcher (a shell script npm also installs) AND the .cmd / .exe shim.
+        # Only the .cmd/.exe/.bat/.ps1 variants are valid Win32 executables —
+        # the extensionless one fails with "WinError 193: not a valid Win32
+        # application" when launched via subprocess. Filter accordingly.
+        if sys.platform == "win32":
+            exec_exts = (".exe", ".cmd", ".bat", ".ps1")
+            candidates = [
+                p for p in candidates if p.lower().endswith(exec_exts)
+            ] or candidates  # fall back to anything if nothing matches
+        for path in candidates:
+            if Path(path).is_file():
+                logger.info("Found opencode at %s", path)
+                return path
+    except (subprocess.CalledProcessError, FileNotFoundError):
         pass
 
+    search_dirs: list[Path] = []
+    if sys.platform == "win32":
+        search_dirs.extend(_WINDOWS_EXTRA_DIRS)
+    else:
+        search_dirs.extend([
+            Path.home() / ".npm-global" / "bin",
+            Path.home() / ".local" / "bin",
+            Path("/usr/local/bin"),
+            Path("/usr/bin"),
+        ])
+
+    # Also consult npm itself for its global prefix (works on every platform
+    # as long as Node.js is installed). npm is a .cmd shim on Windows, so
+    # shell=True is required there; on POSIX we invoke it directly.
+    try:
+        npm_prefix = subprocess.run(
+            ["npm", "prefix", "-g"],
+            capture_output=True,
+            text=True,
+            check=True,
+            shell=(sys.platform == "win32"),
+            timeout=5,
+        ).stdout.strip()
+        if npm_prefix:
+            prefix_path = Path(npm_prefix)
+            search_dirs.append(prefix_path)
+            # On POSIX, binaries live under <prefix>/bin
+            if sys.platform != "win32":
+                search_dirs.append(prefix_path / "bin")
+    except Exception as exc:
+        logger.debug("npm prefix lookup failed: %s", exc)
+
+    for directory in search_dirs:
+        for name in _NAMES:
+            candidate = directory / name
+            if candidate.is_file():
+                logger.info("Found opencode at %s", candidate)
+                return str(candidate)
+
     raise FileNotFoundError(
-        "opencode.exe not found in Chocolatey.\n\n"
+        "opencode not found on PATH or in known npm install directories.\n\n"
         "To fix:\n"
-        "  • Run (as Administrator):  choco install opencode\n"
+        "  • Install Node.js (https://nodejs.org) if npm is not available.\n"
+        "  • Run:  npm install -g opencode-ai\n"
         "  • Then restart the Streamlit app so it picks up the updated PATH.",
     )
 
@@ -332,10 +394,11 @@ class OpencodeRunner(BaseRunner):
             except Exception as exc:
                 logger.warning("Error killing process: %s", exc)
 
-        self._kill_chocolatey_processes()
+        self._kill_opencode_processes()
 
-    def _kill_chocolatey_processes(self) -> None:
-        """Kill processes that have 'chocolatey', 'choco', or 'opencode' in their names."""
+    def _kill_opencode_processes(self) -> None:
+        """Kill lingering opencode processes (post-npm installation)."""
+        keywords = ["opencode"]
         try:
             system = platform.system()
             if system == "Windows":
@@ -353,10 +416,7 @@ class OpencodeRunner(BaseRunner):
                             parts = line.split('","')
                             if len(parts) >= 1:
                                 process_name = parts[0].strip('"').lower()
-                                if any(
-                                    keyword in process_name
-                                    for keyword in ["chocolatey", "choco", "opencode"]
-                                ):
+                                if any(keyword in process_name for keyword in keywords):
                                     if len(parts) >= 2:
                                         pid = parts[1].strip('"')
                                         try:
@@ -372,7 +432,7 @@ class OpencodeRunner(BaseRunner):
                                                 "Error killing process %s: %s", pid, e,
                                             )
                     if not found_processes:
-                        logger.debug("No chocolatey/opencode processes found to kill")
+                        logger.debug("No opencode processes found to kill")
                     return
                 except subprocess.TimeoutExpired:
                     logger.debug("Primary process scan timed out, using fallback method")
@@ -389,10 +449,7 @@ class OpencodeRunner(BaseRunner):
                         parts = line.split()
                         if len(parts) >= 2:
                             process_name = parts[0].lower()
-                            if any(
-                                keyword in process_name
-                                for keyword in ["chocolatey", "choco", "opencode"]
-                            ):
+                            if any(keyword in process_name for keyword in keywords):
                                 pid = parts[1]
                                 try:
                                     subprocess.run(
@@ -407,24 +464,28 @@ class OpencodeRunner(BaseRunner):
                                         "Error killing process %s: %s", pid, e,
                                     )
                     if not found_processes:
-                        logger.debug("No chocolatey/opencode processes found to kill (fallback)")
+                        logger.debug("No opencode processes found to kill (fallback)")
                 except Exception as e:
                     logger.warning("Fallback process scan failed: %s", e)
             else:
-                # Unix-like systems
+                # Unix-like systems (Linux, macOS). `pkill -f` matches full
+                # command line; the -i flag isn't portable (GNU-only), so we
+                # rely on "opencode" being lowercase in the actual invocation.
                 try:
                     subprocess.run(
-                        ["pkill", "-f", "-i", "chocolatey"],
+                        ["pkill", "-f", "opencode"],
                         capture_output=True,
                         text=True,
                         timeout=2,
                     )
+                except FileNotFoundError:
+                    logger.debug("pkill not available on this system")
                 except subprocess.TimeoutExpired:
                     logger.debug("Unix pkill command timed out")
                 except Exception as e:
                     logger.warning("Unix pkill failed: %s", e)
         except Exception as e:
-            logger.warning("Error in chocolatey process killing: %s", e)
+            logger.warning("Error in opencode process killing: %s", e)
 
     @property
     def estimated_context_tokens(self) -> int:
@@ -470,14 +531,14 @@ class OpencodeRunner(BaseRunner):
                 self.agent,
             )
 
-            cmd = self._build_cmd(exe, prompt, model=model_for_cmd)
-            msg = f"Running opencode command: {' '.join(cmd)}"
-            logger.info(msg)
-            yield {"level": "info", "msg": msg}
-
             use_shell = sys.platform == "win32" and exe.lower().endswith(
                 (".cmd", ".bat", ".ps1"),
             )
+
+            cmd = self._build_cmd(exe, prompt, model=model_for_cmd, use_shell=use_shell)
+            msg = f"Running opencode command: {' '.join(cmd)}"
+            logger.info(msg)
+            yield {"level": "info", "msg": msg}
 
             try:
                 self._process = subprocess.Popen(
@@ -615,6 +676,9 @@ class OpencodeRunner(BaseRunner):
         """Run `opencode session list` and return the most recently updated session ID."""
         try:
             exe = find_opencode(self.opencode_executable)
+            use_shell = sys.platform == "win32" and exe.lower().endswith(
+                (".cmd", ".bat", ".ps1"),
+            )
             result = subprocess.run(
                 [exe, "session", "list"],
                 capture_output=True,
@@ -623,6 +687,7 @@ class OpencodeRunner(BaseRunner):
                 errors="replace",
                 cwd=str(self.workspace),
                 timeout=10,
+                shell=use_shell,
             )
             for line in result.stdout.splitlines():
                 stripped = line.strip()
@@ -637,12 +702,20 @@ class OpencodeRunner(BaseRunner):
     def reset_context_counter(self) -> None:
         self._chars_exchanged = 0
 
-    def _build_cmd(self, exe: str, prompt: str, model: str | None = None) -> list[str]:
+    def _build_cmd(
+        self,
+        exe: str,
+        prompt: str,
+        model: str | None = None,
+        use_shell: bool = False,
+    ) -> list[str]:
         """Build the opencode CLI command list.
 
-        Every value is coerced to ``str`` here as a final safety net, and the
-        resolved values are logged at DEBUG level so any future type surprises
-        are immediately visible in the log.
+        When ``use_shell`` is True (Windows ``.cmd``/``.bat``/``.ps1``), the
+        prompt is wrapped with ``quote_prompt`` so cmd.exe receives it as a
+        single argument. On POSIX (or whenever the subprocess is launched
+        without a shell), the prompt is passed verbatim — argv entries must
+        not carry literal surrounding quotes.
         """
         exe = coerce_str(exe, "exe (_build_cmd)")
         prompt = coerce_str(prompt, "prompt (_build_cmd)")
@@ -681,7 +754,7 @@ class OpencodeRunner(BaseRunner):
             else:
                 cmd.append("--continue")
 
-        cmd.append(quote_prompt(prompt))
+        cmd.append(quote_prompt(prompt) if use_shell else prompt)
 
         if resolved_model:
             cmd += ["--model", resolved_model]
