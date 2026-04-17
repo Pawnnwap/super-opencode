@@ -1453,6 +1453,43 @@ class JobStatusScreen:
         state = status["state"]
         logs = _safe_logs(status)
 
+        # Job switcher — when several tasks of this type are active, show
+        # a selector so the user can move between them without going back
+        # to the list. Only renders when there is more than one choice.
+        job_type = status.get("type")
+        sibling_ids: list[str] = []
+        if job_type:
+            for jid in job_manager.store.list_jobs():
+                s = job_manager.get_job_status(jid)
+                if not s or s.get("type") != job_type:
+                    continue
+                if s.get("state") == "RUNNING" or jid == self.job_id:
+                    sibling_ids.append(jid)
+        # Preserve deterministic order (current job first, then others newest→oldest)
+        siblings_status = {
+            jid: job_manager.get_job_status(jid) or {} for jid in sibling_ids
+        }
+        ordered = sorted(
+            set(sibling_ids),
+            key=lambda j: (j != self.job_id, -float(siblings_status.get(j, {}).get("updated_at") or 0)),
+        )
+        if len(ordered) > 1:
+            def _fmt(jid: str) -> str:
+                s = siblings_status.get(jid, {})
+                st_name = s.get("state", "?")
+                ws = s.get("config", {}).get("workspace", "")
+                ws_name = Path(ws).name if ws else ""
+                suffix = f" — {ws_name}" if ws_name else ""
+                return f"{jid} [{st_name}]{suffix}"
+            idx = ordered.index(self.job_id) if self.job_id in ordered else 0
+            picked = st.selectbox(
+                "Active tasks", ordered, index=idx, format_func=_fmt,
+                key=f"switcher_{self.page_key}",
+            )
+            if picked != self.job_id:
+                st.query_params[self.query_param] = picked
+                st.rerun()
+
         # Header row
         col_h1, col_h2, col_h3 = st.columns([3, 1, 1])
         with col_h1:
@@ -1517,7 +1554,14 @@ def _show_task_form(workspace: Path | None) -> None:
         st.error("No protocol.md in workspace. Create one via Protocol Wizard first.")
         return
 
-    with st.expander("Start New Task", expanded=st.session_state.get("_show_task_form", False)):
+    # Expand by default when there are no existing run jobs, so the path to
+    # start one is obvious on an empty page. Once tasks exist the expander
+    # collapses — the user can open it whenever they want another task.
+    no_existing_jobs = not any(
+        (job_manager.store.get_job_state(jid) or {}).get("type") == "run"
+        for jid in job_manager.store.list_jobs()
+    )
+    with st.expander("Start New Task", expanded=no_existing_jobs):
         st.markdown(f"**Primary workspace:** `{workspace}`")
         st.caption("Each task gets its own isolated workspace directory.")
         col1, col2 = st.columns([2, 1])
@@ -1535,7 +1579,6 @@ def _show_task_form(workspace: Path | None) -> None:
             if st.button("Start Task", type="primary", use_container_width=True, key="btn_start_task"):
                 st.session_state.plan_mode_rounds = plan_rounds
                 st.session_state.enable_python_scanner = enable_scanner
-                st.session_state._show_task_form = False
                 save_settings()
                 apply_api_config()
                 config = _build_supervisor_config(proto_path, workspace, plan_mode_rounds=int(plan_rounds))
@@ -1553,13 +1596,41 @@ def _render_job_card(job: dict, is_running: bool) -> None:
     state = status.get("state", "UNKNOWN")
     config = status.get("config", {})
     workspace = config.get("workspace", "")
+
+    # Derive at-a-glance info so the card list stays useful when several
+    # tasks are running — no need to click "View" on each one.
+    logs = _safe_logs(status)
+    last_event_msg = ""
+    for ev in reversed(logs):
+        if not isinstance(ev, dict):
+            continue
+        if ev.get("level") == "heartbeat":
+            continue
+        msg = (ev.get("msg") or "").strip().splitlines()[0:1]
+        if msg:
+            last_event_msg = msg[0][:120]
+            break
+    started_at = status.get("updated_at") or 0
+    elapsed_txt = ""
+    if started_at:
+        elapsed = max(0, time.time() - started_at) if state == "RUNNING" else 0
+        if state == "RUNNING":
+            mins, secs = divmod(int(elapsed), 60)
+            elapsed_txt = f"⏱ {mins}m {secs:02d}s"
+
     col1, col2, col3 = st.columns([3, 2, 1])
     with col1:
         pill = _render_status_pill(state)
         st.markdown(f"`{job_id}` {pill} ", unsafe_allow_html=True)
+        meta_bits = []
         if workspace:
-            ws_name = Path(workspace).name
-            st.caption(f"Workspace: `{ws_name}`")
+            meta_bits.append(f"📁 `{Path(workspace).name}`")
+        if elapsed_txt:
+            meta_bits.append(elapsed_txt)
+        if meta_bits:
+            st.caption(" · ".join(meta_bits))
+        if last_event_msg:
+            st.caption(f"› {last_event_msg}")
     with col2:
         if state == "RUNNING":
             if st.button("Stop", key=f"stop_card_{job_id}"):
@@ -1596,30 +1667,45 @@ def page_run() -> None:
 
     workspace = Path(st.session_state.workspace) if st.session_state.workspace else None
 
-    st.markdown("Manage multiple concurrent tasks with isolated workspaces.")
-    col_nav, col_new = st.columns([3, 1])
-    with col_new:
-        if st.button("New Task", type="primary", key="btn_new_task"):
-            st.session_state._show_task_form = True
-            st.rerun()
+    # "Start New Task" lives at the top so users always see how to launch one.
+    _show_task_form(workspace)
+
     st.markdown("---")
+    col_nav, col_auto = st.columns([3, 1])
+    with col_nav:
+        st.markdown("Manage multiple concurrent tasks with isolated workspaces.")
+    with col_auto:
+        auto_refresh = st.toggle(
+            "Auto-refresh", value=st.session_state.get("_run_list_autorefresh", True),
+            key="_run_list_autorefresh_toggle",
+            help="Re-fetch task states every few seconds while any task is running.",
+        )
+        st.session_state["_run_list_autorefresh"] = auto_refresh
+
     all_run_jobs = _get_all_run_jobs()
+    running_jobs: list = []
     if not all_run_jobs:
-        st.info("No run tasks yet. Click **New Task** to start one.")
+        st.info("No run tasks yet. Use **Start New Task** above to launch one.")
     else:
         running_jobs = [j for j in all_run_jobs if j["status"].get("state") == "RUNNING"]
         completed_jobs = [j for j in all_run_jobs if j["status"].get("state") != "RUNNING"]
         if running_jobs:
-            st.markdown("### Active Tasks")
+            st.markdown(f"### Active Tasks ({len(running_jobs)})")
             for job in running_jobs:
                 _render_job_card(job, is_running=True)
         if completed_jobs:
-            with st.expander("### Completed Tasks", expanded=False):
+            with st.expander(f"Completed Tasks ({len(completed_jobs)})", expanded=False):
                 for job in completed_jobs[:10]:
                     _render_job_card(job, is_running=False)
         st.markdown("---")
 
-    _show_task_form(workspace)
+    # Poll while something is still running AND the user wants refresh on.
+    # Widgets persist values across reruns via their keys, so typing in the
+    # task-form expander above is not lost — but users can flip auto-refresh
+    # off via the toggle if they find the cadence disruptive.
+    if running_jobs and auto_refresh:
+        time.sleep(3)
+        st.rerun()
 
 
 # ═══════════════════════════════════════════════════════════════════════════ #

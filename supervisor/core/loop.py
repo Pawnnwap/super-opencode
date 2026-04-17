@@ -334,9 +334,11 @@ class SupervisorLoop(BaseLoop):
 
 
 def _setup_logging(level: str) -> None:
+    # threadName lets concurrent jobs be distinguished on shared stderr.
+    # JobManager sets worker-thread names to "job-<id>" for this reason.
     logging.basicConfig(
         level=level,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        format="%(asctime)s [%(levelname)s] [%(threadName)s] %(name)s: %(message)s",
         datefmt="%H:%M:%S",
         stream=sys.stderr,
     )

@@ -48,11 +48,14 @@ class JobManager:
             "report": "",
         })
 
-        # Start worker thread
+        # Start worker thread. The name shows up in log records (via the
+        # threadName formatter token) so concurrent jobs can be told apart
+        # on shared stderr.
         thread = threading.Thread(
             target=self._worker,
             args=(job_id, job_type, config, stop_event),
             daemon=True,
+            name=f"job-{job_id}",
         )
         thread.start()
 
