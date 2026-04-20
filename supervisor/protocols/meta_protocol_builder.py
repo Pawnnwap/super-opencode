@@ -18,7 +18,7 @@ from openai import OpenAI
 
 from supervisor.analyzers.codebase_analyzer import CodebaseSnapshot
 from supervisor.protocols.protocol_wizard import _append_required_target
-from supervisor.utils.text_utils import strip_thinking_blocks
+from supervisor.utils.text_utils import normalize_model_response
 
 _BUILDER_SYSTEM = """\
 Write protocol.md for coding agent to modify the codebase it lives in.
@@ -75,7 +75,10 @@ class MetaProtocolBuilder:
             kwargs["temperature"] = 0.2
 
         response = self._client.chat.completions.create(**kwargs)
-        meta_md = strip_thinking_blocks(response.choices[0].message.content.strip())
+        meta_md = normalize_model_response(
+            response.choices[0].message.content,
+            "meta protocol response",
+        )
         meta_md = _append_required_target(meta_md)
         return meta_md
 

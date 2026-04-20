@@ -20,7 +20,7 @@ from supervisor.protocols.protocol import Protocol
 from supervisor.protocols.protocol_analyzer import ProtocolAnalysis, ProtocolAnalyzer
 from supervisor.utils.file_ops import safe_read_text
 from supervisor.utils.path_filters import DEFAULT_IGNORE_DIRS, DEFAULT_IGNORE_PREFIXES
-from supervisor.utils.text_utils import strip_thinking_blocks
+from supervisor.utils.text_utils import normalize_model_response
 from supervisor.workspace.ignore_patterns import IgnoreMatcher
 
 logger = logging.getLogger(__name__)
@@ -354,7 +354,10 @@ class LLMSupervisor:
             self._log_prompt("LLM Select Files", kwargs["messages"])
 
             response = self._client.chat.completions.create(**kwargs)
-            raw = (response.choices[0].message.content or "").strip()
+            raw = normalize_model_response(
+                response.choices[0].message.content,
+                "file selection response",
+            )
 
             # Extract list of strings using regex if json fails or as an alternative
             selected = []
@@ -1264,7 +1267,10 @@ class LLMSupervisor:
                     empty_choices_retries += 1
                     continue
                 empty_choices_retries = 0
-                reply = strip_thinking_blocks(response.choices[0].message.content or "")
+                reply = normalize_model_response(
+                    response.choices[0].message.content,
+                    "supervisor response",
+                )
                 break
             except (RateLimitError, APIConnectionError, APITimeoutError) as exc:
                 if transient_attempt >= max_transient_retries:

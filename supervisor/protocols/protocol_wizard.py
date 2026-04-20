@@ -14,7 +14,7 @@ from openai import OpenAI
 
 from supervisor.protocols.protocol import Protocol, parse_protocol_text
 from supervisor.protocols.protocol_analyzer import ProtocolAnalysis, ProtocolAnalyzer
-from supervisor.utils.text_utils import strip_thinking_blocks
+from supervisor.utils.text_utils import normalize_model_response
 
 logger = logging.getLogger(__name__)
 
@@ -91,7 +91,10 @@ class ProtocolWizard:
             kwargs["temperature"] = 0.3
 
         response = self._client.chat.completions.create(**kwargs)
-        return response.choices[0].message.content.strip()
+        return normalize_model_response(
+            response.choices[0].message.content,
+            "protocol wizard response",
+        )
 
     def refine(
         self,
@@ -109,7 +112,7 @@ class ProtocolWizard:
             f"### RESTRICTIONS (raw)\n{raw_restrictions}"
         )
 
-        refined_md = strip_thinking_blocks(self._chat(user_msg))
+        refined_md = self._chat(user_msg)
         refined_md = _append_required_target(refined_md)
         protocol = parse_protocol_text(refined_md)
         return refined_md, protocol
@@ -135,7 +138,7 @@ class ProtocolWizard:
             f"Return ONLY the body text for the {section_name} section "
             "(no heading, no preamble)."
         )
-        return strip_thinking_blocks(self._chat(user_msg))
+        return self._chat(user_msg)
 
     def analyze_sections(
         self,

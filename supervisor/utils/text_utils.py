@@ -12,6 +12,14 @@ def strip_thinking_blocks(text: str) -> str:
     return _THINKING_BLOCK_RE.sub("", text)
 
 
+def normalize_model_response(
+    value: object,
+    field_name: str = "model response",
+) -> str:
+    """Coerce model text to string, strip hidden thinking blocks, and trim."""
+    return strip_thinking_blocks(coerce_str(value, field_name)).strip()
+
+
 def sanitize_event_message(msg: object) -> str:
     """Convert event msg payloads to a deterministic string representation.
 

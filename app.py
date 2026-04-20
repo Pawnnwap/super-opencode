@@ -27,7 +27,7 @@ from supervisor.protocols.protocol import parse_protocol_text
 from supervisor.protocols.protocol_analyzer import ProtocolAnalyzer, Severity
 from supervisor.protocols.protocol_wizard import ProtocolWizard
 from supervisor.utils.config import SupervisorConfig
-from supervisor.utils.text_utils import sanitize_event_message
+from supervisor.utils.text_utils import normalize_model_response, sanitize_event_message
 
 _UPGRADE_SETTINGS_FILE = Path.home() / ".opencode_supervisor_settings.json"
 
@@ -843,7 +843,10 @@ def test_supervisor() -> tuple[bool, str]:
     def _inner():
         resp = client.chat.completions.create(
             model=model, messages=[{"role": "user", "content": "hi"}])
-        text = resp.choices[0].message.content or ""
+        text = normalize_model_response(
+            resp.choices[0].message.content,
+            "supervisor connectivity test response",
+        )
         if text.strip():
             return True, f"Supervisor responded: {text.strip()[:120]}"
         return False, "Supervisor returned an empty response."
@@ -1184,7 +1187,10 @@ def page_wizard() -> None:
                             messages=[{"role": "system", "content": system_msg},
                                       {"role": "user", "content": user_msg}],
                         )
-                        generated_patterns = response.choices[0].message.content.strip()
+                        generated_patterns = normalize_model_response(
+                            response.choices[0].message.content,
+                            "generated ignore patterns response",
+                        )
                         st.text_area("Generated .opencodeignore patterns", value=generated_patterns,
                                      height=300, key="generated_ignore_patterns", disabled=True)
                         ignore_file_path.write_text(generated_patterns, encoding="utf-8")
