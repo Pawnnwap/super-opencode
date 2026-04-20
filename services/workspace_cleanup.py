@@ -6,7 +6,7 @@ from pathlib import Path
 
 
 def clean_workspace_artifacts(workspace: Path) -> dict:
-    file_suffixes = {".isorted", ".pyc", ".pyo"}
+    file_suffixes = {".bak", ".isorted", ".pyc", ".pyo"}
     dir_names = {"__pycache__", ".pytest_cache", ".ruff_cache"}
 
     removed_files: list[str] = []

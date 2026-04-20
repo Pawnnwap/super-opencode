@@ -300,6 +300,22 @@ def _render_status_pill(state: str) -> str:
 _jobs_running = _any_job_running()
 
 
+def _job_queue_stats(job_type: str) -> dict[str, int]:
+    stats = {"active": 0, "running": 0, "pending": 0}
+    for jid in job_manager.store.list_jobs():
+        status = job_manager.get_job_status(jid)
+        if not status or status.get("type") != job_type:
+            continue
+        state = status.get("state")
+        if state == "RUNNING":
+            stats["running"] += 1
+            stats["active"] += 1
+        elif state == "PENDING":
+            stats["pending"] += 1
+            stats["active"] += 1
+    return stats
+
+
 def _evo_job_passed() -> bool:
     for jid in job_manager.store.list_jobs():
         status = job_manager.get_job_status(jid)
@@ -314,6 +330,15 @@ def _evo_job_passed() -> bool:
 with st.sidebar:
     st.markdown("## 🤖 opencode<br>**Supervisor**", unsafe_allow_html=True)
     st.markdown("---")
+    run_stats = _job_queue_stats("run")
+    evo_stats = _job_queue_stats("evolve")
+    queue_bits = []
+    if run_stats["active"]:
+        queue_bits.append(f"Live {run_stats['running']} run / {run_stats['pending']} queued")
+    if evo_stats["active"]:
+        queue_bits.append(f"Evo {evo_stats['running']} run / {evo_stats['pending']} queued")
+    if queue_bits:
+        st.caption(" · ".join(queue_bits))
 
     for param_key, label in (("run_job_id", "**Live Run**"), ("evo_job_id", "**Self-evo**")):
         jid = st.query_params.get(param_key)
