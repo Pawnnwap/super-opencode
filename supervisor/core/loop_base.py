@@ -94,6 +94,31 @@ class BaseLoop:
         self.guard = WorkspaceGuard(self.config.workspace, self.config.protected_files)
         self._step_detector = OpencodeStepDetector()
 
+    def _create_supervisor(
+        self,
+        *,
+        max_protected_files_for_suggestions: int | None = None,
+    ):
+        from supervisor.core.llm_supervisor import LLMSupervisor
+
+        kwargs = dict(
+            protocol=self.protocol,
+            workspace=self.config.workspace,
+            model=self.config.supervisor_model,
+            extra_system=self._codebase_preamble(),
+            read_external_feedback=self.config.read_external_feedback,
+            max_tokens=self.config.max_tokens,
+            truncation_enabled=self.config.truncation_enabled,
+            max_history_turns=self.config.max_history_turns,
+            compact_intermediate_steps=self.config.compact_intermediate_steps,
+            model_backup=self.config.supervisor_model_backup,
+        )
+        if max_protected_files_for_suggestions is not None:
+            kwargs["max_protected_files_for_suggestions"] = (
+                max_protected_files_for_suggestions
+            )
+        return LLMSupervisor(**kwargs)
+
     def _run_python_scanner(self) -> Generator[Event]:
         """Run python_scanner.py on workspace if .py files exist and not yet run."""
         import os
@@ -237,6 +262,10 @@ class BaseLoop:
     def _on_successful_output(self, output: str) -> Generator[Event]:
         """Hook for subclasses to do something before context monitor updates."""
         yield from []
+
+    def _refresh_supervisor_snapshot(self) -> Generator[Event]:
+        if self.supervisor is not None:
+            yield from self._check_and_update_snapshot()
 
     def _handle_failure(self, output: str) -> Generator[Event]:
         self._failures += 1

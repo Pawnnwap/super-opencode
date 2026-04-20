@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import logging
-import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from openai import OpenAI
 
+from supervisor.core.protocol_alignment import (
+    AlignmentResult,
+    verify_protocol_alignment as _verify_protocol_alignment,
+)
+from supervisor.core.supervisor_context import SupervisorContextManager
 from supervisor.monitoring.session_tracker import (
     estimate_request_tokens,
     truncate_with_fallback,
@@ -18,7 +22,6 @@ from supervisor.monitoring.session_tracker import (
 from supervisor.monitoring.token_estimator import should_truncate
 from supervisor.protocols.protocol import Protocol
 from supervisor.protocols.protocol_analyzer import ProtocolAnalysis, ProtocolAnalyzer
-from supervisor.utils.file_ops import safe_read_text
 from supervisor.utils.path_filters import DEFAULT_IGNORE_DIRS, DEFAULT_IGNORE_PREFIXES
 from supervisor.utils.text_utils import normalize_model_response
 from supervisor.workspace.ignore_patterns import IgnoreMatcher
@@ -108,20 +111,6 @@ _SKIP_DIRS = DEFAULT_IGNORE_DIRS | {".opencode", "opencode_supervisor.egg-info"}
 _SKIP_DIR_PREFIXES = DEFAULT_IGNORE_PREFIXES
 
 
-@dataclass
-class ProtocolViolation:
-    section: str
-    description: str
-    suggestion: str
-
-
-@dataclass
-class AlignmentResult:
-    aligned: bool
-    violations: list[ProtocolViolation] = field(default_factory=list)
-    reinforcement_message: str = ""
-
-
 _DONE_PHRASES = [
     "all targets met",
     "all targets are met",
@@ -190,6 +179,19 @@ class LLMSupervisor:
         self._ignore_matcher = IgnoreMatcher(workspace)
         self._ignore_matcher.load_from_workspace(workspace)
         self._last_opencode_output: str | None = None
+        self._context = SupervisorContextManager(
+            workspace=workspace,
+            max_tokens=self._max_tokens,
+            max_protected_files_for_suggestions=self._max_protected_files_for_suggestions,
+            protocol_target=self._protocol_target,
+            model=self._model,
+            client=self._client,
+            ignore_matcher=self._ignore_matcher,
+            log_prompt=self._log_prompt,
+            skip_dirs=_SKIP_DIRS,
+            skip_dir_prefixes=_SKIP_DIR_PREFIXES,
+            generated_markdown_files=_OPENCODE_GENERATED_MD,
+        )
 
     def _get_model_limit_for_model(self, model: str) -> int:
         """Get token limit for a specific model (handles backup model)."""
@@ -216,384 +218,44 @@ class LLMSupervisor:
         return None
 
     def read_protected_files(self) -> dict[str, str]:
-        """Read all protected files and return their content as a dict mapping path to content."""
-        protected_contents: dict[str, str] = {}
-        workspace = self._workspace.resolve()
-
-        # Read .opencoderc if it exists at workspace root
-        opencoderc = workspace / ".opencoderc"
-        if opencoderc.is_file():
-            try:
-                rel = opencoderc.relative_to(workspace)
-                protected_contents[str(rel)] = safe_read_text(opencoderc)
-            except (OSError, UnicodeDecodeError):
-                pass
-
-        # Read .opencode file if it exists at workspace root (as a file)
-        opencode_file = workspace / ".opencode"
-        if opencode_file.is_file():
-            try:
-                rel = opencode_file.relative_to(workspace)
-                protected_contents[str(rel)] = safe_read_text(opencode_file)
-            except (OSError, UnicodeDecodeError):
-                pass
-
-        # Read all files in .opencode/ directory
-        opencode_dir = workspace / ".opencode"
-        if opencode_dir.is_dir():
-            for dirpath, dirnames, filenames in os.walk(opencode_dir):
-                dirnames[:] = [
-                    d
-                    for d in dirnames
-                    if d not in _SKIP_DIRS
-                    and not any(d.startswith(p) for p in _SKIP_DIR_PREFIXES)
-                ]
-                for fname in filenames:
-                    if fname.endswith(".log"):
-                        continue
-                    fpath = Path(dirpath) / fname
-                    try:
-                        rel = fpath.relative_to(workspace)
-                        protected_contents[str(rel)] = safe_read_text(fpath)
-                    except (OSError, UnicodeDecodeError):
-                        pass
-
-        return protected_contents
+        return self._context.read_protected_files()
 
     def _should_skip_file(self, path: str) -> bool:
-        """Check if a file path matches any pattern in .opencodeignore.
-
-        Args:
-            path: The relative path of the file to check.
-
-        Returns:
-            True if the file should be skipped, False otherwise.
-            Protected files (.opencoderc, .opencode/*) are never skipped.
-
-        """
-        protected_markers = (".opencoderc", ".opencode/")
-        if any(
-            path.startswith(pm) or path == pm.rstrip("/") for pm in protected_markers
-        ):
-            return False
-
-        return self._ignore_matcher.matches(path)
+        return self._context.should_skip_file(path)
 
     def _llm_select_files(self, file_meta: dict[str, int], top_k: int) -> list[str]:
-        """Ask the LLM to pick the top-k most relevant files given path+size metadata.
-
-        Args:
-            file_meta: Mapping of relative path -> byte size for every candidate file.
-            top_k: Maximum number of files to return.
-
-        Returns:
-            List of relative path strings chosen by the LLM (length <= top_k).
-            Falls back to the first top_k sorted paths if the response cannot be parsed.
-
-        """
-        import json as _json
-
-        if not file_meta:
-            return []
-
-        filtered_meta = {
-            path: size
-            for path, size in file_meta.items()
-            if not self._should_skip_file(path)
-        }
-
-        if not filtered_meta:
-            return []
-
-        # Budget: each path can be up to ~100 chars (~25 tokens); add overhead for
-        # JSON brackets, commas, and whitespace. Minimum 256 to be safe.
-        response_budget = max(256, top_k * 50)
-
-        # Ensure the prompt doesn't exceed max_tokens
-        # The prompt template without listing is about 150 tokens
-        available_tokens = max(1000, self._max_tokens - response_budget - 200)
-
-        # Sort items to prioritize (maybe by size, or just alphabetical, we already sorted alphabetical)
-        sorted_items = sorted(filtered_meta.items())
-
-        # Build listing iteratively to fit within available tokens
-        # Or we can just use estimate_tokens on the listing and truncate
-        listing_lines = []
-        for path, size in sorted_items:
-            listing_lines.append(f"{path} ({size} bytes)")
-
-        from supervisor.monitoring.session_tracker import SessionTracker
-
-        listing = "\n".join(listing_lines)
-        if SessionTracker.estimate_tokens(listing) > available_tokens:
-            # We must truncate the listing
-            listing = SessionTracker.truncate_prompt(
-                listing, available_tokens, preserve_end_ratio=0.0,
-            )
-
-        from supervisor.prompts import FILE_SELECTION_PROMPT
-
-        prompt = FILE_SELECTION_PROMPT.format(
-            top_k=top_k,
-            protocol_target=self._protocol_target,
-            total_candidates=len(filtered_meta),
-            listing=listing,
-        )
-
-        try:
-            kwargs = {
-                "model": self._model,
-                "messages": [{"role": "user", "content": prompt}],
-            }
-            if self._model.startswith(("o1", "o3")):
-                kwargs["max_completion_tokens"] = response_budget
-            else:
-                kwargs["max_tokens"] = response_budget
-                kwargs["temperature"] = 0.0
-
-            self._log_prompt("LLM Select Files", kwargs["messages"])
-
-            response = self._client.chat.completions.create(**kwargs)
-            raw = normalize_model_response(
-                response.choices[0].message.content,
-                "file selection response",
-            )
-
-            # Extract list of strings using regex if json fails or as an alternative
-            selected = []
-            try:
-                match = re.search(r"\[.*\]", raw, re.DOTALL)
-                if match:
-                    selected = _json.loads(match.group(0))
-                else:
-                    selected = _json.loads(raw)
-                if not isinstance(selected, list):
-                    selected = []
-            except Exception:
-                # Fallback to regex extraction of string literals
-                matches = re.findall(r'["\']([^"\']+)["\']', raw)
-                selected = [m for m in matches if m]
-
-            if not selected:
-                raise ValueError("Could not extract any paths from LLM response")
-
-            # Keep only paths that actually exist in filtered_meta
-            real_paths = []
-            for p in selected:
-                p_str = str(p).strip()
-                if not p_str:
-                    continue
-
-                if p_str in filtered_meta:
-                    if p_str not in real_paths:
-                        real_paths.append(p_str)
-                    continue
-
-                # try suffix/prefix match
-                p_norm = p_str.replace("\\", "/").strip("/")
-                best_match = None
-                for candidate in filtered_meta:
-                    c_norm = candidate.replace("\\", "/").strip("/")
-                    if (
-                        c_norm.endswith("/" + p_norm)
-                        or p_norm.endswith("/" + c_norm)
-                        or c_norm == p_norm
-                    ):
-                        best_match = candidate
-                        break
-
-                # try basename match if suffix match fails
-                if not best_match:
-                    p_name = p_norm.split("/")[-1]
-                    for candidate in filtered_meta:
-                        c_name = candidate.replace("\\", "/").strip("/").split("/")[-1]
-                        if c_name == p_name:
-                            best_match = candidate
-                            break
-
-                if best_match and best_match not in real_paths:
-                    real_paths.append(best_match)
-
-            return real_paths[:top_k]
-        except Exception as exc:
-            logger.warning(
-                "LLM file selection failed (%s); falling back to first %d files.",
-                exc,
-                top_k,
-            )
-            return sorted(filtered_meta)[:top_k]
+        return self._context.llm_select_files(file_meta, top_k)
 
     def _read_protected_files_for_suggestions(self) -> tuple[dict[str, str], list[str]]:
-        """Walk the full workspace, let the LLM choose the top-k most relevant files,
-        then return their contents and the list of chosen paths.
-
-        Dot-prefixed directories (.git, .opencode, etc.) and generated markdown
-        files are excluded from consideration. The number of files returned is
-        capped at self._max_protected_files_for_suggestions.
-        """
-        workspace = self._workspace.resolve()
-        top_k = self._max_protected_files_for_suggestions
-
-        # Collect candidate paths and their sizes — no content read yet.
-        file_meta: dict[str, int] = {}
-        try:
-            for path in workspace.rglob("*"):
-                if not path.is_file():
-                    continue
-                rel_parts = path.relative_to(workspace).parts
-                # Skip anything inside a dot-prefixed directory.
-                if any(part.startswith(".") for part in rel_parts):
-                    continue
-                # Skip files generated by opencode/supervisor.
-                if path.name in _OPENCODE_GENERATED_MD:
-                    continue
-                try:
-                    file_meta[str(path.relative_to(workspace))] = path.stat().st_size
-                except OSError:
-                    pass
-        except OSError as exc:
-            logger.warning("Could not walk workspace for file selection: %s", exc)
-
-        if not file_meta:
-            return {}, []
-
-        # Ask the LLM which files are most worth reading.
-        chosen_paths = self._llm_select_files(file_meta, top_k)
-
-        # Read only the chosen files.
-        result: dict[str, str] = {}
-        for rel_str in chosen_paths:
-            try:
-                result[rel_str] = safe_read_text(workspace / rel_str)
-            except (OSError, UnicodeDecodeError) as exc:
-                logger.warning("Could not read selected file %s: %s", rel_str, exc)
-
-        return result, chosen_paths
+        return self._context.read_protected_files_for_suggestions()
 
     def _find_feedback_file(self) -> Path | None:
-        """Find the latest modified markdown file not generated by opencode.
-
-        Falls back to the latest modified file (any extension) if no such
-        markdown file exists in the workspace.
-        """
+        feedback_file = self._context.find_feedback_file()
         workspace = self._workspace.resolve()
-        if not workspace.is_dir():
-            return None
-
-        latest_md: Path | None = None
-        latest_md_mtime: float = -1.0
-        latest_any: Path | None = None
-        latest_any_mtime: float = -1.0
-
-        for dirpath, dirnames, filenames in os.walk(workspace):
-            dirnames[:] = [
-                d
-                for d in dirnames
-                if d not in _SKIP_DIRS
-                and not any(d.startswith(p) for p in _SKIP_DIR_PREFIXES)
-            ]
-            for fname in filenames:
-                fpath = Path(dirpath) / fname
-                try:
-                    mtime = fpath.stat().st_mtime
-                except OSError:
-                    continue
-
-                if mtime > latest_any_mtime:
-                    latest_any_mtime = mtime
-                    latest_any = fpath
-
-                if (
-                    fpath.suffix.lower() == ".md"
-                    and fname not in _OPENCODE_GENERATED_MD
-                ):
-                    if mtime > latest_md_mtime:
-                        latest_md_mtime = mtime
-                        latest_md = fpath
-
-        if latest_md is not None:
-            logger.info(
-                "Using external feedback file: %s",
-                latest_md.relative_to(workspace),
-            )
-            return latest_md
-
-        if latest_any is not None:
-            logger.info(
-                "No non-generated .md found; falling back to latest file: %s",
-                latest_any.relative_to(workspace),
-            )
-            return latest_any
-
-        return None
+        if feedback_file is not None:
+            try:
+                rel = feedback_file.relative_to(workspace)
+            except ValueError:
+                rel = feedback_file
+            if feedback_file.suffix.lower() == ".md":
+                logger.info("Using external feedback file: %s", rel)
+            else:
+                logger.info(
+                    "No non-generated .md found; falling back to latest file: %s",
+                    rel,
+                )
+        return feedback_file
 
     def _read_feedback_content(self, feedback_file: Path) -> str:
-        """Read the content of a feedback file, returning empty string on failure."""
-        try:
-            content = safe_read_text(feedback_file)
-            logger.info(
-                "Read %d chars from feedback file: %s",
-                len(content),
-                feedback_file.relative_to(self._workspace.resolve()),
-            )
-            return content
-        except (OSError, UnicodeDecodeError) as exc:
-            logger.warning("Failed to read feedback file %s: %s", feedback_file, exc)
-            return ""
+        return self._context.read_feedback_content(feedback_file)
 
     def _get_evaluation_context(self) -> tuple[str, str]:
-        protected_files = self.read_protected_files()
-        protected_context = ""
-        if protected_files:
-            sections = []
-            for path, content in protected_files.items():
-                sections.append(f"--- {path} ---\n{content}\n--- end {path} ---")
-            protected_context = (
-                "\n\n## Current Protected Files State\n"
-                + "\n\n".join(sections)
-                + "\n\n"
-            )
-
-        feedback_context = ""
-        if self._read_external_feedback:
-            feedback_file = self._find_feedback_file()
-            if feedback_file is not None:
-                fb_content = self._read_feedback_content(feedback_file)
-                if fb_content:
-                    feedback_context = (
-                        f"\n\n## External Feedback (from {feedback_file.name})\n"
-                        f"{fb_content}\n"
-                        "Use this external feedback as the primary evaluation input.\n\n"
-                    )
-        return protected_context, feedback_context
+        return self._context.get_evaluation_context(
+            read_external_feedback=self._read_external_feedback,
+        )
 
     def _build_experience_context(self) -> str:
-        """Read experience.md from workspace and format for prompt injection.
-
-        Returns empty string if the file is missing or unreadable.
-        Failures are logged but never raised.
-        """
-        try:
-            from supervisor.monitoring.session_tracker import SessionTracker
-            from supervisor.utils.experience_tracker import read_experience_capped
-
-            experience_text = read_experience_capped(self._workspace, max_chars=10000)
-            if not experience_text.strip():
-                return ""
-
-            # Ensure experience does not exceed a reasonable budget (e.g., 10% of max_tokens)
-            budget = int(self._max_tokens * 0.1)
-            if SessionTracker.estimate_tokens(experience_text) > budget:
-                experience_text = SessionTracker.truncate_prompt(
-                    experience_text, budget, preserve_end_ratio=0.0,
-                )
-
-            return (
-                f"--- Previous Experience ---\n{experience_text}\n--- end ---\n\n"
-            )
-        except Exception as exc:
-            logger.warning("Failed to build experience context: %s", exc)
-        return ""
+        return self._context.build_experience_context()
 
     def judge(self, opencode_output: str) -> SupervisorVerdict:
         from supervisor.prompts.templates import (
@@ -869,136 +531,7 @@ class LLMSupervisor:
         opencode_output: str,
         protocol: Protocol,
     ) -> AlignmentResult:
-        violations: list[ProtocolViolation] = []
-        output_lower = opencode_output.lower()
-
-        restriction_patterns = [
-            (
-                r"(do not delete|don't delete|never delete|avoid deleting)",
-                "Attempting to delete code without permission",
-                "Do not delete files unless explicitly instructed in the TARGET section.",
-            ),
-            (
-                r"(rm\s+-rf|del\s+/[sqf]|\$\(\{|sudo\s+)",
-                "Suspicious destructive command detected",
-                "Destructive commands require explicit permission. Only proceed if the TARGET explicitly requires it.",
-            ),
-            (
-                r"(\.\.\/|\.\.\\|\.\.\%|\.\.\.)",
-                "Path traversal attempt detected",
-                "All file operations must stay within the workspace directory. Do not access parent directories.",
-            ),
-            (
-                r"(git\s+reset|git\s+rebase|git\s+push\s+--force|git\s+push\s+-f)",
-                "Destructive git operation detected",
-                "Do not perform destructive git operations (reset, rebase, force push) without explicit permission.",
-            ),
-            (
-                r"(chmod\s+777|chmod\s+000|\$\(whoami\)|eval\s+\$\{)",
-                "Risky shell operation detected",
-                "Avoid risky operations involving permissions, command substitution in eval, or dynamic code execution.",
-            ),
-        ]
-
-        for pattern, description, suggestion in restriction_patterns:
-            if re.search(pattern, output_lower):
-                violations.append(
-                    ProtocolViolation(
-                        section="RESTRICTIONS",
-                        description=description,
-                        suggestion=suggestion,
-                    ),
-                )
-
-        if protocol.target_section:
-            target_keywords = self._extract_keywords(protocol.target_section)
-            found_keywords = sum(
-                1 for kw in target_keywords if kw.lower() in output_lower
-            )
-            if target_keywords and found_keywords == 0:
-                violations.append(
-                    ProtocolViolation(
-                        section="TARGET",
-                        description="No evidence of target-related activity in output",
-                        suggestion=f"Your output should address these target keywords: {', '.join(target_keywords[:5])}",
-                    ),
-                )
-
-        if protocol.restrictions_section:
-            restriction_keywords = self._extract_keywords(protocol.restrictions_section)
-            for kw in restriction_keywords:
-                if kw.lower() in output_lower and any(
-                    word in output_lower
-                    for word in ["ignore", "skip", "bypass", "violate"]
-                ):
-                    violations.append(
-                        ProtocolViolation(
-                            section="RESTRICTIONS",
-                            description=f"Potential attempt to ignore restriction keyword: {kw}",
-                            suggestion="You must comply with all restrictions listed in the protocol.",
-                        ),
-                    )
-                    break
-
-        aligned = len(violations) == 0
-        reinforcement_message = (
-            self._generate_reinforcement_message(violations) if violations else ""
-        )
-
-        return AlignmentResult(
-            aligned=aligned,
-            violations=violations,
-            reinforcement_message=reinforcement_message,
-        )
-
-    def _extract_keywords(self, text: str) -> list[str]:
-        words = re.findall(r"\b[a-zA-Z]{4,}\b", text)
-        stopwords = {
-            "that",
-            "this",
-            "with",
-            "from",
-            "have",
-            "will",
-            "been",
-            "were",
-            "they",
-            "their",
-            "what",
-            "when",
-            "your",
-            "must",
-            "only",
-            "also",
-            "into",
-            "than",
-            "then",
-            "should",
-            "could",
-            "would",
-            "which",
-            "about",
-            "after",
-            "before",
-            "being",
-        }
-        return [w for w in words if w.lower() not in stopwords][:10]
-
-    def _generate_reinforcement_message(
-        self,
-        violations: list[ProtocolViolation],
-    ) -> str:
-        if not violations:
-            return ""
-
-        violations_text = ""
-        for i, v in enumerate(violations, 1):
-            violations_text += f"{i}. [{v.section}] {v.description}\n"
-            violations_text += f"   Correction: {v.suggestion}\n\n"
-
-        from supervisor.prompts import PROTOCOL_VIOLATION_TEMPLATE
-
-        return PROTOCOL_VIOLATION_TEMPLATE.format(violations=violations_text)
+        return _verify_protocol_alignment(opencode_output, protocol)
 
     # ------------------------------------------------------------------ #
 

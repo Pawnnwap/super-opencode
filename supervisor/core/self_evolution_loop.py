@@ -14,7 +14,6 @@ from collections.abc import Generator
 from pathlib import Path
 
 from supervisor.analyzers.codebase_analyzer import CodebaseSnapshot, snapshot_codebase
-from supervisor.core.llm_supervisor import LLMSupervisor
 from supervisor.core.loop_base import BaseLoop, Event, LoopState, _ev
 from supervisor.runners.test_runner import OcTestRunner, RunTestResult
 from supervisor.utils.config import SupervisorConfig
@@ -32,19 +31,7 @@ class SelfEvolutionLoop(BaseLoop):
         super().__init__(config)
 
         self._setup_core_services()
-
-        self.supervisor = LLMSupervisor(
-            protocol=self.protocol,
-            workspace=config.workspace,
-            model=config.supervisor_model,
-            extra_system=self._codebase_preamble(),
-            read_external_feedback=config.read_external_feedback,
-            max_tokens=config.max_tokens,
-            truncation_enabled=config.truncation_enabled,
-            max_history_turns=config.max_history_turns,
-            compact_intermediate_steps=config.compact_intermediate_steps,
-            model_backup=config.supervisor_model_backup,
-        )
+        self.supervisor = self._create_supervisor()
         self.test_runner = OcTestRunner(config.workspace)
 
         self._baseline: RunTestResult | None = None
@@ -100,7 +87,7 @@ class SelfEvolutionLoop(BaseLoop):
             f"[iter {self._iteration}] opencode output ({len(output)} chars)",
         )
         yield from super()._on_successful_output(output)
-        yield from self._check_and_update_snapshot()
+        yield from self._refresh_supervisor_snapshot()
         update_experience(
             self.config.workspace,
             worked=[f"Iteration {self._iteration} output processed successfully"],

@@ -1,6 +1,6 @@
 """supervisor/config.py — immutable run configuration."""
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 
@@ -26,3 +26,10 @@ class SupervisorConfig:
     compact_intermediate_steps: bool = False
     plan_mode_rounds: int = 0
     enable_python_scanner: bool = True
+
+    def to_state_dict(self) -> dict[str, object]:
+        data = asdict(self)
+        data["protocol_path"] = str(self.protocol_path)
+        data["workspace"] = str(self.workspace)
+        data["protected_files"] = list(self.protected_files)
+        return data

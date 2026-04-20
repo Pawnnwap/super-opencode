@@ -1,11 +1,8 @@
-"""supervisor/monitoring/session_tracker.py — Unified token and context tracking.
+"""supervisor/monitoring/session_tracker.py — Context tracking over token tools.
 
-Consolidates token estimation (from token_estimator) and context window
-monitoring into a single SessionTracker that can be used across
-llm_supervisor.py, loop.py, and self_evolution_loop.py.
-
-The module re-exports all public symbols from token_estimator for backward
-compatibility, so existing imports continue to work without modification.
+SessionTracker owns mutable session state only. Token estimation and
+truncation live in ``token_estimator`` and are re-exported here at module
+scope for compatibility.
 """
 
 from __future__ import annotations
@@ -64,22 +61,6 @@ class SessionTracker:
         self.compaction_triggered = False
         self._files_read: list[str] = []
         self._prompt_head: str = ""
-
-    # -- Token estimation (delegates to token_estimator) --
-
-    @staticmethod
-    def estimate_tokens(text: str) -> int:
-        """Estimate token count for a text string."""
-        return estimate_tokens(text)
-
-    @staticmethod
-    def estimate_request(
-        system_prompt: str,
-        conversation_history: str,
-        user_input: str,
-    ) -> TokenEstimate:
-        """Estimate tokens for a complete API request."""
-        return estimate_request_tokens(system_prompt, conversation_history, user_input)
 
     # -- Context tracking --
 
@@ -228,33 +209,6 @@ class SessionTracker:
         self._current = 0
         self._last_warning_threshold = None
         self.compaction_triggered = False
-
-    # -- Warnings --
-
-    def get_warnings(self, estimate: TokenEstimate, max_tokens: int) -> list[str]:
-        """Get token warnings for a given estimate."""
-        return warn_if_exceeds_limit(estimate, max_tokens)
-
-    # -- Truncation --
-
-    @staticmethod
-    def truncate_prompt(
-        text: str,
-        max_tokens: int,
-        preserve_end_ratio: float = 0.3,
-    ) -> str:
-        return truncate_prompt(text, max_tokens, preserve_end_ratio)
-
-    @staticmethod
-    def truncate_with_fallback(
-        text: str,
-        max_tokens: int,
-        system_prompt: str = "",
-        conversation_history: str = "",
-    ) -> str:
-        return truncate_with_fallback(
-            text, max_tokens, system_prompt, conversation_history,
-        )
 
     # -- Session state access --
 

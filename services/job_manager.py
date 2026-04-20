@@ -220,16 +220,4 @@ class JobManager:
 
     def _serialize_config(self, config: SupervisorConfig) -> dict[str, Any]:
         """Convert SupervisorConfig to a serializable dict."""
-        return {
-            "protocol_path": str(config.protocol_path),
-            "workspace": str(config.workspace),
-            "max_retries": config.max_retries,
-            "context_threshold": config.context_threshold,
-            "opencode_model": config.opencode_model,
-            "opencode_executable": config.opencode_executable,
-            "supervisor_model": config.supervisor_model,
-            "timeout": config.timeout,
-            "protected_files": list(config.protected_files),
-            "max_tokens": config.max_tokens,
-            "plan_mode_rounds": config.plan_mode_rounds,
-        }
+        return config.to_state_dict()

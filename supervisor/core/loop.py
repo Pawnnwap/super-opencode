@@ -30,19 +30,10 @@ class SupervisorLoop(BaseLoop):
         _setup_logging(config.log_level)
 
         self._setup_core_services(agent="build")
-
-        self.supervisor = LLMSupervisor(
-            self.protocol,
-            config.workspace,
-            config.supervisor_model,
-            extra_system=self._codebase_preamble(),
-            read_external_feedback=config.read_external_feedback,
-            max_tokens=config.max_tokens,
-            max_protected_files_for_suggestions=config.max_protected_files_for_suggestions,
-            truncation_enabled=config.truncation_enabled,
-            max_history_turns=config.max_history_turns,
-            compact_intermediate_steps=config.compact_intermediate_steps,
-            model_backup=config.supervisor_model_backup,
+        self.supervisor = self._create_supervisor(
+            max_protected_files_for_suggestions=(
+                config.max_protected_files_for_suggestions
+            ),
         )
         self._step_detector_initialized = False
         self._plan_context: str = (
@@ -257,7 +248,7 @@ class SupervisorLoop(BaseLoop):
 
     def _on_successful_output(self, output: str) -> Generator[Event]:
         yield from super()._on_successful_output(output)
-        yield from self._check_and_update_snapshot()
+        yield from self._refresh_supervisor_snapshot()
         yield from []
 
     def _get_verdict(self, output: str, progress) -> SupervisorVerdict:

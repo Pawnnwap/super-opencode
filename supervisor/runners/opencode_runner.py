@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import logging
 import os
-import platform
 import subprocess
 import sys
 import time
@@ -32,129 +31,22 @@ from supervisor.analyzers.opencode_step_detector import (
 )
 from supervisor.prompts.commands import BREVITY_COMMAND
 from supervisor.runners.base_runner import BaseRunner
+from supervisor.runners.opencode_locator import find_opencode as _find_opencode
+from supervisor.runners.process_utils import kill_processes_by_keywords
 from supervisor.utils.text_utils import coerce_str, quote_prompt, strip_thinking_blocks
+from supervisor.workspace.cleanup_candidates import (
+    build_cleanup_inquiry,
+    identify_cleanup_candidates as discover_cleanup_candidates,
+)
 from supervisor.workspace.workspace_archiver import ArchiveResult, WorkspaceArchiver
 
 logger = logging.getLogger(__name__)
-
-# ── Executable resolution ─────────────────────────────────────────────────── #
-
-_NAMES = (
-    # Windows: executable variants FIRST — the extensionless file npm creates
-    # is a Bash launcher that can't be run via subprocess (WinError 193).
-    ["opencode.cmd", "opencode.exe", "opencode.bat", "opencode"]
-    if sys.platform == "win32"
-    else ["opencode", "opencode.exe", "opencode.cmd", "opencode.bat"]
-)
-
-_WINDOWS_EXTRA_DIRS = [
-    Path.home() / "AppData" / "Local" / "opencode",
-    Path.home() / "AppData" / "Local" / "Programs" / "opencode",
-    Path.home() / "AppData" / "Roaming" / "npm",
-    Path.home() / "AppData" / "Roaming" / "npm" / "node_modules" / ".bin",
-    Path.home() / ".local" / "bin",
-    Path.home() / "bin",
-    Path("C:/Program Files/opencode"),
-    Path("C:/Program Files (x86)/opencode"),
-    Path("C:/tools/opencode"),
-]
 
 _DOT_MODEL_FILE = Path(__file__).parent.parent / ".opencode_model"
 
 
 def find_opencode(explicit: str = "") -> str:
-    """Locate the opencode executable installed via npm.
-
-    Resolution order:
-      1. Explicit path argument, if it exists.
-      2. ``where opencode`` / ``which opencode`` output (first existing match).
-      3. Known npm install directories (global prefix, AppData\\Roaming\\npm, etc.).
-
-    Raises FileNotFoundError with actionable npm-based instructions if nothing is found.
-    """
-    explicit = coerce_str(explicit, "opencode_executable (find_opencode arg)")
-
-    if explicit:
-        p = Path(explicit)
-        if p.is_file():
-            logger.debug("Using explicit opencode path: %s", explicit)
-            return explicit
-        logger.warning(
-            "Explicit opencode path '%s' does not exist — falling back to auto-detection.",
-            explicit,
-        )
-
-    lookup_cmd = "where" if sys.platform == "win32" else "which"
-    try:
-        result = subprocess.run(
-            [lookup_cmd, "opencode"], capture_output=True, text=True, check=True,
-        )
-        candidates = [
-            line.strip() for line in result.stdout.splitlines() if line.strip()
-        ]
-        # On Windows, `where` often returns both the extensionless Bash-style
-        # launcher (a shell script npm also installs) AND the .cmd / .exe shim.
-        # Only the .cmd/.exe/.bat/.ps1 variants are valid Win32 executables —
-        # the extensionless one fails with "WinError 193: not a valid Win32
-        # application" when launched via subprocess. Filter accordingly.
-        if sys.platform == "win32":
-            exec_exts = (".exe", ".cmd", ".bat", ".ps1")
-            candidates = [
-                p for p in candidates if p.lower().endswith(exec_exts)
-            ] or candidates  # fall back to anything if nothing matches
-        for path in candidates:
-            if Path(path).is_file():
-                logger.info("Found opencode at %s", path)
-                return path
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        pass
-
-    search_dirs: list[Path] = []
-    if sys.platform == "win32":
-        search_dirs.extend(_WINDOWS_EXTRA_DIRS)
-    else:
-        search_dirs.extend([
-            Path.home() / ".npm-global" / "bin",
-            Path.home() / ".local" / "bin",
-            Path("/usr/local/bin"),
-            Path("/usr/bin"),
-        ])
-
-    # Also consult npm itself for its global prefix (works on every platform
-    # as long as Node.js is installed). npm is a .cmd shim on Windows, so
-    # shell=True is required there; on POSIX we invoke it directly.
-    try:
-        npm_prefix = subprocess.run(
-            ["npm", "prefix", "-g"],
-            capture_output=True,
-            text=True,
-            check=True,
-            shell=(sys.platform == "win32"),
-            timeout=5,
-        ).stdout.strip()
-        if npm_prefix:
-            prefix_path = Path(npm_prefix)
-            search_dirs.append(prefix_path)
-            # On POSIX, binaries live under <prefix>/bin
-            if sys.platform != "win32":
-                search_dirs.append(prefix_path / "bin")
-    except Exception as exc:
-        logger.debug("npm prefix lookup failed: %s", exc)
-
-    for directory in search_dirs:
-        for name in _NAMES:
-            candidate = directory / name
-            if candidate.is_file():
-                logger.info("Found opencode at %s", candidate)
-                return str(candidate)
-
-    raise FileNotFoundError(
-        "opencode not found on PATH or in known npm install directories.\n\n"
-        "To fix:\n"
-        "  • Install Node.js (https://nodejs.org) if npm is not available.\n"
-        "  • Run:  npm install -g opencode-ai\n"
-        "  • Then restart the Streamlit app so it picks up the updated PATH.",
-    )
+    return _find_opencode(explicit)
 
 
 # ── Result container ─────────────────────────────────────────────────────── #
@@ -398,94 +290,7 @@ class OpencodeRunner(BaseRunner):
 
     def _kill_opencode_processes(self) -> None:
         """Kill lingering opencode processes (post-npm installation)."""
-        keywords = ["opencode"]
-        try:
-            system = platform.system()
-            if system == "Windows":
-                # Primary method: Use tasklist /fo csv
-                try:
-                    result = subprocess.run(
-                        ["tasklist", "/fo", "csv"],
-                        capture_output=True,
-                        text=True,
-                        timeout=2,
-                    )
-                    found_processes = False
-                    for line in result.stdout.splitlines()[1:]:  # Skip header
-                        if line.strip():
-                            parts = line.split('","')
-                            if len(parts) >= 1:
-                                process_name = parts[0].strip('"').lower()
-                                if any(keyword in process_name for keyword in keywords):
-                                    if len(parts) >= 2:
-                                        pid = parts[1].strip('"')
-                                        try:
-                                            subprocess.run(
-                                                ["taskkill", "/PID", pid, "/F"],
-                                                capture_output=True,
-                                                text=True,
-                                                timeout=2,
-                                            )
-                                            found_processes = True
-                                        except Exception as e:
-                                            logger.warning(
-                                                "Error killing process %s: %s", pid, e,
-                                            )
-                    if not found_processes:
-                        logger.debug("No opencode processes found to kill")
-                    return
-                except subprocess.TimeoutExpired:
-                    logger.debug("Primary process scan timed out, using fallback method")
-                except Exception as e:
-                    logger.warning("Primary process scan failed: %s", e)
-
-                # Fallback: plain tasklist
-                try:
-                    result = subprocess.run(
-                        ["tasklist"], capture_output=True, text=True, timeout=2,
-                    )
-                    found_processes = False
-                    for line in result.stdout.splitlines()[3:]:
-                        parts = line.split()
-                        if len(parts) >= 2:
-                            process_name = parts[0].lower()
-                            if any(keyword in process_name for keyword in keywords):
-                                pid = parts[1]
-                                try:
-                                    subprocess.run(
-                                        ["taskkill", "/PID", pid, "/F"],
-                                        capture_output=True,
-                                        text=True,
-                                        timeout=2,
-                                    )
-                                    found_processes = True
-                                except Exception as e:
-                                    logger.warning(
-                                        "Error killing process %s: %s", pid, e,
-                                    )
-                    if not found_processes:
-                        logger.debug("No opencode processes found to kill (fallback)")
-                except Exception as e:
-                    logger.warning("Fallback process scan failed: %s", e)
-            else:
-                # Unix-like systems (Linux, macOS). `pkill -f` matches full
-                # command line; the -i flag isn't portable (GNU-only), so we
-                # rely on "opencode" being lowercase in the actual invocation.
-                try:
-                    subprocess.run(
-                        ["pkill", "-f", "opencode"],
-                        capture_output=True,
-                        text=True,
-                        timeout=2,
-                    )
-                except FileNotFoundError:
-                    logger.debug("pkill not available on this system")
-                except subprocess.TimeoutExpired:
-                    logger.debug("Unix pkill command timed out")
-                except Exception as e:
-                    logger.warning("Unix pkill failed: %s", e)
-        except Exception as e:
-            logger.warning("Error in opencode process killing: %s", e)
+        kill_processes_by_keywords(["opencode"])
 
     @property
     def estimated_context_tokens(self) -> int:
@@ -802,35 +607,9 @@ class OpencodeRunner(BaseRunner):
 
     def send_cleanup_inquiry(self, candidates: list[str]) -> None:
         """Send an inquiry to opencode about identified cleanup candidates."""
-        if not candidates:
+        inquiry = build_cleanup_inquiry(self.workspace, candidates)
+        if not inquiry:
             return
-
-        workspace_rel = (
-            self.workspace.relative_to(self.workspace)
-            if self.workspace.is_absolute()
-            else self.workspace
-        )
-        inquiry = (
-            f"Workspace: {workspace_rel}\n\n"
-            f"Following files may be outdated or unused:\n"
-        )
-        for i, candidate in enumerate(candidates, 1):
-            inquiry += f"  {i}. {candidate}\n"
-
-        inquiry += (
-            "\nPlease analyze these files and respond with a JSON list of file paths "
-            "that should be archived. These files will be moved to .archive/ "
-            "instead of being deleted, preserving historical versions.\n"
-            "Consider:\n"
-            "- Files clearly temporary, backup, or cache files\n"
-            "- Files not referenced by other code\n"
-            "- Files that appear to be duplicate or superseded versions\n"
-            "- Any __pycache__ directories\n\n"
-            "IMPORTANT: Never select protected paths (.opencode/, .checkpoints/, .archive/) "
-            "for archiving.\n\n"
-            "Respond ONLY with a JSON array of file paths to archive, nothing else. "
-            'Example: ["file1.bak", "file2.tmp"]'
-        )
 
         logger.info(
             "Sending cleanup inquiry to opencode for %d candidates", len(candidates),
@@ -840,152 +619,9 @@ class OpencodeRunner(BaseRunner):
 
     def identify_cleanup_candidates(self) -> list[str]:
         """Identify files that might be outdated or unused."""
-        import re
-
-        candidates: list[str] = []
-        workspace = self.workspace
-
-        _VERSION_PATTERNS = [
-            re.compile(r"\.bak$"),
-            re.compile(r"\.backup$"),
-            re.compile(r"\.old$"),
-            re.compile(r"\.orig$"),
-            re.compile(r"\.tmp$"),
-            re.compile(r"~\d+$"),
-            re.compile(r"\.v\d+$"),
-            re.compile(r"_backup_\d+$"),
-            re.compile(r"_old_\d+$"),
-            re.compile(r"\.\d+$"),
-        ]
-
-        _SOURCE_EXTS = {
-            ".py", ".pyc", ".pyo", ".pyd",
-            ".md", ".txt", ".rst",
-            ".json", ".yaml", ".yml", ".toml", ".cfg", ".ini",
-            ".js", ".ts", ".jsx", ".tsx", ".css", ".scss",
-            ".html", ".xml", ".sh", ".bat", ".ps1",
-        }
-
-        def should_ignore(path: Path) -> bool:
-            if not path.is_file():
-                if not (path.is_dir() and path.name == "__pycache__"):
-                    return True
-            rel = path.relative_to(workspace)
-            if ".checkpoints" in rel.parts:
-                return True
-            if path == workspace / ".checkpoints":
-                return True
-            ignore_dirs = {".git", ".venv", "venv", "node_modules", ".mypy_cache", ".opencode"}
-            if any(part in ignore_dirs for part in rel.parts):
-                return True
-            return False
-
-        def is_versioned_backup(name: str) -> bool:
-            return any(p.search(name) for p in _VERSION_PATTERNS)
-
-        def get_base_name(path: Path) -> str:
-            base = path.name
-            changed = True
-            while changed:
-                changed = False
-                for pattern in _VERSION_PATTERNS:
-                    new_base = pattern.sub("", base)
-                    if new_base != base:
-                        base = new_base
-                        changed = True
-                        break
-            return base
-
-        candidates.extend(
-            self._identify_versioned_backups(
-                workspace, should_ignore, is_versioned_backup, get_base_name,
-            ),
-        )
-        candidates.extend(
-            self._identify_orphaned_files(workspace, should_ignore, _SOURCE_EXTS),
-        )
-
+        candidates = discover_cleanup_candidates(self.workspace)
         if candidates:
             self.send_cleanup_inquiry(candidates)
-
-        return candidates
-
-    def _identify_versioned_backups(
-        self,
-        workspace: Path,
-        should_ignore,
-        is_versioned_backup,
-        get_base_name,
-    ) -> list[str]:
-        candidates: list[str] = []
-        backup_groups: dict[str, list[Path]] = {}
-        all_files: dict[str, Path] = {}
-
-        for path in workspace.rglob("*"):
-            if should_ignore(path):
-                continue
-            all_files[path.name] = path
-            if is_versioned_backup(path.name):
-                base = get_base_name(path)
-                backup_groups.setdefault(base, []).append(path)
-
-        for base_name, backups in backup_groups.items():
-            if base_name in all_files:
-                backups.append(all_files[base_name])
-            backups_sorted = sorted(backups, key=lambda p: len(p.name))
-            for backup in backups_sorted[1:]:
-                candidates.append(str(backup.relative_to(workspace)))
-
-        return candidates
-
-    def _identify_orphaned_files(
-        self,
-        workspace: Path,
-        should_ignore,
-        source_exts: set,
-    ) -> list[str]:
-        import re
-
-        candidates: list[str] = []
-        import_patterns = [
-            (re.compile(r"^(?:from|import)\s+([\w.]+)", re.MULTILINE), "py"),
-            (re.compile(r'require\s*\(\s*["\']([^"\']+)["\']\s*\)', re.MULTILINE), "js"),
-            (re.compile(r'import\s+.*?from\s+["\']([^"\']+)["\']', re.MULTILINE), "js"),
-            (re.compile(r'#include\s*["<]([^">]+)[">]', re.MULTILINE), "c"),
-        ]
-
-        referenced_paths: set[str] = set()
-        for path in workspace.rglob("*"):
-            if should_ignore(path):
-                continue
-            if path.suffix not in source_exts and not path.name.endswith(".h"):
-                continue
-            try:
-                content = path.read_text(encoding="utf-8", errors="ignore")
-                for pattern, ptype in import_patterns:
-                    for match in pattern.finditer(content):
-                        ref = match.group(1)
-                        if ptype == "py":
-                            ref = ref.replace(".", "/")
-                            if not ref.endswith(".py"):
-                                ref += ".py"
-                        referenced_paths.add(ref)
-            except Exception:
-                pass
-
-        for path in workspace.rglob("*"):
-            if should_ignore(path):
-                continue
-            rel_str = str(path.relative_to(workspace))
-
-            if path.is_dir() and path.name == "__pycache__":
-                candidates.append(rel_str)
-                continue
-
-            if path.suffix in {".pyc", ".pyo", ".pyc.tmp"} or path.name.endswith(".pyc"):
-                candidates.append(rel_str)
-                continue
-
         return candidates
 
     def archive_files(self, files: list[str]) -> ArchiveResult:
