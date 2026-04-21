@@ -261,6 +261,20 @@ class BaseLoop:
         else:
             yield _ev("info", "No protected paths to unlock")
 
+    def _archive_before_new_run(self) -> Generator[Event]:
+        """Archive current workspace state before starting a fresh session."""
+        if not hasattr(self, "archiver") or self.archiver is None:
+            return
+        yield _ev("info", "Archiving previous workspace state...")
+        archive_result = self.archiver.archive_before_new_run()
+        if archive_result.success:
+            yield _ev(
+                "info",
+                f"Archived {len(archive_result.archived_files)} files to {archive_result.archive_path}",
+            )
+        else:
+            yield _ev("warn", f"Archive warning: {archive_result.message}")
+
     def _on_successful_output(self, output: str) -> Generator[Event]:
         """Hook for subclasses to do something before context monitor updates."""
         yield from []
@@ -438,15 +452,7 @@ class BaseLoop:
                 "info",
                 "Context limit approaching — writing summary.md and restarting session.",
             )
-            yield from self._forced_summary("")
-            self.runner.stop()
-            self.runner.reset_session()
-            self.runner.reset_context_counter()
-            self.ctx_monitor.reset()
-            restart_prompt = self._get_restart_prompt_for_continuation()
-            yield _ev("opencode_prompt", restart_prompt)
-            yield from self.runner.start(restart_prompt)
-            self.runner.mark_session_active()
+            yield from self._restart_from_summary_output("")
 
     def _should_extend_timeout(self, progress) -> bool:
         if self._timeout_extension_count >= self._max_timeout_extensions:
@@ -540,8 +546,27 @@ class BaseLoop:
         )
         yield _ev("opencode_prompt", msg)
         yield from self.runner.send(msg)
+        compaction_output, _timed_out = self.runner.read_output()
+        if compaction_output.strip():
+            yield _ev("opencode_output", compaction_output)
+        yield _ev(
+            "info",
+            "Compaction complete - writing summary.md and restarting session.",
+        )
+        yield from self._restart_from_summary_output(compaction_output)
+
+    def _restart_from_summary_output(self, last_output: str) -> Generator[Event]:
+        """Write summary.md, reset state, and start a fresh opencode session."""
+        yield from self._forced_summary(last_output)
+        yield from self._archive_before_new_run()
+        self.runner.stop()
+        self.runner.reset_session()
+        self.runner.reset_context_counter()
         self.ctx_monitor.reset()
-        yield _ev("info", "Compaction prompt with deletion permissions sent.")
+        restart_prompt = self._get_restart_prompt_for_continuation()
+        yield _ev("opencode_prompt", restart_prompt)
+        yield from self.runner.start(restart_prompt)
+        self.runner.mark_session_active()
 
     def _update_context_monitor(self) -> Generator[Event]:
         files_read = self.runner.get_files_read()

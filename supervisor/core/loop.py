@@ -62,15 +62,7 @@ class SupervisorLoop(BaseLoop):
     def _run(self) -> Generator[Event]:
         import time
 
-        yield _ev("info", "Archiving previous workspace state...")
-        archive_result = self.archiver.archive_before_new_run()
-        if archive_result.success:
-            yield _ev(
-                "info",
-                f"Archived {len(archive_result.archived_files)} files to {archive_result.archive_path}",
-            )
-        else:
-            yield _ev("warn", f"Archive warning: {archive_result.message}")
+        yield from self._archive_before_new_run()
 
         if self.config.plan_mode_rounds > 0:
             yield from self._run_plan_mode()

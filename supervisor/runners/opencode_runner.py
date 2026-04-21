@@ -246,16 +246,25 @@ class OpencodeRunner(BaseRunner):
             if self._session_id:
                 logger.info("Session ID captured: %s", self._session_id)
                 yield {"level": "info", "msg": f"Session ID captured: {self._session_id}"}
+                self._session_active = True
+                self.enable_continuation(True)
+                yield from self._run_prompt(validated)
             else:
                 logger.warning(
-                    "Could not isolate a newly-created session; falling back to --continue.",
+                    "Could not isolate a newly-created session after BREVITY_COMMAND. "
+                    "Running the initial prompt in a brand-new session instead of "
+                    "risking an old --continue attachment.",
                 )
                 yield {
                     "level": "warn",
-                    "msg": "Session ID capture failed; using --continue fallback.",
+                    "msg": "Session ID capture failed; forcing a fresh prompt session.",
                 }
-            self._session_active = True
-            self.enable_continuation(True)
+                self._session_id = None
+                self.enable_continuation(False)
+                yield from self._run_prompt(self._fresh_session_prompt(validated))
+                self._session_active = True
+                self.enable_continuation(True)
+            return
         yield from self._run_prompt(validated)
 
     def send(self, message: str) -> Generator[dict]:
@@ -492,6 +501,17 @@ class OpencodeRunner(BaseRunner):
         self._use_continue = False
         self._session_id = None
 
+    def _fresh_session_prompt(self, prompt: str) -> str:
+        """Inline brevity rules when we cannot attach to the seed session.
+
+        The initial BREVITY_COMMAND may create a new session even when session
+        discovery fails. Reusing generic ``--continue`` here can accidentally
+        bind the real task to an older unrelated session. Instead, compose a
+        single prompt that restates the brevity rules and lets opencode create
+        a brand-new task session for the actual work.
+        """
+        return f"{BREVITY_COMMAND.strip()}\n\n{prompt}"
+
     def _list_all_session_ids(self) -> set[str]:
         """Enumerate every session ID opencode currently reports.
 
@@ -524,7 +544,12 @@ class OpencodeRunner(BaseRunner):
             logger.warning("Failed to list sessions: %s", exc)
             return set()
 
-    def _capture_new_session_id(self, before: set[str]) -> str | None:
+    def _capture_new_session_id(
+        self,
+        before: set[str],
+        attempts: int = 4,
+        delay_seconds: float = 0.25,
+    ) -> str | None:
         """Return the single session ID that appeared since the `before` snapshot.
 
         When exactly one new ID is present, that is unambiguously the session
@@ -534,21 +559,29 @@ class OpencodeRunner(BaseRunner):
         normally guarantees exactly one new ID, but we stay defensive in case
         something external (another user, a daemon) creates sessions too.
         """
-        after = self._list_all_session_ids()
-        new_ids = after - before
-        if len(new_ids) == 1:
-            session_id = next(iter(new_ids))
-            logger.info("Captured session ID: %s", session_id)
-            return session_id
-        if len(new_ids) > 1:
-            logger.warning(
-                "Ambiguous session capture: %d new sessions appeared (%s); "
-                "refusing to pick one.",
-                len(new_ids),
-                sorted(new_ids),
-            )
-        else:
-            logger.warning("No new session appeared after BREVITY_COMMAND.")
+        for attempt in range(1, attempts + 1):
+            after = self._list_all_session_ids()
+            new_ids = after - before
+            if len(new_ids) == 1:
+                session_id = next(iter(new_ids))
+                logger.info("Captured session ID: %s", session_id)
+                return session_id
+            if len(new_ids) > 1:
+                logger.warning(
+                    "Ambiguous session capture after attempt %d/%d: %d new sessions "
+                    "appeared (%s); refusing to pick one.",
+                    attempt,
+                    attempts,
+                    len(new_ids),
+                    sorted(new_ids),
+                )
+                return None
+            if attempt < attempts:
+                time.sleep(delay_seconds)
+        logger.warning(
+            "No new session appeared after BREVITY_COMMAND (%d attempts).",
+            attempts,
+        )
         return None
 
     def reset_context_counter(self) -> None:
