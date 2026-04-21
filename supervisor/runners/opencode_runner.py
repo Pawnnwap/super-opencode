@@ -19,6 +19,7 @@ import logging
 import os
 import subprocess
 import sys
+import threading
 import time
 from collections.abc import Callable, Generator
 from pathlib import Path
@@ -32,7 +33,6 @@ from supervisor.analyzers.opencode_step_detector import (
 from supervisor.prompts.commands import BREVITY_COMMAND
 from supervisor.runners.base_runner import BaseRunner
 from supervisor.runners.opencode_locator import find_opencode as _find_opencode
-from supervisor.runners.process_utils import kill_processes_by_keywords
 from supervisor.utils.text_utils import coerce_str, quote_prompt, strip_thinking_blocks
 from supervisor.workspace.cleanup_candidates import (
     build_cleanup_inquiry,
@@ -43,6 +43,14 @@ from supervisor.workspace.workspace_archiver import ArchiveResult, WorkspaceArch
 logger = logging.getLogger(__name__)
 
 _DOT_MODEL_FILE = Path(__file__).parent.parent / ".opencode_model"
+
+# Process-wide lock serializing the session-creation critical section.
+# Opencode's `session list` is not strictly workspace-scoped — concurrent
+# start() calls can see each other's just-created sessions and misattribute
+# them, causing subsequent `--session <id>` sends to route messages into the
+# wrong task's session. Holding this lock across the "snapshot → run BREVITY
+# → snapshot → diff" window guarantees the diff contains exactly our session.
+_SESSION_CAPTURE_LOCK = threading.Lock()
 
 
 def find_opencode(explicit: str = "") -> str:
@@ -231,11 +239,21 @@ class OpencodeRunner(BaseRunner):
         if not self._session_active:
             logger.info("New session detected. Sending brevity command...")
             yield {"level": "info", "msg": "New session detected. Sending brevity command..."}
-            yield from self._run_prompt(BREVITY_COMMAND)
-            self._session_id = self._fetch_latest_session_id()
+            with _SESSION_CAPTURE_LOCK:
+                before = self._list_all_session_ids()
+                yield from self._run_prompt(BREVITY_COMMAND)
+                self._session_id = self._capture_new_session_id(before)
             if self._session_id:
                 logger.info("Session ID captured: %s", self._session_id)
                 yield {"level": "info", "msg": f"Session ID captured: {self._session_id}"}
+            else:
+                logger.warning(
+                    "Could not isolate a newly-created session; falling back to --continue.",
+                )
+                yield {
+                    "level": "warn",
+                    "msg": "Session ID capture failed; using --continue fallback.",
+                }
             self._session_active = True
             self.enable_continuation(True)
         yield from self._run_prompt(validated)
@@ -285,12 +303,9 @@ class OpencodeRunner(BaseRunner):
                 self._process.kill()
             except Exception as exc:
                 logger.warning("Error killing process: %s", exc)
-
-        self._kill_opencode_processes()
-
-    def _kill_opencode_processes(self) -> None:
-        """Kill lingering opencode processes (post-npm installation)."""
-        kill_processes_by_keywords(["opencode"])
+        # Intentionally do NOT sweep all opencode processes by name here:
+        # in multi-task mode, sibling tasks are running their own opencode
+        # subprocesses and a broad kill would cancel them too.
 
     @property
     def estimated_context_tokens(self) -> int:
@@ -477,8 +492,13 @@ class OpencodeRunner(BaseRunner):
         self._use_continue = False
         self._session_id = None
 
-    def _fetch_latest_session_id(self) -> str | None:
-        """Run `opencode session list` and return the most recently updated session ID."""
+    def _list_all_session_ids(self) -> set[str]:
+        """Enumerate every session ID opencode currently reports.
+
+        Returns an empty set on failure. Used as a snapshot to diff before and
+        after BREVITY_COMMAND so we can isolate *our* newly-created session and
+        avoid picking up another concurrent task's session ID.
+        """
         try:
             exe = find_opencode(self.opencode_executable)
             use_shell = sys.platform == "win32" and exe.lower().endswith(
@@ -494,14 +514,41 @@ class OpencodeRunner(BaseRunner):
                 timeout=10,
                 shell=use_shell,
             )
+            ids: set[str] = set()
             for line in result.stdout.splitlines():
                 stripped = line.strip()
                 if stripped.startswith("ses_"):
-                    session_id = stripped.split()[0]
-                    logger.info("Captured session ID: %s", session_id)
-                    return session_id
+                    ids.add(stripped.split()[0])
+            return ids
         except Exception as exc:
-            logger.warning("Failed to fetch session ID: %s", exc)
+            logger.warning("Failed to list sessions: %s", exc)
+            return set()
+
+    def _capture_new_session_id(self, before: set[str]) -> str | None:
+        """Return the single session ID that appeared since the `before` snapshot.
+
+        When exactly one new ID is present, that is unambiguously the session
+        this runner just created. When zero or more-than-one new IDs are
+        present we refuse to guess and return None; callers then fall back to
+        the generic `--continue` flag. The surrounding module-level lock
+        normally guarantees exactly one new ID, but we stay defensive in case
+        something external (another user, a daemon) creates sessions too.
+        """
+        after = self._list_all_session_ids()
+        new_ids = after - before
+        if len(new_ids) == 1:
+            session_id = next(iter(new_ids))
+            logger.info("Captured session ID: %s", session_id)
+            return session_id
+        if len(new_ids) > 1:
+            logger.warning(
+                "Ambiguous session capture: %d new sessions appeared (%s); "
+                "refusing to pick one.",
+                len(new_ids),
+                sorted(new_ids),
+            )
+        else:
+            logger.warning("No new session appeared after BREVITY_COMMAND.")
         return None
 
     def reset_context_counter(self) -> None:

@@ -6,7 +6,11 @@ from pathlib import Path
 
 from openai import OpenAI
 
-from supervisor.runners.opencode_runner import OpencodeRunner, find_opencode
+from supervisor.runners.opencode_runner import (
+    _SESSION_CAPTURE_LOCK,
+    OpencodeRunner,
+    find_opencode,
+)
 from supervisor.utils.text_utils import normalize_model_response
 
 
@@ -68,8 +72,15 @@ def test_opencode_connectivity(
 
     def _inner():
         runner._alive = True
-        for _ in runner._run_prompt("hi"):
-            pass
+        # Hold the session-capture lock while the probe runs. The probe creates
+        # a throwaway opencode session in a temp workspace, and concurrently a
+        # real task's start() uses a before/after session-list diff to isolate
+        # *its* session ID. Letting the probe fire inside that diff window
+        # would make the diff ambiguous and force the task into a --continue
+        # fallback. Holding the lock serialises the two paths.
+        with _SESSION_CAPTURE_LOCK:
+            for _ in runner._run_prompt("hi"):
+                pass
         _output, timed_out = runner.read_output(timeout=25)
         if timed_out:
             return False, "opencode timed out reading output."

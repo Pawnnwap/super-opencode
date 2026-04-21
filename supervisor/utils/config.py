@@ -26,6 +26,11 @@ class SupervisorConfig:
     compact_intermediate_steps: bool = False
     plan_mode_rounds: int = 0
     enable_python_scanner: bool = True
+    # OpenAI credentials captured at enqueue time so the running loop is not
+    # affected by later UI changes to os.environ. When empty, downstream
+    # clients fall back to the env vars (OPENAI_API_KEY / OPENAI_BASE_URL).
+    openai_api_key: str = ""
+    openai_base_url: str = ""
 
     def to_state_dict(self) -> dict[str, object]:
         data = asdict(self)

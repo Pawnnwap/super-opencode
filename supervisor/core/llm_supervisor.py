@@ -157,8 +157,18 @@ class LLMSupervisor:
         max_history_turns: int = 40,
         compact_intermediate_steps: bool = False,
         model_backup: str | None = None,
+        api_key: str | None = None,
+        base_url: str | None = None,
     ):
-        self._client = OpenAI()
+        # Prefer explicitly-passed credentials over process env. This isolates
+        # concurrent tasks that each captured their own credentials at enqueue
+        # time from one another and from any later UI-driven env mutation.
+        client_kwargs: dict[str, str] = {}
+        if api_key:
+            client_kwargs["api_key"] = api_key
+        if base_url:
+            client_kwargs["base_url"] = base_url
+        self._client = OpenAI(**client_kwargs)
         self._model = model
         self._model_backup = model_backup
         self._workspace = workspace

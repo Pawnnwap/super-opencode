@@ -71,8 +71,18 @@ class ProtocolWizard:
     """Drives a guided conversation to produce a refined protocol.md.
     """
 
-    def __init__(self, model: str = "gpt-4o"):
-        self._client = OpenAI()
+    def __init__(
+        self,
+        model: str = "gpt-4o",
+        api_key: str | None = None,
+        base_url: str | None = None,
+    ):
+        client_kwargs: dict[str, str] = {}
+        if api_key:
+            client_kwargs["api_key"] = api_key
+        if base_url:
+            client_kwargs["base_url"] = base_url
+        self._client = OpenAI(**client_kwargs)
         self._model = model
 
     # ------------------------------------------------------------------ #

@@ -25,28 +25,37 @@ class JobManager:
     def enqueue_job(self, job_type: str, config: SupervisorConfig) -> str:
         """Submit a job to be executed in the background."""
         new_workspace = Path(config.workspace).resolve()
-        for jid in self.store.list_jobs():
-            state = self.store.get_job_state(jid)
-            if state and state.get("state") == "RUNNING":
-                existing_workspace = Path(state.get("config", {}).get("workspace", "")).resolve()
-                if existing_workspace == new_workspace:
-                    raise ValueError(f"Another task is already running in this workspace: {new_workspace}")
-
+        # Block on any non-terminal state, not just RUNNING. A PENDING peer
+        # would otherwise be allowed to share the workspace and race us for
+        # `.opencode/sessions`, defeating per-task session isolation.
+        active_states = {"PENDING", "RUNNING"}
         job_id = f"{job_type}_{uuid.uuid4().hex[:8]}"
         stop_event = threading.Event()
 
+        # Hold the lock across the collision check AND the PENDING write so
+        # two concurrent enqueues for the same workspace cannot both pass the
+        # guard. Without this, each caller could read the store before either
+        # one has written its PENDING record.
         with self._lock:
+            for jid in self.store.list_jobs():
+                state = self.store.get_job_state(jid)
+                if state and state.get("state") in active_states:
+                    existing_workspace = Path(state.get("config", {}).get("workspace", "")).resolve()
+                    if existing_workspace == new_workspace:
+                        raise ValueError(f"Another task is already active in this workspace: {new_workspace}")
+
             self._active_jobs[job_id] = {"stop_event": stop_event, "loop": None}
 
-        # Initial state
-        self.store.save_job_state(job_id, {
-            "type": job_type,
-            "state": "PENDING",
-            "progress": 0.0,
-            "heartbeat_at": time.time(),
-            "config": self._serialize_config(config),
-            "report": "",
-        })
+            # Initial state — written while still holding the lock so the
+            # next enqueue's collision scan is guaranteed to observe it.
+            self.store.save_job_state(job_id, {
+                "type": job_type,
+                "state": "PENDING",
+                "progress": 0.0,
+                "heartbeat_at": time.time(),
+                "config": self._serialize_config(config),
+                "report": "",
+            })
 
         # Start worker thread. The name shows up in log records (via the
         # threadName formatter token) so concurrent jobs can be told apart

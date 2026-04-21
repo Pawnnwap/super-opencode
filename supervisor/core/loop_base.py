@@ -112,6 +112,8 @@ class BaseLoop:
             max_history_turns=self.config.max_history_turns,
             compact_intermediate_steps=self.config.compact_intermediate_steps,
             model_backup=self.config.supervisor_model_backup,
+            api_key=getattr(self.config, "openai_api_key", "") or None,
+            base_url=getattr(self.config, "openai_base_url", "") or None,
         )
         if max_protected_files_for_suggestions is not None:
             kwargs["max_protected_files_for_suggestions"] = (

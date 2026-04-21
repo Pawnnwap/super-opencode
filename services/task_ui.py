@@ -829,7 +829,11 @@ def generate_meta_protocol(repo_root: Path) -> None:
     apply_api_config()
     with st.spinner("Generating meta_protocol.md..."):
         snap = snapshot_codebase(repo_root)
-        builder = MetaProtocolBuilder(model=st.session_state.supervisor_model)
+        builder = MetaProtocolBuilder(
+            model=st.session_state.supervisor_model,
+            api_key=st.session_state.openai_key or None,
+            base_url=(st.session_state.base_url or "").strip() or None,
+        )
         try:
             meta_md = builder.build(
                 evolution_goal=st.session_state.evo_goal,
