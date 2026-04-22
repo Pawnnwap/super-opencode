@@ -36,6 +36,7 @@ from supervisor.core.llm_support.judgement import (
     verify_protocol_alignment as _verify_protocol_alignment_impl,
 )
 from supervisor.core.llm_support.models import (
+    _DONE_PHRASES,
     _OPENCODE_GENERATED_MD,
     _SKIP_DIR_PREFIXES,
     _SKIP_DIRS,
@@ -329,4 +330,4 @@ class LLMSupervisor:
         return _truncate_messages_for_limit_impl(messages, model_limit)
 
 
-__all__ = ["LLMSupervisor", "StepContext", "SupervisorVerdict"]
+__all__ = ["LLMSupervisor", "StepContext", "SupervisorVerdict", "_DONE_PHRASES"]
