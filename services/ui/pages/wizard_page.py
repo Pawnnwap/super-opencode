@@ -6,17 +6,21 @@ from pathlib import Path
 import streamlit as st
 from openai import OpenAI
 
-from services.connectivity import test_opencode_connectivity, test_supervisor_connectivity
-from services.opencode_config import fetch_opencode_models
-from services.protocol_ui import (
+from services.config.connectivity import (
+    test_opencode_connectivity,
+    test_supervisor_connectivity,
+)
+from services.config.opencode_config import fetch_opencode_models
+from services.config.settings import apply_api_config, save_settings
+from services.runtime.workspace_cleanup import clean_workspace_artifacts
+from services.ui.protocol_ui import (
     render_existing_protocol_banner,
     render_protocol_quality,
     save_protocol,
 )
-from services.settings import apply_api_config, save_settings
-from services.workspace_cleanup import clean_workspace_artifacts
 from supervisor.monitoring.session_tracker import estimate_tokens
 from supervisor.protocols.protocol_wizard import ProtocolWizard
+from supervisor.utils.filesystem.path_filters import should_skip_path
 from supervisor.utils.text_utils import normalize_model_response
 
 
@@ -267,8 +271,6 @@ def page_wizard() -> None:
             all_files = []
             if workspace_path and workspace_path.exists():
                 try:
-                    from supervisor.utils.path_filters import should_skip_path
-
                     all_files = sorted(
                         [
                             str(path.relative_to(workspace_path)).replace("\\", "/")

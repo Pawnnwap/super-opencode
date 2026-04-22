@@ -19,7 +19,7 @@ from supervisor.analyzers.opencode_step_detector import StepProgress
 from supervisor.core.llm_supervisor import LLMSupervisor, StepContext
 from supervisor.core.loop_base import BaseLoop, Event, LoopState, _ev
 from supervisor.utils.config import SupervisorConfig
-from supervisor.utils.file_ops import safe_read_text
+from supervisor.utils.filesystem.file_ops import safe_read_text
 
 logger = logging.getLogger(__name__)
 

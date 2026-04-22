@@ -4,13 +4,13 @@ from pathlib import Path
 
 import streamlit as st
 
-from services.log_ui import format_status_pill, safe_logs
-from services.opencode_config import (
+from services.config.opencode_config import (
     add_custom_provider_to_config,
     find_opencode_config_dir,
     get_opencode_config_file,
 )
-from services.settings import save_settings
+from services.config.settings import save_settings
+from services.ui.log_ui import format_status_pill, safe_logs
 
 PILL_MAP = {
     "PENDING": '<span class="pill pill-idle">queued</span>',
@@ -31,7 +31,7 @@ def _clear_page_state(target_page: str) -> None:
 
 
 def _get_opencode_config_file(config_dir: Path) -> Path:
-    project_root = Path(__file__).resolve().parents[1]
+    project_root = Path(__file__).resolve().parents[2]
     return get_opencode_config_file(
         config_dir,
         project_root,

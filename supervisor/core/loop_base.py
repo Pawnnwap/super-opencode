@@ -11,7 +11,7 @@ from supervisor.utils.experience_tracker import (
     log_evolution_summary,
     update_experience,
 )
-from supervisor.utils.file_ops import safe_read_text
+from supervisor.utils.filesystem.file_ops import safe_read_text
 from supervisor.utils.text_utils import sanitize_event_message, strip_thinking_blocks
 
 logger = logging.getLogger(__name__)
@@ -61,7 +61,7 @@ class BaseLoop:
     def _setup_core_services(self, agent: str = ""):
         from supervisor.analyzers.codebase_analyzer import snapshot_codebase
         from supervisor.protocols.protocol import load_protocol
-        from supervisor.utils.gitignore_utils import update_gitignore_files
+        from supervisor.utils.filesystem.gitignore_utils import update_gitignore_files
         from supervisor.workspace.workspace_archiver import WorkspaceArchiver
 
         # Update .gitignore files

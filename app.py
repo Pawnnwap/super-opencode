@@ -9,19 +9,26 @@ from pathlib import Path
 
 import streamlit as st
 
-from services.app_bootstrap import (
+from services.config.opencode_config import (
+    fetch_opencode_models,
+    find_opencode_config_dir,
+    get_opencode_config_file,
+)
+from services.config.settings import load_settings
+from services.jobs.job_manager import JobManager
+from services.runtime.app_bootstrap import (
     auto_upgrade_dcp as _auto_upgrade_dcp,
     auto_upgrade_opencode as _auto_upgrade_opencode,
 )
-from services.app_shell import apply_page_shell
-from services.job_manager import JobManager
-from services.opencode_config import fetch_opencode_models, find_opencode_config_dir, get_opencode_config_file
-from services.protocol_ui import render_existing_protocol_banner
-from services.settings import load_settings
-from services.sidebar_ui import PILL_MAP, render_sidebar
-from services.task_ui import page_evolve as _page_evolve_impl, page_run as _page_run_impl
-from services.wizard_page import page_wizard
-from services.workspace_cleanup import clean_workspace_artifacts
+from services.runtime.workspace_cleanup import clean_workspace_artifacts
+from services.ui.app_shell import apply_page_shell
+from services.ui.protocol_ui import render_existing_protocol_banner
+from services.ui.sidebar_ui import PILL_MAP, render_sidebar
+from services.ui.pages.task_ui import (
+    page_evolve as _page_evolve_impl,
+    page_run as _page_run_impl,
+)
+from services.ui.pages.wizard_page import page_wizard
 
 
 @st.cache_resource

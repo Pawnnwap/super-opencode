@@ -1,146 +1,61 @@
-"""supervisor/llm_supervisor.py — OpenAI-powered judge."""
+"""supervisor/llm_supervisor.py - OpenAI-powered judge."""
 
 from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass, field
 from pathlib import Path
 
 from openai import OpenAI
 
-from supervisor.core.protocol_alignment import (
-    AlignmentResult,
-    verify_protocol_alignment as _verify_protocol_alignment,
+from supervisor.core.llm_support.chat import (
+    chat as _chat_impl,
+    chat_with_retry as _chat_with_retry_impl,
+    fit_request_to_budget as _fit_request_to_budget_impl,
+    truncate_messages_for_limit as _truncate_messages_for_limit_impl,
+    truncate_older_turns as _truncate_older_turns_impl,
 )
-from supervisor.core.supervisor_context import SupervisorContextManager
-from supervisor.monitoring.session_tracker import (
-    estimate_request_tokens,
-    truncate_with_fallback,
-    warn_if_exceeds_limit,
+from supervisor.core.llm_support.history import (
+    compact_history as _compact_history_impl,
+    estimate_current_tokens as _estimate_current_tokens_impl,
+    extract_and_store_opencode_output as _extract_and_store_opencode_output_impl,
+    log_prompt as _log_prompt_impl,
+    should_omit_step_context as _should_omit_step_context_impl,
+    should_record_turn as _should_record_turn_impl,
+    update_system_prompt as _update_system_prompt_impl,
 )
-from supervisor.monitoring.token_estimator import should_truncate
+from supervisor.core.llm_support.judgement import (
+    analyze_protocol as _analyze_protocol_impl,
+    ask_for_compaction_instructions as _ask_for_compaction_instructions_impl,
+    ask_for_deletion_permission as _ask_for_deletion_permission_impl,
+    generate_suggestions as _generate_suggestions_impl,
+    judge as _judge_impl,
+    judge_plan as _judge_plan_impl,
+    judge_with_step_context as _judge_with_step_context_impl,
+    report_final_status as _report_final_status_impl,
+    verify_protocol_alignment as _verify_protocol_alignment_impl,
+)
+from supervisor.core.llm_support.models import (
+    _OPENCODE_GENERATED_MD,
+    _SKIP_DIR_PREFIXES,
+    _SKIP_DIRS,
+    _check_completion_phrases,
+    _get_model_token_limit,
+    _is_token_limit_error,
+    StepContext,
+    SupervisorVerdict,
+)
+from supervisor.core.llm_support.context import SupervisorContextManager
 from supervisor.protocols.protocol import Protocol
-from supervisor.protocols.protocol_analyzer import ProtocolAnalysis, ProtocolAnalyzer
-from supervisor.utils.path_filters import DEFAULT_IGNORE_DIRS, DEFAULT_IGNORE_PREFIXES
-from supervisor.utils.text_utils import normalize_model_response
+from supervisor.protocols.alignment import AlignmentResult
+from supervisor.protocols.protocol_analyzer import ProtocolAnalysis
 from supervisor.workspace.ignore_patterns import IgnoreMatcher
 
 logger = logging.getLogger(__name__)
 
 
-def _get_model_token_limit(model: str) -> int:
-    """Get the maximum input token limit for a given model."""
-    return 128_000
-
-
-_TOKEN_LIMIT_ERROR_MARKERS = (
-    "range of input length",
-    "input length",
-    "input token count",
-    "maximum number of tokens",
-    "maximum context length",
-    "context length exceeded",
-    "context_length_exceeded",
-    "max tokens",
-    "exceeds the maximum",
-    "too many tokens",
-    "token count exceeds",
-    "prompt is too long",
-    "request too large",
-    "reduce the length",
-)
-
-
-def _is_token_limit_error(exc: Exception) -> bool:
-    """Return True when the error indicates the prompt exceeded the model's token limit."""
-    message = str(exc).lower()
-    if any(marker in message for marker in _TOKEN_LIMIT_ERROR_MARKERS):
-        return True
-    body = getattr(exc, "body", None)
-    if isinstance(body, dict):
-        err = body.get("error") if isinstance(body.get("error"), dict) else body
-        code = str(err.get("code", "")) if isinstance(err, dict) else ""
-        status = str(err.get("status", "")) if isinstance(err, dict) else ""
-        msg = str(err.get("message", "")).lower() if isinstance(err, dict) else ""
-        if status == "INVALID_ARGUMENT" and any(
-            marker in msg for marker in _TOKEN_LIMIT_ERROR_MARKERS
-        ):
-            return True
-        if code in {"context_length_exceeded", "string_above_max_length"}:
-            return True
-    return False
-
-
-def _check_completion_phrases(reply: str, phrases: list[str]) -> bool:
-    """Check if any completion phrase appears positively in the reply."""
-    reply_lower = reply.lower()
-
-    # Negation patterns that should invalidate a match
-    negation_prefixes = [
-        r"not\s+", r"never\s+", r"failed\s+to\s+", r"unable\s+to\s+",
-        r"did\s+not\s+", r"does\s+not\s+", r"don't\s+", r"doesn't\s+",
-        r"won't\s+", r"cannot\s+", r"can't\s+",
-    ]
-
-    for phrase in phrases:
-        # Build regex with word boundaries
-        pattern = r"\b" + re.escape(phrase) + r"\b"
-
-        # Find all matches with their positions
-        for match in re.finditer(pattern, reply_lower):
-            start = match.start()
-            # Check ~50 chars before the match for negation
-            prefix_context = reply_lower[max(0, start - 50):start]
-
-            # If no negation pattern precedes this match, it's a valid positive signal
-            if not any(re.search(neg, prefix_context) for neg in negation_prefixes):
-                return True
-    return False
-
-
-# Markdown files generated by opencode that should be excluded
-# when searching for external feedback files.
-_OPENCODE_GENERATED_MD: set[str] = {
-    "summary.md",
-    "failure_report.md",
-    "evolution_report.md",
-}
-
-_SKIP_DIRS = DEFAULT_IGNORE_DIRS | {".opencode", "opencode_supervisor.egg-info"}
-_SKIP_DIR_PREFIXES = DEFAULT_IGNORE_PREFIXES
-
-
-_DONE_PHRASES = [
-    "all targets met",
-    "all targets are met",
-    "targets achieved",
-    "task complete",
-    "task is complete",
-    "objectives met",
-    "protocol satisfied",
-]
-
-
-@dataclass
-class SupervisorVerdict:
-    raw: str
-    all_targets_met: bool
-    feedback: str
-
-
-@dataclass
-class StepContext:
-    current_step: int = 0
-    total_steps_estimate: int = 5
-    phase: str = "unknown"
-    completed_phases: list[str] = field(default_factory=list)
-
-
 class LLMSupervisor:
-    """Wraps an OpenAI chat client. Protocol is the system prompt;
-    conversation history gives the supervisor persistent memory.
-    """
+    """Wraps OpenAI chat client. Protocol is system prompt; history is memory."""
 
     _INTERMEDIATE_STEP_MARKER = "_is_intermediate_step"
 
@@ -160,14 +75,12 @@ class LLMSupervisor:
         api_key: str | None = None,
         base_url: str | None = None,
     ):
-        # Prefer explicitly-passed credentials over process env. This isolates
-        # concurrent tasks that each captured their own credentials at enqueue
-        # time from one another and from any later UI-driven env mutation.
         client_kwargs: dict[str, str] = {}
         if api_key:
             client_kwargs["api_key"] = api_key
         if base_url:
             client_kwargs["base_url"] = base_url
+
         self._client = OpenAI(**client_kwargs)
         self._model = model
         self._model_backup = model_backup
@@ -176,13 +89,16 @@ class LLMSupervisor:
         self._system = self._system_base
         if extra_system:
             self._system += f"\n\n{extra_system}"
+
         self._protocol_target = protocol.target_section
         self._history: list[dict] = []
         self._read_external_feedback = read_external_feedback
         self._model_input_limit = _get_model_token_limit(model)
         self._max_tokens = min(max_tokens, self._model_input_limit)
         self._token_warnings: list[str] = []
-        self._max_protected_files_for_suggestions = max_protected_files_for_suggestions
+        self._max_protected_files_for_suggestions = (
+            max_protected_files_for_suggestions
+        )
         self._truncation_enabled = truncation_enabled
         self._max_history_turns = max_history_turns
         self._compact_intermediate_steps = compact_intermediate_steps
@@ -204,12 +120,10 @@ class LLMSupervisor:
         )
 
     def _get_model_limit_for_model(self, model: str) -> int:
-        """Get token limit for a specific model (handles backup model)."""
         return _get_model_token_limit(model)
 
     @staticmethod
     def _extract_token_limit_from_error(exc: Exception) -> int | None:
-        """Extract the numeric token limit from a provider error message, if present."""
         text = str(exc)
         body = getattr(exc, "body", None)
         if isinstance(body, dict):
@@ -268,59 +182,14 @@ class LLMSupervisor:
         return self._context.build_experience_context()
 
     def judge(self, opencode_output: str) -> SupervisorVerdict:
-        from supervisor.prompts.templates import (
-            build_context_blocks,
-            build_judge_prompt,
-        )
-
-        experience_context = self._build_experience_context()
-        protected_context, feedback_context = self._get_evaluation_context()
-
-        context_blocks = build_context_blocks(feedback_context, protected_context, experience_context)
-        msg = build_judge_prompt(opencode_output, context_blocks=context_blocks)
-        history_msg = build_judge_prompt(opencode_output, context_blocks="")
-        return self._chat(msg, history_content=history_msg)
+        return _judge_impl(self, opencode_output)
 
     def judge_with_step_context(
         self,
         opencode_output: str,
         step_context: StepContext,
     ) -> SupervisorVerdict:
-        from supervisor.prompts import JUDGE_STEP_PROMPT
-        protected_context, feedback_context = self._get_evaluation_context()
-        phases_str = (
-            ", ".join(step_context.completed_phases)
-            if step_context.completed_phases
-            else "none"
-        )
-        experience_context = self._build_experience_context()
-
-        # Token-aware step context omission
-        omit_sc = self._should_omit_step_context(
-            opencode_output, experience_context, feedback_context, protected_context,
-        )
-
-        msg = JUDGE_STEP_PROMPT.format(
-            current_step=step_context.current_step,
-            total_steps=step_context.total_steps_estimate,
-            phase=step_context.phase,
-            completed_phases=phases_str,
-            experience_context=experience_context,
-            feedback_context=feedback_context,
-            protected_context=protected_context,
-            opencode_output=opencode_output,
-        )
-        history_msg = JUDGE_STEP_PROMPT.format(
-            current_step=0 if omit_sc else step_context.current_step,
-            total_steps=0 if omit_sc else step_context.total_steps_estimate,
-            phase="" if omit_sc else step_context.phase,
-            completed_phases="" if omit_sc else phases_str,
-            experience_context="",
-            feedback_context="",
-            protected_context="",
-            opencode_output=opencode_output,
-        )
-        return self._chat(msg, history_content=history_msg)
+        return _judge_with_step_context_impl(self, opencode_output, step_context)
 
     def judge_plan(
         self,
@@ -329,108 +198,30 @@ class LLMSupervisor:
         total_plan_rounds: int,
         step_context: StepContext | None = None,
     ) -> SupervisorVerdict:
-        """Evaluate opencode's plan output during the plan phase.
-
-        Unlike judge/judge_with_step_context this method explicitly tells the
-        supervisor that opencode is still *planning* — no code changes have been
-        made yet.  The verdict's ``feedback`` is used as the next prompt sent to
-        opencode; ``all_targets_met`` is intentionally never set True here so the
-        plan phase always runs for the configured number of rounds before handing
-        off to build mode.
-
-        Args:
-            opencode_output: The raw text produced by opencode in this round.
-            plan_round: 1-based index of the current plan round.
-            total_plan_rounds: Total number of plan rounds configured.
-            step_context: Optional step/phase context from the step detector.
-
-        Returns:
-            SupervisorVerdict with feedback to send back to opencode.
-
-        """
-        from supervisor.prompts.templates import (
-            build_context_blocks,
-            build_plan_judge_prompt,
-            build_step_context,
-        )
-
-        protected_context, feedback_context = self._get_evaluation_context()
-
-        context_info = ""
-        if step_context is not None:
-            phases_str = (
-                ", ".join(step_context.completed_phases)
-                if step_context.completed_phases
-                else "none"
-            )
-            context_info = build_step_context(
-                step_context.current_step,
-                step_context.total_steps_estimate,
-                step_context.phase,
-                phases_str,
-            ) + "\n"
-
-        experience_context = self._build_experience_context()
-        context_blocks = build_context_blocks(feedback_context, protected_context, experience_context)
-
-        msg = build_plan_judge_prompt(
-            opencode_output=opencode_output,
-            plan_round=plan_round,
-            total_plan_rounds=total_plan_rounds,
-            step_context=context_info,
-            context_blocks=context_blocks,
-        )
-        history_msg = build_plan_judge_prompt(
-            opencode_output=opencode_output,
-            plan_round=plan_round,
-            total_plan_rounds=total_plan_rounds,
-            step_context=context_info,
-            context_blocks="",
-        )
-
-        verdict = self._chat(msg, history_content=history_msg)
-
-        # Plan mode never terminates early — override all_targets_met so the
-        # caller (SupervisorLoop._run_plan_mode) controls the round count.
-        return SupervisorVerdict(
-            raw=verdict.raw,
-            all_targets_met=False,
-            feedback=verdict.feedback,
+        return _judge_plan_impl(
+            self,
+            opencode_output,
+            plan_round,
+            total_plan_rounds,
+            step_context,
         )
 
     def ask_for_compaction_instructions(self) -> SupervisorVerdict:
-        from supervisor.prompts import COMPACTION_INSTRUCTIONS_PROMPT
-
-        return self._chat(COMPACTION_INSTRUCTIONS_PROMPT)
+        return _ask_for_compaction_instructions_impl(self)
 
     def ask_for_deletion_permission(
         self,
         candidates: list[str],
         workspace: Path,
     ) -> SupervisorVerdict:
-        if not candidates:
-            return self.ask_for_compaction_instructions()
-
-        file_list = "\n".join(f"  - {f}" for f in candidates)
-        from supervisor.prompts import DELETION_PERMISSION_PROMPT
-
-        msg = DELETION_PERMISSION_PROMPT.format(file_list=file_list)
-        return self._chat(msg)
+        return _ask_for_deletion_permission_impl(self, candidates, workspace)
 
     def report_final_status(
         self,
         reason: str,
         opencode_output: str,
     ) -> str:
-        msg = (
-            f"Run ending. Reason: {reason}\n\n"
-            "Write a final report:\n"
-            "1. What has been completed.\n"
-            "2. Last known bug / blocker.\n"
-            "3. Remaining undone tasks.\n\n"
-            f"Latest opencode output:\n{opencode_output}"
-        )
-        return self._chat(msg).raw
+        return _report_final_status_impl(self, reason, opencode_output)
 
     def generate_suggestions(
         self,
@@ -438,255 +229,44 @@ class LLMSupervisor:
         current_summary: str = "",
         step_context: StepContext | None = None,
     ) -> tuple[str, list[str]]:
-        from supervisor.prompts.templates import (
-            build_context_blocks,
-            build_step_context,
+        return _generate_suggestions_impl(
+            self,
+            opencode_output,
+            current_summary,
+            step_context,
         )
-
-        protected_files, chosen_paths = self._read_protected_files_for_suggestions()
-        protected_context = ""
-        if protected_files:
-            sections = []
-            for path, content in protected_files.items():
-                sections.append(f"--- {path} ---\n{content}\n--- end {path} ---")
-            protected_context = (
-                "\n\n## Current Protected Files State\n"
-                + "\n\n".join(sections)
-                + "\n\n"
-            )
-
-        step_context_block = ""
-        if step_context:
-            phases_str = (
-                ", ".join(step_context.completed_phases)
-                if step_context.completed_phases
-                else "none"
-            )
-            step_context_block = build_step_context(
-                step_context.current_step,
-                step_context.total_steps_estimate,
-                step_context.phase,
-                phases_str,
-            )
-
-        summary_context = (
-            f"\n\nCurrent implementation summary:\n{current_summary}"
-            if current_summary
-            else ""
-        )
-
-        PREAMBLE = (
-            "Based on the opencode output below and the current implementation status,\n"
-            "generate actionable suggestions for improving the code or approach.\n"
-            "Focus on:\n"
-            "1. Code quality improvements\n"
-            "2. Potential bugs or edge cases\n"
-            "3. Performance optimizations\n"
-            "4. Better patterns or practices\n"
-            "5. Missing tests or error handling\n\n"
-        )
-        POSTSCRIPT = (
-            "Output ONLY the suggestions in a clear, actionable format. "
-            "If no suggestions are needed, output 'No suggestions at this time.'"
-        )
-
-        context_blocks = build_context_blocks("", "", protected_context)
-        msg = (
-            f"{PREAMBLE}"
-            f"--- Step Context ---\n{step_context_block}"
-            f"{context_blocks}"
-            f"--- opencode output ---\n"
-            f"{opencode_output}\n--- end ---{summary_context}\n\n"
-            f"{POSTSCRIPT}"
-        )
-
-        history_step_context = build_step_context(0, 0, "unknown", "none") if step_context else ""
-        history_msg = (
-            f"{PREAMBLE}"
-            f"--- Step Context ---\n{history_step_context}"
-            f"--- opencode output ---\n"
-            f"{opencode_output}\n--- end ---{summary_context}\n\n"
-        )
-
-        return self._chat(msg, history_content=history_msg).raw, chosen_paths
 
     def analyze_protocol(
         self,
         protocol: Protocol,
         use_llm: bool = False,
     ) -> ProtocolAnalysis:
-        analyzer = ProtocolAnalyzer()
-        analysis = analyzer.analyze(protocol)
-
-        if use_llm:
-            msg = (
-                "Analyze the following protocol for an autonomous coding agent. "
-                "Evaluate its quality in terms of clarity, testability, and completeness. "
-                "Identify any vague targets, missing restrictions, or unclear inputs. "
-                "Provide specific, actionable suggestions for improvement.\n\n"
-                f"## INPUT\n{protocol.input_section}\n\n"
-                f"## TARGET\n{protocol.target_section}\n\n"
-                f"## RESTRICTIONS\n{protocol.restrictions_section}\n\n"
-                "Rate each section (INPUT, TARGET, RESTRICTIONS) on clarity, "
-                "testability, and completeness (0-100). "
-                "Then list specific issues and suggestions."
-            )
-            _ = self._chat(msg, is_intermediate=True)
-            # The LLM feedback is stored in history for context enrichment
-
-        return analysis
+        return _analyze_protocol_impl(self, protocol, use_llm)
 
     def verify_protocol_alignment(
         self,
         opencode_output: str,
         protocol: Protocol,
     ) -> AlignmentResult:
-        return _verify_protocol_alignment(opencode_output, protocol)
-
-    # ------------------------------------------------------------------ #
+        return _verify_protocol_alignment_impl(opencode_output, protocol)
 
     def get_token_warnings(self) -> list[str]:
-        """Return collected token warning messages."""
         return list(self._token_warnings)
 
     def clear_token_warnings(self) -> None:
-        """Clear token warning messages."""
         self._token_warnings.clear()
 
     def should_record_turn(self, content: str, role: str = "user") -> bool:
-        """Determine whether a turn should be added to history.
-
-        When compact_intermediate_steps is enabled, this method filters out
-        intermediate steps from opencode output while keeping final outputs
-        and conclusions.
-
-        Args:
-            content: The message content
-            role: The role of the message ('user' or 'assistant')
-
-        Returns:
-            True if the turn should be recorded, False otherwise
-
-        """
-        if not self._compact_intermediate_steps:
-            return True
-
-        if role != "user":
-            return True
-
-        content_lower = content.lower()
-
-        intermediate_indicators = [
-            "step ",
-            "planning",
-            "analyzing",
-            "considering",
-            "let me",
-            "i'll need to",
-            "creating",
-            "writing",
-            "modifying",
-            "running test",
-            "running tests",
-            "test result",
-            "progress:",
-            "phase:",
-            "moving to",
-            "now ",
-            "next ",
-        ]
-
-        final_indicators = [
-            "all targets met",
-            "all targets are met",
-            "targets achieved",
-            "task complete",
-            "task is complete",
-            "objectives met",
-            "protocol satisfied",
-            "feedback:",
-            "recommendation:",
-        ]
-
-        is_intermediate = any(
-            indicator in content_lower for indicator in intermediate_indicators
-        )
-
-        is_final = any(indicator in content_lower for indicator in final_indicators)
-
-        return is_final or not is_intermediate
+        return _should_record_turn_impl(self, content, role)
 
     def compact_history(self) -> None:
-        """Remove intermediate steps from history while preserving essential conversation flow.
-
-        This method keeps the first message (initial prompt) and the last N messages
-        to preserve context, while removing intermediate steps in between.
-        When compact_intermediate_steps is enabled, it identifies and removes
-        intermediate step entries based on content analysis.
-        """
-        if not self._history or len(self._history) <= 2:
-            return
-
-        if not self._compact_intermediate_steps:
-            return
-
-        keep_count = min(self._max_history_turns, len(self._history) // 2)
-
-        if keep_count < 1:
-            return
-
-        preserved: list[dict] = []
-
-        if self._history:
-            preserved.append(self._history[0])
-
-        for msg in self._history[1:]:
-            role = msg.get("role", "")
-            content = msg.get("content", "")
-
-            if (
-                role == "user" and self.should_record_turn(content, role)
-            ) or role == "assistant":
-                preserved.append(msg)
-
-        if len(preserved) > keep_count + 1:
-            if len(preserved) > 2:
-                core = preserved[:2]
-                tail = preserved[-keep_count:]
-                self._history = core + tail
-            else:
-                self._history = preserved[-min(keep_count * 2, len(preserved)):]
+        _compact_history_impl(self)
 
     def estimate_current_tokens(self) -> int:
-        """Estimate total tokens for current conversation state."""
-        conv_parts = [m["content"] for m in self._history]
-        conv_text = "\n".join(conv_parts)
-        return estimate_request_tokens(
-            self._system,
-            conv_text,
-            "",
-        ).total
+        return _estimate_current_tokens_impl(self)
 
     def _log_prompt(self, title: str, messages: list[dict]) -> None:
-        """Write the raw prompt messages to a .log file for debugging."""
-        try:
-            log_dir = self._workspace / ".opencode"
-            log_dir.mkdir(parents=True, exist_ok=True)
-            log_file = log_dir / "supervisor_prompts.log"
-
-            with open(log_file, "a", encoding="utf-8") as f:
-                f.write(f"\n{'=' * 80}\n")
-                f.write(f"--- {title} ---\n")
-                import datetime
-
-                f.write(f"Timestamp: {datetime.datetime.now().isoformat()}\n")
-                f.write(f"{'=' * 80}\n\n")
-                for msg in messages:
-                    role = msg.get("role", "unknown").upper()
-                    content = msg.get("content", "")
-                    f.write(f"[{role}]\n{content}\n\n{'-' * 40}\n\n")
-        except Exception as e:
-            logger.debug(f"Failed to log prompt: {e}")
+        _log_prompt_impl(self, title, messages)
 
     def _chat(
         self,
@@ -694,71 +274,7 @@ class LLMSupervisor:
         is_intermediate: bool = False,
         history_content: str | None = None,
     ) -> SupervisorVerdict:
-        should_record_user = (
-            not is_intermediate
-            or not self._compact_intermediate_steps
-            or self.should_record_turn(user_content, "user")
-        )
-        # Deduplication: skip storing user message when it matches previous opencode output
-        if should_record_user and self._last_opencode_output is not None:
-            if user_content.strip() == self._last_opencode_output.strip():
-                should_record_user = False
-
-        record_content = (
-            history_content if history_content is not None else user_content
-        )
-
-        conv_parts = []
-        for msg in self._history:
-            if msg.get("content"):
-                conv_parts.append(msg["content"])
-        conv_text = "\n".join(conv_parts)
-
-        estimate = estimate_request_tokens(
-            self._system,
-            conv_text,
-            user_content,
-        )
-
-        warning_msgs = warn_if_exceeds_limit(estimate, self._max_tokens)
-        for msg in warning_msgs:
-            self._token_warnings.append(msg)
-
-        if should_truncate(estimate, self._max_tokens):
-            logger.warning(
-                "--- FULL PROMPT EXCEEDING MAX TOKENS ---\n"
-                "SYSTEM:\n%s\n"
-                "HISTORY:\n%s\n"
-                "USER:\n%s\n"
-                "----------------------------------------",
-                self._system,
-                conv_text,
-                user_content,
-            )
-
-        if self._truncation_enabled and should_truncate(estimate, self._max_tokens):
-            original_total = estimate.total
-            user_content = self._fit_request_to_budget(user_content)
-            new_estimate = estimate_request_tokens(
-                self._system,
-                "\n".join(m["content"] for m in self._history if m.get("content")),
-                user_content,
-            )
-            trunc_warning = (
-                f"Prompt truncated to fit within token limit. "
-                f"Original: {original_total} tokens, New: {new_estimate.total} tokens, "
-                f"Max available: {int(self._max_tokens * (1.0 - 0.25))} tokens"
-            )
-            logger.warning(trunc_warning)
-            self._token_warnings.append(trunc_warning)
-
-        messages = [{"role": "system", "content": self._system}]
-        messages.extend(self._history)
-        messages.append({"role": "user", "content": user_content})
-
-        self._log_prompt("Supervisor Chat", messages)
-
-        return self._chat_with_retry(messages, record_content, should_record_user)
+        return _chat_impl(self, user_content, is_intermediate, history_content)
 
     def _chat_with_retry(
         self,
@@ -766,155 +282,12 @@ class LLMSupervisor:
         record_content: str,
         should_record_user: bool,
     ) -> SupervisorVerdict:
-        import time
-
-        from openai import (
-            APIConnectionError,
-            APIError,
-            APITimeoutError,
-            BadRequestError,
-            InternalServerError,
-            OpenAIError,
-            RateLimitError,
+        return _chat_with_retry_impl(
+            self,
+            messages,
+            record_content,
+            should_record_user,
         )
-
-        max_retries = 5
-        empty_choices_retries = 0
-        max_empty_choices_retries = 3
-        attempt = 0
-        transient_attempt = 0
-        max_transient_retries = 4
-        working_messages = list(messages)
-        using_backup = False
-        token_limit_retry = 0
-        max_token_limit_retries = 3
-
-        while attempt <= max_retries:
-            current_model = self._model_backup if using_backup else self._model
-            try:
-                response = self._client.chat.completions.create(
-                    model=current_model,
-                    messages=working_messages,
-                )
-                if not response.choices:
-                    if empty_choices_retries >= max_empty_choices_retries:
-                        raise OpenAIError("LLM response returned no choices after %d retries" % max_empty_choices_retries)
-                    wait = 15 * (2 ** empty_choices_retries)
-                    logger.warning(
-                        "LLM response returned no choices, retry %d/%d after %ds",
-                        empty_choices_retries + 1,
-                        max_empty_choices_retries,
-                        wait,
-                    )
-                    time.sleep(wait)
-                    empty_choices_retries += 1
-                    continue
-                empty_choices_retries = 0
-                reply = normalize_model_response(
-                    response.choices[0].message.content,
-                    "supervisor response",
-                )
-                break
-            except (RateLimitError, APIConnectionError, APITimeoutError) as exc:
-                if transient_attempt >= max_transient_retries:
-                    logger.error(
-                        "Transient API error after %d retries, giving up: %s",
-                        max_transient_retries,
-                        exc,
-                    )
-                    raise
-                wait = min(60, 5 * (2 ** transient_attempt))
-                logger.warning(
-                    "Transient API error %s (attempt %d/%d), retrying after %ds",
-                    type(exc).__name__,
-                    transient_attempt + 1,
-                    max_transient_retries,
-                    wait,
-                )
-                time.sleep(wait)
-                transient_attempt += 1
-                continue
-            except BadRequestError as exc:
-                if _is_token_limit_error(exc):
-                    if token_limit_retry >= max_token_limit_retries:
-                        logger.error(
-                            "BadRequestError: input length exceeds model limit after %d retries",
-                            max_token_limit_retries,
-                        )
-                        raise
-                    current_limit = self._extract_token_limit_from_error(exc) or self._get_model_limit_for_model(current_model)
-                    old_count = len(working_messages)
-                    working_messages = self._truncate_messages_for_limit(working_messages, current_limit)
-                    new_count = len(working_messages)
-                    if new_count >= old_count:
-                        working_messages = self._truncate_older_turns(working_messages)
-                        new_count = len(working_messages)
-                    token_limit_retry += 1
-                    logger.warning(
-                        "BadRequestError (input length) retry %d/%d: truncated messages from %d to %d for limit %d",
-                        token_limit_retry,
-                        max_token_limit_retries,
-                        old_count,
-                        new_count,
-                        current_limit,
-                    )
-                    continue
-                raise
-            except (APIError, OpenAIError) as exc:
-                if not using_backup and self._model_backup:
-                    logger.warning(
-                        "Primary model %s failed (%s), falling back to backup %s",
-                        self._model,
-                        exc,
-                        self._model_backup,
-                    )
-                    using_backup = True
-                    attempt = 0
-                    continue
-                if isinstance(exc, InternalServerError):
-                    code = getattr(exc, "code", None) or getattr(
-                        exc, "status_code", None,
-                    )
-                    body = str(exc)
-                    if code != 511 and "max tokens" not in body.lower():
-                        raise
-                    if attempt >= max_retries:
-                        logger.error(
-                            "Prompt still exceeds token limit after %d truncation attempts",
-                            max_retries,
-                        )
-                        raise
-
-                    old_count = len(working_messages)
-                    working_messages = self._truncate_older_turns(working_messages)
-                    new_count = len(working_messages)
-                    removed = old_count - new_count
-                    attempt += 1
-                    logger.warning(
-                        "Token-limit retry %d/%d: removed %d older message(s), "
-                        "now %d messages in request",
-                        attempt,
-                        max_retries,
-                        removed,
-                        new_count,
-                    )
-                else:
-                    raise
-
-        if should_record_user:
-            self._history.append({"role": "user", "content": record_content})
-        self._history.append({"role": "assistant", "content": reply})
-
-        # Track last opencode output for deduplication in next turn
-        self._extract_and_store_opencode_output(record_content, should_record_user)
-
-        if len(self._history) > self._max_history_turns * 2:
-            if self._compact_intermediate_steps:
-                self.compact_history()
-            else:
-                self._history = self._history[:2] + self._history[4:]
-        all_met = _check_completion_phrases(reply, _DONE_PHRASES)
-        return SupervisorVerdict(raw=reply, all_targets_met=all_met, feedback=reply)
 
     def _should_omit_step_context(
         self,
@@ -923,167 +296,37 @@ class LLMSupervisor:
         feedback_context: str,
         protected_context: str,
     ) -> bool:
-        """Decide whether to strip step-context from history to save tokens."""
-        history_context = "".join([
-            experience_context, feedback_context, protected_context,
+        return _should_omit_step_context_impl(
+            self,
             opencode_output,
-        ])
-        conv_text = "\n".join(m["content"] for m in self._history if m.get("content"))
-        estimate = estimate_request_tokens(self._system, conv_text, history_context)
-        threshold = int(self._max_tokens * 0.65)
-        return estimate.total > threshold
-
-    def _extract_and_store_opencode_output(self, content: str, should_record: bool) -> None:
-        """Extract opencode output from record_content for deduplication tracking."""
-        if not should_record:
-            return
-        for marker in ("--- opencode output ---", "--- opencode plan output ---"):
-            start = content.find(marker)
-            if start >= 0:
-                output_start = start + len(marker)
-                end_marker = content.find("\n--- end ---", output_start)
-                if end_marker >= 0:
-                    self._last_opencode_output = content[output_start:end_marker].strip()
-                    return
-
-    def update_system_prompt(self, new_preamble: str) -> None:
-        """Update the extra_system preamble portion of the system prompt.
-
-        This rebuilds the internal _system string by combining the protocol
-        system prompt with the new preamble, without re-instantiating the class.
-        """
-        self._system = self._system_base
-        if new_preamble:
-            self._system += f"\n\n{new_preamble}"
-
-    def _fit_request_to_budget(self, user_content: str) -> str:
-        """Proactively shrink self._history and user_content to fit within token budget.
-
-        Mutates self._history in place by dropping the oldest turns first, then
-        truncates the tail of individual oversized messages, and finally falls back
-        to truncating user_content. Returns the (possibly truncated) user_content.
-        """
-        from supervisor.monitoring.token_estimator import (
-            estimate_tokens,
-            truncate_prompt,
+            experience_context,
+            feedback_context,
+            protected_context,
         )
 
-        available = int(self._max_tokens * 0.75)
-        system_tokens = estimate_tokens(self._system)
-        budget = max(available - system_tokens, self._max_tokens // 8)
+    def _extract_and_store_opencode_output(
+        self,
+        content: str,
+        should_record: bool,
+    ) -> None:
+        _extract_and_store_opencode_output_impl(self, content, should_record)
 
-        def _msg_tokens(msg: dict) -> int:
-            return estimate_tokens(msg.get("content", ""))
+    def update_system_prompt(self, new_preamble: str) -> None:
+        _update_system_prompt_impl(self, new_preamble)
 
-        history_tokens = sum(_msg_tokens(m) for m in self._history)
-        user_tokens = estimate_tokens(user_content)
-
-        if history_tokens + user_tokens <= budget:
-            return user_content
-
-        # Phase 1: drop oldest turns until we fit, preserving the very first turn
-        # (initial task prompt) and the most recent exchanges.
-        dropped_any = False
-        while self._history and history_tokens + user_tokens > budget:
-            # Always keep at least the last assistant/user pair to retain continuity.
-            if len(self._history) <= 2:
-                break
-            # Drop the oldest message (index 0). If that drops a standalone user,
-            # also drop its paired assistant response to keep alignment.
-            removed = self._history.pop(0)
-            history_tokens -= _msg_tokens(removed)
-            dropped_any = True
-            if (
-                removed.get("role") == "user"
-                and self._history
-                and self._history[0].get("role") == "assistant"
-            ):
-                removed2 = self._history.pop(0)
-                history_tokens -= _msg_tokens(removed2)
-
-        # Phase 2: per-message truncation of any oversized remaining entry.
-        per_msg_cap = max(budget // 4, 2_000)
-        if history_tokens + user_tokens > budget:
-            for msg in self._history:
-                if _msg_tokens(msg) > per_msg_cap:
-                    original = msg.get("content", "")
-                    msg["content"] = truncate_prompt(original, per_msg_cap)
-            history_tokens = sum(_msg_tokens(m) for m in self._history)
-
-        # Phase 3: truncate user_content if still over budget.
-        if history_tokens + user_tokens > budget:
-            remaining_for_user = max(budget - history_tokens, budget // 4)
-            user_content = truncate_prompt(user_content, remaining_for_user)
-
-        if dropped_any:
-            logger.warning(
-                "Proactively trimmed history to fit budget (%d tokens, %d messages left)",
-                budget,
-                len(self._history),
-            )
-
-        return user_content
+    def _fit_request_to_budget(self, user_content: str) -> str:
+        return _fit_request_to_budget_impl(self, user_content)
 
     @staticmethod
     def _truncate_older_turns(messages: list[dict]) -> list[dict]:
-        if len(messages) <= 2:
-            return messages
+        return _truncate_older_turns_impl(messages)
 
-        result = [messages[0]]
-        remaining = messages[1:]
+    def _truncate_messages_for_limit(
+        self,
+        messages: list[dict],
+        model_limit: int,
+    ) -> list[dict]:
+        return _truncate_messages_for_limit_impl(messages, model_limit)
 
-        skip = 0
-        if remaining and remaining[0].get("role") == "user":
-            skip = 1
-            if len(remaining) > 1 and remaining[1].get("role") == "assistant":
-                skip = 2
-        elif remaining and remaining[0].get("role") == "assistant":
-            skip = 1
 
-        result.extend(remaining[skip:])
-        return result
-
-    def _truncate_messages_for_limit(self, messages: list[dict], model_limit: int) -> list[dict]:
-        """Truncate messages to fit within a specific model's token limit.
-
-        This method is more aggressive than _truncate_older_turns and handles
-        BadRequestError cases by reducing content significantly.
-        """
-        from supervisor.monitoring.token_estimator import estimate_tokens
-
-        if len(messages) <= 1:
-            return messages
-
-        result = [messages[0]]
-        remaining = messages[1:]
-
-        system_tokens = estimate_tokens(messages[0].get("content", ""))
-        target_budget = int(model_limit * 0.75) - system_tokens
-
-        if target_budget <= 0:
-            logger.warning("System prompt exceeds 75% of model limit, returning minimal messages")
-            if len(messages) > 1:
-                last_user = None
-                for msg in reversed(messages):
-                    if msg.get("role") == "user":
-                        last_user = msg
-                        break
-                if last_user:
-                    truncated_content = truncate_with_fallback(
-                        last_user.get("content", ""),
-                        model_limit // 2,
-                    )
-                    return [messages[0], {"role": "user", "content": truncated_content}]
-            return messages[:1]
-
-        current_tokens = 0
-        preserved = []
-
-        for msg in reversed(remaining):
-            msg_tokens = estimate_tokens(msg.get("content", ""))
-            if current_tokens + msg_tokens <= target_budget:
-                preserved.insert(0, msg)
-                current_tokens += msg_tokens
-
-        result.extend(preserved)
-        return result
+__all__ = ["LLMSupervisor", "StepContext", "SupervisorVerdict"]

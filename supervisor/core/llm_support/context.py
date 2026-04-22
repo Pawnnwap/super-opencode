@@ -7,7 +7,7 @@ import re
 from pathlib import Path
 
 from supervisor.monitoring.session_tracker import estimate_tokens, truncate_prompt
-from supervisor.utils.file_ops import safe_read_text
+from supervisor.utils.filesystem.file_ops import safe_read_text
 from supervisor.utils.text_utils import normalize_model_response
 
 logger = logging.getLogger(__name__)

@@ -24,6 +24,18 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_MAX = 128_000
 
+__all__ = [
+    "SessionState",
+    "SessionTracker",
+    "TokenEstimate",
+    "estimate_request_tokens",
+    "estimate_tokens",
+    "get_threshold_for_fraction",
+    "truncate_prompt",
+    "truncate_with_fallback",
+    "warn_if_exceeds_limit",
+]
+
 
 @dataclass
 class SessionState:
@@ -38,10 +50,10 @@ class SessionState:
 
 
 class SessionTracker:
-    """Unified tracker combining token estimation with context monitoring.
+    """Unified tracker for mutable context/session state.
 
-    Provides a single interface for:
-    - Estimating token counts for text/requests
+    Token estimation and truncation helpers stay at module scope.
+    This class handles:
     - Tracking context window usage across a session
     - Emitting graduated warnings at threshold crossings
     - Deciding when to compact or truncate

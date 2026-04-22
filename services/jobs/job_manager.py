@@ -5,7 +5,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from services.state_store import JobStateStore
+from services.jobs.state_store import JobStateStore
 from supervisor.core.loop import SupervisorLoop
 from supervisor.core.self_evolution_loop import SelfEvolutionLoop
 from supervisor.utils.config import SupervisorConfig

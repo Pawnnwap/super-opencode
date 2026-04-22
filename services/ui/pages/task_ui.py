@@ -5,10 +5,15 @@ from pathlib import Path
 
 import streamlit as st
 
-from services.log_ui import render_events, render_step_progress, render_token_usage_bar, safe_logs
-from services.settings import apply_api_config, save_settings
-from services.supervisor_config_builder import build_supervisor_config
-from services.task_board_ui import (
+from services.config.settings import apply_api_config, save_settings
+from services.config.supervisor_config_builder import build_supervisor_config
+from services.ui.log_ui import (
+    render_events,
+    render_step_progress,
+    render_token_usage_bar,
+    safe_logs,
+)
+from services.ui.task_board_ui import (
     collect_jobs,
     render_job_board,
     render_live_protocol_readiness,
@@ -218,7 +223,7 @@ def show_evo_setup_screen(*, job_manager, render_existing_protocol_banner) -> No
         st.warning("Enter OpenAI API key in Protocol Wizard config first.")
         return
 
-    repo_root = Path(__file__).resolve().parents[1]
+    repo_root = Path(__file__).resolve().parents[3]
     st.info(f"**Repo root (workspace):** `{repo_root}`")
     st.markdown("### Meta-Protocol Readiness")
     st.caption("Reuse existing `meta_protocol.md` or generate fresh one from current repo snapshot.")

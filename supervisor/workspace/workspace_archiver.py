@@ -23,8 +23,9 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from supervisor.utils.file_permissions import remove_file_readonly
-from supervisor.utils.path_filters import should_skip_path
+from supervisor.utils.filesystem.file_ops import copy_tree_to_workspace
+from supervisor.utils.filesystem.file_permissions import remove_file_readonly
+from supervisor.utils.filesystem.path_filters import should_skip_path
 from supervisor.workspace.ignore_patterns import IgnoreMatcher
 
 logger = logging.getLogger(__name__)
@@ -224,8 +225,6 @@ class WorkspaceArchiver:
         """Restore files from an archive back to the workspace.
         Returns list of restored file paths.
         """
-        from supervisor.utils.file_ops import copy_tree_to_workspace
-
         restored: list[str] = []
         if not archive_path.is_dir():
             return restored

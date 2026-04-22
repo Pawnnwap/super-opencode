@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from supervisor.utils.path_filters import should_skip_path
+from supervisor.utils.filesystem.path_filters import should_skip_path
 
 if TYPE_CHECKING:
     from supervisor.workspace.ignore_patterns import IgnoreMatcher

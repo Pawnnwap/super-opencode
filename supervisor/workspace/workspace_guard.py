@@ -7,7 +7,10 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from supervisor.utils.file_permissions import remove_file_readonly, set_file_readonly
+from supervisor.utils.filesystem.file_permissions import (
+    remove_file_readonly,
+    set_file_readonly,
+)
 
 if TYPE_CHECKING:
     from supervisor.workspace.ignore_patterns import IgnoreMatcher

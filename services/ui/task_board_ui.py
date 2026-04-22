@@ -5,7 +5,7 @@ from pathlib import Path
 
 import streamlit as st
 
-from services.log_ui import (
+from services.ui.log_ui import (
     format_status_pill,
     render_events,
     render_job_card,
@@ -13,7 +13,7 @@ from services.log_ui import (
     render_token_usage_bar,
     safe_logs,
 )
-from services.protocol_ui import render_protocol_quality, save_protocol
+from services.ui.protocol_ui import render_protocol_quality, save_protocol
 
 ACTIVE_JOB_STATES = {"PENDING", "RUNNING"}
 TERMINAL_JOB_STATES = {"SUCCESS", "FAILED", "CANCELLED"}
