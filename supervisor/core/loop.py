@@ -18,6 +18,7 @@ from collections.abc import Generator
 from supervisor.analyzers.opencode_step_detector import StepProgress
 from supervisor.core.llm_supervisor import LLMSupervisor, StepContext
 from supervisor.core.loop_base import BaseLoop, Event, LoopState, _ev
+from supervisor.core.occam_razor import OccamRazorStage
 from supervisor.utils.config import SupervisorConfig
 from supervisor.utils.filesystem.file_ops import safe_read_text
 
@@ -87,10 +88,29 @@ class SupervisorLoop(BaseLoop):
             self.runner.stop()
 
         if self._state == LoopState.ENDED_SUCCESS:
+            if self.config.enable_occam_razor:
+                yield from self._run_occam_razor()
             yield _ev("success", "All targets met — run finished successfully.")
         else:
             yield _ev(
                 "error", "Run ended with failures. See failure_report.md in workspace.",
+            )
+
+    def _run_occam_razor(self) -> Generator[Event]:
+        """Run optional post-success reduction pass against a copy only."""
+        yield _ev(
+            "info",
+            "[occam] Occam Razor enabled. Starting copy-only reduction pass after live success.",
+        )
+        protocol_text = safe_read_text(self.config.protocol_path)
+        try:
+            stage = OccamRazorStage(self.config, protocol_text)
+            yield from stage.run()
+        except Exception as exc:
+            logger.exception("Occam Razor stage crashed")
+            yield _ev(
+                "warn",
+                f"[occam] Stage failed after live success; original final code untouched: {exc}",
             )
 
     def _run_plan_mode(self) -> Generator[Event]:

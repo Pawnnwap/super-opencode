@@ -108,6 +108,7 @@ defaults = {
     "supervisor_test_passed": False,
     "opencode_models": [],
     "enable_python_scanner": True,
+    "enable_occam_razor": False,
 }
 for key, value in defaults.items():
     if key not in st.session_state:

@@ -26,6 +26,7 @@ class SupervisorConfig:
     compact_intermediate_steps: bool = False
     plan_mode_rounds: int = 0
     enable_python_scanner: bool = True
+    enable_occam_razor: bool = False
     # OpenAI credentials captured at enqueue time so the running loop is not
     # affected by later UI changes to os.environ. When empty, downstream
     # clients fall back to the env vars (OPENAI_API_KEY / OPENAI_BASE_URL).

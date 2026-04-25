@@ -27,6 +27,7 @@ def build_supervisor_config(
         protected_files=tuple(session_state.get("protected_files", [])),
         max_tokens=int(session_state["max_tokens"]),
         enable_python_scanner=bool(session_state["enable_python_scanner"]),
+        enable_occam_razor=bool(session_state.get("enable_occam_razor", False)),
         # Snapshot credentials at enqueue. Running tasks will use their own
         # captured copy instead of whatever the live UI last wrote to env.
         openai_api_key=str(session_state.get("openai_key", "") or ""),

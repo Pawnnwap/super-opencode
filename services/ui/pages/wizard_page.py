@@ -261,6 +261,12 @@ def page_wizard() -> None:
                 value=bool(st.session_state.enable_python_scanner),
                 help="Run Python vulnerability scanner before each live run",
             )
+            st.session_state.enable_occam_razor = st.toggle(
+                "Enable Occam Razor copy pass",
+                key="cfg_enable_occam_razor",
+                value=bool(st.session_state.enable_occam_razor),
+                help="After live success, copy final code and reduce only extra code/logic.",
+            )
 
         with st.expander("Protected Files", expanded=False):
             st.caption("Files opencode cannot modify or delete")

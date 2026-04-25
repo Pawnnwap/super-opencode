@@ -28,6 +28,7 @@ _PERSIST_KEYS = [
     "evo_goal",
     "evo_extra_restrictions",
     "enable_python_scanner",
+    "enable_occam_razor",
 ]
 
 

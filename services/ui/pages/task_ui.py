@@ -133,6 +133,9 @@ class JobStatusScreen:
             oc_model = st.session_state.get("opencode_model", "") or "(not set)"
             st.markdown(f"**Supervisor model:** `{sup_model}`")
             st.markdown(f"**Opencode model:** `{oc_model}`")
+            if not self.is_evolution:
+                occam_enabled = status.get("config", {}).get("enable_occam_razor", False)
+                st.markdown(f"**Occam Razor:** `{'on' if occam_enabled else 'off'}`")
             render_token_usage_bar(logs, int(st.session_state.max_tokens))
 
             if status.get("report"):
@@ -191,10 +194,17 @@ def show_task_form(*, job_manager, workspace: Path | None) -> None:
                 key="task_enable_python_scanner",
                 help="Run Python vulnerability scanner before execution",
             )
+            enable_occam = st.toggle(
+                "Enable Occam Razor copy pass",
+                value=bool(st.session_state.enable_occam_razor),
+                key="task_enable_occam_razor",
+                help="After live success, copy final code and let opencode reduce only extra code/logic.",
+            )
         with col2:
             if st.button("Start Task", type="primary", use_container_width=True, key="btn_start_task"):
                 st.session_state.plan_mode_rounds = plan_rounds
                 st.session_state.enable_python_scanner = enable_scanner
+                st.session_state.enable_occam_razor = enable_occam
                 save_settings()
                 apply_api_config()
                 config = build_supervisor_config(
@@ -202,6 +212,7 @@ def show_task_form(*, job_manager, workspace: Path | None) -> None:
                     proto_path,
                     workspace,
                     plan_mode_rounds=int(plan_rounds),
+                    enable_occam_razor=bool(enable_occam),
                 )
                 try:
                     job_id = job_manager.enqueue_job("run", config)
