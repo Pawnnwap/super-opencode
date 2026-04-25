@@ -65,6 +65,7 @@ class SelfEvolutionLoop(BaseLoop):
 
         yield from self._apply_protection()
 
+        closing = False
         try:
             yield _ev("info", "🚀  Starting opencode for self-evolution…")
             init_prompt = self._init_prompt()
@@ -74,11 +75,16 @@ class SelfEvolutionLoop(BaseLoop):
             output, timed_out = self.runner.read_output()
 
             yield from self._run_loop(output, timed_out)
+        except GeneratorExit:
+            closing = True
+            self._cleanup_after_generator_close()
+            raise
         finally:
-            yield from self._remove_protection()
+            if not closing:
+                yield from self._remove_protection()
 
-            self.runner.stop()
-            yield from self._evolution_summary()
+                self.runner.stop()
+                yield from self._evolution_summary()
 
     def _on_successful_output(self, output: str) -> Generator[Event]:
         self._iteration += 1

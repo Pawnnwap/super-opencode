@@ -89,9 +89,7 @@ class JobManager:
                 entry["stop_event"].set()
                 loop = entry.get("loop")
                 if loop is not None:
-                    runner = getattr(loop, "runner", None)
-                    if runner is not None:
-                        runner.stop()
+                    self._request_loop_stop(loop)
 
         # Write cancellation state AFTER signalling, outside the lock,
         # so the worker's stop_event check wins the race reliably.
@@ -100,6 +98,17 @@ class JobManager:
         current["state"] = "CANCELLED"
         current["heartbeat_at"] = time.time()
         self.store.save_job_state(job_id, current)
+
+    def _request_loop_stop(self, loop: Any) -> None:
+        """Ask a loop to stop without assuming its concrete implementation."""
+        request_stop = getattr(loop, "request_stop", None)
+        if callable(request_stop):
+            request_stop()
+            return
+
+        runner = getattr(loop, "runner", None)
+        if runner is not None:
+            runner.stop()
 
     def _worker(self, job_id: str, job_type: str, config: SupervisorConfig, stop_event: threading.Event):
         """Worker thread that executes the job loop."""
@@ -131,8 +140,11 @@ class JobManager:
             report_content = ""
 
             # Run the loop and stream events
-            for event in loop.run_streaming():
+            stream = loop.run_streaming()
+            for event in stream:
                 if stop_event.is_set():
+                    self._request_loop_stop(loop)
+                    stream.close()
                     return
 
                 # Record the event in the log store
@@ -154,6 +166,8 @@ class JobManager:
                 now = time.time()
                 if now - last_heartbeat >= heartbeat_interval:
                     if stop_event.is_set():
+                        self._request_loop_stop(loop)
+                        stream.close()
                         return
 
                     # Also append a heartbeat event so the UI can count them
@@ -173,6 +187,7 @@ class JobManager:
                     last_heartbeat = now
 
             if stop_event.is_set():
+                self._request_loop_stop(loop)
                 return
             # Determine final state
             logs = self.store.get_logs(job_id)

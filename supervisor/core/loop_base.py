@@ -58,6 +58,12 @@ class BaseLoop:
         self._cached_snapshot = None
         self._python_scanner_ran: bool = False
 
+    def request_stop(self) -> None:
+        """Request cooperative loop shutdown without yielding cleanup events."""
+        self._state = LoopState.ENDED_FAILURE
+        if self.runner:
+            self.runner.stop()
+
     def _setup_core_services(self, agent: str = ""):
         from supervisor.analyzers.codebase_analyzer import snapshot_codebase
         from supervisor.protocols.protocol import load_protocol
@@ -180,10 +186,14 @@ class BaseLoop:
         return
 
     def run_streaming(self) -> Generator[Event]:
-        if self.config and getattr(self.config, "enable_python_scanner", True):
-            yield from self._run_python_scanner()
         try:
+            if self.config and getattr(self.config, "enable_python_scanner", True):
+                yield from self._run_python_scanner()
             yield from self._run()
+        except GeneratorExit:
+            self._state = LoopState.ENDED_FAILURE
+            self._cleanup_after_generator_close()
+            raise
         except KeyboardInterrupt:
             if self.runner:
                 self.runner.stop()
@@ -260,6 +270,25 @@ class BaseLoop:
             self._all_protected = []
         else:
             yield _ev("info", "No protected paths to unlock")
+
+    def _remove_protection_immediately(self) -> list[str]:
+        """Remove read-only protection without yielding events."""
+        if not hasattr(self, "_all_protected") or not self._all_protected:
+            return []
+        unprotected = self.guard.remove_readonly_protection(self._all_protected)
+        self._all_protected = []
+        return unprotected
+
+    def _cleanup_after_generator_close(self) -> None:
+        try:
+            self._remove_protection_immediately()
+        except Exception:
+            logger.warning(
+                "Failed to remove protection during generator close",
+                exc_info=True,
+            )
+        if self.runner:
+            self.runner.stop()
 
     def _archive_before_new_run(self) -> Generator[Event]:
         """Archive current workspace state before starting a fresh session."""

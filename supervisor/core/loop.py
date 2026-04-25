@@ -72,6 +72,7 @@ class SupervisorLoop(BaseLoop):
 
         yield from self._apply_protection()
 
+        closing = False
         try:
             yield _ev("info", "Running initial prompt with opencode…")
 
@@ -83,9 +84,14 @@ class SupervisorLoop(BaseLoop):
             output, timed_out = self.runner.read_output()
 
             yield from self._run_loop(output, timed_out)
+        except GeneratorExit:
+            closing = True
+            self._cleanup_after_generator_close()
+            raise
         finally:
-            yield from self._remove_protection()
-            self.runner.stop()
+            if not closing:
+                yield from self._remove_protection()
+                self.runner.stop()
 
         if self._state == LoopState.ENDED_SUCCESS:
             if self.config.enable_occam_razor:
