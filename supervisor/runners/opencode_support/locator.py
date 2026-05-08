@@ -61,6 +61,7 @@ def find_opencode(explicit: str = "") -> str:
     else:
         search_dirs.extend(
             [
+                Path.home() / ".opencode" / "bin",
                 Path.home() / ".npm-global" / "bin",
                 Path.home() / ".local" / "bin",
                 Path("/usr/local/bin"),
