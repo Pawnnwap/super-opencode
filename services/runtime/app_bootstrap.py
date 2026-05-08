@@ -34,19 +34,40 @@ def auto_upgrade_opencode(settings_file: Path = UPGRADE_SETTINGS_FILE) -> None:
 
     try:
         home_dir = str(Path.home())
-        print(
-            "[opencode-upgrade] Running: npm install -g opencode-ai@latest",
-            file=sys.stderr,
-        )
-        proc = subprocess.Popen(
-            "npm install -g opencode-ai@latest",
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            cwd=home_dir,
-            shell=True,
-        )
+
+        if sys.platform == "win32":
+            # Windows: keep using npm
+            print(
+                "[opencode-upgrade] Running: npm install -g opencode-ai@latest",
+                file=sys.stderr,
+            )
+            cmd = "npm install -g opencode-ai@latest"
+            proc = subprocess.Popen(
+                cmd,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                cwd=home_dir,
+                shell=True,
+            )
+        else:
+            # macOS / Linux: use the official curl install script
+            print(
+                "[opencode-upgrade] Running: curl -fsSL https://raw.githubusercontent.com/opencode-ai/opencode/main/install | bash",
+                file=sys.stderr,
+            )
+            cmd = "curl -fsSL https://raw.githubusercontent.com/opencode-ai/opencode/main/install | bash"
+            proc = subprocess.Popen(
+                cmd,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                cwd=home_dir,
+                shell=True,
+            )
+
         stdout, stderr = proc.communicate(timeout=180)
         if stdout:
             print(f"[opencode-upgrade] stdout: {stdout.strip()}", file=sys.stderr)
@@ -66,7 +87,7 @@ def auto_upgrade_opencode(settings_file: Path = UPGRADE_SETTINGS_FILE) -> None:
         )
     except FileNotFoundError:
         print(
-            "[opencode-upgrade] 'npm' command not found — install Node.js to enable auto-upgrade. Continuing startup.",
+            "[opencode-upgrade] Required command not found — install Node.js (Windows) or curl (macOS/Linux) to enable auto-upgrade. Continuing startup.",
             file=sys.stderr,
         )
     except Exception as exc:
@@ -90,7 +111,7 @@ def auto_upgrade_dcp(settings_file: Path = UPGRADE_SETTINGS_FILE) -> None:
         opencode_exe = find_opencode("")
     except FileNotFoundError:
         print(
-            "[dcp-upgrade] opencode executable not found — install via 'npm install -g opencode-ai' first. Continuing startup.",
+            "[dcp-upgrade] opencode executable not found — install via 'npm install -g opencode-ai' (Windows) or 'curl -fsSL https://raw.githubusercontent.com/opencode-ai/opencode/main/install | bash' (macOS/Linux) first. Continuing startup.",
             file=sys.stderr,
         )
         return

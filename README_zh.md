@@ -47,16 +47,24 @@ node --version
 npm --version
 ```
 
-### 通过 npm 安装 opencode
+### 安装 opencode
+
+**Windows（npm）：**
 
 ```bash
 npm install -g opencode-ai
 ```
 
-该命令会将 `opencode` 可执行文件放入 npm 全局 bin 目录，确保其位于 PATH 中：
+**macOS / Linux（curl）：**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/opencode-ai/opencode/main/install | bash
+```
+
+`opencode` 可执行文件将被放置到 PATH 中：
 
 - **Windows：** `%AppData%\npm\opencode.cmd`（通常为 `C:\Users\<你>\AppData\Roaming\npm\opencode.cmd`）
-- **macOS / Linux：** `$(npm prefix -g)/bin/opencode`
+- **macOS / Linux：** `~/.opencode/bin/opencode`
 
 运行 `where opencode`（Windows）或 `which opencode`（macOS/Linux）可查看实际路径。
 如果希望覆盖自动检测，可将该路径填入 UI 的 "opencode executable" 字段；留空则由
@@ -64,11 +72,19 @@ supervisor 自动定位。
 
 ### 升级 opencode
 
+**Windows：**
+
 ```bash
 npm install -g opencode-ai@latest
 ```
 
-Streamlit 应用在启动时也会自动运行此命令（可通过 `OPENCODE_SKIP_UPGRADE=1` 环境变量
+**macOS / Linux：**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/opencode-ai/opencode/main/install | bash
+```
+
+Streamlit 应用在启动时也会自动运行这些命令（可通过 `OPENCODE_SKIP_UPGRADE=1` 环境变量
 或 `~/.opencode_supervisor_settings.json` 中的 `skip_upgrade: true` 关闭）。
 
 ---

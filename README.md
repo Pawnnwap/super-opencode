@@ -48,16 +48,24 @@ node --version
 npm --version
 ```
 
-### Installing opencode via npm
+### Installing opencode
+
+**Windows (npm):**
 
 ```bash
 npm install -g opencode-ai
 ```
 
-This places the `opencode` executable on your PATH via the npm global bin directory:
+**macOS / Linux (curl):**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/opencode-ai/opencode/main/install | bash
+```
+
+The `opencode` executable will be placed on your PATH:
 
 - **Windows:** `%AppData%\npm\opencode.cmd`  (typically `C:\Users\<you>\AppData\Roaming\npm\opencode.cmd`)
-- **macOS / Linux:** `$(npm prefix -g)/bin/opencode`
+- **macOS / Linux:** `~/.opencode/bin/opencode`
 
 Run `where opencode` (Windows) or `which opencode` (macOS/Linux) to see the resolved
 path. That path is what you enter in the UI's "opencode executable" field if you want
@@ -65,11 +73,19 @@ to override auto-detection — leaving it blank lets the supervisor locate it au
 
 ### Upgrading opencode
 
+**Windows:**
+
 ```bash
 npm install -g opencode-ai@latest
 ```
 
-The Streamlit app also runs this command automatically on startup (disable via
+**macOS / Linux:**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/opencode-ai/opencode/main/install | bash
+```
+
+The Streamlit app also runs these commands automatically on startup (disable via
 `OPENCODE_SKIP_UPGRADE=1` or `skip_upgrade: true` in `~/.opencode_supervisor_settings.json`).
 
 ---
