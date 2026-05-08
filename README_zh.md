@@ -58,7 +58,7 @@ npm install -g opencode-ai
 **macOS / Linux（curl）：**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/opencode-ai/opencode/main/install | bash
+curl -fsSL https://opencode.ai/install | bash
 ```
 
 `opencode` 可执行文件将被放置到 PATH 中：
@@ -81,7 +81,7 @@ npm install -g opencode-ai@latest
 **macOS / Linux：**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/opencode-ai/opencode/main/install | bash
+curl -fsSL https://opencode.ai/install | bash
 ```
 
 Streamlit 应用在启动时也会自动运行这些命令（可通过 `OPENCODE_SKIP_UPGRADE=1` 环境变量

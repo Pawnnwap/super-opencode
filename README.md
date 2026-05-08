@@ -59,7 +59,7 @@ npm install -g opencode-ai
 **macOS / Linux (curl):**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/opencode-ai/opencode/main/install | bash
+curl -fsSL https://opencode.ai/install | bash
 ```
 
 The `opencode` executable will be placed on your PATH:
@@ -82,7 +82,7 @@ npm install -g opencode-ai@latest
 **macOS / Linux:**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/opencode-ai/opencode/main/install | bash
+curl -fsSL https://opencode.ai/install | bash
 ```
 
 The Streamlit app also runs these commands automatically on startup (disable via

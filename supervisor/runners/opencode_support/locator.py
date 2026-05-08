@@ -96,6 +96,6 @@ def find_opencode(explicit: str = "") -> str:
         "opencode not found on PATH or in known install directories.\n\n"
         "To fix:\n"
         "  • Windows:      npm install -g opencode-ai\n"
-        "  • macOS/Linux:  curl -fsSL https://raw.githubusercontent.com/opencode-ai/opencode/main/install | bash\n"
+        "  • macOS/Linux:  curl -fsSL https://opencode.ai/install | bash\n"
         "  • Then restart the Streamlit app so it picks up the updated PATH.",
     )
