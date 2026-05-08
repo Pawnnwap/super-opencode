@@ -66,8 +66,9 @@ def build_cmd(
 
     cmd: list[str] = [exe, "run"]
 
-    if agent:
-        cmd += ["--agent", agent]
+    # opencode 2.x removed the built-in "coder" agent; default to "build" when
+    # no agent is explicitly specified to avoid "agent coder not found" errors.
+    cmd += ["--agent", agent if agent else "build"]
 
     if use_continue:
         if session_id:
