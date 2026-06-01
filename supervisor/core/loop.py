@@ -131,7 +131,7 @@ class SupervisorLoop(BaseLoop):
         All supervisor↔opencode exchanges are emitted as ``log-plan_phase``
         events so they appear as a distinct section in the UI event stream.
         """
-        from supervisor.runners.opencode_runner import OpencodeRunner
+        from supervisor.runners.factory import create_runner
 
         total = self.config.plan_mode_rounds
         yield _ev(
@@ -141,7 +141,7 @@ class SupervisorLoop(BaseLoop):
 
         # Dedicated runner locked to the plan agent — the main self.runner
         # stays untouched and will be used for build mode.
-        plan_runner = OpencodeRunner.from_config(
+        plan_runner = create_runner(
             self.config,
             agent="plan",
         )

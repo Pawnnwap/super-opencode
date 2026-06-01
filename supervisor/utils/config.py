@@ -10,6 +10,11 @@ class SupervisorConfig:
     workspace: Path
     max_retries: int = 3
     context_threshold: float = 0.60
+    # Execution agent backend: "opencode" (default) or "codex". Both are
+    # open-source coding CLIs and work on Windows + Linux. The opencode_model
+    # / opencode_executable / opencode_model_backup fields below are reused
+    # generically as the chosen agent's model / executable / fallback model.
+    engine: str = "opencode"
     opencode_model: str | None = None
     opencode_executable: str = ""
     supervisor_model: str = "gpt-4o"
@@ -32,6 +37,14 @@ class SupervisorConfig:
     # clients fall back to the env vars (OPENAI_API_KEY / OPENAI_BASE_URL).
     openai_api_key: str = ""
     openai_base_url: str = ""
+    # External OpenAI-compatible API for the codex engine (the equivalent of
+    # opencode's custom provider). When codex_base_url is set, the runner
+    # injects an ephemeral codex provider via `-c` overrides pointed at this
+    # endpoint (wire_api=responses) and feeds codex_api_key through an env var.
+    # The endpoint must support the OpenAI Responses API (/v1/responses).
+    # Empty -> codex uses whatever provider its own ~/.codex/config.toml selects.
+    codex_base_url: str = ""
+    codex_api_key: str = ""
 
     def to_state_dict(self) -> dict[str, object]:
         data = asdict(self)

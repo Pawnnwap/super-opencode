@@ -83,6 +83,9 @@ defaults = {
     "workspace": "",
     "supervisor_model": "",
     "supervisor_model_backup": "",
+    "engine": "opencode",
+    "codex_base_url": "",
+    "codex_api_key": "",
     "opencode_model": "",
     "opencode_model_backup": "",
     "opencode_executable": "",
@@ -114,7 +117,10 @@ for key, value in defaults.items():
     if key not in st.session_state:
         st.session_state[key] = persisted.get(key, value)
 
-if not st.session_state["opencode_models"]:
+if (
+    st.session_state.get("engine", "opencode") == "opencode"
+    and not st.session_state["opencode_models"]
+):
     st.session_state["opencode_models"] = fetch_opencode_models()
 
 tests_ok = render_sidebar(job_manager)

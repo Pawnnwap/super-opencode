@@ -19,7 +19,7 @@ from typing import Any
 
 from supervisor.core.loop_base import Event, _ev
 from supervisor.protocols.protocol import load_protocol
-from supervisor.runners.opencode_runner import OpencodeRunner
+from supervisor.runners.factory import create_runner
 from supervisor.utils.config import SupervisorConfig
 from supervisor.utils.filesystem.path_filters import should_skip_path
 from supervisor.workspace.ignore_patterns import IgnoreMatcher
@@ -276,7 +276,7 @@ class OccamRazorStage:
         output = ""
         timed_out = False
         try:
-            runner = OpencodeRunner.from_config(
+            runner = create_runner(
                 replace(
                     self.config,
                     workspace=copy_workspace,

@@ -7,9 +7,11 @@ import streamlit as st
 from openai import OpenAI
 
 from services.config.connectivity import (
-    test_opencode_connectivity,
+    test_agent_connectivity,
     test_supervisor_connectivity,
 )
+
+ENGINE_OPTIONS = ["opencode", "codex"]
 from services.config.opencode_config import fetch_opencode_models
 from services.config.settings import apply_api_config, save_settings
 from services.runtime.workspace_cleanup import clean_workspace_artifacts
@@ -94,11 +96,14 @@ def bound_text_input(
     return st.session_state[session_key]
 
 
-def _test_opencode() -> tuple[bool, str]:
-    return test_opencode_connectivity(
+def _test_agent() -> tuple[bool, str]:
+    return test_agent_connectivity(
+        st.session_state.get("engine", "opencode"),
         st.session_state.opencode_executable,
         st.session_state.opencode_model,
         st.session_state.opencode_model_backup,
+        base_url=st.session_state.get("codex_base_url", ""),
+        api_key=st.session_state.get("codex_api_key", ""),
     )
 
 
@@ -111,13 +116,14 @@ def _test_supervisor() -> tuple[bool, str]:
 
 
 def _render_connectivity_tests() -> None:
+    engine = st.session_state.get("engine", "opencode")
     st.markdown("---")
     st.markdown("### Connectivity Tests")
     both_passed = st.session_state.opencode_test_passed and st.session_state.supervisor_test_passed
     if both_passed:
-        st.success("Both opencode and supervisor connectivity tests passed.")
+        st.success(f"Both {engine} and supervisor connectivity tests passed.")
     else:
-        st.info("Run tests below to verify opencode and supervisor are reachable.")
+        st.info(f"Run tests below to verify {engine} and supervisor are reachable.")
 
     col_t1, col_t2, col_t3 = st.columns(3)
     with col_t1:
@@ -125,14 +131,14 @@ def _render_connectivity_tests() -> None:
             if not st.session_state.workspace:
                 st.error("Set workspace path before running tests.")
             else:
-                _do_test("opencode", _test_opencode, "opencode_test_passed")
+                _do_test(engine, _test_agent, "opencode_test_passed")
                 _do_test("Supervisor", _test_supervisor, "supervisor_test_passed")
     with col_t2:
-        if st.button("Test opencode", key="btn_test_opencode"):
+        if st.button(f"Test {engine}", key="btn_test_opencode"):
             if not st.session_state.workspace:
                 st.error("Set workspace path before testing.")
             else:
-                _do_test("opencode", _test_opencode, "opencode_test_passed")
+                _do_test(engine, _test_agent, "opencode_test_passed")
     with col_t3:
         if st.button("Test Supervisor", key="btn_test_supervisor"):
             if not st.session_state.openai_key:
@@ -147,6 +153,7 @@ def _save_protocol() -> None:
 
 
 def page_wizard() -> None:
+    from supervisor.runners.codex_runner import find_codex
     from supervisor.runners.opencode_runner import find_opencode
 
     if st.session_state.get("_redirect_warning"):
@@ -158,11 +165,15 @@ def page_wizard() -> None:
         "them into clean, unambiguous `protocol.md`.",
     )
 
+    # Soft check: only the *selected* engine's CLI must be installed. Warn
+    # (don't hard-stop) so a codex-only user is never locked out by a missing
+    # opencode binary, and vice versa.
+    engine = st.session_state.get("engine", "opencode")
+    locate = find_codex if engine == "codex" else find_opencode
     try:
-        find_opencode()
+        locate()
     except FileNotFoundError as exc:
-        st.error(str(exc))
-        st.stop()
+        st.warning(str(exc))
 
     with st.expander("Configuration", expanded=st.session_state.wizard_step == 0):
         col1, col2 = st.columns(2)
@@ -199,14 +210,55 @@ def page_wizard() -> None:
             )
 
         with col2:
-            models = st.session_state.get("opencode_models", [])
+            cur_engine = st.session_state.get("engine", "opencode")
+            st.session_state.engine = st.selectbox(
+                "Execution agent",
+                options=ENGINE_OPTIONS,
+                index=ENGINE_OPTIONS.index(cur_engine) if cur_engine in ENGINE_OPTIONS else 0,
+                key="cfg_engine",
+                help=(
+                    "Coding agent that writes code. Both are open-source CLIs that "
+                    "run on Windows + Linux. `opencode` lists models via `opencode "
+                    "models`; for `codex` enter the model id manually and configure "
+                    "your provider via `codex` login / ~/.codex/config.toml."
+                ),
+            )
+
+            # External OpenAI-compatible API for codex (same idea as opencode's
+            # custom provider). Endpoint must support the Responses API.
+            if st.session_state.engine == "codex":
+                bound_text_input(
+                    "Codex API base URL (external, optional)",
+                    "codex_base_url",
+                    placeholder="e.g. https://api.openai.com/v1 or http://localhost:1235/v1",
+                    help_text=(
+                        "OpenAI-compatible endpoint with /v1/responses support. "
+                        "Leave blank to use your own ~/.codex/config.toml provider."
+                    ),
+                )
+                bound_text_input(
+                    "Codex API key (external, optional)",
+                    "codex_api_key",
+                    type="password",
+                    placeholder="sk-... (sent via env var, never on the command line)",
+                )
+
+            # For codex, opencode's `models` listing does not apply; show the
+            # free-text fallback rather than an empty-list warning.
+            models = (
+                st.session_state.get("opencode_models", [])
+                if st.session_state.engine == "opencode"
+                else []
+            )
             _render_model_selector(
                 "Model",
                 models,
                 "opencode_model",
                 "cfg_opencode_model_select",
                 "cfg_opencode_model_fallback",
-                help_text="Models returned by `opencode models`",
+                help_text="Agent model id (opencode: from `opencode models`; codex: provider/model).",
+                placeholder="e.g. anthropic/claude-sonnet-4 or gpt-5-codex",
+                show_warning=False,
             )
 
             backup_models = [model for model in models if model != st.session_state.opencode_model] if models else []

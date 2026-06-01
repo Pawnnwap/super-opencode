@@ -85,10 +85,10 @@ class BaseLoop:
     def _init_components(self, agent: str = ""):
         from supervisor.analyzers.opencode_step_detector import OpencodeStepDetector
         from supervisor.monitoring.session_tracker import SessionTracker
-        from supervisor.runners.opencode_runner import OpencodeRunner
+        from supervisor.runners.factory import create_runner
         from supervisor.workspace.workspace_guard import WorkspaceGuard
 
-        self.runner = OpencodeRunner.from_config(
+        self.runner = create_runner(
             self.config,
             agent=agent,
         )

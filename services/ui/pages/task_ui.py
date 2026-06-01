@@ -131,8 +131,9 @@ class JobStatusScreen:
             )
             sup_model = st.session_state.get("supervisor_model", "") or "(not set)"
             oc_model = st.session_state.get("opencode_model", "") or "(not set)"
+            engine = status.get("config", {}).get("engine") or st.session_state.get("engine", "opencode")
             st.markdown(f"**Supervisor model:** `{sup_model}`")
-            st.markdown(f"**Opencode model:** `{oc_model}`")
+            st.markdown(f"**{engine.capitalize()} model:** `{oc_model}`")
             if not self.is_evolution:
                 occam_enabled = status.get("config", {}).get("enable_occam_razor", False)
                 st.markdown(f"**Occam Razor:** `{'on' if occam_enabled else 'off'}`")

@@ -6,6 +6,7 @@ from pathlib import Path
 
 from openai import OpenAI
 
+from supervisor.runners.codex_runner import CodexRunner, find_codex
 from supervisor.runners.opencode_runner import (
     _SESSION_CAPTURE_LOCK,
     OpencodeRunner,
@@ -100,6 +101,83 @@ def test_opencode_connectivity(
             runner.stop()
         except Exception:
             pass
+
+
+def test_codex_connectivity(
+    codex_executable: str,
+    codex_model: str | None,
+    codex_model_backup: str | None,
+    timeout: int = 30,
+    base_url: str = "",
+    api_key: str = "",
+) -> tuple[bool, str]:
+    workspace = (
+        Path(os.environ.get("TEMP", os.environ.get("TMPDIR", "/tmp")))
+        / "codex_test_dummy"
+    )
+    workspace.mkdir(exist_ok=True)
+    try:
+        exe = find_codex(codex_executable or "")
+    except FileNotFoundError as exc:
+        return False, str(exc)
+
+    runner = CodexRunner(
+        workspace=workspace,
+        opencode_model=codex_model,
+        opencode_executable=exe,
+        opencode_model_backup=codex_model_backup,
+        timeout=timeout,
+        codex_base_url=base_url,
+        codex_api_key=api_key,
+    )
+
+    def _inner():
+        runner._alive = True
+        # codex needs no session-list capture lock (it uses resume/--last),
+        # so the probe is a single self-contained `codex exec "hi"` call.
+        for _ in runner._run_prompt("hi"):
+            pass
+        _output, timed_out = runner.read_output(timeout=25)
+        if timed_out:
+            return False, "codex timed out reading output."
+        if runner._last_result and runner._last_result.ok:
+            return True, "codex responded successfully."
+        diag = runner.last_diagnostic() if runner._last_result else "(no result)"
+        return False, f"codex returned an error.\n{diag}"
+
+    try:
+        return run_with_timeout(_inner, seconds=timeout)
+    except TimeoutError:
+        return False, "codex test timed out."
+    except Exception as exc:
+        return False, f"codex test failed: {exc}"
+    finally:
+        try:
+            runner.stop()
+        except Exception:
+            pass
+
+
+def test_agent_connectivity(
+    engine: str,
+    executable: str,
+    model: str | None,
+    model_backup: str | None,
+    timeout: int = 30,
+    base_url: str = "",
+    api_key: str = "",
+) -> tuple[bool, str]:
+    """Dispatch the execution-agent connectivity probe by engine.
+
+    ``base_url`` / ``api_key`` configure codex's external OpenAI-compatible
+    (Responses API) endpoint; they are ignored for opencode, which manages its
+    own provider config.
+    """
+    if (engine or "opencode").strip().lower() == "codex":
+        return test_codex_connectivity(
+            executable, model, model_backup, timeout, base_url, api_key
+        )
+    return test_opencode_connectivity(executable, model, model_backup, timeout)
 
 
 def test_supervisor_connectivity(
