@@ -162,7 +162,7 @@ def _hashline_edit(
     edits: list[dict[str, Any]],
     *,
     dry_run: bool = False,
-    auto_retry: bool = True,
+    auto_retry: bool = False,
     autofix: bool = False,
 ) -> dict[str, Any]:
     resolved = Path(path).resolve()
@@ -172,6 +172,16 @@ def _hashline_edit(
     raw_text = resolved.read_text(encoding="utf-8", errors="replace")
     had_trailing_newline = raw_text.endswith("\n")
     original = raw_text.splitlines()
+
+    for edit in edits:
+        if edit.get("op") == "replace_range" and edit.get("end_pos"):
+            start_no = _parse_ref(edit["pos"])[0]
+            end_no = _parse_ref(edit["end_pos"])[0]
+            if end_no < start_no:
+                raise ValueError(
+                    f"replace_range end_pos (line {end_no}) is before pos "
+                    f"(line {start_no}) - nothing written.",
+                )
 
     conflicts = _check_edit_conflicts(edits)
     if conflicts:

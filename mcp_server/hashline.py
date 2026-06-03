@@ -87,8 +87,8 @@ HASHLINE_READ_TOOL = Tool(
         "Read a file with LINE#ID annotations required for safe editing.\n\n"
         "PREFER THIS OVER built-in `read` when the file will be edited - "
         "without LINE#IDs, `hashline edit` rejects every operation.\n\n"
-        "Format:  42#VKB| def process(data):\n"
-        "         43#XJZ|     return transform(data)\n\n"
+        "Format:  42#VKBM| def process(data):\n"
+        "         43#XJZP|     return transform(data)\n\n"
         "Pass LINE#IDs directly to `hashline edit`. "
         "IDs go stale on every write - re-read after each edit.\n\n"
         "Use start_line/end_line to read only the relevant section."
@@ -110,14 +110,16 @@ HASHLINE_EDIT_TOOL = Tool(
         "Apply validated edits to a file using LINE#IDs from `hashline read`.\n\n"
         "PREFER THIS OVER built-in `write`/`edit` - validates atomically before "
         "touching disk; a failed write never corrupts the file.\n\n"
-        "auto_retry=true (default): stale refs are auto-patched and re-applied "
-        "server-side in the same call. No extra round-trip needed.\n\n"
-        "auto_retry=false: returns retry_edits with corrected refs on mismatch.\n\n"
-        "autofix=true: after writing, runs safe style/security fixers (isort, "
-        "autopep8, pyupgrade, ruff) on the edited file. Unused-import and dead-code "
-        "fixers are intentionally skipped because hashline edit only touches specific "
-        "sections - removing 'unused' symbols from a fragment may break callers "
-        "elsewhere in the codebase.\n\n"
+        "auto_retry=false (default, safe): on a stale LINE#ID nothing is written - "
+        "you get a snippet of CURRENT content with valid LINE#IDs to re-target from.\n\n"
+        "auto_retry=true: re-applies at the same line NUMBER with a refreshed hash. "
+        "If lines shifted since you read, the edit hits the WRONG line silently - "
+        "see the auto_retry field for the full warning.\n\n"
+        "autofix=true: after writing, runs style/security fixers (isort, autopep8, "
+        "pyupgrade, ruff). These reformat the WHOLE file, not just your edit, so "
+        "ALL outstanding LINE#IDs go stale - re-read before the next edit. "
+        "Unused-import and dead-code fixers are intentionally skipped because "
+        "removing 'unused' symbols may break callers elsewhere in the codebase.\n\n"
         "On success: diff is returned (key omitted if no changes).\n\n"
         "ops: replace | replace_range (pos+end_pos) | delete | append | prepend\n"
         "Multiple edits -> one atomic write. Overlapping edits rejected upfront."
@@ -148,7 +150,7 @@ HASHLINE_EDIT_TOOL = Tool(
                                 "  prepend       - Insert lines[] BEFORE pos (does not remove pos)."
                             ),
                         },
-                        "pos": {"type": "string", "description": "LINE#ID of target line, e.g. '42#VKB'."},
+                        "pos": {"type": "string", "description": "LINE#ID of target line, e.g. '42#VKBM'."},
                         "end_pos": {
                             "type": "string",
                             "description": (
@@ -170,11 +172,16 @@ HASHLINE_EDIT_TOOL = Tool(
             "auto_retry": {
                 "type": "boolean",
                 "description": (
-                    "When true (default), stale LINE#IDs are auto-corrected and "
-                    "the edit re-applied server-side - no round-trip needed. "
-                    "Set false to receive retry_edits for manual retry."
+                    "Default false (safe): on a stale LINE#ID, nothing is written - "
+                    "you get a snippet of the file's CURRENT content with valid "
+                    "LINE#IDs; re-target from that snippet.\n\n"
+                    "WARNING - when true, a stale ref is re-applied at the SAME line "
+                    "NUMBER with the hash refreshed to whatever now occupies that "
+                    "line. If lines shifted (an insert/delete above, or a prior "
+                    "autofix), the edit lands on the WRONG line silently. Only enable "
+                    "for appends to a file you know has not shifted."
                 ),
-                "default": True,
+                "default": False,
             },
             "autofix": {
                 "type": "boolean",
@@ -267,7 +274,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         path = arguments.get("path")
         edits = arguments.get("edits")
         dry_run = bool(arguments.get("dry_run", False))
-        auto_retry = bool(arguments.get("auto_retry", True))
+        auto_retry = bool(arguments.get("auto_retry", False))
         autofix = bool(arguments.get("autofix", False))
 
         if not path:

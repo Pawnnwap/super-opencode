@@ -11,6 +11,11 @@ logger = logging.getLogger(__name__)
 
 _AUTOFIX_TOOL_TIMEOUT = 30
 
+# Per-process cache of fixer availability. Without this, every autofix call
+# re-probes (and, when missing, re-attempts a 60s `pip install`) for all four
+# tools on every edited file.
+_TOOL_AVAILABLE: dict[str, bool] = {}
+
 
 def _run_fix(cmd: list[str]) -> tuple[str, str, int]:
     try:
@@ -28,6 +33,15 @@ def _run_fix(cmd: list[str]) -> tuple[str, str, int]:
 
 
 def _ensure_fix_tool(package: str, binary: str) -> bool:
+    cached = _TOOL_AVAILABLE.get(binary)
+    if cached is not None:
+        return cached
+    available = _resolve_fix_tool(package, binary)
+    _TOOL_AVAILABLE[binary] = available
+    return available
+
+
+def _resolve_fix_tool(package: str, binary: str) -> bool:
     if shutil.which(binary):
         return True
     try:

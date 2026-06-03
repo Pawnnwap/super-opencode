@@ -5,7 +5,7 @@ from typing import Any
 
 _CHARSET = "ZPMQVRWSNKTXJBYH"
 _ALGO = "sha256"
-_HASH_CHARS = 3
+_HASH_CHARS = 4
 
 
 def _compute_line_hash(line_number: int, content: str) -> str:
