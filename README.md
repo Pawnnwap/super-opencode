@@ -267,9 +267,8 @@ supervisor/
     templates.py                    All prompt templates (init, judge, hashline instructions)
 
   monitoring/
-    context_monitor.py              Tracks context window usage with graduated warnings
     token_estimator.py              Token counting (tiktoken) and prompt truncation
-    session_tracker.py              Session state and lifecycle tracking
+    session_tracker.py              Context window usage with graduated warnings, session state and lifecycle tracking
 
   workspace/
     workspace_guard.py              Blocks out-of-workspace path references

@@ -3,7 +3,10 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from supervisor.prompts.commands import BREVITY_COMMAND
+from supervisor.runners.command_common import (
+    fresh_session_prompt,
+    validate_message as _validate_message_common,
+)
 from supervisor.utils.text_utils import coerce_str, quote_prompt
 
 logger = logging.getLogger(__name__)
@@ -12,20 +15,7 @@ _DOT_MODEL_FILE = Path(__file__).resolve().parents[2] / ".opencode_model"
 
 
 def validate_message(message: str, context: str = "message") -> str | None:
-    """Return cleaned message or None when empty after coercion."""
-    message = coerce_str(message, context)
-    if not message:
-        logger.warning(
-            "Empty message provided to opencode (%s). Returning None to trigger graceful handling.",
-            context,
-        )
-        return None
-    return message
-
-
-def fresh_session_prompt(prompt: str) -> str:
-    """Inline brevity rules when session attach cannot be trusted."""
-    return f"{BREVITY_COMMAND.strip()}\n\n{prompt}"
+    return _validate_message_common(message, context, engine="opencode")
 
 
 def build_cmd(

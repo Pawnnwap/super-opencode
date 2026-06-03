@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import logging
 import subprocess
-import time
 from collections.abc import Callable, Generator
 from pathlib import Path
 
@@ -25,7 +24,6 @@ from supervisor.analyzers.opencode_step_detector import (
 from supervisor.prompts.commands import BREVITY_COMMAND
 from supervisor.runners.base_runner import BaseRunner
 from supervisor.runners.opencode_support.command_builder import (
-    build_cmd as _build_cmd_impl,
     fresh_session_prompt as _fresh_session_prompt_impl,
     validate_message as _validate_message_impl,
 )
@@ -204,34 +202,19 @@ class OpencodeRunner(BaseRunner):
             if validated is not None
             else "Continue based on the current context and proceed."
         )
-        max_retries = 5
-        base_wait = 30
-
-        for attempt in range(max_retries + 1):
-            if self._alive:
-                if self._session_active:
-                    self.enable_continuation(True)
-                logger.info("send() - message length=%d chars", len(resolved_message))
-                yield from self._run_prompt(resolved_message)
-                return
-
-            if attempt == max_retries:
-                state_info = (
-                    f"alive={self._alive}, session_active={self._session_active}"
-                )
-                raise RuntimeError(
-                    "OpencodeRunner has been stopped. "
-                    f"(Operation: send, State: {state_info}, Retries: {attempt}/{max_retries})",
-                )
-
-            wait_time = base_wait * (2 ** attempt)
-            logger.warning(
-                "OpencodeRunner is stopped. Retrying send operation (attempt %d/%d) in %ds...",
-                attempt + 1,
-                max_retries,
-                wait_time,
+        # Single-threaded driver: nothing flips _alive back to True mid-call, so
+        # a stopped runner can never recover here. Fail fast instead of sleeping
+        # through a doomed exponential backoff before the inevitable raise.
+        if not self._alive:
+            raise RuntimeError(
+                "OpencodeRunner has been stopped. "
+                f"(Operation: send, alive={self._alive}, session_active={self._session_active})",
             )
-            time.sleep(wait_time)
+
+        if self._session_active:
+            self.enable_continuation(True)
+        logger.info("send() - message length=%d chars", len(resolved_message))
+        yield from self._run_prompt(resolved_message)
 
     def read_output(self, timeout: int | None = None) -> tuple[str, bool]:
         if self._last_result is None:
@@ -310,24 +293,6 @@ class OpencodeRunner(BaseRunner):
     def reset_context_counter(self) -> None:
         self._chars_exchanged = 0
 
-    def _build_cmd(
-        self,
-        exe: str,
-        prompt: str,
-        model: str | None = None,
-        use_shell: bool = False,
-    ) -> list[str]:
-        return _build_cmd_impl(
-            exe=exe,
-            prompt=prompt,
-            agent=self.agent,
-            opencode_model=self.opencode_model,
-            use_continue=self._use_continue,
-            session_id=self._session_id,
-            model=model,
-            use_shell=use_shell,
-        )
-
     def process_step_detection(self, output: str) -> Generator[dict]:
         yield from self._step_detector.process_output(output)
 
@@ -336,9 +301,6 @@ class OpencodeRunner(BaseRunner):
 
     def get_current_phase(self) -> str:
         return self._step_detector.progress.phase.name.lower()
-
-    def is_active(self) -> bool:
-        return self._step_detector.is_progressing()
 
     def is_progressing(self) -> bool:
         return self._step_detector.is_progressing()

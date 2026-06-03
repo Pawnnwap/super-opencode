@@ -12,6 +12,7 @@ import logging
 import time
 from collections.abc import Generator
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from supervisor.analyzers.codebase_analyzer import CodebaseSnapshot, snapshot_codebase
 from supervisor.core.loop_base import BaseLoop, Event, LoopState, _ev
@@ -22,6 +23,9 @@ from supervisor.utils.experience_tracker import (
     update_experience,
 )
 from supervisor.workspace.workspace_archiver import ArchiveResult
+
+if TYPE_CHECKING:
+    from supervisor.core.llm_support.models import SupervisorVerdict
 
 logger = logging.getLogger(__name__)
 
@@ -145,9 +149,6 @@ class SelfEvolutionLoop(BaseLoop):
 
     def _get_verdict(self, output: str, progress) -> SupervisorVerdict:
         return self.supervisor.judge(output)
-
-    def _handle_failure(self, last_output: str) -> Generator[Event]:
-        yield from super()._handle_failure(last_output)
 
     def _rollback(self) -> Generator[Event]:
         if self._best_archive:

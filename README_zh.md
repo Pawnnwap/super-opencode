@@ -250,9 +250,8 @@ supervisor/
     templates.py                    所有提示模板（初始化、评判、哈希行指令）
 
   monitoring/
-    context_monitor.py              跟踪上下文窗口使用情况，分级警告
     token_estimator.py              Token 计算（tiktoken）和提示截断
-    session_tracker.py              会话状态和生命周期跟踪
+    session_tracker.py              上下文窗口使用情况（分级警告）、会话状态和生命周期跟踪
 
   workspace/
     workspace_guard.py              阻止对工作区外路径的引用

@@ -26,7 +26,6 @@ import logging
 from collections.abc import Generator
 
 from supervisor.runners.codex_support.command_builder import (
-    build_cmd as _codex_build_cmd_impl,
     fresh_session_prompt as _codex_fresh_session_prompt_impl,
     validate_message as _codex_validate_message_impl,
 )
@@ -109,26 +108,6 @@ class CodexRunner(OpencodeRunner):
 
     def _fresh_session_prompt(self, prompt: str) -> str:
         return _codex_fresh_session_prompt_impl(prompt)
-
-    def _build_cmd(
-        self,
-        exe: str,
-        prompt: str,
-        model: str | None = None,
-        use_shell: bool = False,
-    ) -> list[str]:
-        return _codex_build_cmd_impl(
-            exe=exe,
-            prompt=prompt,
-            agent=self.agent,
-            codex_model=self.opencode_model,
-            use_continue=self._use_continue,
-            session_id=self._session_id,
-            model=model,
-            use_shell=use_shell,
-            base_url=self.codex_base_url,
-            api_key=self.codex_api_key,
-        )
 
     # Codex has no opencode-style session-list command. Continuation relies on
     # `resume <id|--last>`, so these enumeration hooks are intentionally inert.

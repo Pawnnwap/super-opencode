@@ -16,7 +16,7 @@ import time
 from collections.abc import Generator
 
 from supervisor.analyzers.opencode_step_detector import StepProgress
-from supervisor.core.llm_supervisor import LLMSupervisor, StepContext
+from supervisor.core.llm_supervisor import LLMSupervisor, StepContext, SupervisorVerdict
 from supervisor.core.loop_base import BaseLoop, Event, LoopState, _ev
 from supervisor.core.occam_razor import OccamRazorStage
 from supervisor.utils.config import SupervisorConfig
@@ -61,8 +61,6 @@ class SupervisorLoop(BaseLoop):
     # ------------------------------------------------------------------ #
 
     def _run(self) -> Generator[Event]:
-        import time
-
         yield from self._archive_before_new_run()
 
         if self.config.plan_mode_rounds > 0:
@@ -267,7 +265,6 @@ class SupervisorLoop(BaseLoop):
     def _on_successful_output(self, output: str) -> Generator[Event]:
         yield from super()._on_successful_output(output)
         yield from self._refresh_supervisor_snapshot()
-        yield from []
 
     def _get_verdict(self, output: str, progress) -> SupervisorVerdict:
         step_context = self._get_step_context(progress)

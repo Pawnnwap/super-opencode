@@ -3,7 +3,10 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from supervisor.prompts.commands import BREVITY_COMMAND
+from supervisor.runners.command_common import (
+    fresh_session_prompt,
+    validate_message as _validate_message_common,
+)
 from supervisor.utils.text_utils import coerce_str, quote_prompt
 
 logger = logging.getLogger(__name__)
@@ -61,20 +64,7 @@ def external_provider_flags(base_url: str, api_key: str) -> list[str]:
 
 
 def validate_message(message: str, context: str = "message") -> str | None:
-    """Return cleaned message or None when empty after coercion."""
-    message = coerce_str(message, context)
-    if not message:
-        logger.warning(
-            "Empty message provided to codex (%s). Returning None to trigger graceful handling.",
-            context,
-        )
-        return None
-    return message
-
-
-def fresh_session_prompt(prompt: str) -> str:
-    """Inline brevity rules into the first codex prompt of a session."""
-    return f"{BREVITY_COMMAND.strip()}\n\n{prompt}"
+    return _validate_message_common(message, context, engine="codex")
 
 
 def build_cmd(

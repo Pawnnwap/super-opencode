@@ -169,16 +169,6 @@ class SessionTracker:
         return self.fraction >= 0.90
 
     @property
-    def estimated_tokens(self) -> int:
-        """Return current estimated token count."""
-        return self._current
-
-    @property
-    def remaining_tokens(self) -> int:
-        """Return estimated remaining token capacity."""
-        return max(0, self.max_tokens - self._current)
-
-    @property
     def truncation_enabled(self) -> bool:
         """Return whether truncation is enabled."""
         return self._truncation_enabled
@@ -205,18 +195,6 @@ class SessionTracker:
             "recommendation": recommendation,
         }
 
-    def get_truncation_status(self) -> dict:
-        """Provide detailed truncation status information."""
-        available = int(self.max_tokens * 0.75)
-        return {
-            "truncation_enabled": self._truncation_enabled,
-            "current_tokens": self._current,
-            "max_tokens": self.max_tokens,
-            "available_tokens": available,
-            "would_need_truncation": self._current > available,
-            "fraction": self.fraction,
-        }
-
     def reset(self) -> None:
         self._current = 0
         self._last_warning_threshold = None
@@ -234,20 +212,3 @@ class SessionTracker:
             last_warning_threshold=self._last_warning_threshold,
             compaction_triggered=self.compaction_triggered,
         )
-
-    def get_context_info(self) -> dict:
-        """Return a comprehensive context info dict for logging/UI."""
-        advice = self.get_reduction_advice()
-        truncation = self.get_truncation_status()
-        return {
-            "current_tokens": self._current,
-            "max_tokens": self.max_tokens,
-            "fraction": self.fraction,
-            "should_compact": self.should_compact,
-            "can_continue": self.can_continue_session,
-            "approaching_limit": self.approaching_limit,
-            "is_critical": self.is_critical,
-            "files_read": self._files_read,
-            "reduction_advice": advice,
-            "truncation_status": truncation,
-        }

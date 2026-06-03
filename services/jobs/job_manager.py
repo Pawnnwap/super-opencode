@@ -179,7 +179,7 @@ class JobManager:
                     self.store.save_job_state(job_id, {
                         "type": job_type,
                         "state": "RUNNING",
-                        "progress": self._estimate_progress(event),
+                        "progress": 0.0,
                         "heartbeat_at": now,
                         "config": self._serialize_config(config),
                         "report": report_content,
@@ -219,11 +219,6 @@ class JobManager:
             "report": report,
         })
         self.store.save_job_state(job_id, current)
-
-    def _estimate_progress(self, event: dict[str, Any]) -> float:
-        """Crude progress estimation based on event messages."""
-        # This could be improved if loops emitted explicit progress percentages
-        return 0.0  # Default to 0 if not easily inferrable
 
     def _fetch_report(self, workspace: Path, job_type: str) -> str:
         """Try to read final report files from workspace."""

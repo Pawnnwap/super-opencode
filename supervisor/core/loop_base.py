@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import logging
+import os
 import time
 from collections.abc import Generator
 from enum import Enum, auto
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from supervisor.utils.experience_tracker import (
     EvolutionSummary,
@@ -13,6 +15,9 @@ from supervisor.utils.experience_tracker import (
 )
 from supervisor.utils.filesystem.file_ops import safe_read_text
 from supervisor.utils.text_utils import sanitize_event_message, strip_thinking_blocks
+
+if TYPE_CHECKING:
+    from supervisor.core.llm_support.models import SupervisorVerdict
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +62,7 @@ class BaseLoop:
         self._last_feedback: str = ""
         self._cached_snapshot = None
         self._python_scanner_ran: bool = False
+        self._vuln_autofixed: bool = False
 
     @property
     def _engine_name(self) -> str:
@@ -136,9 +142,9 @@ class BaseLoop:
 
     def _run_python_scanner(self) -> Generator[Event]:
         """Run python_scanner.py on workspace if .py files exist and not yet run."""
-        import os
-
         if self._python_scanner_ran:
+            return
+        if _vuln_scan is None:
             return
         if not self.config or not self.config.workspace:
             return
@@ -169,13 +175,11 @@ class BaseLoop:
         try:
             import concurrent.futures
 
-            from vulnerability.python_scanner import scan
-
             _SCAN_TIMEOUT = 300  # 5-minute hard ceiling for the whole scan
 
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _pool:
                 _future = _pool.submit(
-                    scan,
+                    _vuln_scan,
                     target=str(workspace),
                     autofix_first=True,
                     print_output=False,
@@ -186,6 +190,9 @@ class BaseLoop:
                     yield _ev("warn", f"python_scanner timed out after {_SCAN_TIMEOUT}s, continuing")
                     return
 
+            # Startup autofix already mutated the workspace; mark it so the
+            # first judgement scan does NOT autofix a second time.
+            self._vuln_autofixed = True
             yield _ev("info", "python_scanner completed")
         except Exception as e:
             yield _ev("warn", f"python_scanner failed: {e}")
@@ -344,7 +351,6 @@ class BaseLoop:
     def _on_final_failure(self, output: str) -> Generator[Event]:
         failure_reason = self._last_feedback or "Reached max retries"
         update_experience(self.config.workspace, failed=[failure_reason])
-        yield from []
         yield from []
 
     def _get_step_context(self, progress) -> StepContext:
@@ -793,8 +799,6 @@ class BaseLoop:
 
     def scan_for_vulnerabilities(self) -> str | None:
         """Run vulnerability scan on workspace Python files, return formatted results or None."""
-        import os
-
         if _vuln_scan is None:
             logger.debug("Vulnerability scanner not available, skipping scan")
             return None
@@ -807,7 +811,7 @@ class BaseLoop:
         ignore_matcher = IgnoreMatcher(workspace)
         ignore_matcher.load_from_workspace(workspace)
 
-        py_files = []
+        has_py = False
         for root, dirs, files in os.walk(workspace):
             rel_root = str(Path(root).resolve().relative_to(workspace))
 
@@ -823,24 +827,32 @@ class BaseLoop:
                     f"{rel_root}/{d}" if rel_root != "." else d,
                 )
             ]
-            for f in files:
-                if f.endswith(".py"):
-                    fp = f"{rel_root}/{f}" if rel_root != "." else f
-                    if not ignore_matcher.matches(fp):
-                        py_files.append(fp)
+            if any(
+                f.endswith(".py")
+                and not ignore_matcher.matches(
+                    f"{rel_root}/{f}" if rel_root != "." else f,
+                )
+                for f in files
+            ):
+                has_py = True
+                break
 
-        if not py_files:
+        if not has_py:
             logger.info(
                 "No Python files found in workspace, skipping vulnerability scan",
             )
             return None
 
-        logger.info("Found %d Python file(s) to scan", len(py_files))
+        logger.info("Python files present; running vulnerability scan")
         try:
+            # Autofix is a workspace-mutating pass — run it only on the first
+            # scan of a run; later judgements scan without re-applying autofixes.
+            autofix_first = not self._vuln_autofixed
+            self._vuln_autofixed = True
             findings = _vuln_scan(
                 target=str(workspace),
                 min_severity="HIGH",
-                autofix_first=True,
+                autofix_first=autofix_first,
                 scan_deps=False,
                 print_output=False,
             )
@@ -874,9 +886,9 @@ class BaseLoop:
 
         lines = [
             "\n\n--- vulnerability scan ---",
-            f"Found {len(findings)} issue(s) (MEDIUM+ severity, dependencies excluded):",
+            f"Found {len(findings)} issue(s) (HIGH+ severity, dependencies excluded):",
         ]
-        for sev in ("CRITICAL", "HIGH", "MEDIUM"):
+        for sev in ("CRITICAL", "HIGH"):
             if sev in by_severity:
                 lines.append(f"\n{sev} ({len(by_severity[sev])}):")
                 for f in by_severity[sev]:
