@@ -18,12 +18,20 @@ def esc(text) -> str:
     return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
-_BLOCK_LABELS = {
-    "opencode_prompt": "▶ PROMPT → opencode",
-    "opencode_output": "◀ OUTPUT ← opencode",
+_SUPERVISOR_LABELS = {
     "supervisor_response": "🧠 SUPERVISOR",
     "supervisor_read_files": "📂 SUPERVISOR READ FILES",
 }
+
+
+def _block_labels(engine: str) -> dict[str, str]:
+    """Build block labels, naming the active execution engine (opencode|codex)."""
+    name = engine or "opencode"
+    return {
+        "opencode_prompt": f"▶ PROMPT → {name}",
+        "opencode_output": f"◀ OUTPUT ← {name}",
+        **_SUPERVISOR_LABELS,
+    }
 
 
 def render_events(
@@ -32,9 +40,11 @@ def render_events(
     skip: set | None = None,
     show_verbose: bool = True,
     page_key: str = "default",
+    engine: str = "opencode",
 ) -> None:
     events = events or []
     skip = skip or set()
+    block_labels = _block_labels(engine)
     verbose = st.session_state.get("verbose_log", True)
 
     if show_verbose:
@@ -61,8 +71,8 @@ def render_events(
             continue
         msg = sanitize_event_message(event.get("msg") or "")
 
-        if level in _BLOCK_LABELS:
-            header = _BLOCK_LABELS[level]
+        if level in block_labels:
+            header = block_labels[level]
             if not verbose:
                 preview = esc(str(msg)[:120].replace("\n", " "))
                 lines_html.append(

@@ -58,6 +58,13 @@ class BaseLoop:
         self._cached_snapshot = None
         self._python_scanner_ran: bool = False
 
+    @property
+    def _engine_name(self) -> str:
+        """Active execution engine name for user-facing log text ("opencode"|"codex")."""
+        from supervisor.runners.factory import resolve_engine
+
+        return resolve_engine(self.config)
+
     def request_stop(self) -> None:
         """Request cooperative loop shutdown without yielding cleanup events."""
         self._state = LoopState.ENDED_FAILURE
@@ -318,7 +325,7 @@ class BaseLoop:
 
         yield _ev(
             "warn",
-            f"opencode returned empty/timeout (failure {self._failures}/{self.config.max_retries}, "
+            f"{self._engine_name} returned empty/timeout (failure {self._failures}/{self.config.max_retries}, "
             f"{retries_remaining} {'retry' if retries_remaining == 1 else 'retries'} remaining).",
         )
         yield from self._forced_summary(output)
@@ -427,7 +434,7 @@ class BaseLoop:
                     continue
 
                 diag = self.runner.last_diagnostic()
-                yield _ev("warn", f"opencode returned no output. Diagnostic:\n{diag}")
+                yield _ev("warn", f"{self._engine_name} returned no output. Diagnostic:\n{diag}")
                 yield from self._handle_failure(output)
                 if self._state != LoopState.RUNNING:
                     break
@@ -473,7 +480,7 @@ class BaseLoop:
         if self.ctx_monitor.can_continue_session:
             if self.runner.is_continuation_enabled() or self.runner._session_active:
                 self.runner.enable_continuation(True)
-                yield _ev("info", "Continuing opencode session (--continue).")
+                yield _ev("info", f"Continuing {self._engine_name} session.")
             else:
                 self.runner.mark_session_active()
         else:
@@ -505,7 +512,7 @@ class BaseLoop:
         )
         yield _ev(
             "info",
-            f"opencode is actively working (step {progress.current_step}, "
+            f"{self._engine_name} is actively working (step {progress.current_step}, "
             f"phase: {progress.phase.name.lower()}, state: {activity_state}{wait_msg}). "
             f"Timeout extension {ext_count}/{self._max_timeout_extensions} — continuing...",
         )
@@ -519,7 +526,7 @@ class BaseLoop:
         }
         yield _ev(
             "heartbeat",
-            f"opencode active: step {progress.current_step}/{progress.total_steps_estimate} "
+            f"{self._engine_name} active: step {progress.current_step}/{progress.total_steps_estimate} "
             f"({progress.phase.name.lower()}) — {progress.percentage:.0f}% complete",
             **heartbeat_data,
         )

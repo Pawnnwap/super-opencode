@@ -262,6 +262,7 @@ def render_job_snapshot(
             "No logs yet.",
             show_verbose=False,
             page_key=f"{page_key}_snapshot",
+            engine=status.get("config", {}).get("engine") or "opencode",
         )
 
     if status.get("report"):

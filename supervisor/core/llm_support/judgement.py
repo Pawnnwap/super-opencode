@@ -163,7 +163,7 @@ def report_final_status(
         "1. What has been completed.\n"
         "2. Last known bug / blocker.\n"
         "3. Remaining undone tasks.\n\n"
-        f"Latest opencode output:\n{opencode_output}"
+        f"Latest agent output:\n{opencode_output}"
     )
     return supervisor._chat(msg).raw
 
@@ -209,7 +209,7 @@ def generate_suggestions(
     )
 
     preamble = (
-        "Based on the opencode output below and the current implementation status,\n"
+        "Based on the agent output below and the current implementation status,\n"
         "generate actionable suggestions for improving the code or approach.\n"
         "Focus on:\n"
         "1. Code quality improvements\n"

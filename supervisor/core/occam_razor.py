@@ -19,7 +19,7 @@ from typing import Any
 
 from supervisor.core.loop_base import Event, _ev
 from supervisor.protocols.protocol import load_protocol
-from supervisor.runners.factory import create_runner
+from supervisor.runners.factory import create_runner, resolve_engine
 from supervisor.utils.config import SupervisorConfig
 from supervisor.utils.filesystem.path_filters import should_skip_path
 from supervisor.workspace.ignore_patterns import IgnoreMatcher
@@ -297,13 +297,13 @@ class OccamRazorStage:
             manifest.update({"status": "opencode_error", "error": str(exc)})
             self._write_manifest(manifest_path, manifest)
             logger.exception("Occam Razor opencode pass failed")
-            yield _ev("warn", f"[occam] opencode pass failed: {exc}")
+            yield _ev("warn", f"[occam] {resolve_engine(self.config)} pass failed: {exc}")
             return
 
         if output.strip():
             yield _ev("opencode_output", output)
         if timed_out:
-            yield _ev("warn", "[occam] opencode timed out; measuring partial copy state.")
+            yield _ev("warn", f"[occam] {resolve_engine(self.config)} timed out; measuring partial copy state.")
 
         after_files = identify_final_code_files(copy_workspace)
         after_metrics = measure_code_metrics(copy_workspace, after_files)

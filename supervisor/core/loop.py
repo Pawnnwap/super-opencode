@@ -74,7 +74,7 @@ class SupervisorLoop(BaseLoop):
 
         closing = False
         try:
-            yield _ev("info", "Running initial prompt with opencode…")
+            yield _ev("info", f"Running initial prompt with {self._engine_name}…")
 
             init_prompt = self._init_prompt()
             yield _ev("opencode_prompt", init_prompt)  # ← full prompt visible
@@ -168,7 +168,7 @@ class SupervisorLoop(BaseLoop):
         for round_num in range(1, total + 1):
             yield _ev(
                 "log-plan_phase",
-                f"[plan mode] Round {round_num}/{total} — sending prompt to opencode…",
+                f"[plan mode] Round {round_num}/{total} — sending prompt to {self._engine_name}…",
             )
 
             # Round 1: full plan prompt.  Subsequent rounds: supervisor feedback only.
@@ -296,7 +296,7 @@ class SupervisorLoop(BaseLoop):
     def _on_final_failure(self, output: str) -> Generator[Event]:
         yield from super()._on_final_failure(output)
         report = self.supervisor.report_final_status(
-            reason=f"opencode failed {self._failures} consecutive times",
+            reason=f"{self._engine_name} failed {self._failures} consecutive times",
             opencode_output=output,
         )
         self._write(report, "failure_report.md")

@@ -67,7 +67,7 @@ class SelfEvolutionLoop(BaseLoop):
 
         closing = False
         try:
-            yield _ev("info", "🚀  Starting opencode for self-evolution…")
+            yield _ev("info", f"🚀  Starting {self._engine_name} for self-evolution…")
             init_prompt = self._init_prompt()
             yield _ev("opencode_prompt", init_prompt)
             yield from self.runner.start(init_prompt)
@@ -90,7 +90,7 @@ class SelfEvolutionLoop(BaseLoop):
         self._iteration += 1
         yield _ev(
             "info",
-            f"[iter {self._iteration}] opencode output ({len(output)} chars)",
+            f"[iter {self._iteration}] {self._engine_name} output ({len(output)} chars)",
         )
         yield from super()._on_successful_output(output)
         yield from self._refresh_supervisor_snapshot()

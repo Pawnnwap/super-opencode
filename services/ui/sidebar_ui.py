@@ -197,7 +197,10 @@ def render_sidebar(job_manager) -> bool:
         if not tests_ok:
             st.caption("Run and Self-Evolution locked - pass connectivity tests first.")
 
-        if st.session_state.page == "wizard":
+        if (
+            st.session_state.page == "wizard"
+            and st.session_state.get("engine", "opencode") == "opencode"
+        ):
             _render_custom_model_form()
 
         st.markdown("---")

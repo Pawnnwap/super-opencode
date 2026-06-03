@@ -121,7 +121,14 @@ class JobStatusScreen:
         with col_main:
             render_step_progress(logs, state, is_evolution=self.is_evolution)
             st.markdown(f"#### {'Evolution' if self.is_evolution else 'Live'} Log")
-            render_events(logs, "... waiting for logs ...", show_verbose=True, page_key=self.page_key)
+            engine = status.get("config", {}).get("engine") or st.session_state.get("engine", "opencode")
+            render_events(
+                logs,
+                "... waiting for logs ...",
+                show_verbose=True,
+                page_key=self.page_key,
+                engine=engine,
+            )
 
         with col_side:
             st.markdown("#### Details")

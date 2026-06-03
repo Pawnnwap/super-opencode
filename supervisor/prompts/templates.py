@@ -42,7 +42,7 @@ Your project root (cwd) is: {workspace}
 Continue from where the summary left off. All files you create or modify MUST be inside this directory."""
 
 JUDGE_STEP_PROMPT = """\
-opencode just produced the following output. Evaluate it against the protocol.
+The coding agent just produced the following output. Evaluate it against the protocol.
 If ALL targets are met say 'all targets met'.
 Otherwise give clear, actionable feedback.
 
@@ -61,7 +61,7 @@ Completed phases: {completed_phases}
 Focus your feedback on the current phase and remaining work."""
 
 JUDGE_PLAN_PROMPT = """\
-opencode is in PLAN MODE (round {plan_round}/{total_plan_rounds}). No code changes have been made yet — this is a planning-only phase.
+The coding agent is in PLAN MODE (round {plan_round}/{total_plan_rounds}). No code changes have been made yet — this is a planning-only phase.
 
 Review the plan below and provide actionable feedback to refine it. Do NOT declare 'all targets met' during plan mode. Focus on:
   1. Correctness and completeness of the proposed approach
@@ -93,14 +93,14 @@ Return ONLY a JSON array of up to {top_k} file paths from the list above, ordere
 Do not include any explanation or markdown — just the JSON array."""
 
 COMPACTION_INSTRUCTIONS_PROMPT = """\
-The opencode agent's context window is nearly full. Generate instructions for it to:
+The coding agent's context window is nearly full. Generate instructions for it to:
 1. Keep only the latest version of every file.
 2. Retain any foundational/fallback code it may reference.
 3. Write summary.md to the workspace with: current status, key decisions, remaining tasks and future directions.
-Output ONLY the instruction text to send to opencode."""
+Output ONLY the instruction text to send to the coding agent."""
 
 DELETION_PERMISSION_PROMPT = """\
-The opencode agent's context window is nearly full. Before compacting the context, you MUST address the following cleanup:
+The coding agent's context window is nearly full. Before compacting the context, you MUST address the following cleanup:
 
 ## DELETION PERMISSION
 
@@ -120,7 +120,7 @@ Generate instructions for the agent to:
 4. Retain any foundational/fallback code it may reference
 5. Write summary.md to the workspace with: current status, key decisions, remaining tasks and future directions
 
-Output ONLY the instruction text to send to opencode, including explicit permission to delete listed files."""
+Output ONLY the instruction text to send to the coding agent, including explicit permission to delete listed files."""
 
 PROTOCOL_VIOLATION_TEMPLATE = """\
 
@@ -227,7 +227,7 @@ def build_judge_prompt(
     step_context: str = "",
     context_blocks: str = "",
     preamble: str = (
-        "opencode just produced the following output. Evaluate it against the protocol.\n"
+        "The coding agent just produced the following output. Evaluate it against the protocol.\n"
         "If ALL targets are met say 'all targets met'.\n"
         "Otherwise give clear, actionable feedback.\n"
     ),
@@ -265,7 +265,7 @@ def build_plan_judge_prompt(
     """Build a judge-style prompt for plan mode evaluation."""
     if preamble is None:
         preamble = (
-            f"opencode is in PLAN MODE (round {plan_round}/{total_plan_rounds}). "
+            f"The coding agent is in PLAN MODE (round {plan_round}/{total_plan_rounds}). "
             "No code changes have been made yet — this is a planning-only phase.\n\n"
             "Review the plan below and provide actionable feedback to refine it. "
             "Do NOT declare 'all targets met' during plan mode. Focus on:\n"
