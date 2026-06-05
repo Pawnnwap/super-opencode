@@ -88,6 +88,118 @@ def auto_upgrade_opencode(settings_file: Path = UPGRADE_SETTINGS_FILE) -> None:
         )
 
 
+def _is_root() -> bool:
+    """True when already running with root privileges (sudo would be a no-op)."""
+    geteuid = getattr(os, "geteuid", None)
+    return bool(geteuid and geteuid() == 0)
+
+
+def _sudo_available_noninteractive() -> bool:
+    """True when sudo can run without prompting (cached creds or NOPASSWD).
+
+    Uses `sudo -n` so a missing/expired credential fails fast instead of
+    blocking startup on a hidden password prompt.
+    """
+    try:
+        proc = subprocess.run(
+            ["sudo", "-n", "true"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+        )
+        return proc.returncode == 0
+    except Exception:
+        return False
+
+
+def _is_permission_error(stderr: str) -> bool:
+    s = (stderr or "").lower()
+    return any(tok in s for tok in ("eacces", "eperm", "permission denied"))
+
+
+def _run_codex_upgrade(cmd: str, home_dir: str) -> tuple[int, str, str]:
+    """Run one upgrade command, echo its output, return (code, stdout, stderr)."""
+    print(f"[codex-upgrade] Running: {cmd}", file=sys.stderr)
+    proc = subprocess.Popen(
+        cmd,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        cwd=home_dir,
+        shell=True,
+    )
+    stdout, stderr = proc.communicate(timeout=180)
+    if stdout:
+        print(f"[codex-upgrade] stdout: {stdout.strip()}", file=sys.stderr)
+    if stderr:
+        print(f"[codex-upgrade] stderr: {stderr.strip()}", file=sys.stderr)
+    return proc.returncode, stdout or "", stderr or ""
+
+
+def auto_upgrade_codex(settings_file: Path = UPGRADE_SETTINGS_FILE) -> None:
+    if should_skip_upgrade(settings_file):
+        print(
+            "[codex-upgrade] Skipping upgrade: disabled via config/env var",
+            file=sys.stderr,
+        )
+        return
+
+    try:
+        home_dir = str(Path.home())
+
+        # Codex CLI ships via npm (@openai/codex) on every platform, so a single
+        # npm command covers Windows/macOS/Linux — no per-OS install script.
+        base_cmd = "npm install -g @openai/codex@latest"
+        code, _out, err = _run_codex_upgrade(base_cmd, home_dir)
+
+        # A global npm install on macOS/Linux can hit EACCES when the npm prefix
+        # is root-owned. Windows has no sudo, and running as root never needs it.
+        # Retry with sudo only when it works non-interactively, so startup never
+        # blocks on a password prompt — otherwise point the user at a fix.
+        if code != 0 and sys.platform != "win32" and _is_permission_error(err):
+            if _is_root():
+                pass  # already root; sudo would not help
+            elif _sudo_available_noninteractive():
+                print(
+                    "[codex-upgrade] Permission denied — retrying with sudo.",
+                    file=sys.stderr,
+                )
+                code, _out, err = _run_codex_upgrade(
+                    f"sudo -n {base_cmd}", home_dir
+                )
+            else:
+                print(
+                    "[codex-upgrade] Permission denied and sudo unavailable "
+                    "non-interactively. Fix npm global perms or run manually: "
+                    f"sudo {base_cmd}. Continuing startup.",
+                    file=sys.stderr,
+                )
+
+        code_msg = (
+            "successfully"
+            if code == 0
+            else f"with code {code}. Continuing startup."
+        )
+        print(f"[codex-upgrade] Upgrade completed {code_msg}.", file=sys.stderr)
+    except subprocess.TimeoutExpired:
+        print(
+            "[codex-upgrade] Upgrade timed out after 180 seconds. Continuing startup.",
+            file=sys.stderr,
+        )
+    except FileNotFoundError:
+        print(
+            "[codex-upgrade] npm not found — install Node.js to enable auto-upgrade. Continuing startup.",
+            file=sys.stderr,
+        )
+    except Exception as exc:
+        print(
+            f"[codex-upgrade] Unexpected error: {exc}. Continuing startup.",
+            file=sys.stderr,
+        )
+
+
 def auto_upgrade_dcp(settings_file: Path = UPGRADE_SETTINGS_FILE) -> None:
     if should_skip_upgrade(settings_file):
         print(
