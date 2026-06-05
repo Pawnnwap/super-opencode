@@ -17,6 +17,7 @@ from services.config.opencode_config import (
 from services.config.settings import load_settings
 from services.jobs.job_manager import JobManager
 from services.runtime.app_bootstrap import (
+    auto_upgrade_codex as _auto_upgrade_codex,
     auto_upgrade_dcp as _auto_upgrade_dcp,
     auto_upgrade_opencode as _auto_upgrade_opencode,
 )
@@ -47,6 +48,7 @@ job_manager = _get_job_manager()
 
 if not st.session_state.get("_upgrade_done"):
     _auto_upgrade_opencode()
+    _auto_upgrade_codex()
     _auto_upgrade_dcp()
     st.session_state["_upgrade_done"] = True
 

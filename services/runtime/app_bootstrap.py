@@ -88,6 +88,63 @@ def auto_upgrade_opencode(settings_file: Path = UPGRADE_SETTINGS_FILE) -> None:
         )
 
 
+def auto_upgrade_codex(settings_file: Path = UPGRADE_SETTINGS_FILE) -> None:
+    if should_skip_upgrade(settings_file):
+        print(
+            "[codex-upgrade] Skipping upgrade: disabled via config/env var",
+            file=sys.stderr,
+        )
+        return
+
+    try:
+        home_dir = str(Path.home())
+
+        # Codex CLI ships via npm (@openai/codex) on every platform, so a single
+        # npm command covers Windows/macOS/Linux — no per-OS install script.
+        print(
+            "[codex-upgrade] Running: npm install -g @openai/codex@latest",
+            file=sys.stderr,
+        )
+        cmd = "npm install -g @openai/codex@latest"
+
+        proc = subprocess.Popen(
+            cmd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            cwd=home_dir,
+            shell=True,
+        )
+        stdout, stderr = proc.communicate(timeout=180)
+        if stdout:
+            print(f"[codex-upgrade] stdout: {stdout.strip()}", file=sys.stderr)
+        if stderr:
+            print(f"[codex-upgrade] stderr: {stderr.strip()}", file=sys.stderr)
+
+        code_msg = (
+            "successfully"
+            if proc.returncode == 0
+            else f"with code {proc.returncode}. Continuing startup."
+        )
+        print(f"[codex-upgrade] Upgrade completed {code_msg}.", file=sys.stderr)
+    except subprocess.TimeoutExpired:
+        print(
+            "[codex-upgrade] Upgrade timed out after 180 seconds. Continuing startup.",
+            file=sys.stderr,
+        )
+    except FileNotFoundError:
+        print(
+            "[codex-upgrade] npm not found — install Node.js to enable auto-upgrade. Continuing startup.",
+            file=sys.stderr,
+        )
+    except Exception as exc:
+        print(
+            f"[codex-upgrade] Unexpected error: {exc}. Continuing startup.",
+            file=sys.stderr,
+        )
+
+
 def auto_upgrade_dcp(settings_file: Path = UPGRADE_SETTINGS_FILE) -> None:
     if should_skip_upgrade(settings_file):
         print(
