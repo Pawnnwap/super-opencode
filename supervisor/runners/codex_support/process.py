@@ -73,6 +73,7 @@ def run_prompt(
         )
         base_url = getattr(runner, "codex_base_url", "") or ""
         api_key = getattr(runner, "codex_api_key", "") or ""
+        context_window = getattr(runner, "codex_context_window", 0) or 0
 
         cmd = build_cmd(
             exe=exe,
@@ -85,6 +86,7 @@ def run_prompt(
             use_shell=use_shell,
             base_url=base_url,
             api_key=api_key,
+            context_window=context_window,
         )
 
         msg = f"Running codex command: {' '.join(cmd)}"

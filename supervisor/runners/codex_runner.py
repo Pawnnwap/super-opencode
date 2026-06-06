@@ -56,10 +56,29 @@ class CodexRunner(OpencodeRunner):
     endpoint, injected per-run via codex ``-c`` overrides.
     """
 
-    def __init__(self, *args, codex_base_url: str = "", codex_api_key: str = "", **kwargs):
+    def __init__(
+        self,
+        *args,
+        codex_base_url: str = "",
+        codex_api_key: str = "",
+        codex_context_window: int = 0,
+        **kwargs,
+    ):
         super().__init__(*args, **kwargs)
         self.codex_base_url = coerce_str(codex_base_url, "codex_base_url") or ""
         self.codex_api_key = coerce_str(codex_api_key, "codex_api_key") or ""
+        # Local model's context window (from config.max_tokens). Forwarded as a
+        # codex `-c model_context_window` override for external providers so
+        # codex auto-compacts before the local model's cache overflows.
+        self.codex_context_window = self._coerce_window(codex_context_window)
+
+    @staticmethod
+    def _coerce_window(value) -> int:
+        try:
+            window = int(value)
+        except (TypeError, ValueError):
+            return 0
+        return window if window > 0 else 0
 
     @classmethod
     def from_config(cls, config, agent: str = "") -> "CodexRunner":
@@ -70,6 +89,9 @@ class CodexRunner(OpencodeRunner):
         runner.codex_api_key = coerce_str(
             getattr(config, "codex_api_key", ""), "codex_api_key"
         ) or ""
+        runner.codex_context_window = cls._coerce_window(
+            getattr(config, "max_tokens", 0)
+        )
         return runner
 
     def _prepare_workspace(self) -> None:

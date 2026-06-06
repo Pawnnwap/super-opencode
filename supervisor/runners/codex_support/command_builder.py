@@ -39,6 +39,29 @@ CODEX_PROVIDER_ID = "super_opencode"
 CODEX_API_KEY_ENV = "SUPER_OPENCODE_CODEX_KEY"
 
 
+def context_window_flags(context_window: int, base_url: str) -> list[str]:
+    """`-c model_context_window` override so codex knows the local model's window.
+
+    Only emitted for an EXTERNAL/local provider (``base_url`` set). Codex
+    already carries window metadata for its own built-in providers, and forcing
+    a wrong value there could truncate a hosted model. For a custom local
+    endpoint (Ollama / LM Studio), codex has NO metadata, so it assumes a large
+    default and never triggers its own context compaction -> every ``resume``
+    turn replays an ever-growing rollout to the local model, thrashing its
+    KV/prompt cache until it stalls ("stuck on cache"). Setting the window makes
+    codex compact before the local context overflows.
+    """
+    if not coerce_str(base_url, "base_url (codex ctx window)"):
+        return []
+    try:
+        window = int(context_window)
+    except (TypeError, ValueError):
+        return []
+    if window <= 0:
+        return []
+    return ["-c", f"model_context_window={window}"]
+
+
 def external_provider_flags(base_url: str, api_key: str) -> list[str]:
     """`-c` overrides defining an ephemeral OpenAI-compatible codex provider.
 
@@ -79,6 +102,7 @@ def build_cmd(
     use_shell: bool = False,
     base_url: str = "",
     api_key: str = "",
+    context_window: int = 0,
 ) -> list[str]:
     """Build a ``codex exec`` CLI command list.
 
@@ -122,6 +146,7 @@ def build_cmd(
     # token; after `resume` only the session selector and the prompt go.
     cmd += _CODEX_AUTONOMY_FLAGS
     cmd += _CODEX_CONFIG_FLAGS
+    cmd += context_window_flags(context_window, base_url)
     cmd += external_provider_flags(base_url, api_key)
 
     if resolved_model:
