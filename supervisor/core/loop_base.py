@@ -616,6 +616,16 @@ class BaseLoop:
             self.runner.estimated_context_tokens,
             files_read=files_read,
         )
+        # Structured token event so the UI token bar reads the real number
+        # directly instead of regex-scraping a warning string. Hidden from the
+        # log box by default (see log_ui._DEFAULT_HIDDEN_LEVELS).
+        current_tokens = self.runner.estimated_context_tokens
+        yield _ev(
+            "tokens",
+            f"Context: {current_tokens:,} tokens ({self.ctx_monitor.fraction * 100:.0f}%)",
+            current=current_tokens,
+            fraction=self.ctx_monitor.fraction,
+        )
         if self.ctx_monitor.approaching_limit:
             advice = self.ctx_monitor.get_reduction_advice()
             file_info = (

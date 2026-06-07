@@ -54,9 +54,20 @@ class JobStateStore:
             return None
 
     def append_log(self, job_id: str, log_event: dict[str, Any]):
-        """Append a log event to the job's log file."""
+        """Append a log event to the job's log file.
+
+        Stamps a wall-clock ``ts`` (epoch seconds) for the UI log view if the
+        event does not already carry one. This is the single chokepoint every
+        logged event passes through (loop ``_ev`` events, raw runner-yielded
+        dicts, and direct status appends alike), so it is the one place a
+        timestamp is needed. The timestamp is purely for logging — the
+        supervisor's context is built from ``read_output()`` and never flows
+        through here, so it stays timestamp-free.
+        """
         path = self._get_logs_path(job_id)
         self.store_dir.mkdir(parents=True, exist_ok=True)
+        if isinstance(log_event, dict) and "ts" not in log_event:
+            log_event = {**log_event, "ts": time.time()}
         for attempt in range(3):
             try:
                 with open(path, "a", encoding="utf-8") as f:

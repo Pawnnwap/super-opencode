@@ -101,14 +101,14 @@ def consume_process_stream(
     *,
     classify_line: Callable[[str | None], LineEvent | None],
     timeout: int,
-    live_prefix: str = "tool: ",
 ) -> Generator[dict, None, StreamOutcome]:
     """Stream *proc* stdout via *classify_line*, yield live tool markers.
 
-    Text events accumulate as the real output; tool events are emitted as
-    compact ``{live_prefix}[tool] …`` progress events AND collapsed to markers
-    (verbose I/O dropped); tokens/session/error events update the outcome.
-    Returns a :class:`StreamOutcome`; never blocks past *timeout*.
+    Text events accumulate as the real output; tool events are emitted live as
+    ``{"level":"tool","msg":"[tool] …"}`` events (own log level so the UI can
+    style them distinctly) AND collapsed to markers (verbose I/O dropped);
+    tokens/session/error events update the outcome. Returns a
+    :class:`StreamOutcome`; never blocks past *timeout*.
     """
     text_parts: list[str] = []
     markers: list[str] = []
@@ -179,9 +179,9 @@ def consume_process_stream(
             break
         marker = _accumulate(classify_line(item))
         if marker is not None:
-            # ASCII-only prefix: this msg is also logged to stderr, which is
-            # cp1252 on Windows and would choke on non-ASCII.
-            yield {"level": "info", "msg": f"{live_prefix}{marker}"}
+            # Own "tool" level so the log UI can style it; msg stays ASCII
+            # (it is also logged to cp1252 stderr on Windows).
+            yield {"level": "tool", "msg": marker}
 
     if timed_out:
         _kill_process_tree(proc)

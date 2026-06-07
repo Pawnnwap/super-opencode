@@ -31,7 +31,14 @@ button[kind="primary"]:hover, .stButton > button:hover { background: #388bfd !im
     padding: 1rem 1.2rem; font-family: 'JetBrains Mono', monospace; font-size: 0.78rem;
     line-height: 1.7; max-height: 520px; overflow-y: auto; white-space: pre-wrap; word-break: break-word;
 }
+.log-ts { color: #6e7681; font-weight: 400; }
+.log-elapsed { color: #484f58; font-weight: 400; }
 .log-info { color: #8b949e; }
+.log-tool { color: #39c5cf; font-weight: 600; }
+.log-tokens { color: #6e7681; }
+.log-details { white-space: pre-wrap; }
+.log-details > summary { cursor: pointer; list-style: revert; }
+.log-details > summary:hover { opacity: 0.85; }
 .log-warn { color: #e3b341; }
 .log-error { color: #f85149; }
 .log-success { color: #3fb950; font-weight: 600; }
