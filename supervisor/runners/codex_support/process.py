@@ -12,13 +12,15 @@ from supervisor.runners.codex_support.command_builder import (
     CODEX_API_KEY_ENV,
     build_cmd,
 )
+from supervisor.runners.codex_support.stream import classify_line
 from supervisor.runners.opencode_support.result import RunResult
+from supervisor.runners.stream_driver import consume_process_stream
 from supervisor.utils.text_utils import coerce_str
 
 logger = logging.getLogger(__name__)
 
-# Best-effort extraction of a codex session id from human-readable output so a
-# follow-up turn can `resume <id>` exactly instead of `resume --last`. Codex
+# Fallback extraction of a codex session id from human-readable output, used
+# only when the structured `thread.started` event did not carry one. Codex
 # prints either a `session_id: <uuid>` style line and/or a rollout file path
 # of the form `rollout-<timestamp>-<uuid>.jsonl`. Either form gives us the id.
 _UUID = r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
@@ -44,9 +46,10 @@ def run_prompt(
 ) -> Generator[dict]:
     """Run one codex prompt through subprocess and update runner state.
 
-    Structurally mirrors ``opencode_support.process.run_prompt`` (timeout
-    handling, primary→backup model fallback, char accounting) but drives the
-    ``codex exec`` CLI and captures the codex session id when present.
+    Structurally mirrors ``opencode_support.process.run_prompt`` (streaming,
+    timeout handling, primary->backup model fallback, char accounting) but
+    drives the ``codex exec --json`` CLI and captures the codex session id from
+    the structured ``thread.started`` event (regex on raw output as fallback).
     """
     prompt = coerce_str(prompt, "prompt (codex _run_prompt)")
 
@@ -114,31 +117,29 @@ def run_prompt(
                 shell=use_shell,
             )
 
-            try:
-                stdout, stderr = runner._process.communicate(timeout=runner.timeout)
-                returncode = runner._process.returncode
-            except subprocess.TimeoutExpired:
-                stdout_val = (
-                    runner._process.stdout.read() if runner._process.stdout else ""
-                )
-                stderr_val = (
-                    runner._process.stderr.read() if runner._process.stderr else ""
-                )
+            outcome = yield from consume_process_stream(
+                runner._process,
+                classify_line=classify_line,
+                timeout=runner.timeout,
+            )
 
-                stdout_val = (
-                    stdout_val.decode("utf-8", errors="replace")
-                    if isinstance(stdout_val, bytes)
-                    else (stdout_val or "")
-                )
-                stderr_val = (
-                    stderr_val.decode("utf-8", errors="replace")
-                    if isinstance(stderr_val, bytes)
-                    else (stderr_val or "")
-                )
+            if outcome.tokens_total > 0:
+                runner._last_tokens_total = outcome.tokens_total
 
+            # Prefer the structured thread_id; fall back to a regex over output.
+            captured_id = (
+                outcome.session_id
+                or _extract_session_id(outcome.stdout)
+                or _extract_session_id(outcome.stderr)
+            )
+            if captured_id and captured_id != runner._session_id:
+                runner._session_id = captured_id
+                logger.info("Captured codex session id: %s", captured_id)
+
+            if outcome.timed_out:
                 runner._last_result = RunResult(
-                    stdout=stdout_val,
-                    stderr=stderr_val,
+                    stdout=outcome.stdout,
+                    stderr=outcome.stderr,
                     returncode=-1,
                     timed_out=True,
                 )
@@ -156,13 +157,9 @@ def run_prompt(
                 runner._chars_exchanged += len(prompt) + len(runner._last_result.output)
                 return
 
-            stdout = stdout or ""
-            stderr = stderr or ""
-
-            captured_id = _extract_session_id(stdout) or _extract_session_id(stderr)
-            if captured_id and captured_id != runner._session_id:
-                runner._session_id = captured_id
-                logger.info("Captured codex session id: %s", captured_id)
+            stdout = outcome.stdout or ""
+            stderr = outcome.stderr or ""
+            returncode = outcome.returncode
 
             combined_lower = (stdout + stderr).lower()
             if (
@@ -184,10 +181,11 @@ def run_prompt(
                 returncode=returncode,
             )
             logger.info(
-                "codex exit=%d stdout=%d chars stderr=%d chars",
+                "codex exit=%d stdout=%d chars stderr=%d chars tokens=%d",
                 returncode,
                 len(stdout),
                 len(stderr),
+                outcome.tokens_total,
             )
             if stderr.strip():
                 logger.info("stderr snippet: %s", stderr[:400])

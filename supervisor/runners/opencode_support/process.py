@@ -9,6 +9,8 @@ from collections.abc import Callable, Generator
 
 from supervisor.runners.opencode_support.command_builder import build_cmd
 from supervisor.runners.opencode_support.result import RunResult
+from supervisor.runners.opencode_support.stream import classify_line
+from supervisor.runners.stream_driver import consume_process_stream
 from supervisor.utils.text_utils import coerce_str
 
 logger = logging.getLogger(__name__)
@@ -73,31 +75,19 @@ def run_prompt(
                 shell=use_shell,
             )
 
-            try:
-                stdout, stderr = runner._process.communicate(timeout=runner.timeout)
-                returncode = runner._process.returncode
-            except subprocess.TimeoutExpired:
-                stdout_val = (
-                    runner._process.stdout.read() if runner._process.stdout else ""
-                )
-                stderr_val = (
-                    runner._process.stderr.read() if runner._process.stderr else ""
-                )
+            outcome = yield from consume_process_stream(
+                runner._process,
+                classify_line=classify_line,
+                timeout=runner.timeout,
+            )
 
-                stdout_val = (
-                    stdout_val.decode("utf-8", errors="replace")
-                    if isinstance(stdout_val, bytes)
-                    else (stdout_val or "")
-                )
-                stderr_val = (
-                    stderr_val.decode("utf-8", errors="replace")
-                    if isinstance(stderr_val, bytes)
-                    else (stderr_val or "")
-                )
+            if outcome.tokens_total > 0:
+                runner._last_tokens_total = outcome.tokens_total
 
+            if outcome.timed_out:
                 runner._last_result = RunResult(
-                    stdout=stdout_val,
-                    stderr=stderr_val,
+                    stdout=outcome.stdout,
+                    stderr=outcome.stderr,
                     returncode=-1,
                     timed_out=True,
                 )
@@ -115,8 +105,9 @@ def run_prompt(
                 runner._chars_exchanged += len(prompt) + len(runner._last_result.output)
                 return
 
-            stdout = stdout or ""
-            stderr = stderr or ""
+            stdout = outcome.stdout or ""
+            stderr = outcome.stderr or ""
+            returncode = outcome.returncode
 
             combined_lower = (stdout + stderr).lower()
             if (
@@ -137,10 +128,11 @@ def run_prompt(
                 returncode=returncode,
             )
             logger.info(
-                "opencode exit=%d stdout=%d chars stderr=%d chars",
+                "opencode exit=%d stdout=%d chars stderr=%d chars tokens=%d",
                 returncode,
                 len(stdout),
                 len(stderr),
+                outcome.tokens_total,
             )
             if stderr.strip():
                 logger.info("stderr snippet: %s", stderr[:400])
@@ -183,4 +175,3 @@ def run_prompt(
 
         runner._chars_exchanged += len(prompt) + len(runner._last_result.output)
         return
-

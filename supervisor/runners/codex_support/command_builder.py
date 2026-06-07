@@ -140,6 +140,11 @@ def build_cmd(
 
     cmd: list[str] = [exe, "exec"]
 
+    # Stream structured thread events as JSONL (one per line) so the process
+    # layer can keep the model's prose, drop verbose tool I/O, and read real
+    # token counts. Like every exec-level option it must precede `resume`.
+    cmd += ["--json"]
+
     # IMPORTANT: codex's `resume` subcommand only accepts a small option set
     # (it rejects `--model` / `--color` / `-c`-after-resume in older parses).
     # All exec-level options must therefore be placed BEFORE the `resume`

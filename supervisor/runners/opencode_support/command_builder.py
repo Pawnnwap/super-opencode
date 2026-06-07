@@ -69,6 +69,12 @@ def build_cmd(
     if resolved_model:
         cmd += ["--model", resolved_model]
 
+    # Stream raw JSON events (one per line) instead of the formatted TUI
+    # output. The process layer parses these to keep the model's prose, drop
+    # verbose tool I/O, and read real token counts. --pure is intentionally
+    # NOT used (it hangs alongside --format json).
+    cmd += ["--format", "json"]
+
     cmd.append("--")
     cmd.append(quote_prompt(prompt) if use_shell else prompt)
 

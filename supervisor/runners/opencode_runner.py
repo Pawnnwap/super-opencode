@@ -116,6 +116,10 @@ class OpencodeRunner(BaseRunner):
 
         self._last_result: RunResult | None = None
         self._chars_exchanged: int = 0
+        # Real cumulative context tokens from opencode's step_finish events
+        # (0 until the first json stream reports them). Preferred over the
+        # chars/4 estimate when available.
+        self._last_tokens_total: int = 0
         self._process: subprocess.Popen | None = None
         self._archiver = WorkspaceArchiver(workspace)
         self._session_active = False
@@ -145,6 +149,10 @@ class OpencodeRunner(BaseRunner):
 
     @property
     def estimated_context_tokens(self) -> int:
+        # Prefer opencode's reported token total (exact) over the heuristic
+        # chars/4 estimate, which is all the codex path / non-json output has.
+        if self._last_tokens_total > 0:
+            return self._last_tokens_total
         return self._chars_exchanged // 4
 
     def get_step_progress(self) -> StepProgress:
@@ -292,6 +300,7 @@ class OpencodeRunner(BaseRunner):
 
     def reset_context_counter(self) -> None:
         self._chars_exchanged = 0
+        self._last_tokens_total = 0
 
     def process_step_detection(self, output: str) -> Generator[dict]:
         yield from self._step_detector.process_output(output)
