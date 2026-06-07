@@ -16,8 +16,10 @@ tested against captured event lines.  The supervisor consumes it to:
 
   * keep the model's prose (``text`` events) as the real turn output,
   * reduce each ``tool_use`` to a compact ``[tool] <intent>`` marker — the
-    verbose tool input/output is dropped so it never bloats supervisor history
-    ("DROP the tool use from history and anything not so important"),
+    verbose tool input/output is dropped entirely, and the marker itself is
+    kept only for live logging, NOT placed in the supervisor's context
+    (intermediate tool use is "not so important" for judging). See
+    ``build_output`` for the exact policy and the tool-only-turn fallback.
   * read REAL context-token counts off ``step_finish`` instead of estimating.
 
 Anything unrecognised, or non-JSON output (e.g. a plain-text provider error),
@@ -136,19 +138,33 @@ def build_output(
     markers: list[str],
     saw_json: bool,
     raw_parts: list[str],
+    include_markers: bool = False,
 ) -> str:
     """Compose the compacted turn output fed back to the supervisor.
 
-    When json events were seen, the output is the compact tool-marker trail
-    followed by the model's prose. Otherwise we fall back to the raw lines
-    (covers plain-text errors or a future schema change).
+    Intermediate tool-use markers are *not* in the supervisor's context by
+    default: only the model's prose is returned. The markers are still emitted
+    as live events for logging/UI, so nothing is lost operationally — they just
+    don't clutter the judge's context.
+
+    The marker trail is used as a fallback only when the turn produced no prose
+    at all, so a tool-only turn still surfaces *something* instead of empty
+    output (which the loop would treat as a no-op failure). Pass
+    ``include_markers=True`` to prepend the trail in-band (e.g. for tooling
+    that wants the breadcrumb).
+
+    When no json events were seen, fall back to the raw lines (covers
+    plain-text errors or a future schema change).
     """
     if saw_json:
         prose = "".join(text_parts).strip()
-        segments: list[str] = []
-        if markers:
-            segments.append(" ".join(markers))
         if prose:
-            segments.append(prose)
-        return "\n\n".join(segments).strip()
+            if include_markers and markers:
+                return (" ".join(markers) + "\n\n" + prose).strip()
+            return prose
+        # No prose this turn — fall back to the marker trail so a tool-only
+        # turn is not surfaced as empty output.
+        if markers:
+            return " ".join(markers).strip()
+        return ""
     return "\n".join(raw_parts).strip()

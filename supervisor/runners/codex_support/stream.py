@@ -24,7 +24,9 @@ This module mirrors ``opencode_support.stream`` and reuses its ``LineEvent`` +
   * keep ``agent_message`` prose as the real turn output,
   * reduce each tool-ish item (command_execution / file_change / mcp_tool_call
     / web_search / unknown) to a compact ``[tool] <intent>`` marker — the
-    verbose ``aggregated_output`` and other I/O is dropped,
+    verbose ``aggregated_output`` and other I/O is dropped, and the marker is
+    kept only for live logging, NOT placed in the supervisor's context (see
+    ``build_output``),
   * read REAL context tokens off ``turn.completed`` (input + output),
   * capture ``thread_id`` as the resumable session id,
   * drop ``reasoning`` / ``plan_update`` (model bookkeeping, not output).
