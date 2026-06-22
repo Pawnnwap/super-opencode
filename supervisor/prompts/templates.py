@@ -35,6 +35,7 @@ Context was reset due to token limits. Here is a summary of progress so far:
 
 {summary}
 
+{task_state_section}\
 PROTOCOL:
 {protocol_text}
 

@@ -330,10 +330,13 @@ class SupervisorLoop(BaseLoop):
 
     def _restart_prompt(self) -> str:
         summary, text = self._get_restart_context()
+        tail = self._restart_task_state()
+        journal_block = f"PROGRESS JOURNAL:\n{tail}\n\n" if tail else ""
         return (
             "Resuming previous session. Context was cleared.\n\n"
             f"PROTOCOL:\n{text}\n\n"
             f"LAST SUMMARY:\n{summary}\n\n"
+            f"{journal_block}"
             f"Working directory: {self.config.workspace.resolve()}\n"
             "Continue from where the summary left off."
         )

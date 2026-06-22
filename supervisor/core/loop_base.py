@@ -59,6 +59,7 @@ class BaseLoop:
         self._step_history: list[dict] = []
         self._state = LoopState.RUNNING
         self._failures = 0
+        self._task_turn: int = 0
         self._last_feedback: str = ""
         self._cached_snapshot = None
         self._python_scanner_ran: bool = False
@@ -353,6 +354,26 @@ class BaseLoop:
         update_experience(self.config.workspace, failed=[failure_reason])
         yield from []
 
+    def _record_task_state(self, verdict, progress) -> None:
+        """Append a journal entry for this judge turn (no extra LLM call)."""
+        from supervisor.core.task_state import append_task_state
+
+        append_task_state(
+            self.config.workspace,
+            turn=self._task_turn,
+            phase=progress.phase.name.lower(),
+            step=progress.current_step,
+            total_steps=progress.total_steps_estimate,
+            targets_met=verdict.all_targets_met,
+            feedback=verdict.feedback,
+        )
+
+    def _restart_task_state(self) -> str:
+        """Tail of the progress journal, for injection into a restart prompt."""
+        from supervisor.core.task_state import read_task_state_tail
+
+        return read_task_state_tail(self.config.workspace)
+
     def _get_step_context(self, progress) -> StepContext:
         from supervisor.core.llm_supervisor import StepContext
 
@@ -394,6 +415,9 @@ class BaseLoop:
 
         verdict = self._get_verdict(actual_output, progress)
         yield _ev("supervisor_response", verdict.raw)
+
+        self._task_turn += 1
+        self._record_task_state(verdict, progress)
 
         yield from self._emit_token_warnings()
 
@@ -701,8 +725,13 @@ class BaseLoop:
 
         summary, protocol_text = self._get_restart_context()
         ws = self.config.workspace.resolve()
+        tail = self._restart_task_state()
+        task_state_section = (
+            f"Recent progress journal (most recent turns):\n\n{tail}\n\n" if tail else ""
+        )
         return RESTART_PROMPT_TEMPLATE.format(
             summary=summary,
+            task_state_section=task_state_section,
             protocol_text=protocol_text,
             workspace=ws,
         )
