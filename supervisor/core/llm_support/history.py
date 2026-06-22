@@ -88,6 +88,42 @@ def compact_history(supervisor) -> None:
             ]
 
 
+def rollup_history(supervisor, keep_recent: int = 6, headline_chars: int = 200) -> int:
+    """Condense older supervisor turns into one synopsis, keep recent verbatim.
+
+    Structural rolling-window compaction (no LLM call): keeps the oldest anchor
+    turn and the most recent ``keep_recent`` turns verbatim, and collapses
+    everything in between into a single bullet-list synopsis (each turn trimmed
+    to ``headline_chars``). The supervisor's ``_history`` persists across agent
+    session restarts, so on a long multi-restart task it grows unbounded — this
+    bounds it. Returns the number of turns condensed (0 if nothing to do).
+    """
+    hist = supervisor._history
+    if not hist or len(hist) <= keep_recent + 2:
+        return 0
+    head = hist[:1]
+    tail = hist[-keep_recent:]
+    middle = hist[1:-keep_recent]
+    if not middle:
+        return 0
+
+    lines = []
+    for msg in middle:
+        role = msg.get("role", "?")
+        content = " ".join((msg.get("content") or "").split())
+        if len(content) > headline_chars:
+            content = content[:headline_chars] + "…"
+        lines.append(f"- [{role}] {content}")
+
+    synopsis = {
+        "role": "user",
+        "content": "[Earlier supervisor turns condensed to save context]\n"
+        + "\n".join(lines),
+    }
+    supervisor._history = head + [synopsis] + tail
+    return len(middle)
+
+
 def estimate_current_tokens(supervisor) -> int:
     """Estimate total tokens for current conversation state."""
     conv_text = "\n".join(m["content"] for m in supervisor._history)

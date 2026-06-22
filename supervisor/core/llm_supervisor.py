@@ -18,6 +18,7 @@ from supervisor.core.llm_support.chat import (
 from supervisor.core.llm_support.history import (
     compact_history as _compact_history_impl,
     estimate_current_tokens as _estimate_current_tokens_impl,
+    rollup_history as _rollup_history_impl,
     extract_and_store_opencode_output as _extract_and_store_opencode_output_impl,
     log_prompt as _log_prompt_impl,
     should_omit_step_context as _should_omit_step_context_impl,
@@ -262,6 +263,9 @@ class LLMSupervisor:
 
     def compact_history(self) -> None:
         _compact_history_impl(self)
+
+    def rollup_history(self, keep_recent: int = 6) -> int:
+        return _rollup_history_impl(self, keep_recent=keep_recent)
 
     def estimate_current_tokens(self) -> int:
         return _estimate_current_tokens_impl(self)

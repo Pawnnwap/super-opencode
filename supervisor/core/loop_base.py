@@ -487,8 +487,7 @@ class BaseLoop:
                 yield from self._emit_heartbeat(current_progress)
 
             if self.ctx_monitor.should_compact:
-                self.supervisor.compact_history()
-                yield from self._do_compaction()
+                yield from self._maybe_compact()
                 output, timed_out = self.runner.read_output()
                 continue
 
@@ -591,10 +590,40 @@ class BaseLoop:
                     **progress_event,
                 )
 
+    def _maybe_compact(self) -> Generator[Event]:
+        """Two-stage compaction.
+
+        Both stages first roll up the supervisor's own history (structural, no
+        LLM). Then:
+          * Stage 1 (elevated, < critical): light compaction — write summary.md
+            and restart the agent in a fresh session, skipping the expensive
+            agent cleanup/deletion turns.
+          * Stage 2 (critical, >= 90%): full compaction — agent file-cleanup
+            inquiry + deletion + summary + restart.
+        """
+        rolled = self.supervisor.rollup_history()
+        if rolled:
+            yield _ev("info", f"Condensed {rolled} older supervisor turn(s) to save context.")
+
+        if self.ctx_monitor.is_critical:
+            self.supervisor.compact_history()
+            yield from self._do_compaction()
+        else:
+            yield from self._do_light_compaction()
+
+    def _do_light_compaction(self) -> Generator[Event]:
+        """Stage-1 compaction: summary + fresh restart, no agent cleanup turns."""
+        yield _ev(
+            "warn",
+            f"Context at {self.ctx_monitor.fraction * 100:.0f}% — stage 1: "
+            "writing summary.md and restarting session (light).",
+        )
+        yield from self._restart_from_summary_output("")
+
     def _do_compaction(self) -> Generator[Event]:
         yield _ev(
             "warn",
-            f"Context at {self.ctx_monitor.fraction * 100:.0f}% — compacting.",
+            f"Context at {self.ctx_monitor.fraction * 100:.0f}% — stage 2: full compaction.",
         )
         candidates = self.runner.identify_cleanup_candidates()
         if candidates:
