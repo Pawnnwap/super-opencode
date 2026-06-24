@@ -8,6 +8,7 @@ import sys
 import time
 from collections.abc import Callable, Generator
 
+from supervisor.analyzers.loop_detector import LoopDetector
 from supervisor.runners.codex_support.command_builder import (
     CODEX_API_KEY_ENV,
     build_cmd,
@@ -121,6 +122,7 @@ def run_prompt(
                 runner._process,
                 classify_line=classify_line,
                 timeout=runner.timeout,
+                loop_detector=LoopDetector(),
             )
 
             if outcome.tokens_total > 0:
@@ -135,6 +137,18 @@ def run_prompt(
             if captured_id and captured_id != runner._session_id:
                 runner._session_id = captured_id
                 logger.info("Captured codex session id: %s", captured_id)
+
+            if outcome.looped:
+                runner._last_result = RunResult(
+                    stdout=outcome.stdout,
+                    stderr=outcome.stderr,
+                    returncode=-1,
+                    looped=True,
+                    loop_reason=outcome.loop_reason,
+                )
+                logger.warning("codex loop detected: %s", outcome.loop_reason)
+                runner._chars_exchanged += len(prompt) + len(runner._last_result.output)
+                return
 
             if outcome.timed_out:
                 runner._last_result = RunResult(

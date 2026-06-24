@@ -9,12 +9,16 @@ class RunResult:
         returncode: int = 0,
         timed_out: bool = False,
         exception: str = "",
+        looped: bool = False,
+        loop_reason: str = "",
     ):
         self.stdout = stdout
         self.stderr = stderr
         self.returncode = returncode
         self.timed_out = timed_out
         self.exception = exception
+        self.looped = looped
+        self.loop_reason = loop_reason
 
     @property
     def output(self) -> str:
@@ -24,6 +28,8 @@ class RunResult:
             parts.append(f"[EXCEPTION] {self.exception}")
         if self.timed_out:
             parts.append("[TIMED OUT]")
+        if self.looped:
+            parts.append(f"[LOOP DETECTED] {self.loop_reason}")
         if self.stdout.strip():
             parts.append(self.stdout.strip())
         if self.stderr.strip():
@@ -34,7 +40,12 @@ class RunResult:
 
     @property
     def ok(self) -> bool:
-        return not self.timed_out and not self.exception and self.returncode == 0
+        return (
+            not self.timed_out
+            and not self.exception
+            and not self.looped
+            and self.returncode == 0
+        )
 
     def diagnostic(self) -> str:
         lines = [

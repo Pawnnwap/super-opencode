@@ -42,6 +42,8 @@ class StreamOutcome:
     timed_out: bool
     tokens_total: int  # real context tokens, 0 if unseen
     session_id: str | None = None  # captured session id, None if unseen
+    looped: bool = False  # killed because the agent was stuck looping
+    loop_reason: str = ""  # why, when looped
 
 
 def _drain_stderr(proc, sink: list[str]) -> None:
@@ -101,6 +103,7 @@ def consume_process_stream(
     *,
     classify_line: Callable[[str | None], LineEvent | None],
     timeout: int,
+    loop_detector=None,
 ) -> Generator[dict, None, StreamOutcome]:
     """Stream *proc* stdout via *classify_line*, yield live tool markers.
 
@@ -166,6 +169,8 @@ def consume_process_stream(
 
     deadline = time.monotonic() + max(1, timeout)
     timed_out = False
+    looped = False
+    loop_reason = ""
     while True:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
@@ -177,16 +182,27 @@ def consume_process_stream(
             continue
         if item is _STDOUT_DONE:
             break
-        marker = _accumulate(classify_line(item))
+        event = classify_line(item)
+        if loop_detector is not None and event is not None and event.kind == "text" and event.text:
+            loop_detector.record_text()
+        marker = _accumulate(event)
         if marker is not None:
             # Own "tool" level so the log UI can style it; msg stays ASCII
             # (it is also logged to cp1252 stderr on Windows).
             yield {"level": "tool", "msg": marker}
+            if loop_detector is not None:
+                signal = loop_detector.record_tool(marker)
+                if signal is not None:
+                    looped = True
+                    loop_reason = f"{signal.reason} ({signal.marker})"
+                    _kill_process_tree(proc)
+                    break
 
-    if timed_out:
-        _kill_process_tree(proc)
+    if timed_out or looped:
+        if timed_out:
+            _kill_process_tree(proc)
         # Best-effort: fold any lines already buffered before the kill, so a
-        # timeout still preserves partial output. No live yields here.
+        # timeout/loop-kill still preserves partial output. No live yields here.
         drain_deadline = time.monotonic() + 1.0
         while time.monotonic() < drain_deadline:
             try:
@@ -220,4 +236,6 @@ def consume_process_stream(
         timed_out=timed_out,
         tokens_total=tokens_total,
         session_id=session_id,
+        looped=looped,
+        loop_reason=loop_reason,
     )

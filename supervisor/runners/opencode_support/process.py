@@ -7,6 +7,7 @@ import sys
 import time
 from collections.abc import Callable, Generator
 
+from supervisor.analyzers.loop_detector import LoopDetector
 from supervisor.runners.opencode_support.command_builder import build_cmd
 from supervisor.runners.opencode_support.result import RunResult
 from supervisor.runners.opencode_support.stream import classify_line
@@ -79,10 +80,23 @@ def run_prompt(
                 runner._process,
                 classify_line=classify_line,
                 timeout=runner.timeout,
+                loop_detector=LoopDetector(),
             )
 
             if outcome.tokens_total > 0:
                 runner._last_tokens_total = outcome.tokens_total
+
+            if outcome.looped:
+                runner._last_result = RunResult(
+                    stdout=outcome.stdout,
+                    stderr=outcome.stderr,
+                    returncode=-1,
+                    looped=True,
+                    loop_reason=outcome.loop_reason,
+                )
+                logger.warning("opencode loop detected: %s", outcome.loop_reason)
+                runner._chars_exchanged += len(prompt) + len(runner._last_result.output)
+                return
 
             if outcome.timed_out:
                 runner._last_result = RunResult(

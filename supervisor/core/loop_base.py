@@ -60,6 +60,13 @@ class BaseLoop:
         self._state = LoopState.RUNNING
         self._failures = 0
         self._task_turn: int = 0
+        self._loop_restarts: int = 0
+        self._max_loop_restarts: int = 2
+        self._loop_breaker: str = ""
+        from supervisor.analyzers.loop_detector import CrossTurnLoopDetector
+
+        self._cross_turn_detector = CrossTurnLoopDetector()
+        self._pending_cross_loop: str = ""
         self._last_feedback: str = ""
         self._cached_snapshot = None
         self._python_scanner_ran: bool = False
@@ -349,6 +356,30 @@ class BaseLoop:
         )
         yield from self.runner.start(self._restart_prompt())
 
+    def _handle_loop(self, reason: str) -> Generator[Event]:
+        """Agent got stuck looping mid-turn: it was killed; restart it clean.
+
+        Resume from summary.md + the task-state journal in a fresh session, with
+        a loop-breaker note telling the agent not to repeat the offending action.
+        Bail out to a failure report if the loop survives repeated restarts.
+        """
+        self._loop_restarts += 1
+        yield _ev(
+            "warn",
+            f"Loop detected — agent {reason}. Killed it; restarting with fixed "
+            f"context (loop-restart {self._loop_restarts}/{self._max_loop_restarts}).",
+        )
+        if self._loop_restarts > self._max_loop_restarts:
+            yield _ev(
+                "error",
+                f"Loop persists after {self._max_loop_restarts} restart(s) — aborting run.",
+            )
+            yield from self._on_final_failure(f"Stuck in a loop: {reason}")
+            self._state = LoopState.ENDED_FAILURE
+            return
+        self._loop_breaker = reason
+        yield from self._restart_from_summary_output("")
+
     def _on_final_failure(self, output: str) -> Generator[Event]:
         failure_reason = self._last_feedback or "Reached max retries"
         update_experience(self.config.workspace, failed=[failure_reason])
@@ -437,6 +468,16 @@ class BaseLoop:
         safe_msg = yield from self._post_judge_feedback(safe_msg, actual_output)
 
         self._last_feedback = safe_msg
+
+        if self._cross_turn_detector is not None:
+            cross = self._cross_turn_detector.record(actual_output, safe_msg)
+            if cross is not None:
+                # Don't send the same feedback again — flag for the loop to
+                # restart with a loop-breaker instead of oscillating further.
+                self._pending_cross_loop = f"{cross.reason} ({cross.marker})"
+                yield _ev("warn", f"Cross-turn loop: agent {cross.reason}.")
+                return
+
         yield _ev("opencode_prompt", safe_msg)
         yield from self.runner.send(safe_msg)
 
@@ -454,6 +495,14 @@ class BaseLoop:
         timed_out = initial_timed_out
 
         while self._state == LoopState.RUNNING:
+            looped, loop_reason = self.runner.last_looped
+            if looped:
+                yield from self._handle_loop(loop_reason)
+                if self._state != LoopState.RUNNING:
+                    break
+                output, timed_out = self.runner.read_output()
+                continue
+
             current_progress = self.runner.get_step_progress()
 
             if timed_out or not output.strip():
@@ -472,6 +521,7 @@ class BaseLoop:
                 continue
 
             self._failures = 0
+            self._loop_restarts = 0  # genuine progress clears the loop counter
             yield from self._on_successful_output(output)
             yield from self._update_context_monitor()
 
@@ -494,6 +544,15 @@ class BaseLoop:
             yield from self._do_judgement(output)
             if self._state != LoopState.RUNNING:
                 break
+
+            if self._pending_cross_loop:
+                reason = self._pending_cross_loop
+                self._pending_cross_loop = ""
+                yield from self._handle_loop(reason)
+                if self._state != LoopState.RUNNING:
+                    break
+                output, timed_out = self.runner.read_output()
+                continue
 
             yield from self._handle_session_continuity()
 
@@ -758,7 +817,15 @@ class BaseLoop:
         task_state_section = (
             f"Recent progress journal (most recent turns):\n\n{tail}\n\n" if tail else ""
         )
+        loop_section = ""
+        if self._loop_breaker:
+            loop_section = (
+                "IMPORTANT: the previous session was stuck repeating the same action "
+                f"({self._loop_breaker}). Do NOT repeat it — change your approach.\n\n"
+            )
+            self._loop_breaker = ""
         return RESTART_PROMPT_TEMPLATE.format(
+            loop_section=loop_section,
             summary=summary,
             task_state_section=task_state_section,
             protocol_text=protocol_text,

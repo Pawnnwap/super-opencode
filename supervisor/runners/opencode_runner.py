@@ -229,6 +229,16 @@ class OpencodeRunner(BaseRunner):
             return "", False
         return strip_thinking_blocks(self._last_result.output), self._last_result.timed_out
 
+    @property
+    def last_looped(self) -> tuple[bool, str]:
+        """(looped, reason) from the most recent run; (False, "") if none."""
+        if self._last_result is None:
+            return False, ""
+        return (
+            getattr(self._last_result, "looped", False),
+            getattr(self._last_result, "loop_reason", ""),
+        )
+
     def last_diagnostic(self) -> str:
         return self._last_result.diagnostic() if self._last_result else "(no run yet)"
 

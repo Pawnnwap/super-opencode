@@ -31,6 +31,7 @@ Make your changes surgical and minimal.
 Run tests after every logical change. Begin."""
 
 RESTART_PROMPT_TEMPLATE = """\
+{loop_section}\
 Context was reset due to token limits. Here is a summary of progress so far:
 
 {summary}
