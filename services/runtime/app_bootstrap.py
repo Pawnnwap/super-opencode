@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 import subprocess
 import sys
 from pathlib import Path
@@ -130,7 +131,12 @@ def _run_codex_upgrade(cmd: str, home_dir: str) -> tuple[int, str, str]:
         cwd=home_dir,
         shell=True,
     )
-    stdout, stderr = proc.communicate(timeout=180)
+    try:
+        stdout, stderr = proc.communicate(timeout=180)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.communicate()
+        raise
     if stdout:
         print(f"[codex-upgrade] stdout: {stdout.strip()}", file=sys.stderr)
     if stderr:
@@ -138,10 +144,54 @@ def _run_codex_upgrade(cmd: str, home_dir: str) -> tuple[int, str, str]:
     return proc.returncode, stdout or "", stderr or ""
 
 
+def _restore_codex_config(config_path: Path, original: bytes, mode: int) -> None:
+    """Restore an existing Codex config if an upgrade changed it."""
+    try:
+        if config_path.read_bytes() == original:
+            return
+    except OSError:
+        pass
+
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{config_path.name}.",
+        dir=config_path.parent,
+    )
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "wb") as tmp:
+            tmp.write(original)
+            tmp.flush()
+            os.fsync(tmp.fileno())
+        os.chmod(tmp_path, mode)
+        os.replace(tmp_path, config_path)
+        print(
+            f"[codex-upgrade] Restored user config changed during upgrade: {config_path}",
+            file=sys.stderr,
+        )
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+
 def auto_upgrade_codex(settings_file: Path = UPGRADE_SETTINGS_FILE) -> None:
     if should_skip_upgrade(settings_file):
         print(
             "[codex-upgrade] Skipping upgrade: disabled via config/env var",
+            file=sys.stderr,
+        )
+        return
+
+    config_path = Path.home() / ".codex" / "config.toml"
+    try:
+        original_config = config_path.read_bytes()
+        original_mode = config_path.stat().st_mode & 0o7777
+    except FileNotFoundError:
+        original_config = None
+        original_mode = 0
+    except OSError as exc:
+        print(
+            f"[codex-upgrade] Cannot protect existing config {config_path}: {exc}. "
+            "Skipping automatic Codex upgrade.",
             file=sys.stderr,
         )
         return
@@ -198,6 +248,15 @@ def auto_upgrade_codex(settings_file: Path = UPGRADE_SETTINGS_FILE) -> None:
             f"[codex-upgrade] Unexpected error: {exc}. Continuing startup.",
             file=sys.stderr,
         )
+    finally:
+        if original_config is not None:
+            try:
+                _restore_codex_config(config_path, original_config, original_mode)
+            except OSError as exc:
+                print(
+                    f"[codex-upgrade] Failed to restore user config {config_path}: {exc}",
+                    file=sys.stderr,
+                )
 
 
 def auto_upgrade_dcp(settings_file: Path = UPGRADE_SETTINGS_FILE) -> None:
