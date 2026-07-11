@@ -13,10 +13,12 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +27,9 @@ _HEADER_FAILED = "## What Failed"
 _HEADER_SUMMARIES = "## Evolution Summaries"
 _CACHE_DIR = ".opencode"
 _CACHE_FILENAME = "experience_cache.json"
+_EVENTS_FILENAME = "memory_events.jsonl"
+_SNAPSHOT_DIRNAME = "memory_snapshots"
+_SCHEMA_VERSION = 1
 
 _EXPERIENCE_CACHE: dict[str, dict[str, Any]] = {}
 
@@ -33,9 +38,37 @@ def _get_cache_path(workspace: Path) -> Path:
     return workspace / _CACHE_DIR / _CACHE_FILENAME
 
 
+def _get_events_path(workspace: Path) -> Path:
+    return workspace / _CACHE_DIR / _EVENTS_FILENAME
+
+
+def _get_snapshot_dir(workspace: Path) -> Path:
+    return workspace / _CACHE_DIR / _SNAPSHOT_DIRNAME
+
+
 def _ensure_cache_dir(workspace: Path) -> None:
     cache_dir = workspace / _CACHE_DIR
     cache_dir.mkdir(parents=True, exist_ok=True)
+
+
+def _append_memory_event(
+    workspace: Path,
+    event_type: str,
+    **details: Any,
+) -> None:
+    """Append audit-only memory event. Events never alter current memory state."""
+    _ensure_cache_dir(workspace)
+    event = {
+        "event_id": uuid4().hex,
+        "timestamp": datetime.now(UTC).isoformat(),
+        "event_type": event_type,
+        **details,
+    }
+    try:
+        with _get_events_path(workspace).open("a", encoding="utf-8") as f:
+            f.write(json.dumps(event, ensure_ascii=False) + "\n")
+    except OSError as e:
+        logger.warning("Failed to append memory event in %s: %s", workspace, e)
 
 
 def _load_cache_from_file(workspace: Path) -> dict[str, Any] | None:
@@ -66,18 +99,24 @@ class EvolutionSummary:
     goal: str = ""
     outcome: str = ""
     key_changes: list[str] = field(default_factory=list)
+    changed_files: list[str] = field(default_factory=list)
     test_baseline: str = ""
     test_final: str = ""
     test_delta: str = ""
+    test_evidence: list[str] = field(default_factory=list)
     regressions_count: int = 0
     iterations: int = 0
     final_step: int = 0
     total_steps: int = 0
     final_phase: str = ""
     challenges: list[str] = field(default_factory=list)
+    failure_patterns: list[str] = field(default_factory=list)
     solutions: list[str] = field(default_factory=list)
     violations: list[str] = field(default_factory=list)
     archive_path: str = ""
+    confidence: float = 0.5
+    expires_at: str = ""
+    decision_id: str = ""
     timestamp: str = ""
 
     def to_markdown(self) -> str:
@@ -97,10 +136,18 @@ class EvolutionSummary:
             lines.append("- **Key Changes:**")
             for change in self.key_changes[:10]:
                 lines.append("  - " + change)
+        if self.changed_files:
+            lines.append("- **Changed Files:** " + ", ".join(self.changed_files[:20]))
+        if self.test_evidence:
+            lines.append("- **Test Evidence:**")
+            for evidence in self.test_evidence[:5]:
+                lines.append("  - " + evidence)
         if self.challenges:
             lines.append("- **Challenges:**")
             for c in self.challenges[:5]:
                 lines.append("  - " + c)
+        if self.failure_patterns:
+            lines.append("- **Failure Patterns:** " + "; ".join(self.failure_patterns[:5]))
         if self.solutions:
             lines.append("- **Solutions:**")
             for s in self.solutions[:5]:
@@ -111,6 +158,11 @@ class EvolutionSummary:
                 lines.append("  - " + v)
         if self.archive_path:
             lines.append("- **Archive:** " + self.archive_path)
+        lines.append("- **Confidence:** " + f"{self.confidence:.2f}")
+        if self.expires_at:
+            lines.append("- **Expires:** " + self.expires_at)
+        if self.decision_id:
+            lines.append("- **Decision ID:** " + self.decision_id)
         lines.append("")
         return "\n".join(lines)
 
@@ -132,6 +184,16 @@ class ExperienceInsight:
 
     def to_markdown(self) -> str:
         return "- [" + self.insight_type + "] " + self.description + " (seen " + str(self.frequency) + "x). " + self.recommendation
+
+
+@dataclass(frozen=True)
+class MemorySnapshot:
+    """Point-in-time copy of durable memory, independent from code archives."""
+
+    snapshot_id: str
+    path: Path
+    label: str
+    timestamp: str
 
 
 def _get_cache(workspace: Path) -> dict[str, Any]:
@@ -201,6 +263,12 @@ def update_experience(
     if failed:
         cache["failed"].extend(failed)
     _save_cache_to_file(workspace, _serialize_cache_for_save(cache))
+    _append_memory_event(
+        workspace,
+        "experience_updated",
+        worked=list(worked or []),
+        failed=list(failed or []),
+    )
     logger.info("Updated experience: worked=%s, failed=%s", worked, failed)
 
 
@@ -208,9 +276,105 @@ def log_evolution_summary(workspace: Path, summary: EvolutionSummary) -> None:
     cache = _get_cache(workspace)
     if not summary.timestamp:
         summary.timestamp = datetime.now(UTC).isoformat()
+    if not summary.decision_id:
+        summary.decision_id = uuid4().hex
     cache["summaries"].append(summary)
     _save_cache_to_file(workspace, _serialize_cache_for_save(cache))
+    _append_memory_event(
+        workspace,
+        "evolution_summary_logged",
+        goal=summary.goal,
+        outcome=summary.outcome,
+    )
     logger.info("Logged evolution summary: %s [%s]", summary.goal or "unnamed", summary.outcome)
+
+
+def snapshot_memory(workspace: Path, label: str = "") -> MemorySnapshot:
+    """Persist current memory state for later rollback with a code archive."""
+    cache = _get_cache(workspace)
+    snapshot_id = uuid4().hex
+    timestamp = datetime.now(UTC).isoformat()
+    snapshot_dir = _get_snapshot_dir(workspace)
+    snapshot_dir.mkdir(parents=True, exist_ok=True)
+    path = snapshot_dir / f"{timestamp.replace(':', '-').replace('+', '_')}_{snapshot_id[:8]}.json"
+    payload = {
+        "schema_version": _SCHEMA_VERSION,
+        "snapshot_id": snapshot_id,
+        "timestamp": timestamp,
+        "label": label,
+        "state": _serialize_cache_for_save(cache),
+    }
+    try:
+        path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    except OSError as e:
+        logger.warning("Failed to snapshot memory in %s: %s", workspace, e)
+        raise
+    _append_memory_event(
+        workspace,
+        "memory_snapshot_created",
+        snapshot_id=snapshot_id,
+        label=label,
+        snapshot_path=str(path),
+    )
+    return MemorySnapshot(snapshot_id=snapshot_id, path=path, label=label, timestamp=timestamp)
+
+
+def restore_memory_snapshot(workspace: Path, snapshot: MemorySnapshot | Path) -> bool:
+    """Restore durable memory state. Audit log remains append-only."""
+    path = snapshot.path if isinstance(snapshot, MemorySnapshot) else snapshot
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        state = payload.get("state")
+        if not isinstance(state, dict):
+            raise ValueError("memory snapshot has no state object")
+    except (OSError, ValueError, json.JSONDecodeError) as e:
+        logger.warning("Failed to restore memory snapshot %s: %s", path, e)
+        return False
+
+    summaries: list[EvolutionSummary] = []
+    for item in state.get("summaries", []):
+        if isinstance(item, EvolutionSummary):
+            summaries.append(item)
+        elif isinstance(item, dict):
+            summaries.append(EvolutionSummary.from_dict(item))
+    restored = {
+        "worked": list(state.get("worked", [])),
+        "failed": list(state.get("failed", [])),
+        "summaries": summaries,
+    }
+    _EXPERIENCE_CACHE[str(workspace)] = restored
+    _save_cache_to_file(workspace, _serialize_cache_for_save(restored))
+    _append_memory_event(
+        workspace,
+        "memory_snapshot_restored",
+        snapshot_id=payload.get("snapshot_id", ""),
+        snapshot_path=str(path),
+    )
+    return True
+
+
+def read_memory_events(workspace: Path) -> list[dict[str, Any]]:
+    """Read append-only memory audit log, skipping malformed event lines."""
+    path = _get_events_path(workspace)
+    if not path.exists():
+        return []
+    events: list[dict[str, Any]] = []
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError as e:
+        logger.warning("Failed to read memory events in %s: %s", workspace, e)
+        return events
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError:
+            logger.warning("Skipping malformed memory event in %s", path)
+            continue
+        if isinstance(item, dict):
+            events.append(item)
+    return events
 
 
 def read_summaries(workspace: Path, max_count: int = 10) -> list[EvolutionSummary]:
@@ -295,7 +459,132 @@ def extract_insights(workspace: Path) -> list[ExperienceInsight]:
     return insights
 
 
-def get_experience_context(workspace: Path) -> str:
+def _term_set(text: str) -> set[str]:
+    return set(re.findall(r"[a-z0-9_./-]+", text.lower()))
+
+
+def _is_expired(expires_at: str, now: datetime) -> bool:
+    if not expires_at:
+        return False
+    try:
+        expiry = datetime.fromisoformat(expires_at)
+    except ValueError:
+        return False
+    if expiry.tzinfo is None:
+        expiry = expiry.replace(tzinfo=UTC)
+    return expiry <= now
+
+
+def _summary_score(
+    summary: EvolutionSummary,
+    *,
+    goal_terms: set[str],
+    files: tuple[str, ...],
+    recency: int,
+) -> float:
+    searchable = " ".join(
+        [
+            summary.goal,
+            *summary.key_changes,
+            *summary.changed_files,
+            *summary.challenges,
+            *summary.failure_patterns,
+            *summary.solutions,
+        ],
+    )
+    score = len(goal_terms & _term_set(searchable)) * 4.0
+    normalized_files = {path.replace("\\", "/").lower() for path in files}
+    for changed_file in summary.changed_files:
+        changed = changed_file.replace("\\", "/").lower()
+        if any(changed.endswith(file) or file.endswith(changed) for file in normalized_files):
+            score += 8.0
+    score += max(0.0, min(1.0, summary.confidence))
+    if summary.outcome == "success":
+        score += 0.5
+    return score + recency * 0.01
+
+
+def retrieve_memory(
+    workspace: Path,
+    *,
+    goal: str = "",
+    files: tuple[str, ...] = (),
+    max_records: int = 5,
+    now: datetime | None = None,
+) -> str:
+    """Return compact, task-relevant durable memory instead of raw history."""
+    current_time = now or datetime.now(UTC)
+    goal_terms = _term_set(goal)
+    ranked: list[tuple[float, EvolutionSummary]] = []
+    for recency, summary in enumerate(read_summaries(workspace, max_count=50), start=1):
+        if _is_expired(summary.expires_at, current_time):
+            continue
+        ranked.append(
+            (
+                _summary_score(
+                    summary,
+                    goal_terms=goal_terms,
+                    files=files,
+                    recency=recency,
+                ),
+                summary,
+            ),
+        )
+    ranked.sort(key=lambda item: item[0], reverse=True)
+    selected = [summary for _, summary in ranked[:max_records]]
+
+    # Legacy runs only contain free-form lessons. Keep a small ranked fallback
+    # until they age out naturally behind structured summaries.
+    cache = _get_cache(workspace)
+    if not selected:
+        lessons = [
+            ("Worked", lesson)
+            for lesson in cache.get("worked", [])[-10:]
+        ] + [
+            ("Failed", lesson)
+            for lesson in cache.get("failed", [])[-10:]
+        ]
+        lessons.sort(
+            key=lambda item: len(goal_terms & _term_set(item[1])),
+            reverse=True,
+        )
+        selected_lessons = lessons[:max_records]
+        if not selected_lessons:
+            return ""
+        lines = ["--- Retrieved Memory ---"]
+        for kind, lesson in selected_lessons:
+            lines.append(f"- [{kind}] {lesson}")
+        return "\n".join(lines)
+
+    lines = ["--- Retrieved Memory ---"]
+    for summary in selected:
+        lines.append(
+            f"- [{summary.outcome}] {summary.goal or 'Unnamed'} "
+            f"(confidence {summary.confidence:.2f})",
+        )
+        if summary.changed_files:
+            lines.append("  Files: " + ", ".join(summary.changed_files[:8]))
+        if summary.solutions:
+            lines.append("  Learned: " + "; ".join(summary.solutions[:2]))
+        if summary.failure_patterns:
+            lines.append("  Avoid: " + "; ".join(summary.failure_patterns[:2]))
+        if summary.test_evidence:
+            lines.append("  Evidence: " + summary.test_evidence[-1])
+    return "\n".join(lines)
+
+
+def get_experience_context(
+    workspace: Path,
+    *,
+    goal: str = "",
+    files: tuple[str, ...] = (),
+) -> str:
+    """Compatibility entry point for task-relevant memory retrieval."""
+    return retrieve_memory(workspace, goal=goal, files=files)
+
+
+def get_legacy_experience_context(workspace: Path) -> str:
+    """Retain full-history view for diagnostics only, never agent prompting."""
     summaries = read_summaries(workspace, max_count=5)
     insights = extract_insights(workspace)
 

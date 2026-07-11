@@ -8,15 +8,14 @@
 
 一个由 Streamlit 驱动的双循环自主编码系统。`SupervisorLoop` 负责协议引导的任务执行，
 通过 LLM 评判器（`LLMSupervisor`）对每次迭代进行协议对齐评估。`SelfEvolutionLoop` 将
-同样的机制作用于代码库自身 —— 运行带测试门控的自我改进，并在回归时自动回滚。所有文件
-编辑都通过 `hashline` MCP 服务器进行，该服务器使用内容寻址哈希验证每次更改，彻底消除
-陈旧引用错误。
+同样的机制作用于代码库自身 —— 运行带测试门控的自我改进，并在回归时自动回滚。文件编辑
+使用执行后端原生的读取、编辑、补丁和写入工具。
 
 核心能力：
 
 - **双循环架构** — `SupervisorLoop` 处理外部任务，`SelfEvolutionLoop` 实现自我改进
 - **LLM 评判器** — `LLMSupervisor` 在每一步评估 opencode 输出是否符合协议目标
-- **哈希锚定编辑** — `hashline` MCP 服务器提供 `hashline_read` / `hashline_edit`，支持陈旧 ID 拒绝和原子写入
+- **原生文件编辑** — OpenCode 和 Codex 使用各自维护的读取、编辑、补丁和写入工具
 - **Streamlit UI** — 三页管理界面：协议向导、实时运行、自我演进
 - **计划模式** — 可配置的执行前规划轮数，使用只读 opencode 分析
 - **漏洞扫描** — 9 工具静态分析流水线（Bandit、Semgrep、Ruff 等）
@@ -135,7 +134,7 @@ pip install -r requirements.txt
 
 所有依赖均在 `pyproject.toml` 中定义：`openai`、`streamlit`、`tiktoken`、`pytest`、`cryptography`、`rich`、`psutil` 和 `mcp`。
 
-> **MCP 服务器：** `mcp` 包是 hashline 和 codehelp MCP 服务器（`mcp_server/hashline.py` 和 `mcp_server/codehelp.py`）的必需依赖。这些服务器为 opencode 提供哈希锚定文件编辑和代码辅助工具。
+> **MCP 服务器：** `mcp` 包是 Codehelp MCP 服务器（`mcp_server/codehelp.py`）的必需依赖，为 OpenCode 和 Codex 提供代码辅助工具。
 ---
 
 ## 运行应用程序
@@ -207,6 +206,9 @@ python -m streamlit run app.py
 | 回归保护 | 测试变差 → 自动回滚到上一个良好的检查点 |
 | 检查点 | 每次无回归的迭代都会被快照到 `.checkpoints/` |
 | 工作区归档 | 每次迭代都会归档到 `.archive/` 并附带元数据 |
+| TARGET 状态 | `.opencode/target_state.json` 记录证据、已尝试方向和停滞次数 |
+| 被拒绝候选 | 回滚前先归档回归候选，并追加记录到 `.opencode/staged_improvements.jsonl` |
+| 停滞控制 | 两次被拒绝或无证据迭代后要求重新诊断；禁止重复已拒绝方向 |
 | 演进报告 | `evolution_report.md` — 更改的文件、测试差异、最佳检查点 |
 
 ---
@@ -222,6 +224,8 @@ supervisor/
     loop.py                         SupervisorLoop — 主要的监督代理循环
     loop_base.py                    BaseLoop — 通用状态机，事件生成
     self_evolution_loop.py          SelfEvolutionLoop — 带测试门控的自我修改
+    target_evaluator.py             独立的测试/证据验收门控
+    target_state.py                 持久化 TARGET 证据和暂存候选
     llm_supervisor.py               LLM 评判器，评估 opencode 输出
 
   analyzers/
@@ -273,8 +277,7 @@ tests/                              测试套件（pytest）
   test_session_tracker.py           SessionTracker 测试
   test_experience_tracker.py        ExperienceTracker 测试
 mcp_server/
-  hashline.py                       哈希锚定文件编辑的 MCP 服务器（hashline_read, hashline_edit, hashline_write）
-  codehelp.py                       代码辅助 MCP 服务器（文档字符串搜索、包版本查询、示例查找）
+  codehelp.py                       代码辅助与依赖研究 MCP 服务器
 ```
 
 ---
@@ -294,6 +297,9 @@ mcp_server/
 列出代理必须产生的编号、可测试的交付物。
 好的例子："./tests/ 中的所有 pytest 测试通过"
 不好的例子："代码应该能正常工作"
+
+每个 TARGET 必须包含交付物、验收证据、完成态和失败/重规划条件。未量化的
+“improve” 或 “enhance” 会被拒绝。
 
 ## RESTRICTIONS
 
@@ -428,22 +434,15 @@ Token 估算在可用时使用 `tiktoken`（o200k_base 编码），
 
 ---
 
-## 哈希锚定文件编辑
+## 原生文件编辑
 
-系统包含一个 MCP 服务器（`mcp_server/hashline.py`），提供哈希锚定的
-文件编辑工具。从文件读取的每一行都会标注 `LINE#ID` 哈希
-（例如 `42#VK| def process(data):`），编码行号和内容。这使得：
+Super-Opencode 使用执行后端原生的文件工具。OpenCode 提供 `read`、精确匹配
+`edit`、`apply_patch` 和 `write`；Codex 使用 `apply_patch`。监督器会在这些
+修改之外提供协议检查、测试门控演进、工作区归档和回滚。
 
-- **安全的并发编辑** — MCP 服务器在写入前验证所有 LINE#ID；如果任何
-  ID 过时（因为另一个编辑更改了文件），整个操作会被拒绝并返回修正后的 ID
-- **原子写入** — 编辑通过临时文件 + `os.replace` 应用，文件永远不会
-  处于部分状态
-- **编辑操作**：`replace`、`replace_range`、`delete`、`append`、
-  `prepend` — 全部通过哈希锚定位置寻址
-- **干运行模式** — 验证 ID 而不写入磁盘
-
-哈希锚定 MCP 服务器在启动时自动配置到 opencode 的 `opencode.json` 中，
-因此 opencode 在系统提示中接收哈希锚定编辑指令。
+旧版本创建的 OpenCode 配置会在启动时迁移：移除受本应用管理的 Hashline MCP
+条目，并恢复原生 `read` / `edit` 权限。自定义 MCP 服务器和用户自行设置的权限
+保持不变。
 
 
 ## 代码辅助 MCP 服务器
@@ -453,10 +452,12 @@ Token 估算在可用时使用 `tiktoken`（o200k_base 编码），
 
 - **search_docstrings** — 搜索本地代码库中包、模块、类、函数或方法的文档字符串
 - **search_package_version** — 查询 PyPI/npm 的最新发布版本、发布日期和文档 URL
-- **search_package_examples** — 查找 Stack Overflow 和 Real Python 的使用示例和最佳实践
+- **analyze_dependency** — 读取 Python/Node 清单与锁文件，返回声明版本、锁定版本、来源和兼容性风险标签
+- **fetch_official_docs** — 从 PyPI/npm 元数据声明的公共 HTTPS 文档地址读取短摘录，并附注册表/缓存来源
+- **search_package_examples** — 查找 Stack Overflow 和 Real Python 的使用示例和最佳实践；仅作社区补充
 
-这些工具在启动时自动配置到 opencode 的 `opencode.json` 中，
-使 opencode 能够在不离开上下文窗口的情况下查找文档和示例。
+这些工具会在启动时自动配置给 OpenCode 和 Codex。它们只提供研究能力；
+文件编辑仍使用各后端的原生工具。
 
 ---
 

@@ -6,6 +6,7 @@ import re
 from dataclasses import dataclass, field
 
 from supervisor.protocols.protocol import Protocol, parse_protocol_text
+from supervisor.protocols.target_audit import audit_target
 from supervisor.protocols.analyzer_support import (
     SectionScore,
     Severity,
@@ -427,6 +428,26 @@ class ProtocolAnalyzer:
                     section="RESTRICTIONS",
                     message="TARGET mentions installing but RESTRICTIONS forbid it.",
                     suggestion="Resolve this contradiction: either remove installation from TARGET or allow it in RESTRICTIONS.",
+                ),
+            )
+
+        target_audit = audit_target(
+            protocol.target_section,
+            protocol.restrictions_section,
+        )
+        for message in target_audit.issues:
+            issues.append(
+                ValidationIssue(
+                    severity=(
+                        Severity.ERROR
+                        if target_audit.rejects_target and "rejected" in message
+                        else Severity.WARNING
+                    ),
+                    section="TARGET",
+                    message=message,
+                    suggestion=(
+                        "Name deliverable, acceptance evidence, completion state, and failure condition."
+                    ),
                 ),
             )
 

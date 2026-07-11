@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -30,6 +31,40 @@ def atomic_write_json(path: Path, content: dict) -> None:
         raise
 
 
+def _load_config_json(path: Path, on_warning=None) -> dict:
+    """Load OpenCode JSON, preserving common JSONC-style trailing commas."""
+    text = path.read_text(encoding="utf-8")
+    try:
+        content = json.loads(text)
+    except json.JSONDecodeError as exc:
+        normalized = re.sub(r",(\s*[}\]])", r"\1", text)
+        if normalized == text:
+            raise
+        try:
+            content = json.loads(normalized)
+        except json.JSONDecodeError:
+            raise exc
+        if on_warning:
+            on_warning("Config used trailing commas; normalized during migration.")
+    if not isinstance(content, dict):
+        raise TypeError(f"Config must be a JSON object, got {type(content).__name__}")
+    return content
+
+
+def _is_legacy_hashline_config(value: object) -> bool:
+    """Identify only Hashline servers previously installed by this app."""
+    if not isinstance(value, dict) or value.get("type") != "local":
+        return False
+    command = value.get("command")
+    if not isinstance(command, list):
+        return False
+    return any(
+        isinstance(part, str)
+        and part.replace("\\", "/").endswith("/mcp_server/hashline.py")
+        for part in command
+    )
+
+
 def get_opencode_config_file(
     config_dir: Path,
     project_root: Path,
@@ -47,7 +82,7 @@ def get_opencode_config_file(
     target_file.parent.mkdir(parents=True, exist_ok=True)
 
     try:
-        content = json.loads(target_file.read_text(encoding="utf-8"))
+        content = _load_config_json(target_file, on_warning=on_warning)
     except FileNotFoundError:
         content = {"$schema": "https://opencode.ai/config.json", "provider": {}}
     except json.JSONDecodeError as exc:
@@ -57,25 +92,21 @@ def get_opencode_config_file(
     except PermissionError:
         raise PermissionError(f"Cannot read config: {target_file}")
 
-    if not isinstance(content, dict):
-        raise TypeError(f"Config must be a JSON object, got {type(content).__name__}")
-
     dirty = False
     if "mcp" not in content or not isinstance(content["mcp"], dict):
         content["mcp"] = {}
         dirty = True
 
     python_cmd = sys.executable or "python"
-    hashline_path = str((project_root / "mcp_server" / "hashline.py").resolve()).replace("\\", "/")
     codehelp_path = str((project_root / "mcp_server" / "codehelp.py").resolve()).replace("\\", "/")
 
+    removed_legacy_hashline = False
+    if _is_legacy_hashline_config(content["mcp"].get("hashline")):
+        del content["mcp"]["hashline"]
+        removed_legacy_hashline = True
+        dirty = True
+
     mcp_configs = {
-        "hashline": {
-            "type": "local",
-            "command": [python_cmd, hashline_path],
-            "enabled": True,
-            "environment": {},
-        },
         "codehelp": {
             "type": "local",
             "command": [python_cmd, codehelp_path],
@@ -89,10 +120,19 @@ def get_opencode_config_file(
             content["mcp"][key] = value
             dirty = True
 
-    desired_permissions = {"read": "deny", "edit": "deny"}
-    if content.get("permission") != desired_permissions:
-        content["permission"] = desired_permissions
-        dirty = True
+    # Hashline previously denied native tools so its line-ID protocol was the
+    # only edit path. Restore native tools only when removing that managed MCP
+    # entry; preserve permissions deliberately chosen by the user otherwise.
+    if removed_legacy_hashline and isinstance(content.get("permission"), dict):
+        permissions = dict(content["permission"])
+        changed_permissions = False
+        for tool in ("read", "edit"):
+            if permissions.get(tool) == "deny":
+                permissions[tool] = "allow"
+                changed_permissions = True
+        if changed_permissions:
+            content["permission"] = permissions
+            dirty = True
 
     if dirty:
         atomic_write_json(target_file, content)
@@ -115,7 +155,7 @@ def add_custom_provider_to_config(
         raise ValueError("base_url cannot be empty")
 
     try:
-        content = json.loads(config_file.read_text(encoding="utf-8"))
+        content = _load_config_json(config_file)
     except FileNotFoundError:
         content = {"$schema": "https://opencode.ai/config.json", "provider": {}}
     except json.JSONDecodeError as exc:

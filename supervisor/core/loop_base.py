@@ -383,7 +383,17 @@ class BaseLoop:
     def _on_final_failure(self, output: str) -> Generator[Event]:
         failure_reason = self._last_feedback or "Reached max retries"
         update_experience(self.config.workspace, failed=[failure_reason])
+        self._record_structured_failure(
+            failure_reason,
+            goal=self._memory_goal(),
+            challenges=[failure_reason],
+        )
         yield from []
+
+    def _memory_goal(self) -> str:
+        """Stable task description stored with a durable memory decision."""
+        protocol = getattr(self, "protocol", None)
+        return str(getattr(protocol, "target_section", ""))
 
     def _record_task_state(self, verdict, progress) -> None:
         """Append a journal entry for this judge turn (no extra LLM call)."""
@@ -457,8 +467,14 @@ class BaseLoop:
             lesson = self._extract_lesson_from_verdict(verdict.raw)
             if self._failures == 0:
                 update_experience(self.config.workspace, worked=[lesson])
-                return
-            update_experience(self.config.workspace, worked=["Successfully met all targets"])
+            else:
+                lesson = "Successfully met all targets"
+                update_experience(self.config.workspace, worked=[lesson])
+            self._record_structured_success(
+                verdict.raw,
+                goal=self._memory_goal(),
+                solutions=[lesson],
+            )
             return
 
         vuln_scan = self.scan_for_vulnerabilities()
@@ -861,23 +877,49 @@ class BaseLoop:
         solutions: list[str] | None = None,
         violations: list[str] | None = None,
     ) -> EvolutionSummary:
+        baseline = getattr(self, "_baseline", None)
+        final = getattr(self, "_last_result", None)
+        test_evidence: list[str] = []
+        if baseline is not None:
+            test_evidence.append("Baseline: " + baseline.summary())
+        if final is not None:
+            test_evidence.append("Final: " + final.summary())
+            if baseline is not None:
+                test_evidence.append("Delta: " + final.delta(baseline))
+
+        changed_files: list[str] = []
+        before = getattr(self, "_pre_snapshot", None)
+        if before is not None:
+            try:
+                from supervisor.analyzers.codebase_analyzer import snapshot_codebase
+
+                changed_files = before.changed_files(
+                    snapshot_codebase(self.config.workspace),
+                )
+            except OSError:
+                logger.warning("Could not capture changed files for memory summary")
+
         progress = self.runner.get_step_progress() if self.runner else None
         return EvolutionSummary(
             goal=goal,
             outcome=outcome,
             key_changes=key_changes or [],
-            test_baseline=getattr(self, "_baseline", None),
-            test_final=getattr(self, "_last_result", None),
-            test_delta="",
+            changed_files=changed_files,
+            test_baseline=baseline.summary() if baseline is not None else "",
+            test_final=final.summary() if final is not None else "",
+            test_delta=final.delta(baseline) if final is not None and baseline is not None else "",
+            test_evidence=test_evidence,
             regressions_count=0,
             iterations=getattr(self, "_iteration", 0),
             final_step=progress.current_step if progress else 0,
             total_steps=progress.total_steps_estimate if progress else 0,
             final_phase=progress.phase.name.lower() if progress else "",
             challenges=challenges or [],
+            failure_patterns=(challenges or []) if outcome == "failure" else [],
             solutions=solutions or [],
             violations=violations or [],
             archive_path=str(getattr(self, "_best_archive", "")),
+            confidence=1.0 if final is not None and final.ok else 0.7 if outcome == "success" else 0.4,
         )
 
     def _record_structured_success(

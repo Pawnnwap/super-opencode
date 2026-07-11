@@ -61,6 +61,8 @@ When user gives you raw notes for any section, you must:
 1. Rewrite them in precise, imperative language.
 2. Make deliverables concrete and testable (good: "All pytest tests pass";
    bad: "the code should work").
+   TARGET must also state a finished condition and what failure requires replanning.
+   Never leave "improve" or "enhance" unmeasured.
 3. Keep restrictions as clear prohibitions ("Do not …").
 4. Return ONLY the full protocol.md content, no preamble, no commentary.
    The file must start with the three headings in order.

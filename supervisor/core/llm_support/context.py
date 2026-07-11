@@ -316,9 +316,12 @@ class SupervisorContextManager:
 
     def build_experience_context(self) -> str:
         try:
-            from supervisor.utils.experience_tracker import read_experience_capped
+            from supervisor.utils.experience_tracker import get_experience_context
 
-            experience_text = read_experience_capped(self._workspace, max_chars=10000)
+            experience_text = get_experience_context(
+                self._workspace,
+                goal=self._protocol_target,
+            )
             if not experience_text.strip():
                 return ""
 
@@ -330,7 +333,7 @@ class SupervisorContextManager:
                     preserve_end_ratio=0.0,
                 )
 
-            return f"--- Previous Experience ---\n{experience_text}\n--- end ---\n\n"
+            return experience_text + "\n--- end retrieved memory ---\n\n"
         except Exception as exc:
             logger.warning("Failed to build experience context: %s", exc)
             return ""

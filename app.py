@@ -14,6 +14,7 @@ from services.config.opencode_config import (
     find_opencode_config_dir,
     get_opencode_config_file,
 )
+from services.config.codex_config import ensure_codehelp_codex_mcp
 from services.config.settings import load_settings
 from services.jobs.job_manager import JobManager
 from services.runtime.app_bootstrap import (
@@ -61,6 +62,11 @@ if not st.session_state.get("_mcp_config_done"):
             on_info=st.info,
             on_warning=st.warning,
         )
+    ensure_codehelp_codex_mcp(
+        Path(__file__).parent.resolve(),
+        on_info=st.info,
+        on_warning=st.warning,
+    )
     st.session_state["_mcp_config_done"] = True
 
 if not st.session_state.get("_artifact_clean_done"):

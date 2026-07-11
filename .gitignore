@@ -226,6 +226,7 @@ tests
 .ruff_cache
 nul
 test_*.py
+!checks/test_*.py
 .job_store
 *.isorted
 *.bak

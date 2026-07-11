@@ -147,9 +147,20 @@ def _render_connectivity_tests() -> None:
                 _do_test("Supervisor", _test_supervisor, "supervisor_test_passed")
 
 
-def _save_protocol() -> None:
+def _save_protocol() -> tuple[bool, str]:
+    from supervisor.protocols.protocol import parse_protocol_text
+    from supervisor.protocols.target_audit import audit_target
+
+    try:
+        protocol = parse_protocol_text(st.session_state.protocol_md)
+    except ValueError as exc:
+        return False, str(exc)
+    audit = audit_target(protocol.target_section, protocol.restrictions_section)
+    if not audit.is_actionable:
+        return False, "TARGET not ready: " + " ".join(audit.issues)
     proto_path = save_protocol(Path(st.session_state.workspace), st.session_state.protocol_md)
     st.session_state.protocol_saved_path = str(proto_path)
+    return True, str(proto_path)
 
 
 def page_wizard() -> None:
@@ -562,8 +573,11 @@ def page_wizard() -> None:
         col_a, col_b, _ = st.columns([1, 1, 3])
         with col_a:
             if st.button("Accept & Save", type="primary"):
-                _save_protocol()
-                st.success("protocol.md saved to workspace.")
+                saved, message = _save_protocol()
+                if saved:
+                    st.success("protocol.md saved to workspace.")
+                else:
+                    st.error(message)
         with col_b:
             if st.button("Re-refine"):
                 st.session_state.wizard_step = 0

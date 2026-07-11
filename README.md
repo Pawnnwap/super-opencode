@@ -9,15 +9,14 @@
 A Streamlit-driven, dual-loop autonomous coding system. `SupervisorLoop` drives protocol-guided
 task execution with an LLM-based judge (`LLMSupervisor`) that evaluates every iteration for
 protocol alignment. `SelfEvolutionLoop` turns the same machinery on the codebase itself —
-running test-gated self-improvement with automatic regression rollback. All file edits flow
-through a `hashline` MCP server that validates every change with content-addressed hashes,
-eliminating stale-reference errors.
+running test-gated self-improvement with automatic regression rollback. File changes use each
+execution backend's native read, edit, patch, and write tools.
 
 Key capabilities:
 
 - **Dual-loop architecture** — `SupervisorLoop` for external tasks, `SelfEvolutionLoop` for self-improvement
 - **LLM-based judge** — `LLMSupervisor` evaluates opencode output against protocol targets at every step
-- **Hash-anchored editing** — `hashline` MCP server provides `hashline_read` / `hashline_edit` with stale-ID rejection and atomic writes
+- **Native file editing** — OpenCode and Codex use their maintained read, edit, patch, and write tools
 - **Streamlit UI** — Three-page management interface: Protocol Wizard, Live Run, and Self-Evolution
 - **Plan mode** — Configurable pre-execution planning rounds with read-only opencode analysis
 - **Vulnerability scanning** — 9-tool static analysis pipeline (Bandit, Semgrep, Ruff, etc.)
@@ -139,9 +138,8 @@ pip install -r requirements.txt
 All dependencies are defined in `pyproject.toml`: `openai`, `streamlit`,
 `tiktoken`, `pytest`, `cryptography`, `rich`, `psutil`, and `mcp`.
 
-> **MCP servers:** The `mcp` package is required for the hashline and codehelp
-> MCP servers (`mcp_server/hashline.py` and `mcp_server/codehelp.py`). These
-> servers provide hash-anchored file editing and code assistance tools to opencode.
+> **MCP server:** The `mcp` package is required for the Codehelp MCP server
+> (`mcp_server/codehelp.py`), which provides code-assistance tools to OpenCode and Codex.
 ---
 
 ## Running the Application
@@ -224,6 +222,9 @@ Self-evolution features:
 | Regression guard | Tests worse → auto-rollback to last good checkpoint |
 | Checkpointing | Every non-regressing iteration is snapshotted to `.checkpoints/` |
 | Workspace archiving | Every iteration is archived to `.archive/` with metadata |
+| TARGET state | `.opencode/target_state.json` records evidence, tried directions, and stagnation |
+| Rejected candidates | Regression candidates are archived before rollback and appended to `.opencode/staged_improvements.jsonl` |
+| Stagnation control | Two rejected/no-evidence iterations require a fresh diagnosis; repeated directions are blocked |
 | Evolution report | `evolution_report.md` — changed files, test delta, best checkpoint |
 
 ---
@@ -239,6 +240,8 @@ supervisor/
     loop.py                         SupervisorLoop — main supervised agent loop
     loop_base.py                    BaseLoop — common state machine, event yielding
     self_evolution_loop.py          SelfEvolutionLoop — self-modification with test gating
+    target_evaluator.py             Independent test/evidence acceptance gate
+    target_state.py                 Persistent TARGET evidence and staged candidates
     llm_supervisor.py               LLM judge that evaluates opencode output
 
   analyzers/
@@ -264,7 +267,7 @@ supervisor/
 
   prompts/
     __init__.py                     Package exports for prompt templates
-    templates.py                    All prompt templates (init, judge, hashline instructions)
+    templates.py                    All prompt templates (init and judge instructions)
 
   monitoring/
     token_estimator.py              Token counting (tiktoken) and prompt truncation
@@ -290,8 +293,7 @@ tests/                              Test suite (pytest)
   test_session_tracker.py           Tests for SessionTracker
   test_experience_tracker.py        Tests for ExperienceTracker
 mcp_server/
-  hashline.py                       MCP server for hash-anchored file editing (hashline_read, hashline_edit, hashline_write)
-  codehelp.py                       MCP server for code assistance (docstring search, package version, usage examples)
+  codehelp.py                       MCP server for code assistance and dependency research
 ```
 
 ---
@@ -311,6 +313,9 @@ Describe what already exists — files, directories, entry points, current state
 List numbered, testable deliverables the agent must produce.
 Good: "All pytest tests in ./tests/ pass"
 Bad: "the code should work"
+
+Each TARGET must name a deliverable, acceptance evidence, finished state, and
+failure/replan condition. Unmeasured "improve" or "enhance" targets are rejected.
 
 ## RESTRICTIONS
 
@@ -434,25 +439,17 @@ Every run preserves workspace state in `.archive/`:
 
 ---
 
-## Hash-Anchored File Editing
+## Native File Editing
 
-The system includes an MCP server (`mcp_server/hashline.py`) that provides
-hash-anchored file editing tools. Every line read from a file is annotated with
-a `LINE#ID` hash (e.g., `42#VK| def process(data):`) that encodes both the
-line number and content. This enables:
+Super-Opencode uses the execution backend's native file tools. OpenCode offers
+`read`, exact-match `edit`, `apply_patch`, and `write`; Codex uses
+`apply_patch`. The supervisor supplies protocol checks, test-gated evolution,
+workspace archives, and rollback around those changes.
 
-- **Safe concurrent edits** — the MCP server validates all LINE#IDs before
-  writing; if any ID is stale (because another edit changed the file), the
-  entire operation is rejected and corrected IDs are returned
-- **Atomic writes** — edits are applied via temp file + `os.replace` so the
-  file is never left in a partial state
-- **Edit operations**: `replace`, `replace_range`, `delete`, `append`,
-  `prepend` — all addressed by hash-anchored positions
-- **Dry-run mode** — validate IDs without writing to disk
-
-The hashline MCP server is automatically configured in opencode's
-`opencode.json` on startup, so opencode receives hash-anchored editing
-instructions as part of its system prompt.
+OpenCode configurations created by earlier versions are migrated on startup:
+the managed Hashline MCP entry is removed and native `read` / `edit`
+permissions are restored. Custom MCP servers and user-selected permissions are
+left unchanged.
 
 
 ---
@@ -466,12 +463,15 @@ tools for code assistance and documentation lookup:
   modules, classes, functions, or methods
 - **search_package_version** — query PyPI/npm for latest published versions,
   release dates, and documentation URLs
+- **analyze_dependency** — inspect declared and lockfile versions from Python and
+  Node manifests, with source locations and compatibility-risk labels
+- **fetch_official_docs** — read a short excerpt from public HTTPS documentation
+  URL declared by PyPI/npm metadata, with registry/cache provenance
 - **search_package_examples** — find Stack Overflow and Real Python usage
-  examples and best practices
+  examples and best practices; community fallback only
 
-These tools are automatically configured in opencode's `opencode.json` on
-startup, enabling opencode to look up documentation and examples without
-leaving the context window.
+These tools are automatically configured for OpenCode and Codex on startup.
+They provide research only; file editing stays with each backend's native tools.
 
 ## Plan Mode
 
