@@ -27,7 +27,7 @@ def sanitize_event_message(msg: object) -> str:
     strings are returned unchanged.  All other types are coerced via
     ``str()``.  This prevents implicit iteration or unsafe auto-evaluation
     when the msg value flows through the JSONL log pipeline and the
-    Streamlit UI rendering layer.
+    the web UI UI rendering layer.
 
     Parameters
     ----------

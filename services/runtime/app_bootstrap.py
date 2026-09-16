@@ -11,6 +11,32 @@ from supervisor.runners.opencode_runner import find_opencode
 
 UPGRADE_SETTINGS_FILE = Path.home() / ".opencode_supervisor_settings.json"
 
+# Default npm registry for CLI auto-upgrades: direct npmjs access is
+# region-blocked for some users, so upgrades route through a mirror by
+# default. Set "npm_registry": "" in the settings file to use npm's own
+# default registry instead.
+DEFAULT_NPM_REGISTRY = "https://registry.npmmirror.com"
+
+
+def get_npm_registry(settings_file: Path = UPGRADE_SETTINGS_FILE) -> str:
+    """Resolve the npm registry for upgrades ('' -> npm default registry)."""
+    try:
+        if settings_file.exists():
+            cfg = json.loads(settings_file.read_text(encoding="utf-8"))
+            value = cfg.get("npm_registry")
+            if value is not None:
+                return str(value).strip() or ""
+    except Exception:
+        pass
+    return DEFAULT_NPM_REGISTRY
+
+
+def _npm_install_cmd(package: str, registry: str) -> str:
+    cmd = f"npm install -g {package}@latest"
+    if registry:
+        cmd += f" --registry {registry}"
+    return cmd
+
 
 def should_skip_upgrade(settings_file: Path = UPGRADE_SETTINGS_FILE) -> bool:
     if os.environ.get("OPENCODE_SKIP_UPGRADE") == "1":
@@ -25,7 +51,10 @@ def should_skip_upgrade(settings_file: Path = UPGRADE_SETTINGS_FILE) -> bool:
     return False
 
 
-def auto_upgrade_opencode(settings_file: Path = UPGRADE_SETTINGS_FILE) -> None:
+def auto_upgrade_opencode(
+    settings_file: Path = UPGRADE_SETTINGS_FILE,
+    registry: str | None = None,
+) -> None:
     if should_skip_upgrade(settings_file):
         print(
             "[opencode-upgrade] Skipping upgrade: disabled via config/env var",
@@ -35,21 +64,13 @@ def auto_upgrade_opencode(settings_file: Path = UPGRADE_SETTINGS_FILE) -> None:
 
     try:
         home_dir = str(Path.home())
+        if registry is None:
+            registry = get_npm_registry(settings_file)
 
-        if sys.platform == "win32":
-            # Windows: keep using npm
-            print(
-                "[opencode-upgrade] Running: npm install -g opencode-ai@latest",
-                file=sys.stderr,
-            )
-            cmd = "npm install -g opencode-ai@latest"
-        else:
-            # macOS / Linux: use curl install script
-            print(
-                "[opencode-upgrade] Running: curl -fsSL https://opencode.ai/install | bash",
-                file=sys.stderr,
-            )
-            cmd = "curl -fsSL https://opencode.ai/install | bash"
+        # npm everywhere (with registry mirror support); the old curl-based
+        # installer cannot honor a mirror and is the access-restricted path.
+        cmd = _npm_install_cmd("opencode-ai", registry or "")
+        print(f"[opencode-upgrade] Running: {cmd}", file=sys.stderr)
 
         proc = subprocess.Popen(
             cmd,
@@ -79,7 +100,7 @@ def auto_upgrade_opencode(settings_file: Path = UPGRADE_SETTINGS_FILE) -> None:
         )
     except FileNotFoundError:
         print(
-            "[opencode-upgrade] Required command not found — install Node.js (Windows) or curl (macOS/Linux) to enable auto-upgrade. Continuing startup.",
+            "[opencode-upgrade] npm not found — install Node.js to enable auto-upgrade. Continuing startup.",
             file=sys.stderr,
         )
     except Exception as exc:
@@ -173,7 +194,10 @@ def _restore_codex_config(config_path: Path, original: bytes, mode: int) -> None
         tmp_path.unlink(missing_ok=True)
 
 
-def auto_upgrade_codex(settings_file: Path = UPGRADE_SETTINGS_FILE) -> None:
+def auto_upgrade_codex(
+    settings_file: Path = UPGRADE_SETTINGS_FILE,
+    registry: str | None = None,
+) -> None:
     if should_skip_upgrade(settings_file):
         print(
             "[codex-upgrade] Skipping upgrade: disabled via config/env var",
@@ -201,7 +225,9 @@ def auto_upgrade_codex(settings_file: Path = UPGRADE_SETTINGS_FILE) -> None:
 
         # Codex CLI ships via npm (@openai/codex) on every platform, so a single
         # npm command covers Windows/macOS/Linux — no per-OS install script.
-        base_cmd = "npm install -g @openai/codex@latest"
+        if registry is None:
+            registry = get_npm_registry(settings_file)
+        base_cmd = _npm_install_cmd("@openai/codex", registry or "")
         code, _out, err = _run_codex_upgrade(base_cmd, home_dir)
 
         # A global npm install on macOS/Linux can hit EACCES when the npm prefix
@@ -309,7 +335,7 @@ def auto_upgrade_dcp(settings_file: Path = UPGRADE_SETTINGS_FILE) -> None:
             )
 
         print(
-            "[dcp-upgrade] Upgrade launched. Streamlit startup continues.",
+            "[dcp-upgrade] Upgrade launched. Web UI startup continues.",
             file=sys.stderr,
         )
     except FileNotFoundError:

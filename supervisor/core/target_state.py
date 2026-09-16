@@ -20,6 +20,7 @@ _STATE_DIR = ".opencode"
 _STATE_FILE = "target_state.json"
 _STAGED_FILE = "staged_improvements.jsonl"
 _MAX_DIRECTIONS = 12
+_MAX_LESSONS = 8
 _STAGNATION_LIMIT = 2
 _TOKEN_RE = re.compile(r"[a-z0-9_./-]{3,}", re.IGNORECASE)
 _STOP_WORDS = {
@@ -39,6 +40,7 @@ class TargetState:
     evidence: list[str] = field(default_factory=list)
     tried_directions: list[str] = field(default_factory=list)
     rejected_directions: list[str] = field(default_factory=list)
+    lessons: list[str] = field(default_factory=list)
     stagnation_count: int = 0
     staged_improvements: int = 0
     last_reason: str = ""
@@ -184,6 +186,22 @@ def similar_rejected_direction(state: TargetState, direction: str) -> str | None
     return None
 
 
+def record_lesson(workspace: Path, lesson: str) -> TargetState | None:
+    """Append a bounded Reflexion-style lesson for injection into later prompts."""
+    lesson = " ".join((lesson or "").split())
+    if not lesson:
+        return load_target_state(workspace)
+    state = load_target_state(workspace)
+    if state is None:
+        return None
+    if lesson not in state.lessons:
+        state.lessons.append(lesson)
+        state.lessons = state.lessons[-_MAX_LESSONS:]
+    state.updated_at = _now()
+    _write_state(Path(workspace), state)
+    return state
+
+
 def target_state_context(workspace: Path) -> str:
     """Compact state injected into restarts; never raw candidate output."""
     state = load_target_state(workspace)
@@ -191,7 +209,9 @@ def target_state_context(workspace: Path) -> str:
         return ""
     lines = ["--- TARGET state ---", f"Status: {state.status}"]
     if state.success_criteria:
-        lines.append("Acceptance: " + "; ".join(state.success_criteria[:3]))
+        lines.append("Acceptance: " + "; ".join(state.success_criteria[:5]))
+    if state.lessons:
+        lines.append("Lessons so far: " + " | ".join(state.lessons[-3:]))
     if state.rejected_directions:
         lines.append("Avoid repeated directions: " + " | ".join(state.rejected_directions[-3:]))
     if state.last_reason:

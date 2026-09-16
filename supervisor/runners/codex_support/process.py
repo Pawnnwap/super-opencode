@@ -9,6 +9,7 @@ import time
 from collections.abc import Callable, Generator
 
 from supervisor.analyzers.loop_detector import LoopDetector
+from supervisor.runners.command_common import safe_command_summary
 from supervisor.runners.codex_support.command_builder import (
     CODEX_API_KEY_ENV,
     build_cmd,
@@ -93,7 +94,7 @@ def run_prompt(
             context_window=context_window,
         )
 
-        msg = f"Running codex command: {' '.join(cmd)}"
+        msg = f"Running codex command: {safe_command_summary(cmd)}"
         logger.info(msg)
         yield {"level": "info", "msg": msg}
 
@@ -222,12 +223,12 @@ def run_prompt(
             time.sleep(3)
             logger.error(
                 "codex launch error - exc=%s using_backup=%s model_for_cmd=%r (type=%s) "
-                "prompt_snippet=%r agent=%r",
+                "prompt_len=%d agent=%r",
                 exc,
                 using_backup,
                 model_for_cmd,
                 type(model_for_cmd).__name__,
-                prompt[:120],
+                len(prompt),
                 runner.agent,
             )
             if not using_backup and runner.opencode_model_backup:

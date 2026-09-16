@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import logging
 import re
 from collections.abc import Iterable
 from pathlib import Path
@@ -14,6 +16,8 @@ from supervisor.utils.filesystem.file_permissions import (
 
 if TYPE_CHECKING:
     from supervisor.workspace.ignore_patterns import IgnoreMatcher
+
+logger = logging.getLogger(__name__)
 
 _PATH_RE = re.compile(r"""(?:^|\s)(/?(?:[\w.\-]+/)+[\w.\-]*)""")
 
@@ -34,8 +38,18 @@ class WorkspaceGuard:
         violations: list[str] = []
         for m in _PATH_RE.finditer(message):
             candidate = m.group(1)
+            path_obj = Path(candidate)
             try:
-                Path(candidate).resolve().relative_to(self.workspace)
+                if path_obj.is_absolute():
+                    # Absolute paths must point inside the workspace.
+                    path_obj.resolve().relative_to(self.workspace)
+                else:
+                    # Relative references resolve against the workspace, not
+                    # the supervisor's own CWD (which would flag every
+                    # relative path in feedback as a false violation).
+                    (self.workspace / path_obj).resolve().relative_to(
+                        self.workspace,
+                    )
             except ValueError:
                 violations.append(candidate)
 
@@ -152,6 +166,42 @@ class WorkspaceGuard:
     def get_protected_dirs(self) -> set[str]:
         """Return set of protected directory names."""
         return _PROTECTED_DIRS.copy()
+
+    def ensure_agent_permissions(self, workspace: Path) -> Path | None:
+        """Pre-trust the supervised workspace for non-interactive opencode runs.
+
+        opencode gates tool use behind per-project permissions; in run mode
+        (no TTY) unanswered permission requests auto-reject, so a supervised
+        agent could not even list its own workspace. The project-level config
+        grants the agent its tools back — scoped to this workspace only, never
+        touching the user's global opencode permissions. Existing project
+        config is respected and left unchanged.
+        """
+        config_path = Path(workspace) / ".opencode" / "config.json"
+        if config_path.exists():
+            return None
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config = {
+            "autoapprove": True,
+            "permission": {
+                "read": "allow",
+                "edit": "allow",
+                "write": "allow",
+                "bash": "allow",
+            },
+        }
+        try:
+            config_path.write_text(
+                json.dumps(config, indent=2) + "\n",
+                encoding="utf-8",
+            )
+        except OSError:
+            logger.warning(
+                "Could not write project permission config for opencode",
+                exc_info=True,
+            )
+            return None
+        return config_path
 
     def filter_protected_paths(self, paths: list[str]) -> tuple[list[str], list[str]]:
         """Filter a list of paths into allowed and protected paths."""

@@ -43,6 +43,42 @@ class SupervisorLoop(BaseLoop):
         self._last_plan: str = ""
         self._last_supervisor_feedback: str = ""
 
+        # Goal guard: the judge's DONE is a proposal validated against
+        # deterministic workspace evidence before the run may end.
+        self._goal_guard = None
+        if getattr(config, "enable_goal_guard", True):
+            from supervisor.core.goal_guard import GoalGuard
+
+            self._goal_guard = GoalGuard(config, self.protocol)
+            self._goal_guard.start()
+            self.supervisor.set_goal_context_provider(
+                self._goal_guard.judge_context,
+            )
+
+        # Judge evidence harness: auto workspace facts + on-demand resources
+        # the judge can request via NEED_EVIDENCE (open registry).
+        self._judge_harness = None
+        if getattr(config, "enable_judge_harness", True):
+            from supervisor.core.judge_harness import (
+                JudgeHarness,
+                audit_tail_block,
+                make_builtin_resources,
+            )
+
+            self._judge_harness = JudgeHarness()
+            for resource in make_builtin_resources(
+                config.workspace,
+                changed_files=lambda: sorted(self._run_changed_files),
+                workspace_tree=self._workspace_tree_block,
+                audit_tail=lambda: audit_tail_block(config.workspace),
+                run_tests=self._run_test_resource,
+            ):
+                self._judge_harness.register(resource)
+            self.supervisor.register_context_provider(
+                "evidence",
+                self._judge_harness.render_auto_block,
+            )
+
     # ------------------------------------------------------------------ #
 
     def run(self) -> int:
@@ -268,7 +304,40 @@ class SupervisorLoop(BaseLoop):
 
     def _get_verdict(self, output: str, progress) -> SupervisorVerdict:
         step_context = self._get_step_context(progress)
-        return self.supervisor.judge_with_step_context(output, step_context)
+        verdict = self.supervisor.judge_with_step_context(output, step_context)
+        if self._judge_harness and verdict.evidence_requests:
+            # One bounded resolution round: gather the requested resources
+            # and let the judge re-evaluate with real evidence in hand.
+            evidence = self._judge_harness.fulfill(verdict.evidence_requests)
+            if evidence:
+                logger.info(
+                    "Judge requested evidence: %s",
+                    ", ".join(verdict.evidence_requests[:3]),
+                )
+                augmented = (
+                    output
+                    + "\n\n--- HARNESS EVIDENCE (resolved on request) ---\n"
+                    + evidence
+                    + "\n--- end evidence ---\n"
+                    "Re-evaluate the targets using this evidence."
+                )
+                verdict = self.supervisor.judge_with_step_context(
+                    augmented, step_context,
+                )
+        return verdict
+
+    def _workspace_tree_block(self) -> str:
+        snapshot = self._cached_snapshot
+        if snapshot is None:
+            return ""
+        lines = snapshot.tree().splitlines()
+        return "Workspace tree:\n" + "\n".join(lines[:40])
+
+    def _run_test_resource(self) -> str:
+        from supervisor.runners.test_runner import OcTestRunner
+
+        result = OcTestRunner(self.config.workspace).run()
+        return f"Test suite: {result.summary()}\n{result.output[-800:]}"
 
     def _post_judge_feedback(
         self, safe_msg: str, output: str,
@@ -303,12 +372,45 @@ class SupervisorLoop(BaseLoop):
             f"Run terminated after {self._failures} failures.\n\n{report}",
         )
 
+    def _verify_success(
+        self,
+        verdict: SupervisorVerdict,
+        output: str,
+    ) -> str | None:
+        if self._goal_guard is None:
+            return None
+        decision = self._goal_guard.evaluate_done(
+            verdict,
+            sorted(self._run_changed_files),
+        )
+        if decision.accepted:
+            return None
+        return self._goal_guard.blocked_feedback(decision, verdict)
+
+    def _turn_guidance(self, verdict: SupervisorVerdict, output: str) -> str:
+        if self._goal_guard is None:
+            return ""
+        decision = self._goal_guard.evaluate_turn(
+            verdict,
+            worktree_sig=self._last_snapshot_signature,
+            worktree_changed=bool(self._last_changed_files),
+            output=output,
+        )
+        return decision.guidance
+
+    def _guard_restart_section(self) -> str:
+        if self._goal_guard is None:
+            return ""
+        context = self._goal_guard.restart_context()
+        return f"{context}\n\n" if context else ""
+
     def _init_prompt(self) -> str:
         from supervisor.prompts import INIT_PROMPT_TEMPLATE
 
         text = safe_read_text(self.config.protocol_path)
         ws = self.config.workspace.resolve()
         protected_files_desc = self.guard.get_all_protected_files_description()
+        goal_section = self._goal_checklist_section()
         plan_section = f"{self._plan_context}\n\n" if self._plan_context else ""
         plan_output_section = ""
         if self._last_plan and self._plan_context:
@@ -322,11 +424,24 @@ class SupervisorLoop(BaseLoop):
         plan_output_section = self._strip_done_phrases(plan_output_section)
         return INIT_PROMPT_TEMPLATE.format(
             protocol_text=text,
+            goal_section=goal_section,
             plan_section=plan_section,
             plan_output_section=plan_output_section,
             workspace=ws,
             protected_files_desc=protected_files_desc,
         )
+
+    def _goal_checklist_section(self) -> str:
+        """Layer-1 constraint injection: the concrete definition of done."""
+        if self._goal_guard is None:
+            return ""
+        criteria = self._goal_guard.criteria_from_protocol()
+        if not criteria:
+            return ""
+        lines = ["## GOAL CHECKLIST (the run ends only when ALL of these hold)"]
+        lines.extend(f"{i}. {c}" for i, c in enumerate(criteria, start=1))
+        lines.append("")
+        return "\n".join(lines)
 
     def _restart_prompt(self) -> str:
         summary, text = self._get_restart_context()

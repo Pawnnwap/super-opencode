@@ -228,7 +228,11 @@ nul
 test_*.py
 !checks/test_*.py
 .job_store
+.headroom/
 *.isorted
 *.bak
 *.txt
 experience.md
+
+# ZCode agent session directory
+.zcode/

@@ -6,7 +6,7 @@
 
 [English](./README.md) | [中文](./README_zh.md)
 
-A Streamlit-driven, dual-loop autonomous coding system. `SupervisorLoop` drives protocol-guided
+A NiceGUI-driven, dual-loop autonomous coding system. `SupervisorLoop` drives protocol-guided
 task execution with an LLM-based judge (`LLMSupervisor`) that evaluates every iteration for
 protocol alignment. `SelfEvolutionLoop` turns the same machinery on the codebase itself —
 running test-gated self-improvement with automatic regression rollback. File changes use each
@@ -15,10 +15,15 @@ execution backend's native read, edit, patch, and write tools.
 Key capabilities:
 
 - **Dual-loop architecture** — `SupervisorLoop` for external tasks, `SelfEvolutionLoop` for self-improvement
-- **LLM-based judge** — `LLMSupervisor` evaluates opencode output against protocol targets at every step
+- **Dual execution backend** — OpenCode (default) or Codex, selected via `config.engine`; the supervisor loop is backend-agnostic
+- **LLM-based judge** — `LLMSupervisor` evaluates agent output against protocol targets at every step
+- **Goal guard** — Evidence-gated completion: "all targets met" is a proposal, validated against deterministic evidence
+- **Loop & stagnation detection** — Intra-turn tool-loop detection plus cross-turn workspace-fingerprint stagnation with a nudge ladder
 - **Native file editing** — OpenCode and Codex use their maintained read, edit, patch, and write tools
-- **Streamlit UI** — Three-page management interface: Protocol Wizard, Live Run, and Self-Evolution
+- **Web UI** — Three-page management interface: Protocol Wizard, Live Run, and Self-Evolution
 - **Plan mode** — Configurable pre-execution planning rounds with read-only opencode analysis
+- **Occam Razor pass** — Optional post-success redundancy-reduction stage that runs on an archive copy, never the live workspace
+- **Task-state journal** — Append-only `TASK_STATE.md` progress journal re-injected after context resets
 - **Vulnerability scanning** — 9-tool static analysis pipeline (Bandit, Semgrep, Ruff, etc.)
 - **Context management** — Token-aware monitoring with graduated warnings and auto-compaction
 
@@ -84,7 +89,7 @@ npm install -g opencode-ai@latest
 curl -fsSL https://opencode.ai/install | bash
 ```
 
-The Streamlit app also runs these commands automatically on startup (disable via
+The app also runs these commands automatically on startup (disable via
 `OPENCODE_SKIP_UPGRADE=1` or `skip_upgrade: true` in `~/.opencode_supervisor_settings.json`).
 
 ---
@@ -126,7 +131,7 @@ pip install -e . --force-reinstall
 ```
 
 > **Note:** `pip install -e .` is required so that the `supervisor` package is
-> importable from anywhere — including when Streamlit launches `app.py` from
+> importable from anywhere — including when the app launches `app.py` from
 > a different working directory.
 
 Alternatively, you can install from `requirements.txt` directly:
@@ -135,8 +140,11 @@ Alternatively, you can install from `requirements.txt` directly:
 pip install -r requirements.txt
 ```
 
-All dependencies are defined in `pyproject.toml`: `openai`, `streamlit`,
-`tiktoken`, `pytest`, `cryptography`, `rich`, `psutil`, and `mcp`.
+Core dependencies are defined in `pyproject.toml`: `openai`, `nicegui`,
+`tiktoken`, `pytest`, `cryptography`, `rich`, `psutil`, and `mcp`. The
+`requirements.txt` file additionally pins the scanner toolchain (Bandit,
+Pylint, pyflakes, Semgrep, pip-audit, Ruff, Vulture, deadcode, pyscn) and the
+auto-fix helpers (autoflake, isort, autopep8, pyupgrade).
 
 > **MCP server:** The `mcp` package is required for the Codehelp MCP server
 > (`mcp_server/codehelp.py`), which provides code-assistance tools to OpenCode and Codex.
@@ -145,13 +153,7 @@ All dependencies are defined in `pyproject.toml`: `openai`, `streamlit`,
 ## Running the Application
 
 ```bash
-streamlit run app.py
-```
-
-If the above command does not work, try:
-
-```bash
-python -m streamlit run app.py
+python app.py
 ```
 
 The app will open in your browser at `http://localhost:8501`.
@@ -173,10 +175,98 @@ The supervisor system runs the opencode agent in a controlled feedback loop:
    each run and after each iteration
 6. **Self-evolution** — The system can analyze and improve its own codebase,
    running tests before and after each change with automatic rollback on regression
+7. **Goal guard** — Completion claims are verified against deterministic
+   evidence before the run ends (see below)
+8. **Loop detection** — Repeated tool calls within one turn are detected and
+   the run is killed and restarted with fixed context instead of burning tokens;
+   cross-turn workspace stagnation escalates through a nudge ladder
+9. **Occam Razor pass** — After success, an optional stage lets the agent strip
+   redundant code from an archived copy of the final workspace
+10. **Task-state journal** — A `TASK_STATE.md` progress journal preserves
+   "what was already tried" across context resets
 
 ---
 
-## Streamlit UI Pages
+## Goal Guard (Evidence-Gated Completion)
+
+The judge's "all targets met" is treated as a *proposal*, not an acceptance.
+Before a run may end, the goal guard validates it — following the
+propose → validate → execute → audit discipline (工程本体论 ch. 8):
+
+- **Structured verdicts** — The judge ends every reply with a per-target
+  checklist (`[MET]`/`[UNMET]` + evidence), a `NEXT_ACTION` instruction that is
+  forwarded to the agent, and a `DONE: yes|no` flag. Free-text replies still
+  work via the legacy done-phrase matching.
+- **Exit validation** — A DONE proposal is blocked when any criterion is still
+  `[UNMET]`, or when the run produced no observable workspace changes (the
+  agent's own claims are never sufficient evidence).
+- **Blocked-stop cap** — After `max_blocked_stops` blocked proposals, the guard
+  accepts the completion and flags it as unverified, so the loop can neither
+  stop prematurely nor run forever.
+- **Stagnation nudges** — When the workspace fingerprint stays unchanged across
+  judged turns, the agent first gets a nudge, then a forced strategy-change
+  demand, then a loop-restart — legitimate read/test phases are not punished
+  because only the workspace fingerprint counts.
+- **Audit trail** — Every verdict and decision is appended to
+  `.opencode/goal_audit.jsonl` (timestamp, criteria, evidence, decision,
+  reason) so a run can be replayed and audited after the fact.
+- **Progress memory** — Direction tracking and Reflexion-style lessons persist
+  in `.opencode/target_state.json` and are re-injected into judge and restart
+  prompts, so guidance survives restarts.
+
+Configuration (`SupervisorConfig`): `enable_goal_guard` (default `True`),
+`max_blocked_stops` (default `2`), `goal_require_changes` (default `True`;
+disable for pure-analysis goals), `goal_verify_tests` (default `False`; run the
+workspace test suite as the final gate).
+
+---
+
+## Loop & Stagnation Detection
+
+Two pure, LLM-free detectors keep runs honest:
+
+- **Intra-turn (`LoopDetector`)** — watches live tool markers inside one
+  streamed turn. Same-tool repetition (including args), small tool cycles, or
+  tool storms without prose trigger a kill-and-resume with fixed context
+  instead of burning the whole turn on a loop.
+- **Cross-turn (`StagnationDetector`)** — compares workspace fingerprints
+  (file-content hashes) across judged turns. A busy agent whose workspace
+  never changes escalates through nudge → forced strategy change → loop
+  restart, so legitimate read/test phases are not punished (only the
+  workspace fingerprint counts).
+
+---
+
+## Occam Razor Pass
+
+After a run succeeds, an optional post-success stage (`enable_occam_razor`,
+default off) lets the agent strip redundant code and logic. It never edits the
+live workspace: the final code is copied into an archive-owned workspace, and
+opencode reduces only redundant code/logic inside that copy.
+
+---
+
+## Task-State Journal
+
+Compaction writes a single `summary.md` snapshot and restarts the agent in a
+fresh session, so long tasks crossing several resets lose the thread of what
+was already tried. The supervisor therefore appends one compact entry per
+judged turn to `TASK_STATE.md` in the workspace (turn number, time, phase, and
+a one-line headline). On a context reset, the journal tail is injected into
+the restart prompt so the agent resumes with continuity.
+
+---
+
+## Headroom Support
+
+When `enable_headroom` is on (default `True`), the supervisor starts (or
+reuses) a local Headroom proxy and supplies routing only to its own child
+OpenCode process via `OPENCODE_CONFIG_CONTENT`. The user's global OpenCode
+configuration and other OpenCode sessions remain untouched.
+
+---
+
+## Web UI Pages
 
 ### ① Protocol Wizard
 Fill in INPUT / TARGET / RESTRICTIONS in plain language → click
@@ -232,42 +322,62 @@ Self-evolution features:
 ## Architecture
 
 ```
-app.py                              Streamlit UI  (3 pages: Wizard, Live Run, Self-Evolution)
+app.py                              Web UI  (3 pages: Wizard, Live Run, Self-Evolution)
 supervisor/
   __init__.py                       Package exports
+  memory_policy_evaluator.py        Fixed-suite gate for durable-memory policies
 
   core/
     loop.py                         SupervisorLoop — main supervised agent loop
     loop_base.py                    BaseLoop — common state machine, event yielding
     self_evolution_loop.py          SelfEvolutionLoop — self-modification with test gating
+    goal_guard.py                   Evidence-gated completion (propose → validate → execute → audit)
+    occam_razor.py                  Post-success redundancy-reduction pass on an archive copy
+    task_state.py                   Append-only TASK_STATE.md journal for restart continuity
     target_evaluator.py             Independent test/evidence acceptance gate
     target_state.py                 Persistent TARGET evidence and staged candidates
-    llm_supervisor.py               LLM judge that evaluates opencode output
+    llm_supervisor.py               LLM judge that evaluates agent output
+    llm_support/                    Judge internals: chat, context, history, judgement, models
 
   analyzers/
     codebase_analyzer.py            Snapshots source tree for LLM context
-    opencode_step_detector.py       Detects step progress in opencode output
+    opencode_step_detector.py       Detects step progress in agent output
+    loop_detector.py                Intra-turn loop detection (repeated tool calls)
+    stagnation_detector.py          Cross-turn workspace stagnation with nudge ladder
 
   protocols/
     protocol.py                     Parse / validate protocol.md (INPUT, TARGET, RESTRICTIONS)
     protocol_wizard.py              OpenAI-SDK protocol refiner
     protocol_analyzer.py            Quality scoring (clarity, testability, completeness)
     meta_protocol_builder.py        Generates meta_protocol.md from evolution goal + snapshot
+    target_audit.py                 Deterministic preflight audit of TARGET sections
+    alignment.py                    Protocol alignment / violation checks
+    analyzer_support.py             Shared analyzer helpers
 
   runners/
+    factory.py                      Constructs OpencodeRunner or CodexRunner from config.engine
+    base_runner.py                  Common workspace management and lifecycle state
     opencode_runner.py              Subprocess wrapper for the opencode CLI
+    codex_runner.py                 Subprocess wrapper for the Codex CLI
+    opencode_support/               opencode specifics: command builder, locator, process,
+                                    stream, session, inspection, result, headroom proxy
+    codex_support/                  codex specifics: command builder, locator, process, stream
+    command_common.py               Shared command construction helpers
+    locator_common.py               Shared executable discovery
+    process_utils.py                Process lifecycle helpers
+    stream_driver.py                Shared JSON-event stream reader (thread + queue, timeout-safe)
     test_runner.py                  Runs pytest / syntax check; structured results
 
   utils/
     config.py                       Frozen SupervisorConfig dataclass
-    file_ops.py                     File operations utilities
-    gitignore_utils.py              Automatic .gitignore update helpers
     experience_tracker.py           Tracks successful patterns across runs
     text_utils.py                   Text processing utilities
+    filesystem/                     file_ops, file_permissions, gitignore_utils, path_filters
 
   prompts/
     __init__.py                     Package exports for prompt templates
     templates.py                    All prompt templates (init and judge instructions)
+    commands.py                     Behavioral command blocks (brevity mode, tool rules)
 
   monitoring/
     token_estimator.py              Token counting (tiktoken) and prompt truncation
@@ -276,24 +386,31 @@ supervisor/
   workspace/
     workspace_guard.py              Blocks out-of-workspace path references
     workspace_archiver.py           Preserves workspace versions in .archive/
-    opencodeignore_handler.py       .opencodeignore file management
+    cleanup_candidates.py           Suggests backup/temp files for cleanup
     ignore_patterns.py              .opencodeignore parsing and pattern matching
 
-  vulnerability/
-    python_scanner.py               Python code vulnerability scanner (static analysis)
+vulnerability/
+  python_scanner.py                 Python code vulnerability scanner (9-tool static analysis)
 
-
-pyproject.toml                      Makes `supervisor` an installable package (also defines all deps)
-requirements.txt                    Alternative dependency list for pip install -r
-services/
-  job_manager.py                    Background job management with persistence
-  state_store.py                    Job state persistence layer
-  settings.py                       UI configuration persistence
-tests/                              Test suite (pytest)
-  test_session_tracker.py           Tests for SessionTracker
-  test_experience_tracker.py        Tests for ExperienceTracker
 mcp_server/
   codehelp.py                       MCP server for code assistance and dependency research
+  codehelp_support/                 Tool implementations (docstrings, packages, dependencies,
+                                    docs, examples, http)
+
+services/
+  config/                           Settings persistence, opencode/codex config writers,
+                                    connectivity tests, SupervisorConfig builder
+  jobs/                             JobManager and StateStore (background jobs, persistence)
+  runtime/                          App bootstrap (auto-upgrades) and workspace cleanup
+  ui/                               App shell, sidebar, log UI, task board, wizard/run/evolve pages
+
+tests/                              Test suite (pytest): streams, goal guard, task state,
+                                    loop detection, compaction, UI helpers
+checks/                             Integration and e2e check scripts
+docs/                               Research notes
+
+pyproject.toml                      Makes `supervisor` an installable package (core deps)
+requirements.txt                    Alternative dependency list (core + scanner tooling)
 ```
 
 ---
@@ -362,10 +479,12 @@ Quality ratings: `excellent` (≥90%) → `good` (≥75%) → `fair` (≥50%) �
 | read_external_feedback | False | Allow external feedback injection |
 | log_level | "INFO" | Logging verbosity (DEBUG, INFO, WARNING, ERROR) |
 | plan_mode_rounds | 0 | Number of planning rounds before execution (0 = disabled) |
+| enable_headroom | True | Route the child OpenCode process through a local Headroom proxy |
+| enable_occam_razor | False | Run the post-success redundancy-reduction pass on an archive copy |
 
 ### Adding a Custom Model
 
-The Streamlit UI provides a built-in form to configure custom models without manual file editing:
+The Web UI provides a built-in form to configure custom models without manual file editing:
 
 1. In the **Protocol Wizard** page, scroll down in the sidebar to find **"Add Custom Model for Opencode"**
 2. Click **"➕ Add Custom Model for Opencode"** to open the configuration form
@@ -456,8 +575,9 @@ left unchanged.
 
 ## Code Assistance MCP Server
 
-The system includes a second MCP server (`mcp_server/codehelp.py`) that provides
-tools for code assistance and documentation lookup:
+The system ships one MCP server (`mcp_server/codehelp.py`, with tool
+implementations in `mcp_server/codehelp_support/`) that provides tools for
+code assistance and documentation lookup:
 
 - **search_docstrings** — search local codebase for docstrings of packages,
   modules, classes, functions, or methods

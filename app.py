@@ -1,154 +1,59 @@
-"""app.py - opencode Supervisor UI.
+"""app.py — opencode Supervisor UI (NiceGUI).
 
-Run with: streamlit run app.py
+Run with: python app.py   (serves http://127.0.0.1:8501)
 """
 
 from __future__ import annotations
 
-from pathlib import Path
+from nicegui import app, ui
 
-import streamlit as st
+from services.webui import layout, startup
+from services.webui.jobs import get_job_manager
 
-from services.config.opencode_config import (
-    fetch_opencode_models,
-    find_opencode_config_dir,
-    get_opencode_config_file,
+
+@ui.page("/")
+def wizard_page() -> None:
+    layout.apply_theme()
+    job_manager = get_job_manager()
+    layout.render_shell("wizard", job_manager)
+    layout.render_startup_banner()
+    from services.webui.pages import wizard
+
+    wizard.render()
+
+
+@ui.page("/run")
+@ui.page("/run/{job_id}")
+def run_page(job_id: str = "") -> None:
+    layout.apply_theme()
+    job_manager = get_job_manager()
+    layout.render_shell("run", job_manager)
+    layout.render_startup_banner()
+    from services.webui.pages import run
+
+    run.render(job_id=job_id)
+
+
+@ui.page("/evolve")
+@ui.page("/evolve/{job_id}")
+def evolve_page(job_id: str = "") -> None:
+    layout.apply_theme()
+    job_manager = get_job_manager()
+    layout.render_shell("evolve", job_manager)
+    layout.render_startup_banner()
+    from services.webui.pages import evolve
+
+    evolve.render(job_id=job_id)
+
+
+app.on_startup(startup.launch_startup_tasks)
+
+ui.run(
+    host="127.0.0.1",
+    port=8501,
+    title="opencode Supervisor",
+    reload=False,
+    show=False,
+    dark=True,
+    storage_secret="opencode-supervisor",
 )
-from services.config.codex_config import ensure_codehelp_codex_mcp
-from services.config.settings import load_settings
-from services.jobs.job_manager import JobManager
-from services.runtime.app_bootstrap import (
-    auto_upgrade_codex as _auto_upgrade_codex,
-    auto_upgrade_dcp as _auto_upgrade_dcp,
-    auto_upgrade_opencode as _auto_upgrade_opencode,
-)
-from services.runtime.workspace_cleanup import clean_workspace_artifacts
-from services.ui.app_shell import apply_page_shell
-from services.ui.protocol_ui import render_existing_protocol_banner
-from services.ui.sidebar_ui import PILL_MAP, render_sidebar
-from services.ui.pages.task_ui import (
-    page_evolve as _page_evolve_impl,
-    page_run as _page_run_impl,
-)
-from services.ui.pages.wizard_page import page_wizard
-
-
-@st.cache_resource
-def _get_job_manager():
-    return JobManager(".job_store")
-
-
-def _redirect_if_locked(page: str, warning: str) -> None:
-    st.session_state.page = "wizard"
-    st.session_state["_redirect_warning"] = warning
-    st.rerun()
-
-
-apply_page_shell()
-job_manager = _get_job_manager()
-
-if not st.session_state.get("_upgrade_done"):
-    _auto_upgrade_opencode()
-    _auto_upgrade_codex()
-    _auto_upgrade_dcp()
-    st.session_state["_upgrade_done"] = True
-
-if not st.session_state.get("_mcp_config_done"):
-    mcp_dir = find_opencode_config_dir()
-    if mcp_dir:
-        get_opencode_config_file(
-            mcp_dir,
-            Path(__file__).parent.resolve(),
-            on_info=st.info,
-            on_warning=st.warning,
-        )
-    ensure_codehelp_codex_mcp(
-        Path(__file__).parent.resolve(),
-        on_info=st.info,
-        on_warning=st.warning,
-    )
-    st.session_state["_mcp_config_done"] = True
-
-if not st.session_state.get("_artifact_clean_done"):
-    workspace_raw = st.session_state.get("workspace", "")
-    if workspace_raw:
-        clean_workspace_artifacts(Path(workspace_raw))
-    st.session_state["_artifact_clean_done"] = True
-
-persisted = load_settings()
-defaults = {
-    "page": "wizard",
-    "protocol_md": "",
-    "log_events": [],
-    "run_state": "idle",
-    "final_report": "",
-    "wizard_step": 0,
-    "raw_input": "",
-    "raw_target": "",
-    "raw_restrictions": "",
-    "openai_key": "",
-    "base_url": "",
-    "workspace": "",
-    "supervisor_model": "",
-    "supervisor_model_backup": "",
-    "engine": "opencode",
-    "codex_base_url": "",
-    "codex_api_key": "",
-    "opencode_model": "",
-    "opencode_model_backup": "",
-    "opencode_executable": "",
-    "max_retries": 3,
-    "context_threshold": 60,
-    "max_tokens": 150000,
-    "timeout": 120,
-    "plan_mode_rounds": 1,
-    "protected_files": [],
-    "_last_workspace": "",
-    "evo_goal": "",
-    "evo_extra_restrictions": "",
-    "evo_meta_protocol_md": "",
-    "evo_log_events": [],
-    "evo_run_state": "idle",
-    "evo_report": "",
-    "evo_wizard_step": 0,
-    "self_evolution_verbose": False,
-    "verbose_log": True,
-    "_run_heartbeat": 0,
-    "_evo_heartbeat": 0,
-    "opencode_test_passed": False,
-    "supervisor_test_passed": False,
-    "opencode_models": [],
-    "enable_python_scanner": True,
-    "enable_occam_razor": False,
-}
-for key, value in defaults.items():
-    if key not in st.session_state:
-        st.session_state[key] = persisted.get(key, value)
-
-if (
-    st.session_state.get("engine", "opencode") == "opencode"
-    and not st.session_state["opencode_models"]
-):
-    st.session_state["opencode_models"] = fetch_opencode_models()
-
-tests_ok = render_sidebar(job_manager)
-page = st.session_state.page
-if page == "report":
-    st.session_state.page = "run"
-    page = "run"
-
-if page in {"run", "evolve"} and not tests_ok:
-    _redirect_if_locked(
-        page,
-        f"{page.title()} is locked. Pass connectivity tests on Protocol Wizard page first.",
-    )
-elif page == "wizard":
-    page_wizard()
-elif page == "run":
-    _page_run_impl(job_manager=job_manager, pill_map=PILL_MAP)
-elif page == "evolve":
-    _page_evolve_impl(
-        job_manager=job_manager,
-        pill_map=PILL_MAP,
-        render_existing_protocol_banner=render_existing_protocol_banner,
-    )

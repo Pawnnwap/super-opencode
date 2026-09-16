@@ -16,11 +16,13 @@ def judge(supervisor, opencode_output: str) -> SupervisorVerdict:
 
     experience_context = supervisor._build_experience_context()
     protected_context, feedback_context = supervisor._get_evaluation_context()
+    goal_context = supervisor._build_goal_context()
 
     context_blocks = build_context_blocks(
         feedback_context,
         protected_context,
         experience_context,
+        goal_context=goal_context,
     )
     msg = build_judge_prompt(opencode_output, context_blocks=context_blocks)
     history_msg = build_judge_prompt(opencode_output, context_blocks="")
@@ -32,7 +34,7 @@ def judge_with_step_context(
     opencode_output: str,
     step_context: StepContext,
 ) -> SupervisorVerdict:
-    from supervisor.prompts import JUDGE_STEP_PROMPT
+    from supervisor.prompts import JUDGE_STEP_PROMPT, VERDICT_FORMAT
 
     protected_context, feedback_context = supervisor._get_evaluation_context()
     phases_str = (
@@ -41,6 +43,7 @@ def judge_with_step_context(
         else "none"
     )
     experience_context = supervisor._build_experience_context()
+    goal_context = supervisor._build_goal_context()
 
     omit_sc = supervisor._should_omit_step_context(
         opencode_output,
@@ -54,20 +57,24 @@ def judge_with_step_context(
         total_steps=step_context.total_steps_estimate,
         phase=step_context.phase,
         completed_phases=phases_str,
+        goal_context=goal_context,
         experience_context=experience_context,
         feedback_context=feedback_context,
         protected_context=protected_context,
         opencode_output=opencode_output,
+        verdict_format=VERDICT_FORMAT,
     )
     history_msg = JUDGE_STEP_PROMPT.format(
         current_step=0 if omit_sc else step_context.current_step,
         total_steps=0 if omit_sc else step_context.total_steps_estimate,
         phase="" if omit_sc else step_context.phase,
         completed_phases="" if omit_sc else phases_str,
+        goal_context="",
         experience_context="",
         feedback_context="",
         protected_context="",
         opencode_output=opencode_output,
+        verdict_format="",
     )
     return supervisor._chat(msg, history_content=history_msg)
 

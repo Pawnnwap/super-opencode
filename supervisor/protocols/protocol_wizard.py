@@ -3,7 +3,7 @@
 Interactively refines the three protocol sections with the LLM
 and returns a polished Protocol object + the markdown string.
 
-Used by the Streamlit UI (wizard_page.py).
+Used by the web UI (services/webui/pages/wizard.py).
 """
 
 from __future__ import annotations
@@ -88,7 +88,7 @@ class ProtocolWizard:
         self._model = model
 
     # ------------------------------------------------------------------ #
-    # One-shot refinement (used by the Streamlit form)                    #
+    # One-shot refinement (used by the wizard form)                    #
     # ------------------------------------------------------------------ #
 
     def _chat(self, user_msg: str) -> str:

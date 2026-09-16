@@ -188,6 +188,12 @@ class CodebaseSnapshot:
         """Map of rel_path → sha256 for change detection."""
         return {f.rel_path: f.sha256 for f in self.files}
 
+    def signature(self) -> str:
+        """Stable fingerprint of workspace content (equal = unchanged)."""
+        hashes = self.file_hashes()
+        payload = "\n".join(f"{path}:{hashes[path]}" for path in sorted(hashes))
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
     def changed_files(self, other: CodebaseSnapshot) -> list[str]:
         """Files that differ between two snapshots (added, removed, modified)."""
         a = self.file_hashes()

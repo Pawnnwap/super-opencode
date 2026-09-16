@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 
-from supervisor.prompts.commands import BREVITY_COMMAND
 from supervisor.utils.text_utils import coerce_str
 
 logger = logging.getLogger(__name__)
@@ -26,5 +26,18 @@ def validate_message(message: str, context: str, engine: str) -> str | None:
 
 
 def fresh_session_prompt(prompt: str) -> str:
-    """Inline brevity rules into the first prompt of a session."""
-    return f"{BREVITY_COMMAND.strip()}\n\n{prompt}"
+    """Return the task prompt unchanged for the first turn of a session.
+
+    Inlining brevity/style rules here was removed empirically: several free
+    models (nemotron ultra, laguna) fixate on a trailing rules block and reply
+    "mode active — awaiting command" / "please provide the protocol" instead
+    of executing the task. The bare task prompt works everywhere; style
+    guidance already lives in the supervisor-driven protocol when needed.
+    """
+    return prompt
+
+
+def safe_command_summary(command: Sequence[str]) -> str:
+    """Describe an agent invocation without logging prompt, URL, or overrides."""
+    visible = [str(part) for part in command[:2] if str(part)]
+    return " ".join(visible) + " [arguments redacted]"

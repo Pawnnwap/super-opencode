@@ -40,7 +40,7 @@ _NOT_FOUND_MESSAGE = (
     "  • Any OS (npm):  npm install -g @openai/codex\n"
     "  • macOS (brew):  brew install codex\n"
     "  • Or download a release binary from the codex repo and add it to PATH.\n"
-    "  • Then restart the Streamlit app so it picks up the updated PATH."
+    "  • Then restart the web UI so it picks up the updated PATH."
 )
 
 

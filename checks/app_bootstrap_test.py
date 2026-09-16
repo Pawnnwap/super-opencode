@@ -20,6 +20,11 @@ def test_codex_upgrade_preserves_existing_config(
     original = b'model = "user-model"\n'
     config.write_bytes(original)
     config.chmod(0o600)
+    # Windows exposes only its read-only attribute through ``st_mode``; it
+    # cannot report POSIX 0600 even immediately after chmod(0600). Compare the
+    # platform-observable original mode, which remains an exact POSIX check on
+    # Unix while keeping this restoration test meaningful on NTFS.
+    original_mode = config.stat().st_mode & 0o777
 
     def destructive_upgrade(command: str, home_dir: str) -> tuple[int, str, str]:
         config.write_text('model = "startup-default"\n', encoding="utf-8")
@@ -31,7 +36,7 @@ def test_codex_upgrade_preserves_existing_config(
     app_bootstrap.auto_upgrade_codex(home / "settings.json")
 
     assert config.read_bytes() == original
-    assert config.stat().st_mode & 0o777 == 0o600
+    assert config.stat().st_mode & 0o777 == original_mode
 
 
 def test_codex_upgrade_restores_config_after_failure(

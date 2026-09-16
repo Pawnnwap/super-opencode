@@ -3,6 +3,7 @@ Here is your protocol:
 
 {protocol_text}
 
+{goal_section}\
 {plan_section}\
 {plan_output_section}\
 Your project root (cwd) is: {workspace}
@@ -43,6 +44,19 @@ PROTOCOL:
 Your project root (cwd) is: {workspace}
 Continue from where the summary left off. All files you create or modify MUST be inside this directory."""
 
+VERDICT_FORMAT = """\
+End your reply with this exact block:
+CRITERIA:
+- [MET] <target> — <evidence observed in the output/workspace>
+- [UNMET] <target> — <what is missing>
+NEXT_ACTION: <the single most important next step for the agent>
+DONE: yes|no
+Rules:
+- Every [MET] claim needs concrete evidence (command result, file change, test output). No evidence -> mark [UNMET].
+- DONE: yes ONLY if every target is [MET]. If any target is [UNMET], DONE must be no.
+- If you cannot verify a target from the evidence available, mark it [UNMET] and say what evidence is needed — never guess.
+- If a harness resource would settle it, add a line `NEED_EVIDENCE: <name>` (see On-demand resources in the context) and judge accordingly."""
+
 JUDGE_STEP_PROMPT = """\
 The coding agent just produced the following output. Evaluate it against the protocol.
 If ALL targets are met say 'all targets met'.
@@ -53,12 +67,15 @@ Current step: {current_step}/{total_steps}
 Current phase: {phase}
 Completed phases: {completed_phases}
 
+{goal_context}\
 {experience_context}\
 {feedback_context}\
 {protected_context}\
 --- opencode output ---
 {opencode_output}
 --- end ---
+
+{verdict_format}
 
 Focus your feedback on the current phase and remaining work."""
 
@@ -124,9 +141,13 @@ Generate instructions for the agent to:
 
 Output ONLY the instruction text to send to the coding agent, including explicit permission to delete listed files."""
 
+# Marker wording matters: the previous "--- PROTOCOL VIOLATION DETECTED ---"
+# is a trigger phrase for agent-side skills (e.g. checkpoint-progress) and
+# derailed coding agents into checkpoint/recovery behavior instead of applying
+# the correction. Keep this marker free of known skill trigger phrases.
 PROTOCOL_VIOLATION_TEMPLATE = """\
 
---- PROTOCOL VIOLATION DETECTED ---
+--- SUPERVISOR CORRECTION NOTICE ---
 
 The following protocol violations were detected in your output:
 
@@ -171,11 +192,14 @@ def build_context_blocks(
     feedback_context: str = "",
     protected_context: str = "",
     experience_context: str = "",
+    goal_context: str = "",
 ) -> str:
-    """Build optional context blocks (experience, feedback, protected)."""
+    """Build optional context blocks (experience, feedback, protected, goal)."""
     parts = []
     if experience_context:
         parts.append(experience_context)
+    if goal_context:
+        parts.append(goal_context)
     if feedback_context:
         parts.append(feedback_context)
     if protected_context:
@@ -233,9 +257,7 @@ def build_judge_prompt(
         "If ALL targets are met say 'all targets met'.\n"
         "Otherwise give clear, actionable feedback.\n"
     ),
-    postscript: str = (
-        "Focus your feedback on the current phase and remaining work."
-    ),
+    postscript: str = f"Focus your feedback on the current phase and remaining work.\n\n{VERDICT_FORMAT}",
 ) -> str:
     """Build a judge-style evaluation prompt."""
     parts = [preamble, ""]

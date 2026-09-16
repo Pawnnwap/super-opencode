@@ -86,3 +86,34 @@ def test_migrates_trailing_comma_config_without_losing_plugins(tmp_path):
     result = json.loads(config_path.read_text(encoding="utf-8"))
     assert result["plugin"] == ["example-plugin"]
     assert "hashline" not in result["mcp"]
+
+
+def test_migrates_jsonc_without_corrupting_urls_or_comment_like_strings(tmp_path):
+    config_dir = tmp_path / "config"
+    project_root = tmp_path / "project"
+    config_dir.mkdir()
+    project_root.mkdir()
+    config_path = config_dir / "opencode.json"
+    config_path.write_text(
+        """{
+  // Keep user provider.
+  "provider": {
+    "gateway": {
+      "options": {"baseURL": "https://gateway.example.test/v1//path"},
+      "label": "literal // text and /* text */",
+    },
+  },
+  /* Keep this plugin too. */
+  "plugin": ["example-plugin",],
+}
+""",
+        encoding="utf-8",
+    )
+
+    get_opencode_config_file(config_dir, project_root)
+
+    result = json.loads(config_path.read_text(encoding="utf-8"))
+    gateway = result["provider"]["gateway"]
+    assert gateway["options"]["baseURL"] == "https://gateway.example.test/v1//path"
+    assert gateway["label"] == "literal // text and /* text */"
+    assert result["plugin"] == ["example-plugin"]

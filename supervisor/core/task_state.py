@@ -11,7 +11,7 @@ derived from the supervisor's existing verdict — no extra LLM call). On a
 context reset the tail of the journal is injected into the restart prompt so the
 agent resumes with continuity.
 
-Pure file I/O (no LLM, no Streamlit) so it is unit-testable. Inspired by the
+Pure file I/O (no LLM, no the web UI) so it is unit-testable. Inspired by the
 plain-markdown memory pattern (pi-mem): readable, editable, no schema, no DB.
 """
 

@@ -52,10 +52,15 @@ def capture_new_session_id(
     workspace: Path,
     opencode_executable: str,
     find_opencode_fn: Callable[[str], str],
-    attempts: int = 4,
-    delay_seconds: float = 0.25,
+    attempts: int = 10,
+    delay_seconds: float = 0.5,
 ) -> str | None:
-    """Return session ID that appeared since `before` snapshot."""
+    """Return session ID that appeared since `before` snapshot.
+
+    opencode registers sessions asynchronously; the polling window (~5s)
+    must outlast that lag or capture spuriously fails and the run degrades
+    to session-less turns.
+    """
     for attempt in range(1, attempts + 1):
         after = list_all_session_ids(
             workspace=workspace,

@@ -98,12 +98,132 @@ _DONE_PHRASES = [
     "protocol satisfied",
 ]
 
+# Structured verdict markers the judge is asked to emit. Parsing is best-effort:
+# weak/free models often omit them, so callers must fall back to done-phrase
+# matching when the structured flag is absent.
+_CRITERIA_LINE_RE = re.compile(
+    r"^\s*[-*]?\s*\[(?P<state>MET|UNMET)\]\s*(?P<rest>.+)$", re.IGNORECASE,
+)
+_DONE_LINE_RE = re.compile(r"^\s*DONE\s*:\s*(?P<flag>yes|no|true|false)\s*$", re.IGNORECASE)
+_NEXT_ACTION_RE = re.compile(r"^\s*NEXT_ACTION\s*:\s*(?P<action>.+)$", re.IGNORECASE)
+_EVIDENCE_REQUEST_RE = re.compile(
+    r"^\s*NEED_EVIDENCE\s*:\s*(?P<request>.+)$", re.IGNORECASE,
+)
+
+# Evidence text that contradicts a [MET] claim: weak judges occasionally mark
+# a criterion MET while their own evidence says the opposite ("[MET] create
+# greet.py — no greet.py found"). Each pattern here was observed in the wild.
+_NEGATIVE_EVIDENCE_RE = re.compile(
+    r"\b(no|not|none|never|cannot|can't|unable|missing|absent|lacks?|lacking|"
+    r"without)\s+\w+|"
+    r"\bnot\s+found\b|\bdoes\s+not\s+exist\b|\bno\s+changes?\b|"
+    r"\bnot\s+created\b|\bnot\s+modified\b|\bno\s+evidence\b|"
+    r"\bstill\s+(missing|absent|empty)\b|\bempty\b",
+    re.IGNORECASE,
+)
+
+
+def flag_contradicted_criteria(
+    criteria: list[CriterionResult],
+) -> tuple[list[CriterionResult], list[str]]:
+    """Downgrade [MET] criteria whose evidence itself says the opposite.
+
+    Deterministic pre-check on the judge's structured output (defense in
+    depth: validate the validator). Returns the possibly-downgraded list plus
+    human-readable notes for the discrepancies found.
+    """
+    notes: list[str] = []
+    adjusted: list[CriterionResult] = []
+    for result in criteria:
+        if result.met and result.evidence and _NEGATIVE_EVIDENCE_RE.search(
+            result.evidence,
+        ):
+            adjusted.append(
+                CriterionResult(
+                    criterion=result.criterion,
+                    met=False,
+                    evidence=result.evidence,
+                ),
+            )
+            notes.append(
+                f"'{result.criterion}' marked MET but evidence reads negative: "
+                f"'{result.evidence}' — treated as UNMET.",
+            )
+        else:
+            adjusted.append(result)
+    return adjusted, notes
+
+
+@dataclass
+class CriterionResult:
+    """Per-criterion verdict from the judge, with the evidence it relied on."""
+
+    criterion: str
+    met: bool
+    evidence: str = ""
+
+
+def parse_verdict_structure(
+    reply: str,
+) -> tuple[bool | None, list[CriterionResult], str, list[str]]:
+    """Extract the structured verdict block from a judge reply.
+
+    Returns ``(done, criteria, next_action, evidence_requests)`` where ``done``
+    is ``None`` when the reply carries no structured DONE marker (caller falls
+    back to done-phrase matching), otherwise True/False. ``evidence_requests``
+    are the judge's NEED_EVIDENCE resource asks (names, first token each).
+    """
+    done: bool | None = None
+    criteria: list[CriterionResult] = []
+    next_action = ""
+    evidence_requests: list[str] = []
+
+    for line in (reply or "").splitlines():
+        done_match = _DONE_LINE_RE.match(line)
+        if done_match:
+            done = done_match.group("flag").lower() in ("yes", "true")
+            continue
+        criteria_match = _CRITERIA_LINE_RE.match(line)
+        if criteria_match:
+            rest = criteria_match.group("rest").strip()
+            met = criteria_match.group("state").upper() == "MET"
+            criterion, _, evidence = rest.partition("—")
+            if not evidence.strip():
+                criterion, _, evidence = rest.partition("-")
+            criteria.append(
+                CriterionResult(
+                    criterion=criterion.strip().rstrip("-").strip(),
+                    met=met,
+                    evidence=evidence.strip(),
+                ),
+            )
+            continue
+        request_match = _EVIDENCE_REQUEST_RE.match(line)
+        if request_match:
+            name = request_match.group("request").strip().split()
+            if name:
+                evidence_requests.append(name[0])
+            continue
+        action_match = _NEXT_ACTION_RE.match(line)
+        if action_match and not next_action:
+            next_action = action_match.group("action").strip()
+
+    return done, criteria, next_action, evidence_requests
+
 
 @dataclass
 class SupervisorVerdict:
     raw: str
     all_targets_met: bool
     feedback: str
+    criteria_results: list[CriterionResult] = field(default_factory=list)
+    next_action: str = ""
+    evidence_requests: list[str] = field(default_factory=list)
+    validation_notes: list[str] = field(default_factory=list)
+
+    @property
+    def unmet_criteria(self) -> list[CriterionResult]:
+        return [c for c in self.criteria_results if not c.met]
 
 
 @dataclass

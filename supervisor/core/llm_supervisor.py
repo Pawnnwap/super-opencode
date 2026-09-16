@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Callable
 from pathlib import Path
 
 from openai import OpenAI
@@ -107,6 +108,10 @@ class LLMSupervisor:
         self._ignore_matcher = IgnoreMatcher(workspace)
         self._ignore_matcher.load_from_workspace(workspace)
         self._last_opencode_output: str | None = None
+        # Open registry of context modules rendered into judge prompts. Any
+        # module may register a provider (goal guard, evidence harness, ...);
+        # each returns a bounded markdown block or empty string.
+        self._context_providers: list[tuple[str, Callable[[], str]]] = []
         self._context = SupervisorContextManager(
             workspace=workspace,
             max_tokens=self._max_tokens,
@@ -182,6 +187,27 @@ class LLMSupervisor:
 
     def _build_experience_context(self) -> str:
         return self._context.build_experience_context()
+
+    def _build_goal_context(self) -> str:
+        """Render every registered context module into one prompt block."""
+        blocks: list[str] = []
+        for name, provider in self._context_providers:
+            try:
+                rendered = str(provider() or "")
+            except Exception:
+                logger.warning("context provider %r failed", name, exc_info=True)
+                continue
+            if rendered.strip():
+                blocks.append(rendered.strip())
+        return "\n\n".join(blocks) + ("\n" if blocks else "")
+
+    def register_context_provider(self, name: str, provider) -> None:
+        """Register a context module rendered into every judge prompt."""
+        self._context_providers.append((name, provider))
+
+    def set_goal_context_provider(self, provider) -> None:
+        """Backward-compatible alias for registering the goal module."""
+        self.register_context_provider("goal", provider)
 
     def judge(self, opencode_output: str) -> SupervisorVerdict:
         return _judge_impl(self, opencode_output)

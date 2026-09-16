@@ -6,21 +6,25 @@
 
 [English](./README.md) | 中文
 
-一个由 Streamlit 驱动的双循环自主编码系统。`SupervisorLoop` 负责协议引导的任务执行，
+一个由 NiceGUI 驱动的双循环自主编码系统。`SupervisorLoop` 负责协议引导的任务执行，
 通过 LLM 评判器（`LLMSupervisor`）对每次迭代进行协议对齐评估。`SelfEvolutionLoop` 将
-同样的机制作用于代码库自身 —— 运行带测试门控的自我改进，并在回归时自动回滚。文件编辑
-使用执行后端原生的读取、编辑、补丁和写入工具。
+同样的机制作用于代码库自身 —— 运行带测试门控的自我改进，并在回归时自动回滚。文件修改
+使用各执行后端原生的读取、编辑、补丁和写入工具。
 
 核心能力：
 
 - **双循环架构** — `SupervisorLoop` 处理外部任务，`SelfEvolutionLoop` 实现自我改进
-- **LLM 评判器** — `LLMSupervisor` 在每一步评估 opencode 输出是否符合协议目标
+- **双执行后端** — OpenCode（默认）或 Codex，通过 `config.engine` 选择；监督循环与后端无关
+- **LLM 评判器** — `LLMSupervisor` 在每一步评估代理输出是否符合协议目标
+- **目标守卫** — 证据门控完成："all targets met" 只是一个提议，须对照确定性证据校验
+- **循环与停滞检测** — 回合内工具循环检测，加上跨回合的工作区指纹停滞提示阶梯
 - **原生文件编辑** — OpenCode 和 Codex 使用各自维护的读取、编辑、补丁和写入工具
-- **Streamlit UI** — 三页管理界面：协议向导、实时运行、自我演进
+- **Web UI** — 三页管理界面：协议向导、实时运行、自我演进
 - **计划模式** — 可配置的执行前规划轮数，使用只读 opencode 分析
+- **奥卡姆剃刀阶段** — 可选的成功后冗余精简阶段，只在归档副本上运行，绝不触碰实时工作区
+- **任务状态日志** — 只追加的 `TASK_STATE.md` 进度日志，在上下文重置后重新注入
 - **漏洞扫描** — 9 工具静态分析流水线（Bandit、Semgrep、Ruff 等）
 - **上下文管理** — 基于 token 的监控，带分级警告和自动压缩
-
 
 ---
 
@@ -77,13 +81,13 @@ supervisor 自动定位。
 npm install -g opencode-ai@latest
 ```
 
-**macOS / Linux：**
+**macOS / Linux（curl）：**
 
 ```bash
 curl -fsSL https://opencode.ai/install | bash
 ```
 
-Streamlit 应用在启动时也会自动运行这些命令（可通过 `OPENCODE_SKIP_UPGRADE=1` 环境变量
+Web 应用在启动时也会自动运行这些命令（可通过 `OPENCODE_SKIP_UPGRADE=1` 环境变量
 或 `~/.opencode_supervisor_settings.json` 中的 `skip_upgrade: true` 关闭）。
 
 ---
@@ -124,7 +128,7 @@ source venv/bin/activate
 pip install -e . --force-reinstall
 ```
 
-> **注意：** 需要 `pip install -e .`，以便 `supervisor` 包可以从任何位置导入 —— 包括当 Streamlit 从不同工作目录启动 `app.py` 时。
+> **注意：** 需要 `pip install -e .`，以便 `supervisor` 包可以从任何位置导入 —— 包括当应用从不同工作目录启动 `app.py` 时。
 
 或者，您可以直接从 `requirements.txt` 安装：
 
@@ -132,21 +136,25 @@ pip install -e . --force-reinstall
 pip install -r requirements.txt
 ```
 
-所有依赖均在 `pyproject.toml` 中定义：`openai`、`streamlit`、`tiktoken`、`pytest`、`cryptography`、`rich`、`psutil` 和 `mcp`。
+核心依赖定义在 `pyproject.toml` 中：`openai`、`nicegui`、`tiktoken`、`pytest`、
+`cryptography`、`rich`、`psutil` 和 `mcp`。`requirements.txt` 额外固定了扫描器工具链
+（Bandit、Pylint、pyflakes、Semgrep、pip-audit、Ruff、Vulture、deadcode、pyscn）以及
+自动修复辅助工具（autoflake、isort、autopep8、pyupgrade）。
 
 > **MCP 服务器：** `mcp` 包是 Codehelp MCP 服务器（`mcp_server/codehelp.py`）的必需依赖，为 OpenCode 和 Codex 提供代码辅助工具。
+
 ---
 
 ## 运行应用程序
 
 ```bash
-streamlit run app.py
+python app.py
 ```
 
 如果上述命令不起效，请尝试：
 
 ```bash
-python -m streamlit run app.py
+python -m python app.py
 ```
 
 应用程序将在浏览器中打开，地址为 `http://localhost:8501`。
@@ -155,7 +163,7 @@ python -m streamlit run app.py
 
 ## Supervisor 的作用
 
-监督系统在一个受控的反馈循环中运行 opencode 代理：
+监督系统在一个受控的反馈循环中运行代理：
 
 1. **协议驱动执行** — `protocol.md` 文件定义 INPUT、TARGET 和 RESTRICTIONS 来指导代理的行为
 2. **实时监控** — 跟踪上下文窗口使用情况，并在需要时自动触发压缩
@@ -163,10 +171,78 @@ python -m streamlit run app.py
 4. **检查点** — 每次成功的迭代都会被快照到 `.checkpoints/`
 5. **工作区归档** — 每次运行前和每次迭代后，工作区状态都会保存到 `.archive/`
 6. **自我演进** — 系统可以分析和改进其自己的代码库，在每次更改前后运行测试，并在回归时自动回滚
+7. **目标守卫** — 完成声明必须通过确定性证据校验后才能结束运行（见下文）
+8. **循环检测** — 一个回合内重复的工具调用会被检测到，运行将被终止并以固定上下文重启，
+   而不是浪费 token；跨回合的工作区停滞则通过提示阶梯逐级升级
+9. **奥卡姆剃刀阶段** — 成功后，可选阶段让代理从最终工作区的归档副本中剥离冗余代码
+10. **任务状态日志** — `TASK_STATE.md` 进度日志在上下文重置之间保留"已经尝试过什么"
 
 ---
 
-## Streamlit UI 页面
+## 目标守卫（证据门控完成）
+
+评审模型的「all targets met」只是一个*提议*，而非最终接受。运行结束前，目标守卫会
+按「提议 → 校验 → 执行 → 审计」的流程验证它（工程本体论第八章）：
+
+- **结构化裁决** — 评审每条回复末尾附带逐条目标清单（`[MET]`/`[UNMET]` + 证据）、
+  转发给代理的 `NEXT_ACTION` 指令，以及 `DONE: yes|no` 标志。自由文本回复仍可通过
+  旧的完成短语匹配兜底。
+- **出口校验** — 仍有 `[UNMET]` 目标、或运行未产生任何可观察的工作区文件变更时，
+  DONE 提议会被拦截（代理自己的声明永远不构成证据）。
+- **拦截上限** — 超过 `max_blocked_stops` 次拦截后，守卫接受完成并标记为未验证，
+  循环既不会提前停止、也不会永远空转。
+- **停滞提示阶梯** — 工作区指纹连续多个评审回合未变化时，先提示、再强制换策略、
+  最后重启会话；纯阅读/跑测试的合法阶段不受惩罚（只看工作区指纹）。
+- **审计链** — 每条裁决与决定都会追加到 `.opencode/goal_audit.jsonl`
+  （时间戳、目标、证据、决定、原因），运行可事后重放审计。
+- **进度记忆** — 方向追踪与 Reflexion 式经验教训持久化在
+  `.opencode/target_state.json`，并重新注入评审与重启提示词，重启后指导不丢失。
+
+配置项（`SupervisorConfig`）：`enable_goal_guard`（默认开启）、`max_blocked_stops`
+（默认 `2`）、`goal_require_changes`（默认开启；纯分析类目标可关闭）、
+`goal_verify_tests`（默认关闭；开启后以工作区测试套件作为最终门槛）。
+
+---
+
+## 循环与停滞检测
+
+两个纯逻辑、不依赖 LLM 的检测器让运行保持诚实：
+
+- **回合内（`LoopDetector`）** — 监视单个流式回合内的实时工具标记。同一工具重复
+  （含参数）、小型工具循环、或没有文字说明的工具风暴都会触发"终止并以固定上下文恢复"，
+  而不是把整个回合烧在循环上。
+- **跨回合（`StagnationDetector`）** — 跨评审回合比较工作区指纹（文件内容哈希）。
+  一个看似忙碌但工作区从未变化的代理会按 提示 → 强制换策略 → 重启循环 逐级升级；
+  纯阅读/跑测试的合法阶段不受惩罚（只看工作区指纹）。
+
+---
+
+## 奥卡姆剃刀阶段
+
+运行成功后，可选的后处理阶段（`enable_occam_razor`，默认关闭）让代理剥离冗余代码和
+逻辑。它绝不编辑实时工作区：最终代码会被复制到一个由归档系统接管的工作区中，代理只在
+该副本内精简冗余代码/逻辑。
+
+---
+
+## 任务状态日志
+
+压缩会写入单个 `summary.md` 快照并在全新会话中重启代理，因此跨越多次重置的长任务会
+丢失"已经尝试过什么"的线索。为此，监督器在每个评审回合向工作区中的 `TASK_STATE.md`
+追加一条紧凑记录（回合号、时间、阶段和一行摘要）。上下文重置时，日志尾部会被注入
+重启提示词，让代理带着连续性恢复工作。
+
+---
+
+## Headroom 支持
+
+当 `enable_headroom` 开启（默认开启）时，supervisor 会启动（或复用）本地 Headroom 代理，
+并仅通过 `OPENCODE_CONFIG_CONTENT` 为自己的子 OpenCode 进程提供路由。用户的全局
+OpenCode 配置和其他 OpenCode 会话不受影响。
+
+---
+
+## Web UI 页面
 
 ### ① 协议向导
 用自然语言填写 INPUT / TARGET / RESTRICTIONS → 点击 **用 AI 优化** → 查看生成的 `protocol.md` → 接受并保存。
@@ -216,42 +292,62 @@ python -m streamlit run app.py
 ## 架构
 
 ```
-app.py                              Streamlit UI  (3 个页面：向导、实时运行、自我演进)
+app.py                              Web UI（3 个页面：向导、实时运行、自我演进）
 supervisor/
   __init__.py                       包导出
+  memory_policy_evaluator.py        持久记忆策略的固定测试套件门控
 
   core/
-    loop.py                         SupervisorLoop — 主要的监督代理循环
+    loop.py                         SupervisorLoop — 主监督代理循环
     loop_base.py                    BaseLoop — 通用状态机，事件生成
     self_evolution_loop.py          SelfEvolutionLoop — 带测试门控的自我修改
+    goal_guard.py                   证据门控完成（提议 → 校验 → 执行 → 审计）
+    occam_razor.py                  成功后在归档副本上运行的冗余精简阶段
+    task_state.py                   只追加的 TASK_STATE.md 日志，用于重启连续性
     target_evaluator.py             独立的测试/证据验收门控
     target_state.py                 持久化 TARGET 证据和暂存候选
-    llm_supervisor.py               LLM 评判器，评估 opencode 输出
+    llm_supervisor.py               LLM 评判器，评估代理输出
+    llm_support/                    评判器内部模块：chat、context、history、judgement、models
 
   analyzers/
     codebase_analyzer.py            为 LLM 上下文生成源代码树快照
-    opencode_step_detector.py       检测 opencode 输出中的步骤进度
+    opencode_step_detector.py       检测代理输出中的步骤进度
+    loop_detector.py                回合内循环检测（重复工具调用）
+    stagnation_detector.py          跨回合工作区停滞与提示阶梯
 
   protocols/
     protocol.py                     解析/验证 protocol.md（INPUT、TARGET、RESTRICTIONS）
-    protocol_wizard.py              OpenAI SDK 协议优化器
+    protocol_wizard.py              基于 OpenAI SDK 的协议优化器
     protocol_analyzer.py            质量评分（清晰度、可测试性、完整性）
     meta_protocol_builder.py        从演进目标和快照生成 meta_protocol.md
+    target_audit.py                 TARGET 部分的确定性预检审计
+    alignment.py                    协议对齐/违规检查
+    analyzer_support.py             共享分析辅助
 
   runners/
+    factory.py                      根据 config.engine 构造 OpencodeRunner 或 CodexRunner
+    base_runner.py                  通用工作区管理和生命周期状态
     opencode_runner.py              opencode CLI 的子进程包装器
+    codex_runner.py                 Codex CLI 的子进程包装器
+    opencode_support/               opencode 专属：命令构建、定位器、进程、流、会话、
+                                    检查、结果、Headroom 代理
+    codex_support/                  codex 专属：命令构建、定位器、进程、流
+    command_common.py               共享命令构建辅助
+    locator_common.py               共享可执行文件发现
+    process_utils.py                进程生命周期辅助
+    stream_driver.py                共享 JSON 事件流读取器（线程 + 队列，超时安全）
     test_runner.py                  运行 pytest / 语法检查；结构化结果
 
   utils/
     config.py                       不可变 SupervisorConfig 数据类
-    file_ops.py                     文件操作工具
-    gitignore_utils.py              自动 .gitignore 更新助手
     experience_tracker.py           跟踪跨运行的成功模式
     text_utils.py                   文本处理工具
+    filesystem/                     file_ops、file_permissions、gitignore_utils、path_filters
 
   prompts/
     __init__.py                     提示模板包导出
-    templates.py                    所有提示模板（初始化、评判、哈希行指令）
+    templates.py                    所有提示模板（初始化和评判指令）
+    commands.py                     行为命令块（简洁模式、工具规则）
 
   monitoring/
     token_estimator.py              Token 计算（tiktoken）和提示截断
@@ -260,24 +356,30 @@ supervisor/
   workspace/
     workspace_guard.py              阻止对工作区外路径的引用
     workspace_archiver.py           在 .archive/ 中保留工作区版本
-    opencodeignore_handler.py       .opencodeignore 文件管理
+    cleanup_candidates.py           建议可清理的备份/临时文件
     ignore_patterns.py              .opencodeignore 解析和模式匹配
 
-  vulnerability/
-    python_scanner.py               Python 代码漏洞扫描器（静态分析）
+vulnerability/
+  python_scanner.py                 Python 代码漏洞扫描器（9 工具静态分析）
 
-
-pyproject.toml                      使 `supervisor` 成为可安装包（同时定义所有依赖）
-requirements.txt                    备用依赖列表，用于 pip install -r
-services/
-  job_manager.py                    带持久化的后台作业管理
-  state_store.py                    作业状态持久化层
-  settings.py                       UI 配置持久化
-tests/                              测试套件（pytest）
-  test_session_tracker.py           SessionTracker 测试
-  test_experience_tracker.py        ExperienceTracker 测试
 mcp_server/
   codehelp.py                       代码辅助与依赖研究 MCP 服务器
+  codehelp_support/                 工具实现（文档字符串、包、依赖、文档、示例、http）
+
+services/
+  config/                           设置持久化、opencode/codex 配置写入器、
+                                    连接性测试、SupervisorConfig 构建器
+  jobs/                             JobManager 和 StateStore（后台作业、持久化）
+  runtime/                          应用引导（自动升级）和工作区清理
+  ui/                               应用外壳、侧边栏、日志 UI、任务板、向导/运行/演进页面
+
+tests/                              测试套件（pytest）：流、目标守卫、任务状态、
+                                    循环检测、压缩、UI 辅助
+checks/                             集成与端到端检查脚本
+docs/                               研究笔记
+
+pyproject.toml                      使 `supervisor` 成为可安装包（核心依赖）
+requirements.txt                    备用依赖列表（核心 + 扫描器工具链）
 ```
 
 ---
@@ -299,7 +401,7 @@ mcp_server/
 不好的例子："代码应该能正常工作"
 
 每个 TARGET 必须包含交付物、验收证据、完成态和失败/重规划条件。未量化的
-“improve” 或 “enhance” 会被拒绝。
+"improve" 或 "enhance" 目标会被拒绝。
 
 ## RESTRICTIONS
 
@@ -346,10 +448,12 @@ mcp_server/
 | read_external_feedback | False | 允许外部反馈注入 |
 | log_level | "INFO" | 日志详细程度（DEBUG、INFO、WARNING、ERROR） |
 | plan_mode_rounds | 0 | 执行前的规划轮数（0 = 禁用） |
+| enable_headroom | True | 将子 OpenCode 进程路由通过本地 Headroom 代理 |
+| enable_occam_razor | False | 在归档副本上运行成功后的冗余精简阶段 |
 
 ### 添加自定义模型
 
-Streamlit UI 提供了内置表单来配置自定义模型，无需手动编辑文件：
+Web UI 提供了内置表单来配置自定义模型，无需手动编辑文件：
 
 1. 在 **协议向导** 页面中，向下滚动侧边栏找到 **"Add Custom Model for Opencode"**
 2. 点击 **"➕ Add Custom Model for Opencode"** 打开配置表单
@@ -422,18 +526,6 @@ Token 估算在可用时使用 `tiktoken`（o200k_base 编码），
 
 ---
 
-## 漏洞扫描
-
-`vulnerability/python_scanner.py` 模块使用 9 个集成工具对 Python 源文件
-执行全面的静态分析：**Bandit**、**Pylint**、**pyflakes**、**Semgrep**、
-**pip-audit**、**Ruff**、**Vulture**、**deadcode** 和 **pyscn**。
-它检测安全问题、代码质量缺陷、死代码、依赖 CVE 和克隆检测。
-自动修复可通过 autoflake、isort、autopep8、pyupgrade 和 ruff 实现。
-扫描器在自我演进循环中和每次监督判断后调用，在接受代码进入代码库之前
-标记危险模式。
-
----
-
 ## 原生文件编辑
 
 Super-Opencode 使用执行后端原生的文件工具。OpenCode 提供 `read`、精确匹配
@@ -444,11 +536,12 @@ Super-Opencode 使用执行后端原生的文件工具。OpenCode 提供 `read`�
 条目，并恢复原生 `read` / `edit` 权限。自定义 MCP 服务器和用户自行设置的权限
 保持不变。
 
+---
 
 ## 代码辅助 MCP 服务器
 
-系统包含第二个 MCP 服务器（`mcp_server/codehelp.py`），提供
-代码辅助和文档查找工具：
+系统内置一个 MCP 服务器（`mcp_server/codehelp.py`，工具实现位于
+`mcp_server/codehelp_support/`），提供代码辅助和文档查找工具：
 
 - **search_docstrings** — 搜索本地代码库中包、模块、类、函数或方法的文档字符串
 - **search_package_version** — 查询 PyPI/npm 的最新发布版本、发布日期和文档 URL
@@ -458,8 +551,6 @@ Super-Opencode 使用执行后端原生的文件工具。OpenCode 提供 `read`�
 
 这些工具会在启动时自动配置给 OpenCode 和 Codex。它们只提供研究能力；
 文件编辑仍使用各后端的原生工具。
-
----
 
 ## 计划模式
 
@@ -472,6 +563,18 @@ Super-Opencode 使用执行后端原生的文件工具。OpenCode 提供 `read`�
    在 opencode 开始编写代码之前为其提供清晰的路线图
 
 在实时运行侧边栏中配置规划轮数。默认为 0（禁用）。
+
+---
+
+## 漏洞扫描
+
+`vulnerability/python_scanner.py` 模块使用 9 个集成工具对 Python 源文件
+执行全面的静态分析：**Bandit**、**Pylint**、**pyflakes**、**Semgrep**、
+**pip-audit**、**Ruff**、**Vulture**、**deadcode** 和 **pyscn**。
+它检测安全问题、代码质量缺陷、死代码、依赖 CVE 和克隆检测。
+自动修复可通过 autoflake、isort、autopep8、pyupgrade 和 ruff 实现。
+扫描器在自我演进循环中和每次监督判断后调用，在接受代码进入代码库之前
+标记危险模式。
 
 ---
 

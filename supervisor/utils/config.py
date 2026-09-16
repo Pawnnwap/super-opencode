@@ -17,6 +17,16 @@ class SupervisorConfig:
     engine: str = "opencode"
     opencode_model: str | None = None
     opencode_executable: str = ""
+    # Run opencode with --pure (no user plugins/skills). Supervised runs stay
+    # isolated from global agent customization that could hijack the task;
+    # leave off to keep the user's plugin environment.
+    opencode_pure: bool = False
+    # When available, run native OpenAI/Anthropic OpenCode providers through
+    # a process-local Headroom proxy. Unsupported custom providers stay direct
+    # unless explicitly allowed below, so savings setup cannot break them.
+    enable_headroom: bool = True
+    headroom_executable: str = ""
+    headroom_allow_custom_provider: bool = False
     supervisor_model: str = "gpt-4o"
     supervisor_model_backup: str | None = None
     opencode_model_backup: str | None = None
@@ -32,6 +42,20 @@ class SupervisorConfig:
     plan_mode_rounds: int = 0
     enable_python_scanner: bool = True
     enable_occam_razor: bool = False
+    # Goal guard (book ch.8 exit validation): treat the judge's DONE as a
+    # proposal validated against deterministic evidence before the run ends.
+    enable_goal_guard: bool = True
+    # Blocked DONE proposals tolerated before the guard accepts an unverified
+    # completion instead of looping forever (Claude-Code Stop-hook cap).
+    max_blocked_stops: int = 2
+    # Require observable workspace file changes before accepting completion
+    # (disable for pure-analysis goals that legitimately change no files).
+    goal_require_changes: bool = True
+    # Additionally run the workspace test suite as the DONE gate.
+    goal_verify_tests: bool = False
+    # Judge evidence harness: auto-inject workspace facts into judge prompts
+    # and resolve the judge's NEED_EVIDENCE resource requests (open registry).
+    enable_judge_harness: bool = True
     # OpenAI credentials captured at enqueue time so the running loop is not
     # affected by later UI changes to os.environ. When empty, downstream
     # clients fall back to the env vars (OPENAI_API_KEY / OPENAI_BASE_URL).

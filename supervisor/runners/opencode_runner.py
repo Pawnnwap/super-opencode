@@ -21,13 +21,13 @@ from supervisor.analyzers.opencode_step_detector import (
     Step,
     StepProgress,
 )
-from supervisor.prompts.commands import BREVITY_COMMAND
 from supervisor.runners.base_runner import BaseRunner
 from supervisor.runners.opencode_support.command_builder import (
     fresh_session_prompt as _fresh_session_prompt_impl,
     validate_message as _validate_message_impl,
 )
 from supervisor.runners.opencode_support.inspection import extract_file_refs
+from supervisor.runners.opencode_support.headroom import release_headroom_proxy
 from supervisor.runners.opencode_support.locator import find_opencode as _find_opencode
 from supervisor.runners.opencode_support.process import run_prompt as _run_prompt_impl
 from supervisor.runners.opencode_support.result import RunResult
@@ -63,6 +63,10 @@ class OpencodeRunner(BaseRunner):
         timeout: int,
         opencode_model: str | None = None,
         opencode_executable: str = "",
+        enable_headroom: bool = True,
+        headroom_executable: str = "",
+        headroom_allow_custom_provider: bool = False,
+        opencode_pure: bool = False,
         agent: str = "",
         opencode_model_backup: str | None = None,
         step_detector: OpencodeStepDetector | None = None,
@@ -95,6 +99,15 @@ class OpencodeRunner(BaseRunner):
             opencode_executable,
             "opencode_executable",
         )
+        self.enable_headroom = bool(enable_headroom)
+        self.headroom_executable = coerce_str(
+            headroom_executable,
+            "headroom_executable",
+        )
+        self.headroom_allow_custom_provider = bool(headroom_allow_custom_provider)
+        self.opencode_pure = bool(opencode_pure)
+        self._headroom_lease = None
+        self._headroom_status = ""
         self.agent = coerce_str(agent, "agent")
         if not isinstance(timeout, int):
             logger.warning(
@@ -139,6 +152,10 @@ class OpencodeRunner(BaseRunner):
             timeout=config.timeout,
             opencode_model=config.opencode_model,
             opencode_executable=config.opencode_executable,
+            enable_headroom=config.enable_headroom,
+            headroom_executable=config.headroom_executable,
+            headroom_allow_custom_provider=config.headroom_allow_custom_provider,
+            opencode_pure=getattr(config, "opencode_pure", False),
             agent=agent,
             opencode_model_backup=config.opencode_model_backup,
         )
@@ -174,34 +191,31 @@ class OpencodeRunner(BaseRunner):
             yield from self._run_prompt(validated)
             return
 
-        logger.info("New session detected. Sending brevity command...")
-        yield {"level": "info", "msg": "New session detected. Sending brevity command..."}
+        # Bootstrap + work in ONE turn: the first real prompt (with brevity
+        # rules inlined) creates the session, and the capture diff pins its
+        # ID. A standalone rules-only bootstrap turn wastes a full model call
+        # and, with slow models, times out before creating any session.
         with _SESSION_CAPTURE_LOCK:
             before = self._list_all_session_ids()
-            yield from self._run_prompt(BREVITY_COMMAND)
+            yield from self._run_prompt(self._fresh_session_prompt(validated))
             self._session_id = self._capture_new_session_id(before)
 
+        self._session_active = True
         if self._session_id:
             logger.info("Session ID captured: %s", self._session_id)
             yield {"level": "info", "msg": f"Session ID captured: {self._session_id}"}
-            self._session_active = True
             self.enable_continuation(True)
-            yield from self._run_prompt(validated)
-            return
-
-        logger.warning(
-            "Could not isolate a newly-created session after BREVITY_COMMAND. "
-            "Running initial prompt in a brand-new session instead of risking old --continue attachment.",
-        )
-        yield {
-            "level": "warn",
-            "msg": "Session ID capture failed; forcing a fresh prompt session.",
-        }
-        self._session_id = None
-        self.enable_continuation(False)
-        yield from self._run_prompt(self._fresh_session_prompt(validated))
-        self._session_active = True
-        self.enable_continuation(True)
+        else:
+            logger.warning(
+                "Could not capture the new session ID; continuing session-less. "
+                "Later turns send self-contained prompts instead of risking "
+                "bare --continue attaching to a foreign session.",
+            )
+            yield {
+                "level": "warn",
+                "msg": "Session ID capture failed; continuing session-less.",
+            }
+            self.enable_continuation(False)
 
     def send(self, message: str) -> Generator[dict]:
         validated = _validate_message(message, "message (send)")
@@ -250,6 +264,8 @@ class OpencodeRunner(BaseRunner):
                 self._process.kill()
             except Exception as exc:
                 logger.warning("Error killing process: %s", exc)
+        release_headroom_proxy(self._headroom_lease)
+        self._headroom_lease = None
 
     def _prepare_workspace(self) -> None:
         """Ensure workspace exists and contains opencode project marker."""
@@ -270,10 +286,29 @@ class OpencodeRunner(BaseRunner):
         yield from _run_prompt_impl(self, prompt, find_opencode_fn=find_opencode)
 
     def enable_continuation(self, enabled: bool = True) -> None:
+        # Bare `--continue` attaches to opencode's globally-last session, which
+        # on a multi-project machine can be a session from a different
+        # workspace. Continuation is therefore only allowed when a captured
+        # session id pins the target; otherwise each turn runs session-less
+        # (prompts carry protocol + feedback, so this stays correct).
+        if enabled and not self._session_id:
+            logger.debug(
+                "Continuation requested without a captured session id; "
+                "staying session-less.",
+            )
+            return
         self._use_continue = enabled
 
     def is_continuation_enabled(self) -> bool:
         return self._use_continue
+
+    def is_session_pinned(self) -> bool:
+        """True when a captured session id pins the conversation.
+
+        Session-less turns (capture failure, fresh fallback) have no
+        conversation memory, so callers must send self-contained prompts.
+        """
+        return bool(self._session_id)
 
     def mark_session_active(self) -> None:
         self._session_active = True
@@ -296,8 +331,8 @@ class OpencodeRunner(BaseRunner):
     def _capture_new_session_id(
         self,
         before: set[str],
-        attempts: int = 4,
-        delay_seconds: float = 0.25,
+        attempts: int = 10,
+        delay_seconds: float = 0.5,
     ) -> str | None:
         return _capture_new_session_id_impl(
             before,

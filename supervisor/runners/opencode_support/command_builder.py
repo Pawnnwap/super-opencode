@@ -18,6 +18,17 @@ def validate_message(message: str, context: str = "message") -> str | None:
     return _validate_message_common(message, context, engine="opencode")
 
 
+def resolve_model(model: str | None, opencode_model: str | None) -> str:
+    """Resolve command model consistently for execution and Headroom routing."""
+    raw_model_arg = coerce_str(model, "model arg (_build_cmd)")
+    raw_self_model = coerce_str(opencode_model, "opencode_model (_build_cmd)")
+    resolved_model = raw_model_arg or raw_self_model
+    if not resolved_model and _DOT_MODEL_FILE.exists():
+        resolved_model = _DOT_MODEL_FILE.read_text(encoding="utf-8").strip()
+        logger.debug("Model resolved from .opencode_model file: %r", resolved_model)
+    return resolved_model
+
+
 def build_cmd(
     *,
     exe: str,
@@ -28,6 +39,8 @@ def build_cmd(
     session_id: str | None,
     model: str | None = None,
     use_shell: bool = False,
+    use_pure: bool = False,
+    dir_: str | None = None,
 ) -> list[str]:
     """Build opencode CLI command list."""
     exe = coerce_str(exe, "exe (_build_cmd)")
@@ -36,11 +49,7 @@ def build_cmd(
 
     raw_model_arg = coerce_str(model, "model arg (_build_cmd)")
     raw_self_model = coerce_str(opencode_model, "opencode_model (_build_cmd)")
-    resolved_model = raw_model_arg or raw_self_model
-
-    if not resolved_model and _DOT_MODEL_FILE.exists():
-        resolved_model = _DOT_MODEL_FILE.read_text(encoding="utf-8").strip()
-        logger.debug("Model resolved from .opencode_model file: %r", resolved_model)
+    resolved_model = resolve_model(raw_model_arg, raw_self_model)
 
     logger.debug(
         "_build_cmd - exe=%r agent=%r use_continue=%s model_arg=%r "
@@ -59,6 +68,18 @@ def build_cmd(
     # opencode 2.x removed the built-in "coder" agent; default to "build" when
     # no agent is explicitly specified to avoid "agent coder not found" errors.
     cmd += ["--agent", agent if agent else "build"]
+
+    # --pure skips user plugins/skills so supervised runs are not hijacked by
+    # global agent customization. Tested working alongside --format json on
+    # opencode 1.x; opt-in via SupervisorConfig.opencode_pure.
+    if use_pure:
+        cmd.append("--pure")
+
+    # Pin the working tree explicitly: without --dir, opencode's tools can
+    # resolve onto a stale project context and operate outside the workspace
+    # (observed as writes landing in the supervisor's own repo).
+    if dir_:
+        cmd += ["--dir", dir_]
 
     if use_continue:
         if session_id:

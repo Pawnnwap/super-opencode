@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import subprocess
 import sys
 from pathlib import Path
@@ -32,12 +31,12 @@ def atomic_write_json(path: Path, content: dict) -> None:
 
 
 def _load_config_json(path: Path, on_warning=None) -> dict:
-    """Load OpenCode JSON, preserving common JSONC-style trailing commas."""
+    """Load OpenCode JSONC without corrupting URLs or comment-like strings."""
     text = path.read_text(encoding="utf-8")
     try:
         content = json.loads(text)
     except json.JSONDecodeError as exc:
-        normalized = re.sub(r",(\s*[}\]])", r"\1", text)
+        normalized = _normalize_jsonc(text)
         if normalized == text:
             raise
         try:
@@ -45,10 +44,89 @@ def _load_config_json(path: Path, on_warning=None) -> dict:
         except json.JSONDecodeError:
             raise exc
         if on_warning:
-            on_warning("Config used trailing commas; normalized during migration.")
+            on_warning("Config used JSONC comments or trailing commas; normalized during migration.")
     if not isinstance(content, dict):
         raise TypeError(f"Config must be a JSON object, got {type(content).__name__}")
     return content
+
+
+def _normalize_jsonc(text: str) -> str:
+    """Remove JSONC comments/trailing commas only when outside JSON strings."""
+    without_comments: list[str] = []
+    index = 0
+    in_string = False
+    escaped = False
+    length = len(text)
+
+    while index < length:
+        char = text[index]
+        next_char = text[index + 1] if index + 1 < length else ""
+        if in_string:
+            without_comments.append(char)
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            index += 1
+            continue
+        if char == '"':
+            in_string = True
+            without_comments.append(char)
+            index += 1
+            continue
+        if char == "/" and next_char == "/":
+            index += 2
+            while index < length and text[index] not in "\r\n":
+                index += 1
+            continue
+        if char == "/" and next_char == "*":
+            index += 2
+            while index < length:
+                if text[index] == "*" and index + 1 < length and text[index + 1] == "/":
+                    index += 2
+                    break
+                if text[index] in "\r\n":
+                    without_comments.append(text[index])
+                index += 1
+            continue
+        without_comments.append(char)
+        index += 1
+
+    normalized: list[str] = []
+    index = 0
+    in_string = False
+    escaped = False
+    stripped = "".join(without_comments)
+    length = len(stripped)
+    while index < length:
+        char = stripped[index]
+        if in_string:
+            normalized.append(char)
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            index += 1
+            continue
+        if char == '"':
+            in_string = True
+            normalized.append(char)
+            index += 1
+            continue
+        if char == ",":
+            lookahead = index + 1
+            while lookahead < length and stripped[lookahead].isspace():
+                lookahead += 1
+            if lookahead < length and stripped[lookahead] in "}]":
+                index += 1
+                continue
+        normalized.append(char)
+        index += 1
+    return "".join(normalized)
 
 
 def _is_legacy_hashline_config(value: object) -> bool:

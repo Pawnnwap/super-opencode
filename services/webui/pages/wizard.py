@@ -1,0 +1,561 @@
+"""Protocol Wizard page: configuration, editors, connectivity, refine flow."""
+
+from __future__ import annotations
+
+import asyncio
+from pathlib import Path
+
+from nicegui import ui, run as nicegui_run
+
+from services.webui.state import app_state
+
+_MAX_LISTED_FILES = 2000
+
+
+def _save() -> None:
+    app_state.save()
+
+
+def _bind_input(key: str, label: str, *, password: bool = False, classes: str = ""):
+    value = app_state.get(key) or ""
+
+    def _change(e) -> None:
+        app_state[key] = e.value
+        _save()
+
+    return ui.input(
+        label,
+        value=value,
+        password=password,
+        on_change=_change,
+    ).classes(classes or "w-full mono")
+
+
+def _bind_switch(key: str, label: str):
+    def _change(e) -> None:
+        app_state[key] = bool(e.value)
+        _save()
+
+    return ui.switch(label, value=bool(app_state.get(key)), on_change=_change)
+
+
+def _bind_number(key: str, label: str, *, min: int, max: int, format: str = "%.0f"):
+    def _change(e) -> None:
+        if e.value is not None:
+            app_state[key] = int(e.value)
+            _save()
+
+    return ui.number(
+        label, value=int(app_state.get(key) or 0), min=min, max=max,
+        format=format, on_change=_change,
+    )
+
+
+def _workspace() -> Path | None:
+    raw = app_state.get("workspace") or ""
+    path = Path(raw) if raw else None
+    if path and path.exists():
+        return path
+    return None
+
+
+# ── Configuration section ─────────────────────────────────────────────────────
+
+
+def _config_section() -> None:
+    with ui.expansion("Configuration", value=True).classes("w-full bg-[#161b22]"):
+        with ui.row().classes("w-full gap-4 flex-wrap"):
+            _bind_input("openai_key", "API key", password=True)
+            _bind_input("base_url", "API base URL (optional)")
+        with ui.row().classes("w-full gap-4 flex-wrap items-end"):
+            _bind_input("workspace", "Workspace path")
+            ui.button(
+                "Clean artifacts",
+                on_click=lambda: _clean_artifacts(),
+            ).props("flat dense")
+        with ui.row().classes("w-full gap-4 flex-wrap"):
+            _bind_input("supervisor_model", "Supervisor (judge) model")
+            _bind_input("supervisor_model_backup", "Supervisor backup model")
+        with ui.row().classes("w-full gap-4 flex-wrap items-end"):
+            engine_select = ui.select(
+                ["opencode", "codex"],
+                value=app_state.get("engine") or "opencode",
+                label="Execution engine",
+                on_change=lambda e: _set_engine(e.value),
+            ).classes("w-48")
+            _ = engine_select
+        if (app_state.get("engine") or "opencode") == "codex":
+            with ui.row().classes("w-full gap-4 flex-wrap"):
+                _bind_input("codex_base_url", "Codex base URL (responses API)")
+                _bind_input("codex_api_key", "Codex API key", password=True)
+        _model_section()
+        with ui.row().classes("w-full gap-6 flex-wrap"):
+            _bind_switch("enable_headroom", "Headroom proxy")
+            _bind_switch(
+                "headroom_allow_custom_provider",
+                "Headroom for custom providers",
+            )
+            _bind_switch("enable_python_scanner", "Python scanner")
+            _bind_switch("enable_occam_razor", "Occam Razor")
+        with ui.row().classes("w-full gap-4 flex-wrap"):
+            _bind_number("max_retries", "Max retries", min=1, max=10)
+            _bind_number("context_threshold", "Context threshold %", min=10, max=95)
+            _bind_number("max_tokens", "Max tokens", min=1000, max=2000000)
+            _bind_number("timeout", "Turn timeout (min)", min=1, max=120)
+        with ui.row().classes("w-full gap-4 flex-wrap"):
+            _bind_input(
+                "npm_registry", "npm registry for CLI upgrades (empty = default)",
+            )
+
+
+def _set_engine(value: str) -> None:
+    app_state["engine"] = value
+    _save()
+    ui.run_javascript("location.reload()")
+
+
+def _clean_artifacts() -> None:
+    from services.runtime.workspace_cleanup import clean_workspace_artifacts
+
+    workspace = _workspace()
+    if workspace:
+        clean_workspace_artifacts(workspace)
+        ui.notify(f"Cleaned artifacts in {workspace.name}")
+
+
+# ── Models section ────────────────────────────────────────────────────────────
+
+
+def _model_section() -> None:
+    models = app_state.opencode_models
+    with ui.row().classes("w-full gap-4 flex-wrap items-end"):
+        if models:
+            ui.select(
+                models + ["(custom)"],
+                value=app_state.get("opencode_model") or models[0],
+                label="Agent model",
+                on_change=lambda e: _set_model(e.value),
+            ).classes("w-80")
+            ui.button("Refresh models", on_click=_refresh_models).props(
+                "flat dense",
+            )
+        else:
+            _bind_input("opencode_model", "Agent model (provider/model)")
+            ui.button("Fetch models", on_click=_refresh_models).props("flat dense")
+        _bind_input("opencode_model_backup", "Agent backup model")
+
+
+def _set_model(value: str) -> None:
+    if value and value != "(custom)":
+        app_state["opencode_model"] = value
+        _save()
+
+
+async def _refresh_models() -> None:
+    from services.config.opencode_config import fetch_opencode_models
+
+    ui.notify("Fetching model list…")
+    models = await nicegui_run.io_bound(
+        fetch_opencode_models, app_state.get("opencode_executable") or "",
+    )
+    if models:
+        app_state.opencode_models = models
+        if not app_state.get("opencode_model"):
+            app_state["opencode_model"] = models[0]
+            _save()
+        ui.notify(f"Fetched {len(models)} models — reloading page.")
+        ui.run_javascript("location.reload()")
+
+
+# ── Protected files ───────────────────────────────────────────────────────────
+
+
+def _protected_section() -> None:
+    with ui.expansion("Protected Files").classes("w-full bg-[#161b22]"):
+        ui.label(
+            "Files the agent may not modify or delete. Stored per workspace.",
+        ).classes("text-xs text-[#8b949e]")
+        workspace = _workspace()
+        if not workspace:
+            ui.label("Set a valid workspace path first.").classes("text-[#e3b341]")
+            return
+        add_select = ui.select(
+            [], multiple=True, label="Add protected files (search workspace)",
+        ).classes("w-full")
+        options_holder: dict[str, list[str]] = {}
+
+        async def _load_options() -> None:
+            entries = await nicegui_run.io_bound(_scan_workspace, workspace)
+            options_holder["all"] = entries
+            add_select.options = entries[:500]
+            add_select.update()
+
+        ui.button("Scan workspace", on_click=_load_options).props("flat dense")
+
+        def _add(e) -> None:
+            chosen = list(e.value or [])
+            if chosen:
+                current = list(app_state.get("protected_files") or [])
+                merged = sorted(set(current) | set(chosen))
+                app_state["protected_files"] = merged
+                _save()
+                add_select.value = []
+                _refresh_chips(merged, options_holder, chips_container)
+
+        add_select.on_value_change(_add)
+
+        chips_container = ui.column().classes("w-full gap-1")
+        _refresh_chips(list(app_state.get("protected_files") or []), options_holder, chips_container)
+
+
+def _scan_workspace(workspace: Path) -> list[str]:
+    return sorted(
+        str(p.relative_to(workspace)).replace("\\", "/")
+        for p in workspace.rglob("*")
+        if p.is_file()
+    )[:_MAX_LISTED_FILES]
+
+
+def _refresh_chips(protected: list[str], options_holder: dict, container) -> None:
+    container.clear()
+    with container:
+        if not protected:
+            ui.label("No protected files.").classes("text-xs text-[#8b949e]")
+        for path in protected:
+            with ui.row().classes("items-center gap-2"):
+                ui.label(f"🔒 {path}").classes("text-xs mono")
+                ui.button(
+                    icon="close",
+                    on_click=lambda p=path: _remove_protected(p, options_holder, container),
+                ).props("flat dense")
+
+
+def _remove_protected(path: str, options_holder: dict, container) -> None:
+    merged = [p for p in (app_state.get("protected_files") or []) if p != path]
+    app_state["protected_files"] = merged
+    _save()
+    _refresh_chips(merged, options_holder, container)
+
+
+# ── Ignore editor ─────────────────────────────────────────────────────────────
+
+
+def _ignore_section() -> None:
+    from supervisor.workspace.ignore_patterns import IGNORE_FILE
+
+    with ui.expansion(".opencodeignore Editor").classes("w-full bg-[#161b22]"):
+        workspace = _workspace()
+        if not workspace:
+            ui.label("Set a valid workspace path first.").classes("text-[#e3b341]")
+            return
+        from supervisor.workspace.ignore_patterns import write_ignore_file
+
+        ignore_path = workspace / IGNORE_FILE
+        current = (
+            ignore_path.read_text(encoding="utf-8") if ignore_path.exists() else ""
+        )
+        area = ui.textarea(".opencodeignore content", value=current).classes(
+            "w-full mono",
+        )
+        status = ui.label("").classes("text-xs text-[#8b949e]")
+
+        def _save_ignore() -> None:
+            write_ignore_file(workspace, area.value or "")
+            status.set_text("Saved .opencodeignore.")
+
+        ui.button("Save ignore file", on_click=_save_ignore).props("dense")
+
+        async def _suggest() -> None:
+            status.set_text("Generating ignore patterns (LLM call)…")
+            app_state.save()
+            app_state.apply_api_config()
+            try:
+                generated = await nicegui_run.io_bound(
+                    _suggest_ignore_patterns, workspace,
+                )
+            except Exception as exc:
+                status.set_text(f"Failed to generate ignore patterns: {exc}")
+                return
+            area.value = generated
+            write_ignore_file(workspace, generated)
+            status.set_text("Ignore patterns generated and saved.")
+
+        ui.button("Suggest and Apply Ignore Patterns", on_click=_suggest).props(
+            "dense outline",
+        )
+
+
+def _suggest_ignore_patterns(workspace: Path) -> str:
+    from openai import OpenAI
+
+    from supervisor.utils.text_utils import normalize_model_response
+
+    entries = sorted(
+        str(p.relative_to(workspace)).replace("\\", "/")
+        for p in workspace.rglob("*")
+        if p.is_file()
+    )[:1000]
+    client = OpenAI(
+        api_key=app_state.get("openai_key"),
+        base_url=app_state.get("base_url") or None,
+    )
+    response = client.chat.completions.create(
+        model=app_state.get("supervisor_model") or "gpt-4o",
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "Given a list of files and directories in a workspace, generate "
+                    "a .opencodeignore file that ignores common build artifacts, "
+                    "dependency directories, cache files, and other files that should "
+                    "not be modified by an autonomous coding agent. Patterns should be "
+                    "in gitignore format. Output patterns only."
+                ),
+            },
+            {"role": "user", "content": "Workspace entries:\n" + "\n".join(entries)},
+        ],
+    )
+    return normalize_model_response(
+        response.choices[0].message.content, "generated ignore patterns response",
+    )
+
+
+# ── Connectivity tests ────────────────────────────────────────────────────────
+
+
+def _connectivity_section() -> None:
+    from services.config.connectivity import (
+        test_agent_connectivity,
+        test_supervisor_connectivity,
+    )
+
+    with ui.expansion("Connectivity Tests").classes("w-full bg-[#161b22]"):
+        engine = app_state.get("engine") or "opencode"
+        status = ui.label("").classes("text-xs")
+        _refresh_status(status)
+
+        async def _run(kind: str) -> None:
+            if not (app_state.get("workspace") or "").strip():
+                ui.notify("Set workspace path before running tests.")
+                return
+            status.set_text("Testing… (up to 30s)")
+            if kind in ("agent", "all"):
+                ok, message = await nicegui_run.io_bound(
+                    test_agent_connectivity,
+                    app_state.get("engine") or "opencode",
+                    app_state.get("opencode_executable") or "",
+                    app_state.get("opencode_model"),
+                    app_state.get("opencode_model_backup"),
+                    30,
+                    app_state.get("codex_base_url") or "",
+                    app_state.get("codex_api_key") or "",
+                    True,
+                    app_state.get("headroom_executable") or "",
+                    app_state.get("headroom_allow_custom_provider", False),
+                )
+                app_state.flags["opencode_test_passed"] = ok
+                status.set_text(f"{engine}: {'✅' if ok else '❌'} {message[:160]}")
+            if kind in ("supervisor", "all"):
+                ok, message = await nicegui_run.io_bound(
+                    test_supervisor_connectivity,
+                    app_state.get("openai_key"),
+                    app_state.get("supervisor_model") or "gpt-4o",
+                    app_state.get("base_url") or None,
+                )
+                app_state.flags["supervisor_test_passed"] = ok
+                status.set_text(
+                    f"supervisor: {'✅' if ok else '❌'} {message[:160]}",
+                )
+            if app_state.tests_ok():
+                status.set_text("✅ Both connectivity tests passed — Run/Evolve unlocked.")
+
+        with ui.row().classes("gap-3"):
+            ui.button("Run Tests", on_click=lambda: _run("all")).props("color=primary")
+            ui.button(f"Test {engine}", on_click=lambda: _run("agent")).props("outline")
+            ui.button(
+                "Test Supervisor", on_click=lambda: _run("supervisor"),
+            ).props("outline")
+
+
+def _refresh_status(_label) -> None:
+    if app_state.tests_ok():
+        ui.notify("Both connectivity tests passed.")
+
+
+# ── Protocol drafts + refine flow ─────────────────────────────────────────────
+
+
+def _protocol_section() -> None:
+    workspace = _workspace()
+    with ui.expansion("Protocol Draft", value=True).classes("w-full bg-[#161b22]"):
+        if workspace and (workspace / "protocol.md").exists():
+            with ui.row().classes("items-center gap-2"):
+                ui.label("✅ Existing protocol.md found in this workspace.").classes(
+                    "text-xs text-[#3fb950]",
+                )
+                ui.button(
+                    "Preview",
+                    on_click=lambda: _preview_file(workspace / "protocol.md"),
+                ).props("flat dense")
+        with ui.row().classes("w-full gap-4"):
+            ui.input(
+                "INPUT (context)",
+                value=app_state.get("raw_input") or "",
+                on_change=lambda e: _set_draft("raw_input", e.value, quality_label),
+            ).classes("w-full mono")
+        ui.input(
+            "TARGET (objectives)",
+            value=app_state.get("raw_target") or "",
+            on_change=lambda e: _set_draft("raw_target", e.value, quality_label),
+        ).classes("w-full mono").props("autogrow")
+        ui.input(
+            "RESTRICTIONS (boundaries)",
+            value=app_state.get("raw_restrictions") or "",
+            on_change=lambda e: _set_draft(
+                "raw_restrictions", e.value, quality_label,
+            ),
+        ).classes("w-full mono").props("autogrow")
+
+        quality_label = ui.label("").classes("text-xs text-[#8b949e]")
+        _update_quality(quality_label)
+
+        status = ui.label("").classes("text-xs")
+        refine_button = ui.button("Refine with AI", on_click=lambda: _refine(status)).props(
+            "color=primary",
+        )
+
+        if app_state.get("protocol_md"):
+            _refined_editor(workspace)
+
+
+def _set_draft(key: str, value: str, quality_label) -> None:
+    app_state[key] = value
+    _save()
+    _update_quality(quality_label)
+
+
+def _update_quality(label) -> None:
+    from supervisor.protocols.protocol_analyzer import ProtocolAnalyzer
+
+    text = (
+        f"## INPUT\n{app_state.get('raw_input') or ''}\n\n"
+        f"## TARGET\n{app_state.get('raw_target') or ''}\n\n"
+        f"## RESTRICTIONS\n{app_state.get('raw_restrictions') or ''}\n"
+    )
+    try:
+        analysis = ProtocolAnalyzer().analyze_text(text)
+        label.set_text(
+            f"Quality: overall {analysis.overall_score:.0%} · "
+            f"INPUT {analysis.input_score.overall:.0%} · "
+            f"TARGET {analysis.target_score.overall:.0%} · "
+            f"RESTRICTIONS {analysis.restrictions_score.overall:.0%}"
+            + (f" · {len(analysis.issues)} issue(s)" if analysis.issues else ""),
+        )
+    except Exception:
+        label.set_text("Complete all three sections to see quality scores.")
+
+
+async def _refine(status) -> None:
+    if not all(
+        (app_state.get(k) or "").strip()
+        for k in ("raw_input", "raw_target", "raw_restrictions")
+    ):
+        ui.notify("Fill INPUT, TARGET and RESTRICTIONS first.")
+        return
+    status.set_text("Refining protocol with AI… (may take ~30s)")
+    app_state.save()
+    app_state.apply_api_config()
+    try:
+        from supervisor.protocols.protocol_wizard import ProtocolWizard
+
+        wizard = ProtocolWizard(
+            model=app_state.get("supervisor_model") or "gpt-4o",
+            api_key=app_state.get("openai_key") or None,
+            base_url=app_state.get("base_url") or None,
+        )
+        markdown, _protocol = await nicegui_run.io_bound(
+            wizard.refine,
+            app_state.get("raw_input") or "",
+            app_state.get("raw_target") or "",
+            app_state.get("raw_restrictions") or "",
+        )
+    except Exception as exc:
+        status.set_text(f"Refine failed: {exc}")
+        return
+    app_state["protocol_md"] = markdown
+    app_state.save()
+    status.set_text("Refined protocol ready — review and accept below.")
+    ui.run_javascript("location.reload()")
+
+
+def _refined_editor(workspace: Path | None) -> None:
+    with ui.expansion("Refined protocol — review and accept", value=True).classes(
+        "w-full bg-[#161b22]",
+    ):
+        area = ui.textarea(
+            "protocol.md", value=app_state.get("protocol_md") or "",
+        ).classes("w-full mono").props("autogrow")
+        quality_label = ui.label("").classes("text-xs text-[#8b949e]")
+
+        def _on_change(e) -> None:
+            app_state["protocol_md"] = e.value
+            app_state.save()
+            _update_quality(quality_label)
+
+        area.on_value_change(_on_change)
+
+        async def _accept() -> None:
+            from supervisor.protocols.protocol import parse_protocol_text
+            from supervisor.protocols.target_audit import audit_target
+
+            try:
+                protocol = parse_protocol_text(area.value or "")
+            except ValueError as exc:
+                ui.notify(f"Protocol invalid: {exc}")
+                return
+            audit = audit_target(
+                protocol.target_section, protocol.restrictions_section,
+            )
+            if not audit.is_actionable:
+                ui.notify("TARGET not ready: " + " ".join(audit.issues))
+                return
+            if workspace is None:
+                ui.notify("Set a valid workspace first.")
+                return
+            (workspace / "protocol.md").write_text(
+                area.value or "", encoding="utf-8",
+            )
+            ui.notify(f"protocol.md saved to {workspace.name}")
+            app_state["protocol_md"] = ""
+            app_state.save()
+            ui.navigate_to("/run")
+
+        with ui.row():
+            ui.button("Accept & Save", on_click=_accept).props("color=primary")
+            ui.button(
+                "Re-refine",
+                on_click=lambda: (
+                    app_state.__setitem__("protocol_md", ""),
+                    app_state.save(),
+                    ui.run_javascript("location.reload()"),
+                ),
+            ).props("outline")
+
+
+def _preview_file(path: Path) -> None:
+    with ui.dialog() as dialog, ui.card().classes("w-full"):
+        ui.code(path.read_text(encoding="utf-8")[:3000], language="markdown")
+        ui.button("Close", on_click=dialog.close).props("dense")
+    dialog.open()
+
+
+# ── Page entry ────────────────────────────────────────────────────────────────
+
+
+def render() -> None:
+    ui.label("Protocol Wizard").classes("text-2xl font-bold")
+    _config_section()
+    _protected_section()
+    _ignore_section()
+    _connectivity_section()
+    _protocol_section()

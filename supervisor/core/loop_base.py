@@ -69,6 +69,11 @@ class BaseLoop:
         self._pending_cross_loop: str = ""
         self._last_feedback: str = ""
         self._cached_snapshot = None
+        # Workspace evidence for the goal guard (book ch.8 exit validation):
+        # refreshed once per judged turn by _refresh_codebase_snapshot.
+        self._last_snapshot_signature: str = ""
+        self._last_changed_files: list[str] = []
+        self._run_changed_files: set[str] = set()
         self._python_scanner_ran: bool = False
         self._vuln_autofixed: bool = False
 
@@ -102,6 +107,15 @@ class BaseLoop:
         self._cached_snapshot = snapshot_codebase(self.config.workspace)
         self.archiver = WorkspaceArchiver(self.config.workspace)
         self._init_components(agent=agent)
+
+        # Pre-trust the workspace for non-interactive agent runs (opencode
+        # auto-rejects permission prompts when no TTY is attached).
+        from supervisor.runners.factory import resolve_engine
+
+        if resolve_engine(self.config) == "opencode":
+            written = self.guard.ensure_agent_permissions(self.config.workspace)
+            if written:
+                logger.info("Project permission config written: %s", written)
 
     def _init_components(self, agent: str = ""):
         from supervisor.analyzers.opencode_step_detector import OpencodeStepDetector
@@ -241,6 +255,9 @@ class BaseLoop:
 
         new_snapshot = snapshot_codebase(self.config.workspace)
         changed = self._cached_snapshot.changed_files(new_snapshot)
+        self._last_changed_files = changed
+        self._run_changed_files.update(changed)
+        self._last_snapshot_signature = new_snapshot.signature()
         if changed:
             logger.info(
                 "Codebase evolved: %d changed file(s): %s",
@@ -445,6 +462,28 @@ class BaseLoop:
         """Hook to append alignment warnings etc."""
         return safe_msg
 
+    def _verify_success(
+        self,
+        verdict: SupervisorVerdict,
+        output: str,
+    ) -> str | None:
+        """Validate a DONE proposal before the run may end (exit validation).
+
+        Returns ``None`` to accept completion, or feedback text explaining why
+        the completion claim was blocked (the loop continues with it).
+        """
+        _ = verdict, output
+        return None
+
+    def _turn_guidance(self, verdict: SupervisorVerdict, output: str) -> str:
+        """Extra guidance prepended to feedback on a continue turn (nudges)."""
+        _ = verdict, output
+        return ""
+
+    def _guard_restart_section(self) -> str:
+        """Goal-guard context injected into restart prompts."""
+        return ""
+
     def _do_judgement(self, output: str) -> Generator[Event]:
         progress = self.runner.get_step_progress()
 
@@ -456,32 +495,68 @@ class BaseLoop:
 
         verdict = self._get_verdict(actual_output, progress)
         yield _ev("supervisor_response", verdict.raw)
+        validation_notes = getattr(verdict, "validation_notes", None)
+        if validation_notes:
+            yield _ev(
+                "warn",
+                "Judge verdict auto-corrected (evidence contradiction): "
+                + " ".join(validation_notes),
+            )
 
         self._task_turn += 1
         self._record_task_state(verdict, progress)
 
         yield from self._emit_token_warnings()
 
+        feedback_override: str | None = None
         if verdict.all_targets_met:
-            self._state = LoopState.ENDED_SUCCESS
-            lesson = self._extract_lesson_from_verdict(verdict.raw)
-            if self._failures == 0:
-                update_experience(self.config.workspace, worked=[lesson])
-            else:
-                lesson = "Successfully met all targets"
-                update_experience(self.config.workspace, worked=[lesson])
-            self._record_structured_success(
-                verdict.raw,
-                goal=self._memory_goal(),
-                solutions=[lesson],
+            blocked = self._verify_success(verdict, actual_output)
+            if blocked is None:
+                self._state = LoopState.ENDED_SUCCESS
+                lesson = self._extract_lesson_from_verdict(verdict.raw)
+                if self._failures == 0:
+                    update_experience(self.config.workspace, worked=[lesson])
+                else:
+                    lesson = "Successfully met all targets"
+                    update_experience(self.config.workspace, worked=[lesson])
+                self._record_structured_success(
+                    verdict.raw,
+                    goal=self._memory_goal(),
+                    solutions=[lesson],
+                )
+                return
+            feedback_override = blocked
+            yield _ev(
+                "warn",
+                "Completion blocked pending evidence — run continues.",
             )
-            return
+
+        if feedback_override is not None:
+            feedback_text = feedback_override
+        else:
+            feedback_text = verdict.feedback
+            guidance = self._turn_guidance(verdict, actual_output)
+            if guidance:
+                feedback_text = guidance + "\n\n" + feedback_text
 
         vuln_scan = self.scan_for_vulnerabilities()
-        feedback_text = verdict.feedback + (vuln_scan or "")
+        feedback_text = feedback_text + (vuln_scan or "")
         safe_msg = yield from self._sanitize_feedback(feedback_text)
 
         safe_msg = yield from self._post_judge_feedback(safe_msg, actual_output)
+
+        if not self.runner.is_session_pinned():
+            # A session-less turn has no conversation memory — the feedback
+            # alone would be an unanswerable fragment. Make it self-contained.
+            _, protocol_text = self._get_restart_context()
+            journal_tail = self._restart_task_state()
+            context_block = (
+                "TASK CONTEXT (fresh session — no prior conversation memory):\n"
+                f"PROTOCOL:\n{protocol_text}\n\n"
+            )
+            if journal_tail:
+                context_block += f"RECENT PROGRESS JOURNAL:\n{journal_tail}\n\n"
+            safe_msg = context_block + safe_msg
 
         self._last_feedback = safe_msg
 
@@ -833,6 +908,7 @@ class BaseLoop:
         task_state_section = (
             f"Recent progress journal (most recent turns):\n\n{tail}\n\n" if tail else ""
         )
+        guard_section = self._guard_restart_section()
         loop_section = ""
         if self._loop_breaker:
             loop_section = (
@@ -841,7 +917,7 @@ class BaseLoop:
             )
             self._loop_breaker = ""
         return RESTART_PROMPT_TEMPLATE.format(
-            loop_section=loop_section,
+            loop_section=guard_section + loop_section,
             summary=summary,
             task_state_section=task_state_section,
             protocol_text=protocol_text,

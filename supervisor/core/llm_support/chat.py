@@ -14,10 +14,12 @@ from openai import (
 )
 
 from supervisor.core.llm_support.models import (
+    SupervisorVerdict,
     _DONE_PHRASES,
     _check_completion_phrases,
     _is_token_limit_error,
-    SupervisorVerdict,
+    flag_contradicted_criteria,
+    parse_verdict_structure,
 )
 from supervisor.monitoring.session_tracker import (
     estimate_request_tokens,
@@ -246,8 +248,23 @@ def chat_with_retry(
         else:
             supervisor._history = supervisor._history[:2] + supervisor._history[4:]
 
-    all_met = _check_completion_phrases(reply, _DONE_PHRASES)
-    return SupervisorVerdict(raw=reply, all_targets_met=all_met, feedback=reply)
+    structured_done, criteria, next_action, evidence_requests = parse_verdict_structure(
+        reply,
+    )
+    criteria, validation_notes = flag_contradicted_criteria(criteria)
+    if structured_done is not None:
+        all_met = structured_done and not validation_notes
+    else:
+        all_met = _check_completion_phrases(reply, _DONE_PHRASES)
+    return SupervisorVerdict(
+        raw=reply,
+        all_targets_met=all_met,
+        feedback=reply,
+        criteria_results=criteria,
+        next_action=next_action,
+        evidence_requests=evidence_requests,
+        validation_notes=validation_notes,
+    )
 
 
 def fit_request_to_budget(supervisor, user_content: str) -> str:
