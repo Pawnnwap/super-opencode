@@ -31,6 +31,8 @@ def build_supervisor_config(
         ),
         supervisor_model=session_state["supervisor_model"] or "gpt-4o",
         supervisor_model_backup=session_state["supervisor_model_backup"] or None,
+        supervisor_reasoning=str(session_state.get("supervisor_reasoning", "") or "").strip(),
+        agent_reasoning=str(session_state.get("agent_reasoning", "") or "").strip(),
         timeout=int(session_state["timeout"]) * 60,
         protected_files=tuple(session_state.get("protected_files", [])),
         max_tokens=int(session_state["max_tokens"]),

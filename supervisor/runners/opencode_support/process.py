@@ -4,11 +4,15 @@ import logging
 import os
 import subprocess
 import sys
+import threading
 import time
 from collections.abc import Callable, Generator
 
 from supervisor.analyzers.loop_detector import LoopDetector
-from supervisor.runners.command_common import safe_command_summary
+from supervisor.runners.command_common import (
+    feed_stdin_prompt,
+    safe_command_summary,
+)
 from supervisor.runners.opencode_support.command_builder import build_cmd, resolve_model
 from supervisor.runners.opencode_support.headroom import (
     acquire_headroom_proxy,
@@ -103,6 +107,7 @@ def run_prompt(
             use_shell=use_shell,
             use_pure=bool(getattr(runner, "opencode_pure", False)),
             dir_=str(runner.workspace),
+            variant=getattr(runner, "opencode_variant", "") or "",
         )
 
         resolved_model = resolve_model(model_for_cmd, runner.opencode_model)
@@ -121,7 +126,11 @@ def run_prompt(
         try:
             runner._process = subprocess.Popen(
                 cmd,
-                stdin=subprocess.DEVNULL,
+                # stdin carries the prompt (build_cmd passes no message
+                # argument): Windows command-line limits (8191 via cmd.exe
+                # shims, 32767 via CreateProcess) make argv prompts fail
+                # silently with "The command line is too long".
+                stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
@@ -131,6 +140,12 @@ def run_prompt(
                 env=child_env,
                 shell=use_shell,
             )
+            threading.Thread(
+                target=feed_stdin_prompt,
+                args=(runner._process, prompt),
+                daemon=True,
+                name="opencode-stdin-writer",
+            ).start()
 
             outcome = yield from consume_process_stream(
                 runner._process,

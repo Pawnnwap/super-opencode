@@ -215,8 +215,8 @@ class JobBoard:
                         ).props("flat dense")
                     ui.button(
                         icon="open_in_new",
-                        on_click=lambda j=job_id: ui.navigate_to(
-                            f"{self.base_path}/{j}",
+                        on_click=lambda j=job_id: ui.navigate.to(
+                            f"{self.base_path}/{j}", new_tab=True,
                         ),
                     ).props("flat dense")
             meta = []

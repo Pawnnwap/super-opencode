@@ -50,7 +50,7 @@ def _launch_evolve(workspace: Path, scanner: bool, occam: bool) -> None:
     )
     job_id = get_job_manager().enqueue_job("evolve", config)
     ui.notify(f"Evolution launched: {job_id}")
-    ui.navigate_to(f"/evolve/{job_id}")
+    ui.navigate.to(f"/evolve/{job_id}")
 
 
 def render(job_id: str = "") -> None:
@@ -59,7 +59,7 @@ def render(job_id: str = "") -> None:
         ui.label("Set a valid workspace path in the Protocol Wizard first.").classes(
             "text-[#f85149]",
         )
-        ui.button("Open Wizard", on_click=lambda: ui.navigate_to("/")).props("dense")
+        ui.button("Open Wizard", on_click=lambda: ui.navigate.to("/")).props("dense")
         return
     workspace = Path(workspace_raw)
 
@@ -69,7 +69,7 @@ def render(job_id: str = "") -> None:
         if not status or status.get("type") != "evolve":
             ui.label(f"Evolution job {job_id} not found.").classes("text-[#f85149]")
             ui.button(
-                "Back to board", on_click=lambda: ui.navigate_to("/evolve"),
+                "Back to board", on_click=lambda: ui.navigate.to("/evolve"),
             ).props("dense")
             return
         LiveJobScreen(

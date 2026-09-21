@@ -76,6 +76,13 @@ def _config_section() -> None:
         with ui.row().classes("w-full gap-4 flex-wrap"):
             _bind_input("supervisor_model", "Supervisor (judge) model")
             _bind_input("supervisor_model_backup", "Supervisor backup model")
+        from services.config.connectivity import REASONING_EFFORT_CHOICES
+
+        _reasoning_select(
+            "supervisor_reasoning",
+            "Supervisor thinking effort",
+            choices=REASONING_EFFORT_CHOICES,
+        )
         with ui.row().classes("w-full gap-4 flex-wrap items-end"):
             engine_select = ui.select(
                 ["opencode", "codex"],
@@ -126,45 +133,121 @@ def _clean_artifacts() -> None:
 # ── Models section ────────────────────────────────────────────────────────────
 
 
+def _reasoning_select(key: str, label: str, choices: list[str]) -> None:
+    """Thinking-effort droplist saved to ``key`` ("" = model default)."""
+    options = {"": "Default (model default)"} | {c: c for c in choices}
+    current = (app_state.get(key) or "").strip()
+    if current and current not in options:
+        options[current] = current
+    ui.select(
+        options,
+        value=current if current in options else "",
+        label=label,
+        on_change=lambda e, k=key: _set_reasoning(k, e.value),
+    ).classes("w-48").tooltip(
+        "Thinking/reasoning effort for real runs. Choose Default unless the "
+        "model documents these values.",
+    )
+
+
+def _set_reasoning(key: str, value: str) -> None:
+    app_state[key] = value or ""
+    _save()
+
+
+def _agent_variant_choices(engine: str, model: str) -> list[str]:
+    """Variant names for the selected agent model, cheapest first.
+
+    opencode: exact per-model variants from its own model metadata (the same
+    names `--variant` accepts). codex: the standard reasoning-effort ladder
+    (codex exposes no per-model enumeration; providers accept their subset).
+    Detection failures degrade to the plain effort ladder.
+    """
+    if engine == "opencode":
+        from services.config.connectivity import (
+            REASONING_EFFORT_CHOICES,
+            opencode_variant_choices,
+        )
+
+        found = opencode_variant_choices(
+            app_state.get("opencode_executable") or "opencode", model or "",
+        )
+        if found:
+            return list(found)
+    else:
+        from services.config.connectivity import REASONING_EFFORT_CHOICES
+    return list(REASONING_EFFORT_CHOICES)
+
+
 def _model_section() -> None:
-    models = app_state.opencode_models
+    engine = (app_state.get("engine") or "opencode").strip().lower()
+    models = (
+        app_state.opencode_models if app_state.model_list_engine == engine else []
+    )
     with ui.row().classes("w-full gap-4 flex-wrap items-end"):
         if models:
+            current = app_state.get("opencode_model") or models[0]
+            options = models + ["(custom)"]
+            if current and current not in options:
+                options = [current] + options
             ui.select(
-                models + ["(custom)"],
-                value=app_state.get("opencode_model") or models[0],
-                label="Agent model",
+                options,
+                value=current,
+                label=f"Agent model ({engine})",
                 on_change=lambda e: _set_model(e.value),
             ).classes("w-80")
             ui.button("Refresh models", on_click=_refresh_models).props(
                 "flat dense",
             )
         else:
-            _bind_input("opencode_model", "Agent model (provider/model)")
+            _bind_input("opencode_model", f"Agent model ({engine})")
             ui.button("Fetch models", on_click=_refresh_models).props("flat dense")
         _bind_input("opencode_model_backup", "Agent backup model")
+        variant_label = (
+            "Codex reasoning effort" if engine == "codex" else "Thinking variant"
+        )
+        _reasoning_select(
+            "agent_reasoning", variant_label, _agent_variant_choices(
+                engine, app_state.get("opencode_model") or "",
+            ),
+        )
 
 
 def _set_model(value: str) -> None:
     if value and value != "(custom)":
         app_state["opencode_model"] = value
+        # Variant names are model-specific — drop a stale selection and
+        # reload so the variant droplist re-aligns with the new model.
+        app_state["agent_reasoning"] = ""
         _save()
+        ui.run_javascript("location.reload()")
 
 
 async def _refresh_models() -> None:
-    from services.config.opencode_config import fetch_opencode_models
+    from services.config.agent_models import fetch_agent_models
 
-    ui.notify("Fetching model list…")
+    engine = (app_state.get("engine") or "opencode").strip().lower()
+    ui.notify(f"Fetching {engine} model list…")
     models = await nicegui_run.io_bound(
-        fetch_opencode_models, app_state.get("opencode_executable") or "",
+        fetch_agent_models,
+        engine,
+        app_state.get("opencode_executable") or "",
+        app_state.get("codex_base_url") or "",
+        app_state.get("codex_api_key") or "",
     )
     if models:
         app_state.opencode_models = models
+        app_state.model_list_engine = engine
         if not app_state.get("opencode_model"):
             app_state["opencode_model"] = models[0]
-            _save()
-        ui.notify(f"Fetched {len(models)} models — reloading page.")
+        _save()
+        ui.notify(f"Fetched {len(models)} {engine} models — reloading page.")
         ui.run_javascript("location.reload()")
+    else:
+        ui.notify(
+            f"No models returned for {engine} "
+            "(codex needs a base URL with a /models endpoint).",
+        )
 
 
 # ── Protected files ───────────────────────────────────────────────────────────
@@ -338,7 +421,7 @@ def _connectivity_section() -> None:
             if not (app_state.get("workspace") or "").strip():
                 ui.notify("Set workspace path before running tests.")
                 return
-            status.set_text("Testing… (up to 30s)")
+            status.set_text("Testing… (agent up to ~60s)")
             if kind in ("agent", "all"):
                 ok, message = await nicegui_run.io_bound(
                     test_agent_connectivity,
@@ -346,7 +429,7 @@ def _connectivity_section() -> None:
                     app_state.get("opencode_executable") or "",
                     app_state.get("opencode_model"),
                     app_state.get("opencode_model_backup"),
-                    30,
+                    45,
                     app_state.get("codex_base_url") or "",
                     app_state.get("codex_api_key") or "",
                     True,
@@ -528,7 +611,7 @@ def _refined_editor(workspace: Path | None) -> None:
             ui.notify(f"protocol.md saved to {workspace.name}")
             app_state["protocol_md"] = ""
             app_state.save()
-            ui.navigate_to("/run")
+            ui.navigate.to("/run")
 
         with ui.row():
             ui.button("Accept & Save", on_click=_accept).props("color=primary")

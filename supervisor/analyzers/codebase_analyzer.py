@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from supervisor.utils.filesystem.path_filters import should_skip_path
+from supervisor.utils.text_utils import head_tail_excerpt
 
 if TYPE_CHECKING:
     from supervisor.workspace.ignore_patterns import IgnoreMatcher
@@ -311,7 +312,13 @@ def _add_file(snap: CodebaseSnapshot, path: Path, root: Path) -> None:
 
         snap.files.append(FileSnapshot(
             rel_path=str(path.relative_to(root)),
-            content=text[:_MAX_FILE_CHARS] if truncated else text,
+            # Keep both ends of oversized files: imports/metadata at the head,
+            # exports/main guard at the tail — a head-only cut drops exactly
+            # the part that identifies what the module provides.
+            content=(
+                head_tail_excerpt(text, _MAX_FILE_CHARS, end_ratio=0.4)
+                if truncated else text
+            ),
             truncated=truncated,
             sha256=sha,
             skeleton=skeleton,

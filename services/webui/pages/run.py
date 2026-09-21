@@ -16,7 +16,7 @@ from services.webui.state import app_state
 def _save_draft(workspace: Path, text: str) -> None:
     (workspace / "protocol.md").write_text(text, encoding="utf-8")
     ui.notify(f"Saved protocol.md to {workspace.name}")
-    ui.navigate_to("/run")
+    ui.navigate.to("/run")
 
 
 def _render_readiness(workspace: Path) -> bool:
@@ -52,7 +52,7 @@ def _render_readiness(workspace: Path) -> bool:
     ui.label(
         "No protocol.md found for this workspace — create one in the Wizard.",
     ).classes("text-sm text-[#f85149]")
-    ui.button("Open Protocol Wizard", on_click=lambda: ui.navigate_to("/")).props(
+    ui.button("Open Protocol Wizard", on_click=lambda: ui.navigate.to("/")).props(
         "dense",
     )
     return False
@@ -71,7 +71,7 @@ def _launch_run(workspace: Path, plan_rounds: int, scanner: bool, occam: bool) -
     )
     job_id = get_job_manager().enqueue_job("run", config)
     ui.notify(f"Task launched: {job_id}")
-    ui.navigate_to(f"/run/{job_id}")
+    ui.navigate.to(f"/run/{job_id}")
 
 
 def _render_launch_form(workspace: Path) -> None:
@@ -116,7 +116,7 @@ def render(job_id: str = "") -> None:
         ui.label("Set a valid workspace path in the Protocol Wizard first.").classes(
             "text-[#f85149]",
         )
-        ui.button("Open Wizard", on_click=lambda: ui.navigate_to("/")).props("dense")
+        ui.button("Open Wizard", on_click=lambda: ui.navigate.to("/")).props("dense")
         return
     workspace = Path(workspace_raw)
 
@@ -126,7 +126,7 @@ def render(job_id: str = "") -> None:
         if not status or status.get("type") != "run":
             ui.label(f"Run job {job_id} not found.").classes("text-[#f85149]")
             ui.button(
-                "Back to board", on_click=lambda: ui.navigate_to("/run"),
+                "Back to board", on_click=lambda: ui.navigate.to("/run"),
             ).props("dense")
             return
         LiveJobScreen(
@@ -144,7 +144,7 @@ def render(job_id: str = "") -> None:
             "🔒 Live Run is locked — pass the connectivity tests on the "
             "Protocol Wizard page first.",
         ).classes("text-sm text-[#e3b341]")
-        ui.button("Open Wizard", on_click=lambda: ui.navigate_to("/")).props("dense")
+        ui.button("Open Wizard", on_click=lambda: ui.navigate.to("/")).props("dense")
         return
 
     ui.label("Live Run").classes("text-2xl font-bold")

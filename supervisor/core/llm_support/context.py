@@ -28,6 +28,7 @@ class SupervisorContextManager:
         skip_dirs: set[str],
         skip_dir_prefixes,
         generated_markdown_files: set[str],
+        reasoning_body: dict | None = None,
     ):
         self._workspace = workspace
         self._max_tokens = max_tokens
@@ -40,6 +41,8 @@ class SupervisorContextManager:
         self._skip_dirs = skip_dirs
         self._skip_dir_prefixes = skip_dir_prefixes
         self._generated_markdown_files = generated_markdown_files
+        # Thinking-effort extra_body shared with the judge chat path.
+        self._reasoning_body = reasoning_body
 
     def read_protected_files(self) -> dict[str, str]:
         protected_contents: dict[str, str] = {}
@@ -131,6 +134,8 @@ class SupervisorContextManager:
             else:
                 kwargs["max_tokens"] = response_budget
                 kwargs["temperature"] = 0.0
+            if getattr(self, "_reasoning_body", None):
+                kwargs["extra_body"] = self._reasoning_body
 
             self._log_prompt("LLM Select Files", kwargs["messages"])
             response = self._client.chat.completions.create(**kwargs)

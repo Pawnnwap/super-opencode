@@ -5,11 +5,15 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 from collections.abc import Callable, Generator
 
 from supervisor.analyzers.loop_detector import LoopDetector
-from supervisor.runners.command_common import safe_command_summary
+from supervisor.runners.command_common import (
+    feed_stdin_prompt,
+    safe_command_summary,
+)
 from supervisor.runners.codex_support.command_builder import (
     CODEX_API_KEY_ENV,
     build_cmd,
@@ -79,6 +83,7 @@ def run_prompt(
         base_url = getattr(runner, "codex_base_url", "") or ""
         api_key = getattr(runner, "codex_api_key", "") or ""
         context_window = getattr(runner, "codex_context_window", 0) or 0
+        reasoning_effort = getattr(runner, "codex_reasoning_effort", "") or ""
 
         cmd = build_cmd(
             exe=exe,
@@ -92,6 +97,7 @@ def run_prompt(
             base_url=base_url,
             api_key=api_key,
             context_window=context_window,
+            reasoning_effort=reasoning_effort,
         )
 
         msg = f"Running codex command: {safe_command_summary(cmd)}"
@@ -101,14 +107,21 @@ def run_prompt(
         # Per-subprocess env: feed the external API key via env var (codex
         # reads it through the provider's env_key) instead of the command line.
         # Scoped to this Popen call, so concurrent runners never collide.
+        # codex_extra_env (e.g. an isolated CODEX_HOME for smoke tests)
+        # layers on top the same way.
         child_env = {**os.environ, "NO_COLOR": "1", "TERM": "dumb"}
         if base_url and api_key:
             child_env[CODEX_API_KEY_ENV] = api_key
+        child_env.update(getattr(runner, "codex_extra_env", None) or {})
 
         try:
             runner._process = subprocess.Popen(
                 cmd,
-                stdin=subprocess.DEVNULL,
+                # stdin carries the prompt (build_cmd emits `-` as the
+                # prompt argument): Windows command-line limits (8191 via
+                # cmd.exe shims, 32767 via CreateProcess) make argv prompts
+                # fail silently with "The command line is too long".
+                stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
@@ -118,6 +131,12 @@ def run_prompt(
                 env=child_env,
                 shell=use_shell,
             )
+            threading.Thread(
+                target=feed_stdin_prompt,
+                args=(runner._process, prompt),
+                daemon=True,
+                name="codex-stdin-writer",
+            ).start()
 
             outcome = yield from consume_process_stream(
                 runner._process,

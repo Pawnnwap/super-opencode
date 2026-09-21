@@ -15,11 +15,12 @@
 
 - **双循环架构** — `SupervisorLoop` 处理外部任务，`SelfEvolutionLoop` 实现自我改进
 - **双执行后端** — OpenCode（默认）或 Codex，通过 `config.engine` 选择；监督循环与后端无关
-- **LLM 评判器** — `LLMSupervisor` 在每一步评估代理输出是否符合协议目标
+- **证据锚定评判器** — `LLMSupervisor` 在每一步评估代理输出是否符合协议目标，
+  并通过 `JudgeHarness` 证据注册表锚定到确定性的工作区事实
 - **目标守卫** — 证据门控完成："all targets met" 只是一个提议，须对照确定性证据校验
 - **循环与停滞检测** — 回合内工具循环检测，加上跨回合的工作区指纹停滞提示阶梯
 - **原生文件编辑** — OpenCode 和 Codex 使用各自维护的读取、编辑、补丁和写入工具
-- **Web UI** — 三页管理界面：协议向导、实时运行、自我演进
+- **Web UI** — NiceGUI 仪表盘：协议向导、实时运行、自我演进三个页面，带持久化的后台任务看板和整页实时任务屏幕
 - **计划模式** — 可配置的执行前规划轮数，使用只读 opencode 分析
 - **奥卡姆剃刀阶段** — 可选的成功后冗余精简阶段，只在归档副本上运行，绝不触碰实时工作区
 - **任务状态日志** — 只追加的 `TASK_STATE.md` 进度日志，在上下文重置后重新注入
@@ -32,7 +33,7 @@
 
 - Python 3.11 或更高版本
 - OpenAI 或任何兼容提供商（如 NVIDIA NIM、Ollama）的 API 密钥
-- 已安装 opencode CLI（参见下方安装说明）
+- 已安装 opencode CLI（参见下方安装说明）；若选择 Codex 执行后端，则需安装 Codex CLI
 
 ---
 
@@ -70,8 +71,8 @@ curl -fsSL https://opencode.ai/install | bash
 - **macOS / Linux：** `~/.opencode/bin/opencode`
 
 运行 `where opencode`（Windows）或 `which opencode`（macOS/Linux）可查看实际路径。
-如果希望覆盖自动检测，可将该路径填入 UI 的 "opencode executable" 字段；留空则由
-supervisor 自动定位。
+如需覆盖自动检测，请在 `~/.opencode_supervisor_settings.json` 中设置
+`"opencode_executable"`；留空则由 supervisor 自动定位 CLI。
 
 ### 升级 opencode
 
@@ -151,13 +152,7 @@ pip install -r requirements.txt
 python app.py
 ```
 
-如果上述命令不起效，请尝试：
-
-```bash
-python -m python app.py
-```
-
-应用程序将在浏览器中打开，地址为 `http://localhost:8501`。
+应用将在 `http://127.0.0.1:8501` 提供服务 —— 请在浏览器中打开该地址。
 
 ---
 
@@ -184,6 +179,10 @@ python -m python app.py
 评审模型的「all targets met」只是一个*提议*，而非最终接受。运行结束前，目标守卫会
 按「提议 → 校验 → 执行 → 审计」的流程验证它（工程本体论第八章）：
 
+- **证据锚定评判** — 评判器不再只看代理的文字陈述：`JudgeHarness` 注册表会把廉价的
+  确定性证据（变更文件、工作区树、审计链尾部）自动渲染进每条评判提示词；评判器还可以
+  按需申请昂贵证据（在结构化裁决中加入 `NEED_EVIDENCE: <name>`，例如跑一次测试或读取
+  某个文件），循环会在重新评判前解析一次该请求。
 - **结构化裁决** — 评审每条回复末尾附带逐条目标清单（`[MET]`/`[UNMET]` + 证据）、
   转发给代理的 `NEXT_ACTION` 指令，以及 `DONE: yes|no` 标志。自由文本回复仍可通过
   旧的完成短语匹配兜底。
@@ -244,26 +243,37 @@ OpenCode 配置和其他 OpenCode 会话不受影响。
 
 ## Web UI 页面
 
+三个 NiceGUI 页面，分别位于 `/` 与 `/wizard`（协议向导）、`/run`、`/evolve`。
+启动任务或演进会通过 `JobManager` 入队一个后台作业 —— 作业状态与日志持久化在
+`.job_store/` 下，运行不依赖浏览器标签页。左侧抽屉显示实时队列统计，并在连接性
+测试通过前锁定「实时运行 / 自我演进」。
+
 ### ① 协议向导
 用自然语言填写 INPUT / TARGET / RESTRICTIONS → 点击 **用 AI 优化** → 查看生成的 `protocol.md` → 接受并保存。
 
 向导功能包括：
-- **配置面板** — 设置 API 密钥、基础 URL、工作区路径、模型、最大重试次数、上下文阈值、超时、最大 token 数
-- **受保护文件** — 标记 opencode 无法修改或删除的文件
+- **配置面板** — 执行引擎（OpenCode 或 Codex）、API 密钥与基础 URL、工作区路径、
+  监督与代理模型（含备用模型）、最大重试次数、上下文阈值、回合超时、最大 token 数、
+  用于 CLI 升级的 npm registry，以及 Headroom、Python 扫描器、奥卡姆剃刀的开关。
+  **清理产物**按钮可移除工作区中的运行残留。
+- **受保护文件** — 标记代理无法修改或删除的文件
 - **.opencodeignore** — 配置从上下文检索中排除的文件忽略模式
+- **连接性测试** — 一键测试代理与监督模型的连通性；两项全部通过前，
+  实时运行与自我演进保持锁定
 - **实时质量分析** — 在输入时实时评分协议的清晰度、可测试性和完整性
 
 ### ② 实时运行
-针对任何项目工作区启动监督循环。实时日志流随时可以停止。
+针对任何项目工作区启动监督循环。每次启动会打开整页实时任务屏幕
+（`/run/{job_id}`），每 2 秒自动刷新；页面上的任务看板列出活动与已完成的任务。
 
 功能特性：
-- 逐步进度跟踪，带阶段检测
-- 计划模式 — 执行前可配置规划轮数（在侧边栏设置 `plan_mode_rounds`）
-- 分级阈值的 token 使用警告（50%、60%、70%、80%、90%）
-- 详细/紧凑日志切换
-- 上下文压缩与文件清理建议
-- 心跳监控以检测停滞进程
-- 运行完成后的最终监督报告，带下载按钮
+- 逐步进度跟踪，带阶段面包屑
+- 计划模式 — 在启动表单中配置规划轮数（默认 1，0 为禁用）
+- token 使用进度条，按阈值变色（绿 / 黄 / 红）
+- 心跳与步骤计数器，用于检测停滞进程
+- 日志搜索、噪声过滤与下载
+- 随时停止正在运行的任务
+- 运行完成后提供最终报告与下载按钮
 
 ### ③ 自我演进
 将系统指向**自己的源代码树**。
@@ -294,7 +304,7 @@ OpenCode 配置和其他 OpenCode 会话不受影响。
 ```
 app.py                              Web UI（3 个页面：向导、实时运行、自我演进）
 supervisor/
-  __init__.py                       包导出
+  __init__.py                       包标记
   memory_policy_evaluator.py        持久记忆策略的固定测试套件门控
 
   core/
@@ -307,6 +317,7 @@ supervisor/
     target_evaluator.py             独立的测试/证据验收门控
     target_state.py                 持久化 TARGET 证据和暂存候选
     llm_supervisor.py               LLM 评判器，评估代理输出
+    judge_harness.py                锚定评判器的证据注册表（自动 + NEED_EVIDENCE 资源）
     llm_support/                    评判器内部模块：chat、context、history、judgement、models
 
   analyzers/
@@ -369,12 +380,13 @@ mcp_server/
 services/
   config/                           设置持久化、opencode/codex 配置写入器、
                                     连接性测试、SupervisorConfig 构建器
-  jobs/                             JobManager 和 StateStore（后台作业、持久化）
+  jobs/                             JobManager 和 StateStore（后台作业，持久化于 .job_store/）
   runtime/                          应用引导（自动升级）和工作区清理
-  ui/                               应用外壳、侧边栏、日志 UI、任务板、向导/运行/演进页面
+  webui/                            NiceGUI 外壳：布局/主题、持久化应用状态、作业管理器
+                                    单例、日志格式化、启动任务
+    components/                     任务看板、实时任务屏幕、日志面板、进度组件
+    pages/                          wizard、run、evolve 页面
 
-tests/                              测试套件（pytest）：流、目标守卫、任务状态、
-                                    循环检测、压缩、UI 辅助
 checks/                             集成与端到端检查脚本
 docs/                               研究笔记
 
@@ -430,10 +442,11 @@ requirements.txt                    备用依赖列表（核心 + 扫描器工�
 | Base URL | *(留空 = OpenAI)* | 覆盖本地/代理端点，例如 `http://localhost:11434/v1` |
 | 工作区路径 | — | 项目目录的绝对路径 |
 | Supervisor / 向导模型 | — | 您的提供商接受的任何模型字符串 |
-| opencode 模型 | *(opencode 默认)* | 转发到 opencode CLI |
+| 执行引擎 | opencode | 代理后端：`opencode` 或 `codex` |
+| Agent 模型 | *(引擎默认)* | 转发到 opencode/codex CLI |
 | 最大重试次数 | 3 | 强制停止前的连续失败次数 |
 | 上下文阈值 | 60% | 压缩在此估算最大值的比例时触发 |
-| 最大 token 数 | 128,000 | 模型上下文窗口大小 |
+| 最大 token 数 | 150,000 | 模型上下文窗口大小 |
 | 超时 | 120 分钟 | 超过此时间沉默则视为 opencode 无响应 |
 | 受保护文件 | *(空)* | opencode 无法修改的用户定义文件 |
 
@@ -451,22 +464,18 @@ requirements.txt                    备用依赖列表（核心 + 扫描器工�
 | enable_headroom | True | 将子 OpenCode 进程路由通过本地 Headroom 代理 |
 | enable_occam_razor | False | 在归档副本上运行成功后的冗余精简阶段 |
 
-### 添加自定义模型
+### 自定义模型与提供商
 
-Web UI 提供了内置表单来配置自定义模型，无需手动编辑文件：
+向导中的 **Agent 模型** 下拉列表通过 **获取模型 / 刷新模型** 查询已安装的 opencode CLI
+来填充。可从列表中选择任意条目，选择 **(custom)** 使用自由填写的模型字符串，并通过
+**Agent 备用模型** 设置回退模型。
 
-1. 在 **协议向导** 页面中，向下滚动侧边栏找到 **"Add Custom Model for Opencode"**
-2. 点击 **"➕ Add Custom Model for Opencode"** 打开配置表单
-3. 填写以下信息：
-   - **Service name**: 您提供商的唯一标识符（例如："my-custom-service"）
-   - **Base URL**: 您自定义提供商的 API 端点（例如："https://api.example.com/v1"）
-   - **API key**: 您提供商的身份验证密钥
-   - **Model names**: 每行一个模型名称（例如："qwen3-coder-plus"、"qwen3-max"）
-4. 点击 **"💾 Save Service"** 自动配置 opencode
-
-系统将自动在适当位置创建和管理 opencode 配置文件（在类 Unix 系统上为 `~/.config/opencode/opencode.json`，在 Windows 上为 `%APPDATA%\opencode\opencode.json`）。
-
-保存后，您可以直接从协议向导配置面板的下拉菜单中选择您的自定义模型，或使用格式 `service-name/model-name` 引用它们（例如：`my-custom-service/qwen3-max`）。
+如需注册自定义的 OpenAI 兼容提供商，请将其添加到 opencode 自己的配置文件中
+（类 Unix 系统为 `~/.config/opencode/opencode.json`，Windows 为
+`%APPDATA%\opencode\opencode.json`）—— 可以手动编辑，也可以使用
+`services/config/opencode_config.py` 中的 `add_custom_provider_to_config` 辅助函数。
+注册后，其模型会被拉取到下拉列表中，并以 `service-name/model-name` 格式引用
+（例如 `my-custom-service/qwen3-max`）。
 
 ---
 
@@ -562,7 +571,8 @@ Super-Opencode 使用执行后端原生的文件工具。OpenCode 提供 `read`�
 3. 最终计划和监督器反馈被存储并前置到构建模式的初始提示中，
    在 opencode 开始编写代码之前为其提供清晰的路线图
 
-在实时运行侧边栏中配置规划轮数。默认为 0（禁用）。
+在实时运行的启动表单中配置规划轮数 —— 表单默认 1 轮，设为 0 可禁用
+（`SupervisorConfig.plan_mode_rounds` 本身默认为 0）。
 
 ---
 
@@ -594,4 +604,4 @@ Super-Opencode 使用执行后端原生的文件工具。OpenCode 提供 `read`�
 
 - [ ] 消除 `pip install -e . --force-reinstall`，以便每次自我演进都能自动应用
 - [ ] 添加多代理协作/竞争
-- [ ] 更好的超时处理和进程跟踪
+- [ ] 将基于关键词的进程清理（按进程名 taskkill/pkill）替换为基于 PID 的子进程跟踪管理

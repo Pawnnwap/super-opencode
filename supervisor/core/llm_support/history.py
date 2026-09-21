@@ -3,7 +3,9 @@ from __future__ import annotations
 import datetime
 import logging
 
+from supervisor.core.llm_support.history_compaction import extract_output
 from supervisor.monitoring.session_tracker import estimate_request_tokens
+from supervisor.utils.text_utils import head_tail_excerpt
 
 logger = logging.getLogger(__name__)
 
@@ -93,11 +95,21 @@ def rollup_history(supervisor, keep_recent: int = 6, headline_chars: int = 200) 
 
     Structural rolling-window compaction (no LLM call): keeps the oldest anchor
     turn and the most recent ``keep_recent`` turns verbatim, and collapses
-    everything in between into a single bullet-list synopsis (each turn trimmed
-    to ``headline_chars``). The supervisor's ``_history`` persists across agent
-    session restarts, so on a long multi-restart task it grows unbounded — this
-    bounds it. Returns the number of turns condensed (0 if nothing to do).
+    everything in between into a single bullet-list synopsis. Each condensed
+    turn keeps its **verdict digest** (CRITERIA / NEXT_ACTION / DONE) plus a
+    short head-tail excerpt of the agent output — the decision record is the
+    part worth preserving, while a naive first-N-chars cut would keep only the
+    bulky output preamble and discard the criteria at the end of the verdict.
+
+    The supervisor's ``_history`` persists across agent session restarts, so on
+    a long multi-restart task it grows unbounded — this bounds it. Returns the
+    number of messages condensed (0 if nothing to do).
     """
+    from supervisor.core.llm_support.history_compaction import (
+        pair_turns,
+        verdict_digest,
+    )
+
     hist = supervisor._history
     if not hist or len(hist) <= keep_recent + 2:
         return 0
@@ -107,13 +119,23 @@ def rollup_history(supervisor, keep_recent: int = 6, headline_chars: int = 200) 
     if not middle:
         return 0
 
+    per_bullet = max(120, headline_chars)
     lines = []
-    for msg in middle:
-        role = msg.get("role", "?")
-        content = " ".join((msg.get("content") or "").split())
-        if len(content) > headline_chars:
-            content = content[:headline_chars] + "…"
-        lines.append(f"- [{role}] {content}")
+    for turn in pair_turns(middle):
+        digest = verdict_digest(
+            turn.assistant_text,
+            turn_index=turn.index,
+            max_chars=per_bullet,
+        )
+        excerpt = head_tail_excerpt(
+            extract_output(turn.user_text),
+            per_bullet,
+            end_ratio=0.6,
+        )
+        if excerpt:
+            lines.append(f"- {digest}\n  output: {excerpt}")
+        else:
+            lines.append(f"- {digest}")
 
     synopsis = {
         "role": "user",

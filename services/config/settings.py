@@ -21,6 +21,8 @@ _PERSIST_KEYS = [
     "base_url",
     "workspace",
     "supervisor_model",
+    "supervisor_reasoning",
+    "agent_reasoning",
     "engine",
     "codex_base_url",
     "codex_api_key",
@@ -58,6 +60,8 @@ DEFAULTS: dict = {
     "workspace": "",
     "supervisor_model": "",
     "supervisor_model_backup": "",
+    "supervisor_reasoning": "",
+    "agent_reasoning": "",
     "engine": "opencode",
     "codex_base_url": "",
     "codex_api_key": "",
@@ -85,7 +89,7 @@ def load_settings() -> dict:
     """Load persisted settings from disk. Returns {} if file missing or corrupt."""
     try:
         if _SETTINGS_FILE.exists():
-            return json.loads(_SETTINGS_FILE.read_text(encoding="utf-8"))
+            return json.loads(_SETTINGS_FILE.read_text(encoding="utf-8-sig"))
     except Exception:
         pass
     return {}

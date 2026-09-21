@@ -44,7 +44,7 @@ class LiveJobScreen:
         status = self.job_manager.get_job_status(self.job_id)
         if not status:
             ui.label(f"Job {self.job_id} not found.").classes("text-[#f85149]")
-            ui.button("Back to board", on_click=lambda: ui.navigate_to(self.base_path))
+            ui.button("Back to board", on_click=lambda: ui.navigate.to(self.base_path))
             return
 
         state = status["state"]
@@ -80,7 +80,7 @@ class LiveJobScreen:
         logs = safe_logs(status)
         self.progress.update(logs, state, self.is_evolution)
         self.log_panel.update(logs)
-        self.state_pill.setHtml(format_status_pill(state))
+        self.state_pill.set_content(format_status_pill(state))
         if state not in ACTIVE_JOB_STATES:
             self.timer.active = False
             self._render_report(status)
@@ -100,7 +100,7 @@ class LiveJobScreen:
                 ).props("color=red")
             else:
                 ui.button(
-                    "Back to board", on_click=lambda: ui.navigate_to(self.base_path),
+                    "Back to board", on_click=lambda: ui.navigate.to(self.base_path),
                 ).props("flat")
             ui.button(
                 "Refresh", on_click=lambda: ui.run_javascript("location.reload()"),
@@ -134,7 +134,7 @@ class LiveJobScreen:
             ordered,
             value=self.job_id if self.job_id in ordered else ordered[0],
             label="Active tasks",
-            on_change=lambda e: ui.navigate_to(f"{self.base_path}/{e.value}"),
+            on_change=lambda e: ui.navigate.to(f"{self.base_path}/{e.value}"),
         ).classes("w-96 mono")
 
     def _render_details(self, status: dict) -> None:

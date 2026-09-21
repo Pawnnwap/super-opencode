@@ -13,6 +13,7 @@ from openai import (
     RateLimitError,
 )
 
+from supervisor.core.llm_support.history_compaction import build_context_messages
 from supervisor.core.llm_support.models import (
     SupervisorVerdict,
     _DONE_PHRASES,
@@ -91,7 +92,14 @@ def chat(
         supervisor._token_warnings.append(trunc_warning)
 
     messages = [{"role": "system", "content": supervisor._system}]
-    messages.extend(supervisor._history)
+    messages.extend(
+        build_context_messages(
+            supervisor._history,
+            max_tokens=supervisor._max_tokens,
+            verbatim_turns=supervisor._history_verbatim_turns,
+            budget_fraction=supervisor._history_budget_fraction,
+        ),
+    )
     messages.append({"role": "user", "content": user_content})
 
     supervisor._log_prompt("Supervisor Chat", messages)
@@ -118,10 +126,14 @@ def chat_with_retry(
     while attempt <= max_retries:
         current_model = supervisor._model_backup if using_backup else supervisor._model
         try:
-            response = supervisor._client.chat.completions.create(
-                model=current_model,
-                messages=working_messages,
-            )
+            create_kwargs = {
+                "model": current_model,
+                "messages": working_messages,
+            }
+            # Thinking-effort control for real runs; None = provider default.
+            if getattr(supervisor, "_reasoning_body", None):
+                create_kwargs["extra_body"] = supervisor._reasoning_body
+            response = supervisor._client.chat.completions.create(**create_kwargs)
             if not response.choices:
                 if empty_choices_retries >= max_empty_choices_retries:
                     raise OpenAIError(

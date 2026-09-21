@@ -40,6 +40,7 @@ from supervisor.core.target_state import (
 )
 from supervisor.protocols.protocol import Protocol
 from supervisor.utils.config import SupervisorConfig
+from supervisor.utils.text_utils import head_tail_excerpt
 
 logger = logging.getLogger(__name__)
 
@@ -122,8 +123,9 @@ class GoalGuard:
                 continue
             # A TARGET is usually one paragraph; keep the checklist compact by
             # splitting only on explicit list items, one criterion per line.
+            # Criteria often end with the measurable condition — keep both ends.
             if len(cleaned) > 300:
-                cleaned = cleaned[:300].rstrip() + "…"
+                cleaned = head_tail_excerpt(cleaned, 300, end_ratio=0.5)
             lines.append(cleaned)
         return lines[:8]
 
@@ -318,13 +320,18 @@ class GoalGuard:
         record_target_iteration(
             self._workspace,
             iteration=self._turn,
-            direction=verdict.feedback or output[:200],
+            direction=verdict.feedback or head_tail_excerpt(output, 200),
             evidence=f"worktree_changed={worktree_changed}",
             accepted=worktree_changed,
-            reason=(verdict.next_action or verdict.feedback or "")[:240],
+            reason=head_tail_excerpt(
+                verdict.next_action or verdict.feedback or "", 240,
+            ),
         )
         if verdict.next_action:
-            record_lesson(self._workspace, verdict.next_action[:_MAX_LESSON_LEN])
+            record_lesson(
+                self._workspace,
+                head_tail_excerpt(verdict.next_action, _MAX_LESSON_LEN),
+            )
 
         guidance = ""
         if stagnation is not None:

@@ -29,11 +29,18 @@ _DIGITS = re.compile(r"\d+")
 
 def _normalize_turn(text: str) -> str:
     """Stable signature of a turn: lowercase, digits masked (so a varying
-    count like '3 failing' vs '5 failing' matches), whitespace collapsed."""
+    count like '3 failing' vs '5 failing' matches), whitespace collapsed.
+
+    Keeps BOTH ends: turns often share a boilerplate head ("I'll run the
+    tests now") while the tail carries the distinct outcome — a head-only
+    signature would flag genuinely different turns as a loop."""
     t = (text or "").lower()
     t = _DIGITS.sub("#", t)
     t = _WS.sub(" ", t).strip()
-    return t[:400]
+    if len(t) <= 400:
+        return t
+    # 250 head + 150 tail: opening intent + closing outcome.
+    return t[:250] + " ⋯ " + t[-150:]
 
 
 def _short(text: str, n: int = 80) -> str:

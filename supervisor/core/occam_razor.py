@@ -419,6 +419,12 @@ class OccamRazorStage:
                 truncation_enabled=self.config.truncation_enabled,
                 max_history_turns=self.config.max_history_turns,
                 compact_intermediate_steps=False,
+                history_verbatim_turns=getattr(
+                    self.config, "history_verbatim_turns", 4,
+                ),
+                history_budget_fraction=getattr(
+                    self.config, "history_budget_fraction", 0.35,
+                ),
                 model_backup=self.config.supervisor_model_backup,
                 api_key=self.config.openai_api_key or None,
                 base_url=self.config.openai_base_url or None,

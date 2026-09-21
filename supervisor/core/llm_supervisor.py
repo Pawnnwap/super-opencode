@@ -74,9 +74,12 @@ class LLMSupervisor:
         truncation_enabled: bool = True,
         max_history_turns: int = 40,
         compact_intermediate_steps: bool = False,
+        history_verbatim_turns: int = 4,
+        history_budget_fraction: float = 0.35,
         model_backup: str | None = None,
         api_key: str | None = None,
         base_url: str | None = None,
+        reasoning: str = "",
     ):
         client_kwargs: dict[str, str] = {}
         if api_key:
@@ -87,6 +90,13 @@ class LLMSupervisor:
         self._client = OpenAI(**client_kwargs)
         self._model = model
         self._model_backup = model_backup
+        # Thinking-effort control for real runs ("" = provider default):
+        # forwarded as extra_body.reasoning_effort on every judge call. Only
+        # set from the UI droplist aligned with the model's variant names.
+        self._reasoning = (reasoning or "").strip()
+        self._reasoning_body = (
+            {"reasoning_effort": self._reasoning} if self._reasoning else None
+        )
         self._workspace = workspace
         self._system_base = protocol.as_system_prompt(workspace)
         self._system = self._system_base
@@ -105,6 +115,14 @@ class LLMSupervisor:
         self._truncation_enabled = truncation_enabled
         self._max_history_turns = max_history_turns
         self._compact_intermediate_steps = compact_intermediate_steps
+        # Tiered history shaping (see llm_support.history_compaction): recent
+        # turns verbatim, older ones condensed to verdict digests, capped at a
+        # share of the token ceiling.
+        self._history_verbatim_turns = max(0, history_verbatim_turns)
+        self._history_budget_fraction = max(
+            0.0,
+            min(1.0, history_budget_fraction),
+        )
         self._ignore_matcher = IgnoreMatcher(workspace)
         self._ignore_matcher.load_from_workspace(workspace)
         self._last_opencode_output: str | None = None
@@ -124,6 +142,7 @@ class LLMSupervisor:
             skip_dirs=_SKIP_DIRS,
             skip_dir_prefixes=_SKIP_DIR_PREFIXES,
             generated_markdown_files=_OPENCODE_GENERATED_MD,
+            reasoning_body=self._reasoning_body,
         )
 
     def _get_model_limit_for_model(self, model: str) -> int:

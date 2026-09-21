@@ -12,6 +12,7 @@ from services.webui.jobs import get_job_manager
 
 
 @ui.page("/")
+@ui.page("/wizard")
 def wizard_page() -> None:
     layout.apply_theme()
     job_manager = get_job_manager()

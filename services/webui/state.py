@@ -33,6 +33,9 @@ class AppState:
             "supervisor_test_passed": False,
         }
         self.opencode_models: list[str] = []
+        # Engine the cached model list belongs to (models are re-fetched when
+        # the droplist engine differs).
+        self.model_list_engine: str = ""
 
     # -- mapping-style access to settings values ------------------------- #
 

@@ -29,6 +29,14 @@ class SupervisorConfig:
     headroom_allow_custom_provider: bool = False
     supervisor_model: str = "gpt-4o"
     supervisor_model_backup: str | None = None
+    # Thinking/reasoning control for real runs ("" = model default).
+    # supervisor_reasoning: passed to the supervisor's chat.completions calls
+    # as extra_body.reasoning_effort. agent_reasoning: opencode `--variant`
+    # or codex `-c model_reasoning_effort`, depending on engine. Values must
+    # come from the model's own variant names (the UI droplist aligns them);
+    # connectivity probes ignore these and always probe at the lowest effort.
+    supervisor_reasoning: str = ""
+    agent_reasoning: str = ""
     opencode_model_backup: str | None = None
     timeout: int = 300
     log_level: str = "INFO"
@@ -39,6 +47,12 @@ class SupervisorConfig:
     truncation_enabled: bool = True
     max_history_turns: int = 40
     compact_intermediate_steps: bool = False
+    # Supervisor context shaping: recent turns stay verbatim, older turns are
+    # condensed to their verdict digest, and the whole history is capped at a
+    # share of max_tokens so already-judged output cannot crowd out the
+    # current turn. history_verbatim_turns=0 disables the verbatim tier.
+    history_verbatim_turns: int = 4
+    history_budget_fraction: float = 0.35
     plan_mode_rounds: int = 0
     enable_python_scanner: bool = True
     enable_occam_razor: bool = False

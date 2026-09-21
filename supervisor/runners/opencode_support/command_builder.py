@@ -7,7 +7,7 @@ from supervisor.runners.command_common import (
     fresh_session_prompt,
     validate_message as _validate_message_common,
 )
-from supervisor.utils.text_utils import coerce_str, quote_prompt
+from supervisor.utils.text_utils import coerce_str
 
 logger = logging.getLogger(__name__)
 
@@ -41,8 +41,20 @@ def build_cmd(
     use_shell: bool = False,
     use_pure: bool = False,
     dir_: str | None = None,
+    variant: str = "",
 ) -> list[str]:
-    """Build opencode CLI command list."""
+    """Build opencode CLI command list.
+
+    The prompt is NEVER placed on the command line: with no message argument,
+    ``opencode run`` reads the message from stdin (verified on opencode 1.x —
+    an empty stdin errors with "You must provide a message or a command").
+    The *prompt* argument is still validated/coerced here and its length is
+    logged, but the caller owns piping it to the child.
+
+    ``use_shell`` is accepted for signature compatibility (the process layer
+    still needs it to decide ``shell=True`` for ``.cmd`` shims) but no longer
+    changes how the prompt is passed.
+    """
     exe = coerce_str(exe, "exe (_build_cmd)")
     prompt = coerce_str(prompt, "prompt (_build_cmd)")
     agent = coerce_str(agent, "agent (_build_cmd)")
@@ -90,14 +102,20 @@ def build_cmd(
     if resolved_model:
         cmd += ["--model", resolved_model]
 
+    # Model variant (provider-specific reasoning effort, e.g. none/minimal/
+    # low). Only set deliberately (connectivity probes); empty = model default.
+    if variant:
+        cmd += ["--variant", variant]
+
     # Stream raw JSON events (one per line) instead of the formatted TUI
     # output. The process layer parses these to keep the model's prose, drop
     # verbose tool I/O, and read real token counts. --pure is intentionally
     # NOT used (it hangs alongside --format json).
     cmd += ["--format", "json"]
 
-    cmd.append("--")
-    cmd.append(quote_prompt(prompt) if use_shell else prompt)
-
+    # No message argument: opencode reads the message from stdin (see the
+    # docstring for why argv prompts are unsafe on Windows — 8191 chars via
+    # the npm .cmd shim's cmd.exe, 32767 via CreateProcess). The process
+    # layer feeds the prompt through the stdin pipe.
     return cmd
 

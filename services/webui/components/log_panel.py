@@ -46,8 +46,7 @@ class LogPanel:
             )
             self.noise_switch = ui.switch(
                 "Show noise", value=False, on_change=self._reset,
-                help="Heartbeats, step-progress pings, and token events.",
-            )
+            ).tooltip("Heartbeats, step-progress pings, and token events.")
             self.download_button = ui.button(
                 icon="download", on_click=self._download,
             ).props("flat dense")
@@ -90,11 +89,11 @@ class LogPanel:
             f"[{fmt_ts(e) or '--:--:--'}] {e.get('level', 'info')}: "
             f"{sanitize_event_message(e.get('msg') or '')}"
             for e in logs
-            if isinstance(e)
+            if isinstance(e, dict)
         )
 
         hidden = set(DEFAULT_HIDDEN_LEVELS)
-        if self.show_noise.value:
+        if self.noise_switch.value:
             hidden = set()
         search = (self.search_input.value or "").strip()
         filtered = filter_events(logs, search, hidden)

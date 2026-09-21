@@ -16,13 +16,13 @@ Key capabilities:
 
 - **Dual-loop architecture** — `SupervisorLoop` for external tasks, `SelfEvolutionLoop` for self-improvement
 - **Dual execution backend** — OpenCode (default) or Codex, selected via `config.engine`; the supervisor loop is backend-agnostic
-- **LLM-based judge** — `LLMSupervisor` evaluates agent output against protocol targets at every step
+- **Evidence-grounded judge** — `LLMSupervisor` evaluates agent output against protocol targets at every step, grounded in deterministic workspace facts via the `JudgeHarness` evidence registry
 - **Goal guard** — Evidence-gated completion: "all targets met" is a proposal, validated against deterministic evidence
 - **Loop & stagnation detection** — Intra-turn tool-loop detection plus cross-turn workspace-fingerprint stagnation with a nudge ladder
 - **Native file editing** — OpenCode and Codex use their maintained read, edit, patch, and write tools
-- **Web UI** — Three-page management interface: Protocol Wizard, Live Run, and Self-Evolution
+- **Web UI** — NiceGUI dashboard: Protocol Wizard, Live Run, and Self-Evolution pages, with a persisted background-job board and full-page live job screens
 - **Plan mode** — Configurable pre-execution planning rounds with read-only opencode analysis
-- **Occam Razor pass** — Optional post-success redundancy-reduction stage that runs on an archive copy, never the live workspace
+- **Occam's razor pass** — Optional post-success redundancy-reduction stage that runs on an archive copy, never the live workspace
 - **Task-state journal** — Append-only `TASK_STATE.md` progress journal re-injected after context resets
 - **Vulnerability scanning** — 9-tool static analysis pipeline (Bandit, Semgrep, Ruff, etc.)
 - **Context management** — Token-aware monitoring with graduated warnings and auto-compaction
@@ -33,7 +33,8 @@ Key capabilities:
 
 - Python 3.11 or higher
 - An API key for OpenAI or any compatible provider (e.g., NVIDIA NIM, Ollama)
-- opencode CLI installed (see installation below)
+- opencode CLI installed (see installation below) — or the Codex CLI if you
+  select the Codex execution backend
 
 ---
 
@@ -72,8 +73,9 @@ The `opencode` executable will be placed on your PATH:
 - **macOS / Linux:** `~/.opencode/bin/opencode`
 
 Run `where opencode` (Windows) or `which opencode` (macOS/Linux) to see the resolved
-path. That path is what you enter in the UI's "opencode executable" field if you want
-to override auto-detection — leaving it blank lets the supervisor locate it automatically.
+path. To override auto-detection, set `"opencode_executable"` in
+`~/.opencode_supervisor_settings.json`; leave it unset and the supervisor locates
+the CLI automatically.
 
 ### Upgrading opencode
 
@@ -156,7 +158,7 @@ auto-fix helpers (autoflake, isort, autopep8, pyupgrade).
 python app.py
 ```
 
-The app will open in your browser at `http://localhost:8501`.
+The app serves `http://127.0.0.1:8501` — open it in your browser.
 
 ---
 
@@ -180,7 +182,7 @@ The supervisor system runs the opencode agent in a controlled feedback loop:
 8. **Loop detection** — Repeated tool calls within one turn are detected and
    the run is killed and restarted with fixed context instead of burning tokens;
    cross-turn workspace stagnation escalates through a nudge ladder
-9. **Occam Razor pass** — After success, an optional stage lets the agent strip
+9. **Occam's razor pass** — After success, an optional stage lets the agent strip
    redundant code from an archived copy of the final workspace
 10. **Task-state journal** — A `TASK_STATE.md` progress journal preserves
    "what was already tried" across context resets
@@ -193,6 +195,12 @@ The judge's "all targets met" is treated as a *proposal*, not an acceptance.
 Before a run may end, the goal guard validates it — following the
 propose → validate → execute → audit discipline (工程本体论 ch. 8):
 
+- **Evidence-grounded judging** — The judge does not rely on the agent's
+  prose alone: the `JudgeHarness` registry renders cheap deterministic
+  evidence into every judge prompt (changed files, workspace tree,
+  audit-trail tail), and the judge can request expensive evidence on demand
+  (`NEED_EVIDENCE: <name>`, e.g. a test run or file read), which the loop
+  resolves once before re-judging.
 - **Structured verdicts** — The judge ends every reply with a per-target
   checklist (`[MET]`/`[UNMET]` + evidence), a `NEXT_ACTION` instruction that is
   forwarded to the agent, and a `DONE: yes|no` flag. Free-text replies still
@@ -237,7 +245,7 @@ Two pure, LLM-free detectors keep runs honest:
 
 ---
 
-## Occam Razor Pass
+## Occam's Razor Pass
 
 After a run succeeds, an optional post-success stage (`enable_occam_razor`,
 default off) lets the agent strip redundant code and logic. It never edits the
@@ -268,31 +276,45 @@ configuration and other OpenCode sessions remain untouched.
 
 ## Web UI Pages
 
+Three NiceGUI pages, served at `/` and `/wizard` (Protocol Wizard), `/run`,
+and `/evolve`. Launching a task or an evolution enqueues a background job via
+the `JobManager` — job state and logs persist under `.job_store/`, so runs
+continue independently of the browser. The left drawer shows live queue
+stats and locks Run/Evolve until the connectivity tests pass.
+
 ### ① Protocol Wizard
 Fill in INPUT / TARGET / RESTRICTIONS in plain language → click
 **Refine with AI** → review the generated `protocol.md` → Accept & Save.
 
 The wizard includes:
-- **Configuration panel** — Set API key, base URL, workspace path, models,
-  max retries, context threshold, timeout, max tokens
-- **Protected Files** — Mark files that opencode cannot modify or delete
+- **Configuration panel** — Execution engine (OpenCode or Codex), API key
+  and base URL, workspace path, supervisor and agent models (plus backup
+  models), max retries, context threshold, turn timeout, max tokens, npm
+  registry for CLI upgrades, and switches for Headroom, the Python scanner,
+  and the Occam's razor pass. A **Clean artifacts** button removes run
+  leftovers from the workspace.
+- **Protected Files** — Mark files that the agent cannot modify or delete
 - **.opencodeignore** — Configure ignore patterns for files excluded from
   context retrieval
+- **Connectivity Tests** — One-click agent and supervisor connectivity
+  checks; Live Run and Self-Evolution stay locked until both pass
 - **Live quality analysis** — Real-time scoring of protocol clarity,
   testability, and completeness as you type
 
 ### ② Live Run
-Start the supervisor loop against any project workspace. Live log streams
-in real time. Stop between steps at any time.
+Start the supervisor loop against any project workspace. Each launch opens a
+full-page live job screen (`/run/{job_id}`) that auto-refreshes every 2
+seconds; a Task Board on the page lists active and finished runs.
 
 Features:
-- Step-by-step progress tracking with phase detection
-- Plan mode — configurable planning rounds before execution (set `plan_mode_rounds` in sidebar)
-- Token usage warnings with graduated thresholds (50%, 60%, 70%, 80%, 90%)
-- Verbose/compact log toggle
-- Context compaction with file cleanup suggestions
-- Heartbeat monitoring to detect stalled processes
-- Final supervisor report with download button (available after run completes)
+- Step-by-step progress tracking with a phase breadcrumb
+- Plan mode — configurable planning rounds in the launch form (default 1,
+  0 disables)
+- Token usage bar with color-coded thresholds (green / yellow / red)
+- Heartbeat and step counters to detect stalled processes
+- Log search, noise filter, and download
+- Stop a running job at any time
+- Final report with download button (available after the run completes)
 
 ### ③ Self-Evolution
 Point the system at **its own source tree**.
@@ -324,7 +346,7 @@ Self-evolution features:
 ```
 app.py                              Web UI  (3 pages: Wizard, Live Run, Self-Evolution)
 supervisor/
-  __init__.py                       Package exports
+  __init__.py                       Package marker
   memory_policy_evaluator.py        Fixed-suite gate for durable-memory policies
 
   core/
@@ -337,6 +359,7 @@ supervisor/
     target_evaluator.py             Independent test/evidence acceptance gate
     target_state.py                 Persistent TARGET evidence and staged candidates
     llm_supervisor.py               LLM judge that evaluates agent output
+    judge_harness.py                Evidence registry grounding the judge (auto + NEED_EVIDENCE resources)
     llm_support/                    Judge internals: chat, context, history, judgement, models
 
   analyzers/
@@ -400,13 +423,14 @@ mcp_server/
 services/
   config/                           Settings persistence, opencode/codex config writers,
                                     connectivity tests, SupervisorConfig builder
-  jobs/                             JobManager and StateStore (background jobs, persistence)
+  jobs/                             JobManager and StateStore (background jobs, persisted under .job_store/)
   runtime/                          App bootstrap (auto-upgrades) and workspace cleanup
-  ui/                               App shell, sidebar, log UI, task board, wizard/run/evolve pages
+  webui/                            NiceGUI shell: layout/theme, persisted app state, job-manager
+                                    singleton, log formatting, startup tasks
+    components/                     Task board, live job screen, log panel, progress widgets
+    pages/                          wizard, run, evolve pages
 
-tests/                              Test suite (pytest): streams, goal guard, task state,
-                                    loop detection, compaction, UI helpers
-checks/                             Integration and e2e check scripts
+checks/                             Integration and end-to-end check scripts
 docs/                               Research notes
 
 pyproject.toml                      Makes `supervisor` an installable package (core deps)
@@ -461,10 +485,11 @@ Quality ratings: `excellent` (≥90%) → `good` (≥75%) → `fair` (≥50%) �
 | Base URL | *(blank = OpenAI)* | Override for local/proxy endpoints e.g. `http://localhost:11434/v1` |
 | Workspace path | — | Absolute path to the project directory |
 | Supervisor / wizard model | — | Any model string your provider accepts |
-| opencode model | *(opencode default)* | Forwarded to the opencode CLI |
+| Execution engine | opencode | Agent backend: `opencode` or `codex` |
+| Agent model | *(engine default)* | Forwarded to the opencode/codex CLI |
 | Max retries | 3 | Consecutive failures before forced stop |
 | Context threshold | 60% | Compaction fires at this fraction of estimated max |
-| Max tokens | 128,000 | Model context window size |
+| Max tokens | 150,000 | Model context window size |
 | Timeout | 120 min | Silence before opencode is deemed unresponsive |
 | Protected files | *(empty)* | User-defined files that opencode cannot modify |
 
@@ -482,22 +507,20 @@ Quality ratings: `excellent` (≥90%) → `good` (≥75%) → `fair` (≥50%) �
 | enable_headroom | True | Route the child OpenCode process through a local Headroom proxy |
 | enable_occam_razor | False | Run the post-success redundancy-reduction pass on an archive copy |
 
-### Adding a Custom Model
+### Custom Models and Providers
 
-The Web UI provides a built-in form to configure custom models without manual file editing:
+The wizard's **Agent model** dropdown is populated by querying the installed
+opencode CLI via **Fetch models** / **Refresh models**. Pick any entry from
+the list, choose **(custom)** for a free-form model string, and set an
+**Agent backup model** as a fallback.
 
-1. In the **Protocol Wizard** page, scroll down in the sidebar to find **"Add Custom Model for Opencode"**
-2. Click **"➕ Add Custom Model for Opencode"** to open the configuration form
-3. Fill in:
-   - **Service name**: A unique identifier for your provider (e.g., "my-custom-service")
-   - **Base URL**: The API endpoint for your custom provider (e.g., "https://api.example.com/v1")
-   - **API key**: Your authentication key for the provider
-   - **Model names**: One model name per line (e.g., "qwen3-coder-plus", "qwen3-max")
-4. Click **"💾 Save Service"** to automatically configure opencode
-
-The system will automatically create and manage the opencode configuration file in the appropriate location (`~/.config/opencode/opencode.json` on Unix-like systems or `%APPDATA%\opencode\opencode.json` on Windows).
-
-Once saved, you can select your custom models directly from the dropdown menu in the Protocol Wizard configuration panel, or reference them using the format `service-name/model-name` (e.g., `my-custom-service/qwen3-max`).
+To register a custom OpenAI-compatible provider, add it to opencode's own
+configuration file (`~/.config/opencode/opencode.json` on Unix-like systems,
+`%APPDATA%\opencode\opencode.json` on Windows) — either by hand or with the
+`add_custom_provider_to_config` helper in
+`services/config/opencode_config.py`. Once registered, its models are
+fetched into the dropdown and referenced as `service-name/model-name`
+(e.g., `my-custom-service/qwen3-max`).
 
 ---
 
@@ -605,7 +628,9 @@ before execution:
    build-mode initial prompt, giving opencode a clear roadmap before it
    starts writing code
 
-Configure planning rounds in the Live Run sidebar. Default is 0 (disabled).
+Configure planning rounds in the Live Run launch form — it defaults to
+1 round; set it to 0 to disable (`SupervisorConfig.plan_mode_rounds` itself
+defaults to 0).
 
 ---
 
@@ -644,4 +669,4 @@ patterns before they are accepted into the codebase.
 
 - [ ] Get rid of `pip install -e . --force-reinstall` so that every self evolution will be auto applied
 - [ ] Add multi agent cooperation/competition
-- [ ] Better timeout handling and process tracking
+- [ ] Replace keyword-based process cleanup (`taskkill`/`pkill` by process name) with PID-tracked child process management

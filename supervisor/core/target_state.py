@@ -16,6 +16,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from supervisor.utils.text_utils import head_tail_excerpt
+
 _STATE_DIR = ".opencode"
 _STATE_FILE = "target_state.json"
 _STAGED_FILE = "staged_improvements.jsonl"
@@ -143,7 +145,9 @@ def stage_temporary_improvement(
         "archive_path": str(archive_path) if archive_path else "",
         "test_evidence": test_evidence,
         "reason": reason,
-        "output_excerpt": " ".join(output_excerpt.split())[:600],
+        "output_excerpt": head_tail_excerpt(
+            " ".join(output_excerpt.split()), 600, end_ratio=0.5,
+        ),
         "status": "rolled_back_but_preserved",
     }
     with path.open("a", encoding="utf-8") as handle:
@@ -215,7 +219,11 @@ def target_state_context(workspace: Path) -> str:
     if state.rejected_directions:
         lines.append("Avoid repeated directions: " + " | ".join(state.rejected_directions[-3:]))
     if state.last_reason:
-        lines.append("Last evaluator reason: " + state.last_reason[:240])
+        # Evaluator reasons end with the verdict — keep both ends.
+        lines.append(
+            "Last evaluator reason: "
+            + head_tail_excerpt(state.last_reason, 240, end_ratio=0.5),
+        )
     if state.staged_improvements:
         lines.append(f"Preserved temporary candidates: {state.staged_improvements}")
     return "\n".join(lines)

@@ -69,6 +69,7 @@ def launch_startup_tasks() -> None:
         mcp_dir = find_opencode_config_dir()
         if mcp_dir:
             get_opencode_config_file(
+                mcp_dir,
                 PROJECT_ROOT,
                 on_info=infos.append,
                 on_warning=infos.append,

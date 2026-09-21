@@ -67,6 +67,7 @@ class OpencodeRunner(BaseRunner):
         headroom_executable: str = "",
         headroom_allow_custom_provider: bool = False,
         opencode_pure: bool = False,
+        opencode_variant: str = "",
         agent: str = "",
         opencode_model_backup: str | None = None,
         step_detector: OpencodeStepDetector | None = None,
@@ -106,6 +107,9 @@ class OpencodeRunner(BaseRunner):
         )
         self.headroom_allow_custom_provider = bool(headroom_allow_custom_provider)
         self.opencode_pure = bool(opencode_pure)
+        # Thinking variant (opencode `--variant`); "" = model default. Only
+        # values from the model's own variant metadata should be set here.
+        self.opencode_variant = coerce_str(opencode_variant, "opencode_variant")
         self._headroom_lease = None
         self._headroom_status = ""
         self.agent = coerce_str(agent, "agent")
@@ -156,6 +160,7 @@ class OpencodeRunner(BaseRunner):
             headroom_executable=config.headroom_executable,
             headroom_allow_custom_provider=config.headroom_allow_custom_provider,
             opencode_pure=getattr(config, "opencode_pure", False),
+            opencode_variant=str(getattr(config, "agent_reasoning", "") or ""),
             agent=agent,
             opencode_model_backup=config.opencode_model_backup,
         )

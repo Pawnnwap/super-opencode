@@ -7,7 +7,7 @@ from supervisor.runners.command_common import (
     fresh_session_prompt,
     validate_message as _validate_message_common,
 )
-from supervisor.utils.text_utils import coerce_str, quote_prompt
+from supervisor.utils.text_utils import coerce_str
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +86,20 @@ def external_provider_flags(base_url: str, api_key: str) -> list[str]:
     return flags
 
 
+def reasoning_effort_flags(effort: str) -> list[str]:
+    """`-c model_reasoning_effort=<effort>` override (probes use the lowest).
+
+    Values follow codex's reasoning ladder (``none`` / ``minimal`` / ``low`` /
+    ...). Empty input emits no flags, leaving codex's config default untouched
+    — this override is only set deliberately (connectivity probes), never for
+    supervised runs.
+    """
+    e = coerce_str(effort, "effort (codex reasoning_effort_flags)")
+    if not e:
+        return []
+    return ["-c", f"model_reasoning_effort={e}"]
+
+
 def validate_message(message: str, context: str = "message") -> str | None:
     return _validate_message_common(message, context, engine="codex")
 
@@ -103,15 +117,23 @@ def build_cmd(
     base_url: str = "",
     api_key: str = "",
     context_window: int = 0,
+    reasoning_effort: str = "",
 ) -> list[str]:
     """Build a ``codex exec`` CLI command list.
 
-    Fresh run:        ``codex exec <flags> [-m MODEL] -- "<prompt>"``
-    Continuation:     ``codex exec resume <id|--last> <flags> [-m MODEL] -- "<prompt>"``
+    Fresh run:        ``codex exec <flags> [-m MODEL] -- -``
+    Continuation:     ``codex exec resume <id|--last> <flags> [-m MODEL] -- -``
+
+    The trailing ``-`` tells codex to read the prompt from stdin (see the
+    comment at the tail of this function for why argv prompts are unsafe on
+    Windows). The *prompt* argument is still validated/coerced here and its
+    length is logged, but the caller owns piping it to the child.
 
     ``agent`` is accepted for signature parity with opencode but codex has no
     per-agent concept; plan/build behaviour is steered through the prompt text
-    instead (see ``CodexRunner``).
+    instead (see ``CodexRunner``). ``use_shell`` is accepted for signature
+    compatibility (the process layer still needs it to decide ``shell=True``
+    for ``.cmd`` shims) but no longer changes how the prompt is passed.
     """
     exe = coerce_str(exe, "exe (codex build_cmd)")
     prompt = coerce_str(prompt, "prompt (codex build_cmd)")
@@ -151,6 +173,7 @@ def build_cmd(
     # token; after `resume` only the session selector and the prompt go.
     cmd += _CODEX_AUTONOMY_FLAGS
     cmd += _CODEX_CONFIG_FLAGS
+    cmd += reasoning_effort_flags(reasoning_effort)
     cmd += context_window_flags(context_window, base_url)
     cmd += external_provider_flags(base_url, api_key)
 
@@ -164,6 +187,15 @@ def build_cmd(
         cmd.append(session_id if session_id else "--last")
 
     cmd.append("--")
-    cmd.append(quote_prompt(prompt) if use_shell else prompt)
+    # The prompt is NEVER placed on the command line: Windows caps command
+    # lines at 8191 chars when codex runs through a `.cmd` shim (cmd.exe /
+    # c) and at 32767 via CreateProcess even without a shell. Supervised
+    # prompts (task text + roll-up/summary content) routinely exceed both,
+    # and the failure mode is silent — cmd.exe prints "The command line is
+    # too long" and exits 1 before codex even starts, which the judge then
+    # reads as "agent produced only a shell failure, no work product".
+    # codex reads the prompt from stdin when the prompt argument is `-`
+    # (same for `exec resume`); the process layer pipes it in.
+    cmd.append("-")
 
     return cmd

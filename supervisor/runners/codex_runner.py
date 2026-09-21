@@ -62,11 +62,19 @@ class CodexRunner(OpencodeRunner):
         codex_base_url: str = "",
         codex_api_key: str = "",
         codex_context_window: int = 0,
+        codex_reasoning_effort: str = "",
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
         self.codex_base_url = coerce_str(codex_base_url, "codex_base_url") or ""
         self.codex_api_key = coerce_str(codex_api_key, "codex_api_key") or ""
+        # Reasoning effort passed as `-c model_reasoning_effort` ("" = codex
+        # config default). Set from SupervisorConfig.agent_reasoning.
+        self.codex_reasoning_effort = (
+            coerce_str(codex_reasoning_effort, "codex_reasoning_effort") or ""
+        )
+        # Per-subprocess env additions (e.g. isolated CODEX_HOME for probes).
+        self.codex_extra_env: dict[str, str] = {}
         # Local model's context window (from config.max_tokens). Forwarded as a
         # codex `-c model_context_window` override for external providers so
         # codex auto-compacts before the local model's cache overflows.
@@ -91,6 +99,11 @@ class CodexRunner(OpencodeRunner):
         ) or ""
         runner.codex_context_window = cls._coerce_window(
             getattr(config, "max_tokens", 0)
+        )
+        runner.codex_reasoning_effort = (
+            coerce_str(
+                getattr(config, "agent_reasoning", ""), "agent_reasoning (codex)",
+            ) or ""
         )
         return runner
 

@@ -14,7 +14,11 @@ from supervisor.utils.experience_tracker import (
     update_experience,
 )
 from supervisor.utils.filesystem.file_ops import safe_read_text
-from supervisor.utils.text_utils import sanitize_event_message, strip_thinking_blocks
+from supervisor.utils.text_utils import (
+    head_tail_excerpt,
+    sanitize_event_message,
+    strip_thinking_blocks,
+)
 
 if TYPE_CHECKING:
     from supervisor.core.llm_support.models import SupervisorVerdict
@@ -152,9 +156,16 @@ class BaseLoop:
             truncation_enabled=self.config.truncation_enabled,
             max_history_turns=self.config.max_history_turns,
             compact_intermediate_steps=self.config.compact_intermediate_steps,
+            history_verbatim_turns=getattr(
+                self.config, "history_verbatim_turns", 4,
+            ),
+            history_budget_fraction=getattr(
+                self.config, "history_budget_fraction", 0.35,
+            ),
             model_backup=self.config.supervisor_model_backup,
             api_key=getattr(self.config, "openai_api_key", "") or None,
             base_url=getattr(self.config, "openai_base_url", "") or None,
+            reasoning=getattr(self.config, "supervisor_reasoning", "") or "",
         )
         if max_protected_files_for_suggestions is not None:
             kwargs["max_protected_files_for_suggestions"] = (
@@ -424,6 +435,7 @@ class BaseLoop:
             total_steps=progress.total_steps_estimate,
             targets_met=verdict.all_targets_met,
             feedback=verdict.feedback,
+            next_action=getattr(verdict, "next_action", "") or "",
         )
 
     def _restart_task_state(self) -> str:
@@ -716,7 +728,10 @@ class BaseLoop:
             if lvl == "step":
                 yield _ev(
                     "step",
-                    f"{event.get('phase_label', 'Step')} - {event.get('msg', '')[:100]}",
+                    f"{event.get('phase_label', 'Step')} - "
+                    + head_tail_excerpt(
+                        event.get("msg", ""), 100, end_ratio=0.5,
+                    ),
                 )
                 self._step_history.append(event)
             elif lvl == "phase_transition":
@@ -1029,6 +1044,8 @@ class BaseLoop:
         log_evolution_summary(self.config.workspace, summary)
 
     def _extract_lesson_from_verdict(self, raw: str) -> str:
+        from supervisor.utils.text_utils import head_tail_excerpt
+
         lines = raw.strip().splitlines()
         for line in lines:
             line_lower = line.lower().strip()
@@ -1036,10 +1053,9 @@ class BaseLoop:
                 continue
             if line_lower.startswith(("lesson:", "strategy:", "summary:")):
                 return line.split(":", 1)[1].strip()
-        content = raw.strip()
-        if len(content) > 100:
-            content = content[:100] + "..."
-        return content
+        content = " ".join(raw.strip().split())
+        # Lessons conclude at the end of the verdict — keep both ends.
+        return head_tail_excerpt(content, 140, end_ratio=0.5)
 
     def _write(self, text: str, filename: str) -> bool:
         """Write text to a file in the workspace. Returns True if successful."""

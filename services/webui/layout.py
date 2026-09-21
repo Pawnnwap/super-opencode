@@ -63,7 +63,10 @@ def format_status_pill(state: str) -> str:
 def _queue_stats_line(job_manager, job_type: str) -> str:
     running = pending = 0
     for job_id in job_manager.store.list_jobs():
-        state = (job_manager.store.get_job_state(job_id) or {}).get("state")
+        state_data = job_manager.store.get_job_state(job_id) or {}
+        if state_data.get("type") != job_type:
+            continue
+        state = state_data.get("state")
         if state == "RUNNING":
             running += 1
         elif state == "PENDING":

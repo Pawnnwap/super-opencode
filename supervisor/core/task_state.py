@@ -22,12 +22,15 @@ import re
 import time
 from pathlib import Path
 
+from supervisor.utils.text_utils import head_tail_excerpt
+
 logger = logging.getLogger(__name__)
 
 _FILENAME = "TASK_STATE.md"
 _HEADER = "# Task State — progress journal (newest at bottom)\n\n"
 _ENTRY_RE = re.compile(r"(?m)^## Turn ")
 _DEFAULT_HEADLINE_CHARS = 240
+_DEFAULT_NEXT_CHARS = 200
 _DEFAULT_TAIL_ENTRIES = 8
 
 
@@ -36,14 +39,16 @@ def task_state_path(workspace) -> Path:
 
 
 def _headline(feedback: str, max_chars: int) -> str:
-    """Collapse a verdict's feedback to a single trimmed line."""
+    """Collapse a verdict's feedback to one line, keeping BOTH ends.
+
+    Verdicts put their conclusion (met/blocked + why) at the end, so a
+    head-only cut would drop it; the head keeps the referenced context.
+    """
     text = (feedback or "").strip()
     if not text:
         return "(no feedback)"
     line = " ".join(text.split())
-    if len(line) > max_chars:
-        return line[:max_chars] + "…"
-    return line
+    return head_tail_excerpt(line, max_chars, end_ratio=0.5)
 
 
 def append_task_state(
@@ -55,14 +60,30 @@ def append_task_state(
     total_steps: int,
     targets_met: bool,
     feedback: str,
+    next_action: str = "",
     max_chars: int = _DEFAULT_HEADLINE_CHARS,
 ) -> bool:
-    """Append one journal entry. Returns True on success."""
+    """Append one journal entry. Returns True on success.
+
+    The ``next_action`` line is the continuity payload for context resets —
+    it tells the restarted agent what the judge asked for last, which no
+    amount of re-reading the workspace recovers.
+    """
     headline = "✅ ALL TARGETS MET" if targets_met else _headline(feedback, max_chars)
+    next_line = ""
+    if (next_action or "").strip():
+        next_line = (
+            "→ next: "
+            + head_tail_excerpt(
+                " ".join(next_action.split()), _DEFAULT_NEXT_CHARS, end_ratio=0.5,
+            )
+            + "\n"
+        )
     stamp = time.strftime("%H:%M:%S")
     entry = (
         f"## Turn {turn} — {stamp} — {phase} (step {step}/{total_steps})\n"
-        f"{headline}\n\n"
+        f"{headline}\n"
+        f"{next_line}\n"
     )
     path = task_state_path(workspace)
     try:

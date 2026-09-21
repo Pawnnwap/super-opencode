@@ -89,9 +89,12 @@ class SelfEvolutionLoop(BaseLoop):
         self._baseline = self.test_runner.run()
         yield _ev("info", f"Baseline: {self._baseline.summary()}")
         if not self._baseline.ok:
+            from supervisor.utils.text_utils import head_tail_excerpt
+
             yield _ev(
                 "warn",
-                f"Baseline has failures — evolution will try to fix them.\n{self._baseline.output[:600]}",
+                "Baseline has failures — evolution will try to fix them.\n"
+                + head_tail_excerpt(self._baseline.output, 600),
             )
 
         yield _ev("info", "📦  Saving pre-evolution archive…")
@@ -299,7 +302,11 @@ class SelfEvolutionLoop(BaseLoop):
     @staticmethod
     def _candidate_direction(output: str, changed_files: list[str]) -> str:
         """Compact candidate description used only for diversity comparisons."""
-        return "\n".join([*changed_files[:12], output[:600]])
+        from supervisor.utils.text_utils import head_tail_excerpt
+
+        # Agent output states the plan up front and the result at the end —
+        # both ends carry the diversity signal for "same direction again".
+        return "\n".join([*changed_files[:12], head_tail_excerpt(output, 600)])
 
     def _extract_regression_insights(self, experience_ctx: str) -> str:
         if not experience_ctx.strip():

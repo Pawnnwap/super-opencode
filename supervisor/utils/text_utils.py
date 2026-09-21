@@ -20,6 +20,35 @@ def normalize_model_response(
     return strip_thinking_blocks(coerce_str(value, field_name)).strip()
 
 
+def head_tail_excerpt(
+    text: str,
+    max_chars: int,
+    *,
+    end_ratio: float = 0.5,
+    collapse_ws: bool = False,
+) -> str:
+    """Truncate keeping BOTH ends: agent/verdict messages put conclusions,
+    outcomes, and next actions at the END, so a head-only cut loses exactly
+    the valuable part. Follows the head-tail truncation convention used by
+    other terminal coding agents (keep first N + last N chars with an
+    omission marker between).
+
+    ``end_ratio`` is the fraction of ``max_chars`` kept from the end (default
+    half). ``collapse_ws`` squeezes whitespace first (for single-line
+    excerpts). Returns the text unchanged when within budget.
+    """
+    text = text or ""
+    if collapse_ws:
+        text = " ".join(text.split())
+    if max_chars <= 0 or len(text) <= max_chars:
+        return text
+    end_chars = max(1, int(max_chars * end_ratio))
+    head_chars = max(1, max_chars - end_chars)
+    omitted = len(text) - head_chars - end_chars
+    marker = f" [... {omitted} chars omitted ...] "
+    return text[:head_chars].rstrip() + marker + text[len(text) - end_chars:].lstrip()
+
+
 def sanitize_event_message(msg: object) -> str:
     """Convert event msg payloads to a deterministic string representation.
 
