@@ -8,6 +8,7 @@ from nicegui import ui
 
 from services.config.supervisor_config_builder import build_supervisor_config
 from services.webui.components.board import JobBoard
+from services.webui.components.busy import busy_buttons
 from services.webui.components.live_screen import LiveJobScreen
 from services.webui.jobs import get_job_manager
 from services.webui.state import app_state
@@ -91,15 +92,19 @@ def _render_launch_form(workspace: Path) -> None:
             occam = ui.switch(
                 "Occam Razor", value=bool(app_state.get("enable_occam_razor")),
             )
-            ui.button(
-                "Launch",
-                on_click=lambda: _launch_run(
+        async def _launch() -> None:
+            # Disabling is brief here — the enqueue is fast — but it stops a
+            # rapid double click from launching the same task twice before
+            # the browser leaves the page.
+            async with busy_buttons(launch_button):
+                _launch_run(
                     workspace,
                     int(plan_rounds.value or 0),
                     bool(scanner.value),
                     bool(occam.value),
-                ),
-            ).props("color=primary")
+                )
+
+        launch_button = ui.button("Launch", on_click=_launch).props("color=primary")
 
 
 def _has_running_job() -> bool:

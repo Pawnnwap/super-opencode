@@ -14,11 +14,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from openai import OpenAI
-
 from supervisor.analyzers.codebase_analyzer import CodebaseSnapshot
 from supervisor.protocols.protocol_wizard import _append_required_target
-from supervisor.utils.text_utils import normalize_model_response
+from supervisor.utils.llm_stream import make_stream_client, stream_chat_text
 
 _BUILDER_SYSTEM = """\
 Write protocol.md for coding agent to modify the codebase it lives in.
@@ -49,12 +47,9 @@ class MetaProtocolBuilder:
         api_key: str | None = None,
         base_url: str | None = None,
     ):
-        client_kwargs: dict[str, str] = {}
-        if api_key:
-            client_kwargs["api_key"] = api_key
-        if base_url:
-            client_kwargs["base_url"] = base_url
-        self._client = OpenAI(**client_kwargs)
+        # Same streaming + bounded-client fix as the wizard; the evolve
+        # page's meta-protocol call had the identical hang.
+        self._client = make_stream_client(api_key=api_key, base_url=base_url)
         self._model = model
 
     def build(
@@ -74,23 +69,17 @@ class MetaProtocolBuilder:
             f"{digest}"
         )
 
-        kwargs = {
-            "model": self._model,
-            "messages": [
+        meta_md = stream_chat_text(
+            self._client,
+            self._model,
+            [
                 {"role": "system", "content": _BUILDER_SYSTEM},
                 {"role": "user", "content": user_msg},
             ],
-        }
-        if not self._model.startswith(("o1", "o3")):
-            kwargs["temperature"] = 0.2
-
-        response = self._client.chat.completions.create(**kwargs)
-        meta_md = normalize_model_response(
-            response.choices[0].message.content,
-            "meta protocol response",
+            temperature=0.2,
+            field_name="meta protocol response",
         )
-        meta_md = _append_required_target(meta_md)
-        return meta_md
+        return _append_required_target(meta_md)
 
 
 def write_meta_protocol(content: str, workspace: Path) -> Path:

@@ -9,12 +9,11 @@ Used by the web UI (services/webui/pages/wizard.py).
 from __future__ import annotations
 
 import logging
-
-from openai import OpenAI
+from typing import Any, Callable
 
 from supervisor.protocols.protocol import Protocol, parse_protocol_text
 from supervisor.protocols.protocol_analyzer import ProtocolAnalysis, ProtocolAnalyzer
-from supervisor.utils.text_utils import normalize_model_response
+from supervisor.utils.llm_stream import make_stream_client, stream_chat_text
 
 logger = logging.getLogger(__name__)
 
@@ -79,33 +78,33 @@ class ProtocolWizard:
         api_key: str | None = None,
         base_url: str | None = None,
     ):
-        client_kwargs: dict[str, str] = {}
-        if api_key:
-            client_kwargs["api_key"] = api_key
-        if base_url:
-            client_kwargs["base_url"] = base_url
-        self._client = OpenAI(**client_kwargs)
+        # Streamed + bounded: a long refine used to blow past the SDK's 600s
+        # read timeout and then retry twice more, freezing the UI for half
+        # an hour. See supervisor.utils.llm_stream.
+        self._client = make_stream_client(api_key=api_key, base_url=base_url)
         self._model = model
 
     # ------------------------------------------------------------------ #
     # One-shot refinement (used by the wizard form)                    #
     # ------------------------------------------------------------------ #
 
-    def _chat(self, user_msg: str) -> str:
-        kwargs = {
-            "model": self._model,
-            "messages": [
+    def _chat(
+        self,
+        user_msg: str,
+        on_progress: Callable[[int, int, int], None] | None = None,
+        stop_event: Any = None,
+    ) -> str:
+        return stream_chat_text(
+            self._client,
+            self._model,
+            [
                 {"role": "system", "content": _WIZARD_SYSTEM},
                 {"role": "user", "content": user_msg},
             ],
-        }
-        if not self._model.startswith(("o1", "o3")):
-            kwargs["temperature"] = 0.3
-
-        response = self._client.chat.completions.create(**kwargs)
-        return normalize_model_response(
-            response.choices[0].message.content,
-            "protocol wizard response",
+            temperature=0.3,
+            field_name="protocol wizard response",
+            on_progress=on_progress,
+            stop_event=stop_event,
         )
 
     def refine(
@@ -113,6 +112,8 @@ class ProtocolWizard:
         raw_input: str,
         raw_target: str,
         raw_restrictions: str,
+        on_progress: Callable[[int, int, int], None] | None = None,
+        stop_event: Any = None,
     ) -> tuple[str, Protocol]:
         """Send all three raw sections to the LLM in one shot.
         Returns (refined_markdown, Protocol).
@@ -124,7 +125,9 @@ class ProtocolWizard:
             f"### RESTRICTIONS (raw)\n{raw_restrictions}"
         )
 
-        refined_md = self._chat(user_msg)
+        refined_md = self._chat(
+            user_msg, on_progress=on_progress, stop_event=stop_event,
+        )
         refined_md = _append_required_target(refined_md)
         protocol = parse_protocol_text(refined_md)
         return refined_md, protocol

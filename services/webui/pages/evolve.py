@@ -8,6 +8,7 @@ from nicegui import ui, run as nicegui_run
 
 from services.config.supervisor_config_builder import build_supervisor_config
 from services.webui.components.board import JobBoard
+from services.webui.components.busy import busy_buttons
 from services.webui.components.live_screen import LiveJobScreen
 from services.webui.jobs import get_job_manager
 from services.webui.state import app_state
@@ -104,17 +105,18 @@ def render(job_id: str = "") -> None:
                 ui.notify("Enter an evolution goal first.")
                 return
             status_label.set_text("Building meta-protocol (LLM call)…")
-            app_state["evo_goal"] = goal_area.value or ""
-            app_state["evo_extra_restrictions"] = extra_area.value or ""
-            app_state.save()
-            app_state.apply_api_config()
-            try:
-                content = await nicegui_run.io_bound(
-                    _build_meta_protocol, workspace, goal, extra_area.value or "",
-                )
-            except Exception as exc:
-                status_label.set_text(f"Meta-protocol build failed: {exc}")
-                return
+            async with busy_buttons(build_button):
+                app_state["evo_goal"] = goal_area.value or ""
+                app_state["evo_extra_restrictions"] = extra_area.value or ""
+                app_state.save()
+                app_state.apply_api_config()
+                try:
+                    content = await nicegui_run.io_bound(
+                        _build_meta_protocol, workspace, goal, extra_area.value or "",
+                    )
+                except Exception as exc:
+                    status_label.set_text(f"Meta-protocol build failed: {exc}")
+                    return
             _write_meta(content, workspace)
             app_state["protocol_md"] = content
             status_label.set_text("meta_protocol.md written to workspace.")
@@ -122,7 +124,9 @@ def render(job_id: str = "") -> None:
             with meta_exp:
                 ui.markdown(content[:3000])
 
-        ui.button("Build meta-protocol", on_click=_generate).props("color=primary")
+        build_button = ui.button(
+            "Build meta-protocol", on_click=_generate,
+        ).props("color=primary")
 
     with ui.card().classes("w-full bg-[#161b22]"):
         ui.label("Start Evolution").classes("text-sm font-bold text-[#9ecbff]")
@@ -133,12 +137,11 @@ def render(job_id: str = "") -> None:
             occam = ui.switch(
                 "Occam Razor", value=bool(app_state.get("enable_occam_razor")),
             )
-            ui.button(
-                "Launch",
-                on_click=lambda: _launch_evolve(
-                    workspace, bool(scanner.value), bool(occam.value),
-                ),
-            ).props("color=primary")
+        async def _launch() -> None:
+            async with busy_buttons(launch_button):
+                _launch_evolve(workspace, bool(scanner.value), bool(occam.value))
+
+        launch_button = ui.button("Launch", on_click=_launch).props("color=primary")
 
     ui.label("Evolution Board").classes("text-lg font-bold mt-4")
     JobBoard(manager, "evolve", is_evolution=True)
