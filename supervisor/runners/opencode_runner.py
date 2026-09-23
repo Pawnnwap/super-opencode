@@ -31,6 +31,7 @@ from supervisor.runners.opencode_support.headroom import release_headroom_proxy
 from supervisor.runners.opencode_support.locator import find_opencode as _find_opencode
 from supervisor.runners.opencode_support.process import run_prompt as _run_prompt_impl
 from supervisor.runners.opencode_support.result import RunResult
+from supervisor.runners.process_utils import kill_process_tree
 from supervisor.runners.opencode_support.session import (
     SESSION_CAPTURE_LOCK as _SESSION_CAPTURE_LOCK,
     capture_new_session_id as _capture_new_session_id_impl,
@@ -265,10 +266,10 @@ class OpencodeRunner(BaseRunner):
         self._alive = False
         self._session_active = False
         if self._process is not None:
-            try:
-                self._process.kill()
-            except Exception as exc:
-                logger.warning("Error killing process: %s", exc)
+            # Tree-kill: on Windows the direct child is the cmd.exe shim of a
+            # `.cmd` install; killing only it orphans the real CLI process,
+            # which then holds the binary lock and keeps hitting the provider.
+            kill_process_tree(self._process)
         release_headroom_proxy(self._headroom_lease)
         self._headroom_lease = None
 

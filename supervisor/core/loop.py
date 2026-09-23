@@ -79,6 +79,10 @@ class SupervisorLoop(BaseLoop):
                 self._judge_harness.render_auto_block,
             )
 
+        # Supervisor skill bank: catalog in every judge prompt, bodies loaded
+        # on the judge's LOAD_SKILL request (bounded, judge-context only).
+        self._setup_skill_bank()
+
     # ------------------------------------------------------------------ #
 
     def run(self) -> int:
@@ -304,7 +308,10 @@ class SupervisorLoop(BaseLoop):
 
     def _get_verdict(self, output: str, progress) -> SupervisorVerdict:
         step_context = self._get_step_context(progress)
+        self._fulfill_pending_skills()
         verdict = self.supervisor.judge_with_step_context(output, step_context)
+        loaded_skills = self._resolve_skill_requests(verdict)
+        evidence = ""
         if self._judge_harness and verdict.evidence_requests:
             # One bounded resolution round: gather the requested resources
             # and let the judge re-evaluate with real evidence in hand.
@@ -314,16 +321,29 @@ class SupervisorLoop(BaseLoop):
                     "Judge requested evidence: %s",
                     ", ".join(verdict.evidence_requests[:3]),
                 )
-                augmented = (
-                    output
-                    + "\n\n--- HARNESS EVIDENCE (resolved on request) ---\n"
+        if evidence or loaded_skills:
+            parts = [output]
+            if evidence:
+                parts.append(
+                    "--- HARNESS EVIDENCE (resolved on request) ---\n"
                     + evidence
                     + "\n--- end evidence ---\n"
                     "Re-evaluate the targets using this evidence."
                 )
-                verdict = self.supervisor.judge_with_step_context(
-                    augmented, step_context,
+            if loaded_skills:
+                # Bodies arrive via the "skills" context provider rendered
+                # into every judge prompt; the augmentation just tells the
+                # judge to apply them now.
+                parts.append(
+                    "--- SUPERVISOR SKILLS LOADED ---\n"
+                    f"Newly loaded into your context: {', '.join(loaded_skills)}.\n"
+                    "Re-evaluate applying their guidance.\n--- end skills ---"
                 )
+            verdict = self.supervisor.judge_with_step_context(
+                "\n\n".join(parts), step_context,
+            )
+            # No load chains: requests seen in the re-judge wait for next turn.
+            self._queue_deferred_skill_requests(verdict)
         return verdict
 
     def _workspace_tree_block(self) -> str:

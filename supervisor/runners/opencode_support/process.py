@@ -164,6 +164,7 @@ def run_prompt(
                     returncode=-1,
                     looped=True,
                     loop_reason=outcome.loop_reason,
+                    prose=outcome.prose,
                 )
                 logger.warning("opencode loop detected: %s", outcome.loop_reason)
                 runner._chars_exchanged += len(prompt) + len(runner._last_result.output)
@@ -175,6 +176,7 @@ def run_prompt(
                     stderr=outcome.stderr,
                     returncode=-1,
                     timed_out=True,
+                    prose=outcome.prose,
                 )
                 logger.warning("opencode timed out after %ds", runner.timeout)
 
@@ -211,6 +213,7 @@ def run_prompt(
                 stdout=stdout,
                 stderr=stderr,
                 returncode=returncode,
+                prose=outcome.prose,
             )
             logger.info(
                 "opencode exit=%d stdout=%d chars stderr=%d chars tokens=%d",

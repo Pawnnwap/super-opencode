@@ -59,7 +59,9 @@ def _render_readiness(workspace: Path) -> bool:
     return False
 
 
-def _launch_run(workspace: Path, plan_rounds: int, scanner: bool, occam: bool) -> None:
+def _launch_run(
+    workspace: Path, plan_rounds: int, scanner: bool, occam: bool, skills: bool,
+) -> None:
     app_state.save()
     app_state.apply_api_config()
     config = build_supervisor_config(
@@ -69,6 +71,7 @@ def _launch_run(workspace: Path, plan_rounds: int, scanner: bool, occam: bool) -
         plan_mode_rounds=plan_rounds,
         enable_python_scanner=scanner,
         enable_occam_razor=occam,
+        enable_supervisor_skills=skills,
     )
     job_id = get_job_manager().enqueue_job("run", config)
     ui.notify(f"Task launched: {job_id}")
@@ -92,6 +95,13 @@ def _render_launch_form(workspace: Path) -> None:
             occam = ui.switch(
                 "Occam Razor", value=bool(app_state.get("enable_occam_razor")),
             )
+            skills = ui.switch(
+                "Supervisor skills",
+                value=bool(app_state.get("enable_supervisor_skills")),
+            ).tooltip(
+                "Show the supervisor a skill catalog it may load on demand "
+                "(LOAD_SKILL); judge-context only.",
+            )
         async def _launch() -> None:
             # Disabling is brief here — the enqueue is fast — but it stops a
             # rapid double click from launching the same task twice before
@@ -102,6 +112,7 @@ def _render_launch_form(workspace: Path) -> None:
                     int(plan_rounds.value or 0),
                     bool(scanner.value),
                     bool(occam.value),
+                    bool(skills.value),
                 )
 
         launch_button = ui.button("Launch", on_click=_launch).props("color=primary")

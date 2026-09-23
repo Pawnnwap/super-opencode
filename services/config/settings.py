@@ -45,6 +45,8 @@ _PERSIST_KEYS = [
     "evo_extra_restrictions",
     "enable_python_scanner",
     "enable_occam_razor",
+    "enable_supervisor_skills",
+    "supervisor_skills_dir",
     "npm_registry",
 ]
 
@@ -81,6 +83,8 @@ DEFAULTS: dict = {
     "evo_extra_restrictions": "",
     "enable_python_scanner": True,
     "enable_occam_razor": False,
+    "enable_supervisor_skills": True,
+    "supervisor_skills_dir": "",
     "npm_registry": "https://registry.npmmirror.com",
 }
 

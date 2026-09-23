@@ -109,6 +109,9 @@ _NEXT_ACTION_RE = re.compile(r"^\s*NEXT_ACTION\s*:\s*(?P<action>.+)$", re.IGNORE
 _EVIDENCE_REQUEST_RE = re.compile(
     r"^\s*NEED_EVIDENCE\s*:\s*(?P<request>.+)$", re.IGNORECASE,
 )
+_LOAD_SKILL_RE = re.compile(
+    r"^\s*LOAD_SKILL\s*:\s*(?P<name>.+)$", re.IGNORECASE,
+)
 
 # Evidence text that contradicts a [MET] claim: weak judges occasionally mark
 # a criterion MET while their own evidence says the opposite ("[MET] create
@@ -211,6 +214,24 @@ def parse_verdict_structure(
     return done, criteria, next_action, evidence_requests
 
 
+def parse_skill_requests(reply: str) -> list[str]:
+    """Extract LOAD_SKILL names from a judge reply (first token each).
+
+    Separate from ``parse_verdict_structure`` so that function's 4-tuple
+    signature — reused by history digests and verdict parsing — stays
+    untouched. Names are lowercased and de-duplicated; the skill bank
+    validates them against its catalog.
+    """
+    requests: list[str] = []
+    for line in (reply or "").splitlines():
+        match = _LOAD_SKILL_RE.match(line)
+        if match:
+            tokens = match.group("name").strip().split()
+            if tokens and tokens[0].lower() not in requests:
+                requests.append(tokens[0].lower())
+    return requests
+
+
 @dataclass
 class SupervisorVerdict:
     raw: str
@@ -219,6 +240,7 @@ class SupervisorVerdict:
     criteria_results: list[CriterionResult] = field(default_factory=list)
     next_action: str = ""
     evidence_requests: list[str] = field(default_factory=list)
+    skill_requests: list[str] = field(default_factory=list)
     validation_notes: list[str] = field(default_factory=list)
 
     @property

@@ -98,6 +98,7 @@ def run_prompt(
             api_key=api_key,
             context_window=context_window,
             reasoning_effort=reasoning_effort,
+            extra_config_flags=getattr(runner, "codex_extra_config_flags", None),
         )
 
         msg = f"Running codex command: {safe_command_summary(cmd)}"
@@ -165,6 +166,7 @@ def run_prompt(
                     returncode=-1,
                     looped=True,
                     loop_reason=outcome.loop_reason,
+                    prose=outcome.prose,
                 )
                 logger.warning("codex loop detected: %s", outcome.loop_reason)
                 runner._chars_exchanged += len(prompt) + len(runner._last_result.output)
@@ -176,6 +178,7 @@ def run_prompt(
                     stderr=outcome.stderr,
                     returncode=-1,
                     timed_out=True,
+                    prose=outcome.prose,
                 )
                 logger.warning("codex timed out after %ds", runner.timeout)
 
@@ -213,6 +216,7 @@ def run_prompt(
                 stdout=stdout,
                 stderr=stderr,
                 returncode=returncode,
+                prose=outcome.prose,
             )
             logger.info(
                 "codex exit=%d stdout=%d chars stderr=%d chars tokens=%d",

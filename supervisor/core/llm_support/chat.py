@@ -20,6 +20,7 @@ from supervisor.core.llm_support.models import (
     _check_completion_phrases,
     _is_token_limit_error,
     flag_contradicted_criteria,
+    parse_skill_requests,
     parse_verdict_structure,
 )
 from supervisor.monitoring.session_tracker import (
@@ -263,6 +264,7 @@ def chat_with_retry(
     structured_done, criteria, next_action, evidence_requests = parse_verdict_structure(
         reply,
     )
+    skill_requests = parse_skill_requests(reply)
     criteria, validation_notes = flag_contradicted_criteria(criteria)
     if structured_done is not None:
         all_met = structured_done and not validation_notes
@@ -275,6 +277,7 @@ def chat_with_retry(
         criteria_results=criteria,
         next_action=next_action,
         evidence_requests=evidence_requests,
+        skill_requests=skill_requests,
         validation_notes=validation_notes,
     )
 

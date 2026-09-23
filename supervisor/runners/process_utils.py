@@ -7,6 +7,29 @@ import subprocess
 logger = logging.getLogger(__name__)
 
 
+def kill_process_tree(proc) -> None:
+    """Kill *proc* and any children. Tree-kill on Windows: the process layer
+    usually spawns a `.cmd` shim via cmd.exe, and plain ``proc.kill()`` only
+    kills the shim — the real CLI grandchild survives, keeps streaming to the
+    provider, and locks its own binary (npm upgrade EBUSY/EPERM). Tree-kill
+    also guarantees the stdout write handle closes so pipe readers see EOF."""
+    try:
+        if platform.system() == "Windows":
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                capture_output=True,
+                check=False,
+            )
+        else:
+            proc.kill()
+    except Exception as exc:
+        logger.warning("Error killing process tree: %s", exc)
+        try:
+            proc.kill()
+        except Exception:
+            pass
+
+
 def kill_processes_by_keywords(keywords: list[str]) -> None:
     try:
         system = platform.system()

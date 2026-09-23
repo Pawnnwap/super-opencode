@@ -11,6 +11,7 @@ class RunResult:
         exception: str = "",
         looped: bool = False,
         loop_reason: str = "",
+        prose: str = "",
     ):
         self.stdout = stdout
         self.stderr = stderr
@@ -19,6 +20,9 @@ class RunResult:
         self.exception = exception
         self.looped = looped
         self.loop_reason = loop_reason
+        # Model text events only (no tool I/O, stderr, error events) — lets
+        # callers apply "the model answered" as its own success criterion.
+        self.prose = prose
 
     @property
     def output(self) -> str:

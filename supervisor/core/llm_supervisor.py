@@ -74,7 +74,7 @@ class LLMSupervisor:
         truncation_enabled: bool = True,
         max_history_turns: int = 40,
         compact_intermediate_steps: bool = False,
-        history_verbatim_turns: int = 4,
+        history_verbatim_turns: int = 1,
         history_budget_fraction: float = 0.35,
         model_backup: str | None = None,
         api_key: str | None = None,

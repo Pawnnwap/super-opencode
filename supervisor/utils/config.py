@@ -50,8 +50,10 @@ class SupervisorConfig:
     # Supervisor context shaping: recent turns stay verbatim, older turns are
     # condensed to their verdict digest, and the whole history is capped at a
     # share of max_tokens so already-judged output cannot crowd out the
-    # current turn. history_verbatim_turns=0 disables the verbatim tier.
-    history_verbatim_turns: int = 4
+    # current turn. The default keeps only the most recent round verbatim —
+    # earlier rounds remain available as compact digests for continuity.
+    # history_verbatim_turns=0 disables the verbatim tier.
+    history_verbatim_turns: int = 1
     history_budget_fraction: float = 0.35
     plan_mode_rounds: int = 0
     enable_python_scanner: bool = True
@@ -70,6 +72,13 @@ class SupervisorConfig:
     # Judge evidence harness: auto-inject workspace facts into judge prompts
     # and resolve the judge's NEED_EVIDENCE resource requests (open registry).
     enable_judge_harness: bool = True
+    # Supervisor skill bank: a catalog of supervisor-special skills is shown
+    # to the judge, which may load bodies on demand via LOAD_SKILL (bounded,
+    # judge-context only — the supervisor stays a plain API-call judge).
+    # supervisor_skills_dir: optional extra bank directory beyond the
+    # built-in bank and <workspace>/.opencode/supervisor_skills.
+    enable_supervisor_skills: bool = True
+    supervisor_skills_dir: str = ""
     # OpenAI credentials captured at enqueue time so the running loop is not
     # affected by later UI changes to os.environ. When empty, downstream
     # clients fall back to the env vars (OPENAI_API_KEY / OPENAI_BASE_URL).

@@ -5,6 +5,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -208,6 +209,60 @@ def _ephemeral_workspace(prefix: str) -> Path:
     return workspace
 
 
+def _stable_probe_home(prefix: str) -> Path:
+    """Persistent probe home under TEMP, reused across probes (NOT per probe).
+
+    A fresh CLI home costs ~10s of first-run init per probe (config bootstrap,
+    helper-binary check, plugin clone, session store) — on a 45s probe budget
+    that alone times the test out. Reusing one home pays that cost once.
+    Session isolation is unaffected: rollouts key off the unique per-probe
+    cwd, not the home.
+    """
+    base = Path(os.environ.get("TEMP", os.environ.get("TMPDIR", "/tmp")))
+    home = base / f"{prefix}_probe_home"
+    home.mkdir(parents=True, exist_ok=True)
+    return home
+
+
+def _discard_probe_home(home: Path) -> None:
+    """Delete the warm probe home, first killing orphans still holding it.
+
+    A probe killed during the CLI's first-run plugin clone leaves a git.exe
+    writing into ``<home>/.tmp``; rmtree alone then silently fails and the
+    next probe inherits the poisoned home. Windows-only targeted kill (the
+    path in the command line uniquely identifies our orphans); other platforms
+    just remove the tree.
+    """
+    if sys.platform == "win32":
+        try:
+            ps = (
+                "Get-CimInstance Win32_Process -Filter \"Name='git.exe'\" | "
+                f"Where-Object {{ $_.CommandLine -like '*{home}*' }} | "
+                "ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"
+            )
+            subprocess.run(
+                ["powershell", "-NoProfile", "-Command", ps],
+                capture_output=True,
+                timeout=15,
+                check=False,
+            )
+        except Exception:  # noqa: BLE001 — best-effort cleanup before wipe
+            pass
+    shutil.rmtree(home, ignore_errors=True)
+
+
+def _distinct_backup(primary: str | None, backup: str | None) -> str | None:
+    """Backup model for a probe, or None when it duplicates the primary.
+
+    Retrying a timed-out probe on the SAME model doubles the runtime for zero
+    diagnostic value, so probes only fall back to a genuinely different model.
+    """
+    backup = (backup or "").strip()
+    if not backup or backup == (primary or "").strip():
+        return None
+    return backup
+
+
 def test_opencode_connectivity(
     opencode_executable: str,
     opencode_model: str | None,
@@ -225,14 +280,15 @@ def test_opencode_connectivity(
         return False, str(exc)
 
     variant = lowest_opencode_variant(exe, opencode_model or "")
+    backup = _distinct_backup(opencode_model, opencode_model_backup)
 
     def _probe(attempt_variant: str, seconds: int) -> tuple[bool, str]:
         runner = OpencodeRunner(
             workspace=workspace,
             opencode_model=opencode_model,
             opencode_executable=exe,
-            opencode_model_backup=opencode_model_backup,
-            timeout=timeout,
+            opencode_model_backup=backup,
+            timeout=seconds,
             enable_headroom=enable_headroom,
             headroom_executable=headroom_executable,
             headroom_allow_custom_provider=headroom_allow_custom_provider,
@@ -251,14 +307,20 @@ def test_opencode_connectivity(
             with _SESSION_CAPTURE_LOCK:
                 for _ in runner._run_prompt("hi"):
                     pass
+            # Connectivity criterion: the model returned text. Exit-code
+            # oddities (non-zero exits, cleanup running past the stream
+            # timeout, provider stream errors arriving after the answer) do
+            # not mean the endpoint is unreachable, so model text wins over
+            # them. `.prose` excludes stderr, tool I/O and error events.
+            prose = (runner._last_result.prose or "") if runner._last_result else ""
+            if prose.strip():
+                note = f" (variant: {attempt_variant})" if attempt_variant else ""
+                return True, f"opencode responded{note}."
             _output, timed_out = runner.read_output(timeout=25)
             if timed_out:
-                return False, "opencode timed out reading output."
-            if runner._last_result and runner._last_result.ok:
-                note = f" (variant: {attempt_variant})" if attempt_variant else ""
-                return True, f"opencode responded successfully{note}."
+                return False, "opencode timed out without model text."
             diag = runner.last_diagnostic() if runner._last_result else "(no result)"
-            return False, f"opencode returned an error.\n{diag}"
+            return False, f"opencode returned an error without model text.\n{diag}"
 
         try:
             return run_with_timeout(_inner, seconds=seconds)
@@ -273,12 +335,12 @@ def test_opencode_connectivity(
                 pass
 
     deadline = time.monotonic() + timeout
-    result = _probe(variant, max(3, int(deadline - time.monotonic())))
+    result = _probe(variant, max(10, int(deadline - time.monotonic())))
     if not result[0] and variant:
         # The variant came from opencode's own listing, but the provider may
         # still reject it — retry once on the model default with whatever
         # budget remains before reporting failure.
-        retry = _probe("", max(3, int(deadline - time.monotonic())))
+        retry = _probe("", max(10, int(deadline - time.monotonic())))
         if retry[0]:
             return True, (
                 "opencode responded successfully (variant rejected; default used)."
@@ -307,11 +369,11 @@ def test_codex_connectivity(
     # ~/.codex auth or config is needed). Without an external endpoint codex
     # must keep the user's real CODEX_HOME for auth — there the unique cwd
     # above still separates the probe's session from every other cwd's.
+    # The home itself is one warm, reused dir: a fresh home per probe adds
+    # ~10s of cold-start per ATTEMPT, which alone can blow the probe budget.
     extra_env: dict[str, str] = {}
     if (base_url or "").strip() and (api_key or "").strip():
-        isolated_home = workspace / "codex_home"
-        isolated_home.mkdir(exist_ok=True)
-        extra_env["CODEX_HOME"] = str(isolated_home)
+        extra_env["CODEX_HOME"] = str(_stable_probe_home("codex"))
 
     # Lowest accepted reasoning effort: codex rejects unsupported
     # `-c model_reasoning_effort` values immediately, so walk the ladder from
@@ -319,18 +381,25 @@ def test_codex_connectivity(
     # config default is the last resort.
     efforts = ("none", "minimal", "")
 
+    backup = _distinct_backup(codex_model, codex_model_backup)
+
     def _probe(effort: str, seconds: int) -> tuple[bool, str]:
         runner = CodexRunner(
             workspace=workspace,
             opencode_model=codex_model,
             opencode_executable=exe,
-            opencode_model_backup=codex_model_backup,
-            timeout=timeout,
+            opencode_model_backup=backup,
+            timeout=seconds,
             codex_base_url=base_url,
             codex_api_key=api_key,
         )
         runner.codex_reasoning_effort = effort
         runner.codex_extra_env = extra_env
+        # Fresh probe homes trigger codex's first-run plugin clone (a GitHub
+        # network dependency) on every cold start; when GitHub stalls, the
+        # probe burns its whole budget before the model is even asked. Probes
+        # don't need plugins — disable the feature for probe runs only.
+        runner.codex_extra_config_flags = ["-c", "features.plugins=false"]
 
         def _inner():
             runner._alive = True
@@ -339,14 +408,20 @@ def test_codex_connectivity(
             # prompt travels over stdin like every supervised run).
             for _ in runner._run_prompt("hi"):
                 pass
+            # Connectivity criterion: the model returned text. Exit-code
+            # oddities (non-zero exits, cleanup running past the stream
+            # timeout, provider stream errors arriving after the answer) do
+            # not mean the endpoint is unreachable, so model text wins over
+            # them. `.prose` excludes stderr, tool I/O and error events.
+            prose = (runner._last_result.prose or "") if runner._last_result else ""
+            if prose.strip():
+                note = f" (reasoning effort: {effort})" if effort else ""
+                return True, f"codex responded{note}."
             _output, timed_out = runner.read_output(timeout=25)
             if timed_out:
-                return False, "codex timed out reading output."
-            if runner._last_result and runner._last_result.ok:
-                note = f" (reasoning effort: {effort})" if effort else ""
-                return True, f"codex responded successfully{note}."
+                return False, "codex timed out without model text."
             diag = runner.last_diagnostic() if runner._last_result else "(no result)"
-            return False, f"codex returned an error.\n{diag}"
+            return False, f"codex returned an error without model text.\n{diag}"
 
         try:
             return run_with_timeout(_inner, seconds=seconds)
@@ -364,11 +439,20 @@ def test_codex_connectivity(
     result = (False, "codex test did not run.")
     for effort in efforts:
         remaining = int(deadline - time.monotonic())
-        if remaining < 3:
+        # One attempt needs enough budget to actually finish; a leftover
+        # sliver would only produce another guaranteed timeout.
+        if remaining < 10:
             break
         result = _probe(effort, remaining)
         if result[0]:
             break
+    if not result[0]:
+        # A probe killed mid-run (timeout tree-kill) can leave sqlite WAL
+        # state and a half-finished plugin clone (plus its orphaned git.exe)
+        # in the shared warm home that stall every later probe before the
+        # model even answers. Wipe it: the next probe pays the one-time
+        # fresh-home cost and starts clean again.
+        _discard_probe_home(_stable_probe_home("codex"))
     shutil.rmtree(workspace, ignore_errors=True)
     return result
 

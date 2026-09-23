@@ -80,6 +80,13 @@ class BaseLoop:
         self._run_changed_files: set[str] = set()
         self._python_scanner_ran: bool = False
         self._vuln_autofixed: bool = False
+        # Supervisor skill bank (set up by _setup_skill_bank after the
+        # supervisor exists); None = feature off or no skills discovered.
+        self._skill_bank = None
+        # Skill-load actions are queued as (level, msg) during _get_verdict
+        # (a plain function) and yielded into the event stream by
+        # _do_judgement, like every other supervisor action.
+        self._skill_events: list[tuple[str, str]] = []
 
     @property
     def _engine_name(self) -> str:
@@ -157,7 +164,7 @@ class BaseLoop:
             max_history_turns=self.config.max_history_turns,
             compact_intermediate_steps=self.config.compact_intermediate_steps,
             history_verbatim_turns=getattr(
-                self.config, "history_verbatim_turns", 4,
+                self.config, "history_verbatim_turns", 1,
             ),
             history_budget_fraction=getattr(
                 self.config, "history_budget_fraction", 0.35,
@@ -466,6 +473,79 @@ class BaseLoop:
     def _get_verdict(self, output: str, progress) -> SupervisorVerdict:
         raise NotImplementedError
 
+    def _setup_skill_bank(self) -> None:
+        """Wire the supervisor skill bank (catalog provider + load state).
+
+        Called by loop subclasses right after the supervisor is created. The
+        bank renders a catalog into every judge prompt via the context
+        provider registry; bodies enter the context only when the judge asks
+        for them with LOAD_SKILL (resolved in _resolve_skill_requests).
+        """
+        if not getattr(self.config, "enable_supervisor_skills", True):
+            return
+        from supervisor.core.skill_bank import SkillBank, builtin_bank_dir
+
+        extra_dir = getattr(self.config, "supervisor_skills_dir", "") or None
+        bank = SkillBank(
+            builtin_dir=builtin_bank_dir(),
+            workspace_dir=self.config.workspace / ".opencode" / "supervisor_skills",
+            extra_dir=extra_dir,
+        )
+        if not bank.has_skills():
+            logger.info("Supervisor skill bank empty — feature inert.")
+            return
+        self._skill_bank = bank
+        self.supervisor.register_context_provider("skills", bank.context_block)
+        logger.info(
+            "Supervisor skill bank ready: %s", ", ".join(bank.names()),
+        )
+
+    def _fulfill_pending_skills(self) -> None:
+        """Load skills queued by a previous turn's re-judge (no load chains)."""
+        if self._skill_bank is None:
+            return
+        pending = self._skill_bank.drain_pending()
+        if pending:
+            self._load_and_record(pending)
+
+    def _resolve_skill_requests(self, verdict: SupervisorVerdict) -> list[str]:
+        """Load skills the judge asked for; return the names newly loaded."""
+        if self._skill_bank is None or not verdict.skill_requests:
+            return []
+        return self._load_and_record(verdict.skill_requests)
+
+    def _load_and_record(self, requested: list[str]) -> list[str]:
+        """Load skills and record each action as a loop event + app log."""
+        result = self._skill_bank.load(requested)
+        if result.loaded:
+            names = ", ".join(skill.name for skill in result.loaded)
+            logger.info("Supervisor loaded skill(s): %s", names)
+            self._skill_events.append(
+                ("info", f"Supervisor loaded skill(s): {names}"),
+            )
+        for note in result.notes:
+            logger.info("skill bank: %s", note)
+            if "not in bank" in note:
+                self._skill_events.append(
+                    ("warn", f"Skill load rejected: {note}"),
+                )
+            elif "deferred" in note:
+                self._skill_events.append(
+                    ("info", f"Skill load deferred: {note}"),
+                )
+        return [skill.name for skill in result.loaded]
+
+    def _drain_skill_events(self) -> Generator[Event]:
+        """Yield queued skill-load events into the stream, then clear."""
+        events, self._skill_events = self._skill_events[:], []
+        for level, msg in events:
+            yield _ev(level, msg)
+
+    def _queue_deferred_skill_requests(self, verdict: SupervisorVerdict) -> None:
+        """Hold LOAD_SKILL requests seen in a re-judge for the next turn."""
+        if self._skill_bank is not None and verdict.skill_requests:
+            self._skill_bank.queue_pending(verdict.skill_requests)
+
     def _post_judge_feedback(
         self,
         safe_msg: str,
@@ -514,6 +594,9 @@ class BaseLoop:
                 "Judge verdict auto-corrected (evidence contradiction): "
                 + " ".join(validation_notes),
             )
+        # Skill-load actions (loads, rejections, deferrals) recorded during
+        # _get_verdict, surfaced here like every other supervisor action.
+        yield from self._drain_skill_events()
 
         self._task_turn += 1
         self._record_task_state(verdict, progress)
@@ -880,6 +963,11 @@ class BaseLoop:
         yield _ev("info", "summary.md written.")
 
     def _sanitize_feedback(self, feedback: str) -> Generator[Event, None, str]:
+        from supervisor.core.skill_bank import strip_skill_markers
+
+        # The judge's full reply can carry supervisor-side request markers;
+        # they must never reach the runner (see strip_skill_markers).
+        feedback = strip_skill_markers(feedback)
         safe_msg, violations = self.guard.sanitize_message(feedback)
         if violations:
             yield _ev("warn", f"Blocked out-of-workspace paths: {violations}")

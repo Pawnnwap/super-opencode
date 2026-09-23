@@ -39,7 +39,9 @@ def _write_meta(content: str, workspace: Path) -> Path:
     return write_meta_protocol(content, workspace)
 
 
-def _launch_evolve(workspace: Path, scanner: bool, occam: bool) -> None:
+def _launch_evolve(
+    workspace: Path, scanner: bool, occam: bool, skills: bool,
+) -> None:
     app_state.save()
     app_state.apply_api_config()
     config = build_supervisor_config(
@@ -48,6 +50,7 @@ def _launch_evolve(workspace: Path, scanner: bool, occam: bool) -> None:
         workspace=workspace,
         enable_python_scanner=scanner,
         enable_occam_razor=occam,
+        enable_supervisor_skills=skills,
     )
     job_id = get_job_manager().enqueue_job("evolve", config)
     ui.notify(f"Evolution launched: {job_id}")
@@ -137,9 +140,18 @@ def render(job_id: str = "") -> None:
             occam = ui.switch(
                 "Occam Razor", value=bool(app_state.get("enable_occam_razor")),
             )
+            skills = ui.switch(
+                "Supervisor skills",
+                value=bool(app_state.get("enable_supervisor_skills")),
+            )
         async def _launch() -> None:
             async with busy_buttons(launch_button):
-                _launch_evolve(workspace, bool(scanner.value), bool(occam.value))
+                _launch_evolve(
+                    workspace,
+                    bool(scanner.value),
+                    bool(occam.value),
+                    bool(skills.value),
+                )
 
         launch_button = ui.button("Launch", on_click=_launch).props("color=primary")
 

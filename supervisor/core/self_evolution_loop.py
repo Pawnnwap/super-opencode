@@ -50,6 +50,9 @@ class SelfEvolutionLoop(BaseLoop):
 
         self._setup_core_services()
         self.supervisor = self._create_supervisor()
+        # Supervisor skill bank: catalog in every judge prompt, bodies loaded
+        # on the judge's LOAD_SKILL request (bounded, judge-context only).
+        self._setup_skill_bank()
         self.test_runner = OcTestRunner(config.workspace)
 
         self._baseline: RunTestResult | None = None
@@ -273,7 +276,22 @@ class SelfEvolutionLoop(BaseLoop):
         return augmented, False
 
     def _get_verdict(self, output: str, progress) -> SupervisorVerdict:
-        return self.supervisor.judge(output)
+        self._fulfill_pending_skills()
+        verdict = self.supervisor.judge(output)
+        loaded_skills = self._resolve_skill_requests(verdict)
+        if loaded_skills:
+            # Bodies arrive via the "skills" context provider rendered into
+            # every judge prompt; the augmentation tells the judge to apply
+            # them now. One bounded re-judge per turn — no load chains.
+            augmented = (
+                output
+                + "\n\n--- SUPERVISOR SKILLS LOADED ---\n"
+                + f"Newly loaded into your context: {', '.join(loaded_skills)}.\n"
+                + "Re-evaluate applying their guidance.\n--- end skills ---"
+            )
+            verdict = self.supervisor.judge(augmented)
+            self._queue_deferred_skill_requests(verdict)
+        return verdict
 
     def _rollback(self) -> Generator[Event]:
         if self._best_archive:

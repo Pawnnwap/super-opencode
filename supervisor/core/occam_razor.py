@@ -420,7 +420,7 @@ class OccamRazorStage:
                 max_history_turns=self.config.max_history_turns,
                 compact_intermediate_steps=False,
                 history_verbatim_turns=getattr(
-                    self.config, "history_verbatim_turns", 4,
+                    self.config, "history_verbatim_turns", 1,
                 ),
                 history_budget_fraction=getattr(
                     self.config, "history_budget_fraction", 0.35,

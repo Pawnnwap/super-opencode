@@ -118,6 +118,7 @@ def build_cmd(
     api_key: str = "",
     context_window: int = 0,
     reasoning_effort: str = "",
+    extra_config_flags: list[str] | None = None,
 ) -> list[str]:
     """Build a ``codex exec`` CLI command list.
 
@@ -173,6 +174,10 @@ def build_cmd(
     # token; after `resume` only the session selector and the prompt go.
     cmd += _CODEX_AUTONOMY_FLAGS
     cmd += _CODEX_CONFIG_FLAGS
+    # Optional per-caller config overrides (e.g. the connectivity probe
+    # disables the plugins feature — see connectivity.py).
+    if extra_config_flags:
+        cmd += list(extra_config_flags)
     cmd += reasoning_effort_flags(reasoning_effort)
     cmd += context_window_flags(context_window, base_url)
     cmd += external_provider_flags(base_url, api_key)

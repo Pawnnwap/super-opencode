@@ -121,6 +121,7 @@ def _config_section() -> None:
             )
             _bind_switch("enable_python_scanner", "Python scanner")
             _bind_switch("enable_occam_razor", "Occam Razor")
+            _bind_switch("enable_supervisor_skills", "Supervisor skills")
         with ui.row().classes("w-full gap-4 flex-wrap"):
             _bind_number("max_retries", "Max retries", min=1, max=10)
             _bind_number("context_threshold", "Context threshold %", min=10, max=95)
@@ -129,6 +130,39 @@ def _config_section() -> None:
         with ui.row().classes("w-full gap-4 flex-wrap"):
             _bind_input(
                 "npm_registry", "npm registry for CLI upgrades (empty = default)",
+            )
+        with ui.row().classes("w-full gap-4 flex-wrap"):
+            _bind_input(
+                "supervisor_skills_dir",
+                "Supervisor skills extra dir (optional; beyond built-in + "
+                "workspace bank)",
+            )
+        _skills_listing()
+
+
+def _skills_listing() -> None:
+    """Read-only view of the supervisor skill bank the judge can load from."""
+    from supervisor.core.skill_bank import SkillBank, builtin_bank_dir
+
+    extra_dir = (app_state.get("supervisor_skills_dir") or "").strip() or None
+    workspace = _workspace()
+    bank = SkillBank(
+        builtin_dir=builtin_bank_dir(),
+        workspace_dir=(
+            workspace / ".opencode" / "supervisor_skills" if workspace else None
+        ),
+        extra_dir=extra_dir,
+    )
+    with ui.column().classes("w-full gap-1"):
+        ui.label("Supervisor skill bank (loaded only on the judge's request):").classes(
+            "text-xs text-[#8b949e]",
+        )
+        skills = bank.skills()
+        if not skills:
+            ui.label("No skills discovered.").classes("text-xs text-[#8b949e]")
+        for skill in skills:
+            ui.label(f"• {skill.name} — {skill.description}  [{skill.source}]").classes(
+                "text-xs",
             )
 
 

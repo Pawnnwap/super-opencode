@@ -134,3 +134,22 @@ def test_run_prompt_feeds_prompt_via_stdin(tmp_path):
     assert [c.rstrip("\n") for c in runner._process.stdin.chunks] == [
         LONG_PROMPT.strip()
     ]
+
+
+def test_build_cmd_appends_extra_config_flags_only_when_given():
+    base_kwargs = dict(
+        exe="codex.cmd",
+        prompt="hi",
+        agent="",
+        codex_model=None,
+        use_continue=False,
+        session_id=None,
+        use_shell=True,
+    )
+
+    plain = build_cmd(**base_kwargs)
+    flagged = build_cmd(**base_kwargs, extra_config_flags=["-c", "features.plugins=false"])
+
+    assert "features.plugins=false" not in plain
+    assert "-c" in flagged and "features.plugins=false" in flagged
+    assert flagged[-2:] == ["--", "-"]

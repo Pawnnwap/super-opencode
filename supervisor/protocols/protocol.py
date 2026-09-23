@@ -62,7 +62,9 @@ class Protocol:
 def load_protocol(path: Path) -> Protocol:
     if not path.exists():
         raise FileNotFoundError(f"Protocol file not found: {path}")
-    raw = path.read_text(encoding="utf-8")
+    # utf-8-sig transparently strips a leading BOM, which editors and
+    # pasted LLM output otherwise turn into a "missing: INPUT" failure.
+    raw = path.read_text(encoding="utf-8-sig")
     return _parse(raw)
 
 
@@ -71,19 +73,42 @@ def parse_protocol_text(text: str) -> Protocol:
 
 
 def _parse(raw: str) -> Protocol:
+    raw = raw.lstrip("\ufeff")
     sections = _split(raw)
     missing = _REQUIRED - set(sections)
     if missing:
-        raise ValueError(
+        message = (
             f"protocol.md is missing: {', '.join(sorted(missing))}. "
-            "Must contain ## INPUT, ## TARGET, ## RESTRICTIONS.",
+            "Must contain ## INPUT, ## TARGET, ## RESTRICTIONS."
         )
+        hint = _near_miss_hint(missing, raw)
+        if hint:
+            message += f"\n{hint}"
+        raise ValueError(message)
     return Protocol(
         raw=raw,
         input_section=sections["INPUT"].strip(),
         target_section=sections["TARGET"].strip(),
         restrictions_section=sections["RESTRICTIONS"].strip(),
     )
+
+
+def _near_miss_hint(missing: set[str], text: str) -> str:
+    """Point at lines that look like a missing heading but fail the exact pattern."""
+    zero_width = "\ufeff\u200b\u200c\u200d"
+    found: list[str] = []
+    for lineno, line in enumerate(text.splitlines(), start=1):
+        cleaned = line.strip()
+        for ch in zero_width:
+            cleaned = cleaned.replace(ch, "")
+        match = re.match(r"^#{1,6}\s*([A-Za-z]+)", cleaned)
+        if match and match.group(1).upper() in missing:
+            found.append(f"line {lineno}: {line.strip()!r}")
+            if len(found) == 3:
+                break
+    if not found:
+        return ""
+    return "Possible match (check the heading format, e.g. '## INPUT'): " + "; ".join(found)
 
 
 def _split(text: str) -> dict[str, str]:

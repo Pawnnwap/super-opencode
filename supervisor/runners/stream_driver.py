@@ -18,14 +18,13 @@ from __future__ import annotations
 
 import logging
 import queue
-import subprocess
-import sys
 import threading
 import time
 from collections.abc import Callable, Generator
 from dataclasses import dataclass
 
 from supervisor.runners.opencode_support.stream import LineEvent, build_output
+from supervisor.runners.process_utils import kill_process_tree
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +43,7 @@ class StreamOutcome:
     session_id: str | None = None  # captured session id, None if unseen
     looped: bool = False  # killed because the agent was stuck looping
     loop_reason: str = ""  # why, when looped
+    prose: str = ""  # model text events only — no tool I/O, stderr, or errors
 
 
 def _drain_stderr(proc, sink: list[str]) -> None:
@@ -79,23 +79,8 @@ def _read_stdout(stream, out_q: "queue.Queue") -> None:
 
 
 def _kill_process_tree(proc) -> None:
-    """Kill *proc* and any children. Tree-kill on Windows so grandchildren that
-    inherited the stdout handle die too (otherwise the pipe never closes)."""
-    try:
-        if sys.platform == "win32":
-            subprocess.run(
-                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
-                capture_output=True,
-                check=False,
-            )
-        else:
-            proc.kill()
-    except Exception as exc:
-        logger.warning("Error killing process tree: %s", exc)
-        try:
-            proc.kill()
-        except Exception:
-            pass
+    """Kill *proc* and any children (see :func:`kill_process_tree`)."""
+    kill_process_tree(proc)
 
 
 def consume_process_stream(
@@ -114,6 +99,7 @@ def consume_process_stream(
     :class:`StreamOutcome`; never blocks past *timeout*.
     """
     text_parts: list[str] = []
+    prose_parts: list[str] = []
     markers: list[str] = []
     raw_parts: list[str] = []
     saw_json = False
@@ -133,6 +119,9 @@ def consume_process_stream(
         if kind == "text":
             if event.text:
                 text_parts.append(event.text)
+                # Model prose only — the "error" kind below also lands in
+                # text_parts, but must not count as model output.
+                prose_parts.append(event.text)
                 saw_json = True
         elif kind == "tool":
             markers.append(event.marker)
@@ -238,4 +227,5 @@ def consume_process_stream(
         session_id=session_id,
         looped=looped,
         loop_reason=loop_reason,
+        prose="\n".join(p for p in prose_parts if p.strip()),
     )
