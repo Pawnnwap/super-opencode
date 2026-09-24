@@ -49,6 +49,20 @@ def chat(
         if user_content.strip() == supervisor._last_opencode_output.strip():
             should_record_user = False
 
+    if (
+        supervisor._reuse_identical_verdicts
+        and supervisor._last_verdict is not None
+        and user_content == supervisor._last_judged_content
+    ):
+        supervisor._verdict_reuses += 1
+        logger.info(
+            "Reused prior verdict (%d): identical judge input (%d chars), "
+            "no LLM call",
+            supervisor._verdict_reuses,
+            len(user_content),
+        )
+        return supervisor._last_verdict
+
     record_content = history_content if history_content is not None else user_content
     conv_text = "\n".join(
         msg["content"] for msg in supervisor._history if msg.get("content")
@@ -104,7 +118,12 @@ def chat(
     messages.append({"role": "user", "content": user_content})
 
     supervisor._log_prompt("Supervisor Chat", messages)
-    return chat_with_retry(supervisor, messages, record_content, should_record_user)
+    verdict = chat_with_retry(
+        supervisor, messages, record_content, should_record_user,
+    )
+    supervisor._last_judged_content = user_content
+    supervisor._last_verdict = verdict
+    return verdict
 
 
 def chat_with_retry(

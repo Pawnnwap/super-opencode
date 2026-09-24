@@ -79,6 +79,13 @@ class SupervisorLoop(BaseLoop):
                 self._judge_harness.render_auto_block,
             )
 
+        # Pre-execution feasibility probe rendered for the judge every turn;
+        # returns "" when no facts file exists.
+        self.supervisor.register_context_provider(
+            "feasibility",
+            self._feasibility_section,
+        )
+
         # Supervisor skill bank: catalog in every judge prompt, bodies loaded
         # on the judge's LOAD_SKILL request (bounded, judge-context only).
         self._setup_skill_bank()
@@ -187,6 +194,7 @@ class SupervisorLoop(BaseLoop):
         protocol_text = safe_read_text(self.config.protocol_path)
         ws = self.config.workspace.resolve()
         protected_files_desc = self.guard.get_all_protected_files_description()
+        feasibility_block = self._feasibility_section()
         plan_prompt = (
             "@explore PLAN MODE. Do NOT create, modify, or delete any files.\n\n"
             "Read protocol below and produce detailed implementation plan:\n"
@@ -431,6 +439,13 @@ class SupervisorLoop(BaseLoop):
         ws = self.config.workspace.resolve()
         protected_files_desc = self.guard.get_all_protected_files_description()
         goal_section = self._goal_checklist_section()
+        feasibility_block = self._feasibility_section()
+        if feasibility_block:
+            goal_section = (
+                goal_section + "\n\n" + feasibility_block
+                if goal_section
+                else feasibility_block
+            )
         plan_section = f"{self._plan_context}\n\n" if self._plan_context else ""
         plan_output_section = ""
         if self._last_plan and self._plan_context:
@@ -449,6 +464,37 @@ class SupervisorLoop(BaseLoop):
             plan_output_section=plan_output_section,
             workspace=ws,
             protected_files_desc=protected_files_desc,
+        )
+
+    def _feasibility_section(self) -> str:
+        from pathlib import Path
+
+        from supervisor.protocols.feasibility_gate import (
+            check_feasibility,
+            default_facts_path,
+            load_feasibility_facts,
+            render_feasibility_block,
+        )
+
+        cfg_path = getattr(self.config, "feasibility_facts_path", "") or ""
+        path = Path(cfg_path) if cfg_path else default_facts_path(self.config.workspace)
+        facts = load_feasibility_facts(path)
+        if not facts:
+            return ""
+        assessment = check_feasibility(facts, facts_source=str(path))
+        logger.info(
+            "feasibility gate: reachable=%s required_gates=%s "
+            "known_ceiling=%s blocked=%s",
+            assessment.reachable,
+            assessment.required_gates,
+            assessment.known_ceiling,
+            ", ".join(assessment.blocked_gates),
+        )
+        return render_feasibility_block(
+            assessment,
+            max_chars=int(
+                getattr(self.config, "max_feasibility_block_chars", 2200),
+            ),
         )
 
     def _goal_checklist_section(self) -> str:

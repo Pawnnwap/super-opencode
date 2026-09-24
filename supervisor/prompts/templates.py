@@ -12,6 +12,9 @@ Use relative paths from this directory for all file operations.
 A .opencode/ folder has been created there to mark this as your project root.
 IMPORTANT:
 The .archive/ directory preserves historical versions — do not modify it.
+SHELL POLICY: command-line force deletions (PowerShell `Remove-Item -Force`,
+`rm -f`) are rejected by the runner's exec policy. Perform file deletions via
+the python interpreter (os.unlink / shutil.rmtree) instead.
 {protected_files_desc}
 Begin."""
 
@@ -27,6 +30,9 @@ Use relative paths from this directory for all file operations.
 All versions are automatically archived in the .archive/ directory.
 Do NOT delete or manually manage version files — the archive system handles this.
 Do NOT delete or modify the .opencode directory or its contents.
+SHELL POLICY: command-line force deletions (PowerShell `Remove-Item -Force`,
+`rm -f`) are rejected by the runner's exec policy. Perform file deletions via
+the python interpreter (os.unlink / shutil.rmtree) instead.
 {protected_files_desc}
 Make your changes surgical and minimal.
 Run tests after every logical change. Begin."""
@@ -42,6 +48,11 @@ PROTOCOL:
 {protocol_text}
 
 Your project root (cwd) is: {workspace}
+All files you create or modify MUST be inside this directory.
+The .archive/ directory preserves historical versions — do not modify it.
+SHELL POLICY: command-line force deletions (PowerShell `Remove-Item -Force`,
+`rm -f`) are rejected by the runner's exec policy. Perform file deletions via
+the python interpreter (os.unlink / shutil.rmtree) instead.
 Continue from where the summary left off. All files you create or modify MUST be inside this directory."""
 
 VERDICT_FORMAT = """\

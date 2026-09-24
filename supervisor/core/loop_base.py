@@ -116,7 +116,10 @@ class BaseLoop:
 
         self.protocol = load_protocol(self.config.protocol_path)
         self._cached_snapshot = snapshot_codebase(self.config.workspace)
-        self.archiver = WorkspaceArchiver(self.config.workspace)
+        self.archiver = WorkspaceArchiver(
+            self.config.workspace,
+            keep_last=self.config.archive_keep_last,
+        )
         self._init_components(agent=agent)
 
         # Pre-trust the workspace for non-interactive agent runs (opencode
@@ -168,6 +171,9 @@ class BaseLoop:
             ),
             history_budget_fraction=getattr(
                 self.config, "history_budget_fraction", 0.35,
+            ),
+            reuse_identical_verdicts=getattr(
+                self.config, "reuse_identical_verdicts", True,
             ),
             model_backup=self.config.supervisor_model_backup,
             api_key=getattr(self.config, "openai_api_key", "") or None,
@@ -884,9 +890,19 @@ class BaseLoop:
             self.config.workspace,
         )
         yield _ev("supervisor_response", deletion_permission.raw)
-        msg, _ = self.guard.sanitize_message(
+        # always_inject: this prompt invites the agent to delete files, so the
+        # protected-path reminder must be present even when the message itself
+        # matches no protected pattern (a compaction prompt that omitted the
+        # reminder once let the agent rationalize deleting the whole .archive/).
+        msg, _, protected_hits = self.guard.sanitize_with_protection(
             strip_thinking_blocks(deletion_permission.feedback),
+            always_inject=True,
         )
+        if protected_hits:
+            yield _ev(
+                "warn",
+                f"Protected-path references in compaction instructions: {protected_hits}",
+            )
         yield _ev("opencode_prompt", msg)
         yield from self.runner.send(msg)
         compaction_output, _timed_out = self.runner.read_output()
@@ -968,9 +984,13 @@ class BaseLoop:
         # The judge's full reply can carry supervisor-side request markers;
         # they must never reach the runner (see strip_skill_markers).
         feedback = strip_skill_markers(feedback)
-        safe_msg, violations = self.guard.sanitize_message(feedback)
+        safe_msg, violations, protected_violations = (
+            self.guard.sanitize_with_protection(feedback)
+        )
         if violations:
             yield _ev("warn", f"Blocked out-of-workspace paths: {violations}")
+        if protected_violations:
+            yield _ev("warn", f"Protected-path references: {protected_violations}")
         return safe_msg
 
     def _yield_suggestions(

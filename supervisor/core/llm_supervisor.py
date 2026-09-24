@@ -76,6 +76,7 @@ class LLMSupervisor:
         compact_intermediate_steps: bool = False,
         history_verbatim_turns: int = 1,
         history_budget_fraction: float = 0.35,
+        reuse_identical_verdicts: bool = True,
         model_backup: str | None = None,
         api_key: str | None = None,
         base_url: str | None = None,
@@ -126,6 +127,13 @@ class LLMSupervisor:
         self._ignore_matcher = IgnoreMatcher(workspace)
         self._ignore_matcher.load_from_workspace(workspace)
         self._last_opencode_output: str | None = None
+        # Identical-input verdict reuse: keep the last judge input and its
+        # verdict so a byte-identical re-judge (e.g. a repeated stand-by
+        # restatement) replays the verdict without another LLM call.
+        self._reuse_identical_verdicts = reuse_identical_verdicts
+        self._last_judged_content: str | None = None
+        self._last_verdict: SupervisorVerdict | None = None
+        self._verdict_reuses: int = 0
         # Open registry of context modules rendered into judge prompts. Any
         # module may register a provider (goal guard, evidence harness, ...);
         # each returns a bounded markdown block or empty string.
@@ -169,6 +177,11 @@ class LLMSupervisor:
 
     def read_protected_files(self) -> dict[str, str]:
         return self._context.read_protected_files()
+
+    @property
+    def verdict_reuse_count(self) -> int:
+        """Number of judge calls skipped by identical-input verdict reuse."""
+        return self._verdict_reuses
 
     def _should_skip_file(self, path: str) -> bool:
         return self._context.should_skip_file(path)

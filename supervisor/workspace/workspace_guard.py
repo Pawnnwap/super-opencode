@@ -139,15 +139,21 @@ class WorkspaceGuard:
         return violations
 
     def sanitize_with_protection(
-        self, message: str,
+        self, message: str, always_inject: bool = False,
     ) -> tuple[str, list[str], list[str]]:
         """Full sanitization: workspace bounds + protected paths.
+
         Returns (sanitized_msg, workspace_violations, protected_violations).
+        The CRITICAL PROTECTION block is appended when the message touches
+        protected paths, when user-protected files are configured, or when
+        ``always_inject`` is set — use that for prompts that invite the agent
+        to delete things (compaction/cleanup), where the reminder must be
+        present regardless of what the message happens to match.
         """
         sanitized, ws_violations = self.sanitize_message(message)
         protected_violations = self.check_protected_violations(message)
 
-        if protected_violations or self._protected_files:
+        if always_inject or protected_violations or self._protected_files:
             protection_warning = (
                 "\n\n[CRITICAL PROTECTION] The following paths are protected and must NOT be "
                 "modified or deleted:\n"

@@ -71,6 +71,7 @@ class OpencodeRunner(BaseRunner):
         opencode_variant: str = "",
         agent: str = "",
         opencode_model_backup: str | None = None,
+        archive_keep_last: int = 5,
         step_detector: OpencodeStepDetector | None = None,
         on_step: Callable[[Step], None] | None = None,
         on_transition: Callable[[PhaseTransition], None] | None = None,
@@ -139,7 +140,10 @@ class OpencodeRunner(BaseRunner):
         # chars/4 estimate when available.
         self._last_tokens_total: int = 0
         self._process: subprocess.Popen | None = None
-        self._archiver = WorkspaceArchiver(workspace)
+        self._archiver = WorkspaceArchiver(
+            workspace,
+            keep_last=int(archive_keep_last),
+        )
         self._session_active = False
         self._use_continue = False
         self._session_id: str | None = None
@@ -164,6 +168,7 @@ class OpencodeRunner(BaseRunner):
             opencode_variant=str(getattr(config, "agent_reasoning", "") or ""),
             agent=agent,
             opencode_model_backup=config.opencode_model_backup,
+            archive_keep_last=getattr(config, "archive_keep_last", 5),
         )
 
     @property

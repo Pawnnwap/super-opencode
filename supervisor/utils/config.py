@@ -55,6 +55,18 @@ class SupervisorConfig:
     # history_verbatim_turns=0 disables the verbatim tier.
     history_verbatim_turns: int = 1
     history_budget_fraction: float = 0.35
+    # Pre-execution feasibility gate (structural design item 5): optional path to
+    # a JSON recording known gate ceilings / blocked gates (empty = fall back to
+    # <workspace>/logs/feasibility_facts.json when present). Rendered as a tiny
+    # bounded block for both the coding agent and the judge, so an empirically
+    # unreachable done-condition is surfaced up front instead of being
+    # rediscovered over 15-20 pre-registered attempts.
+    feasibility_facts_path: str = ""
+    max_feasibility_block_chars: int = 2200
+    # Judge-context budget (structural design item 4): when the same judge input
+    # repeats byte-for-byte (typical of repeated stand-by restatements), replay
+    # the stored verdict without another LLM call.
+    reuse_identical_verdicts: bool = True
     plan_mode_rounds: int = 0
     enable_python_scanner: bool = True
     enable_occam_razor: bool = False
@@ -67,6 +79,12 @@ class SupervisorConfig:
     # Require observable workspace file changes before accepting completion
     # (disable for pure-analysis goals that legitimately change no files).
     goal_require_changes: bool = True
+    # Archive retention: keep only the newest N .archive/ snapshots when a new
+    # one is written (0 = unlimited). The archiver is supervisor infrastructure
+    # for rollback — pruning is its job, never the agent's; without a cap the
+    # snapshots grow unbounded (a 49 GB .archive once pushed the agent into
+    # deleting the whole directory on its own initiative).
+    archive_keep_last: int = 5
     # Additionally run the workspace test suite as the DONE gate.
     goal_verify_tests: bool = False
     # Judge evidence harness: auto-inject workspace facts into judge prompts

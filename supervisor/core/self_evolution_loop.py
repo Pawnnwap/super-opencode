@@ -228,7 +228,7 @@ class SelfEvolutionLoop(BaseLoop):
                 "implementation approach; do not replay the rejected patch. "
                 f"{diversity_note}{replan_note}"
             )
-            safe_rollback, _ = self.guard.sanitize_message(msg)
+            safe_rollback, _, _ = self.guard.sanitize_with_protection(msg)
             yield _ev("opencode_prompt", safe_rollback)
             yield from self.runner.send(safe_rollback)
             update_experience(self.config.workspace, failed=[f"Regression at step {progress.current_step}: {result.delta(self._baseline)}"])

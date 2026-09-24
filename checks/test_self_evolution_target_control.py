@@ -20,6 +20,9 @@ class _Guard:
     def sanitize_message(self, message: str):
         return message, []
 
+    def sanitize_with_protection(self, message: str, always_inject: bool = False):
+        return message, [], []
+
 
 class _Runner:
     def __init__(self) -> None:

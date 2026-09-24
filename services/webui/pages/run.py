@@ -118,6 +118,94 @@ def _render_launch_form(workspace: Path) -> None:
         launch_button = ui.button("Launch", on_click=_launch).props("color=primary")
 
 
+
+def _save_feasibility(workspace: Path, values: dict) -> None:
+    from supervisor.protocols.feasibility_gate import (
+        feasibility_facts_from_kv,
+        write_feasibility_facts,
+    )
+
+    facts = feasibility_facts_from_kv(**values)
+    dropped = write_feasibility_facts(
+        facts, workspace / "logs" / "feasibility_facts.json",
+    )
+    if dropped is None:
+        ui.notify("Cleared feasibility facts (empty form)")
+    else:
+        ui.notify(f"Saved {dropped} via auto-generated schema")
+
+
+def _render_feasibility_form(workspace: Path) -> None:
+    import json as _json
+
+    path = workspace / "logs" / "feasibility_facts.json"
+    current: dict = {}
+    if path.exists():
+        try:
+            current = _json.loads(path.read_text(encoding="utf-8-sig"))
+        except (ValueError, OSError):
+            current = {}
+    ceiling = current.get("known_ceiling") or {}
+
+    def _int_value(value):
+        from supervisor.protocols.feasibility_gate import _as_int
+
+        parsed = _as_int(value)
+        return parsed if parsed is not None else None
+
+    with ui.card().classes("w-full bg-[#161b22]"):
+        ui.label("Feasibility facts (optional)").classes("text-sm font-bold text-[#9ecbff]")
+        ui.label(
+            "Key-value form; saves logs/feasibility_facts.json (empty form clears it). "
+            "A known_ceiling below required_gates flags an unreachable "
+            "done-condition before the run starts.",
+        ).classes("text-xs text-[#8b949e]")
+        required = ui.number(
+            "required_gates",
+            value=_int_value(current.get("required_gates")),
+            min=0,
+        )
+        ceil_count = ui.number(
+            "known_ceiling count",
+            value=_int_value(ceiling.get("count")),
+            min=0,
+        )
+        ceil_of = ui.number(
+            "known_ceiling of",
+            value=_int_value(ceiling.get("of")),
+            min=0,
+        )
+        blocked = ui.input(
+            "blocked gates (comma-separated)",
+            value=", ".join(str(g) for g in ceiling.get("blocked_gates", [])),
+        )
+        evidence = ui.input("evidence", value=str(ceiling.get("evidence", "")))
+        notes = ui.input("notes", value=str(ceiling.get("notes", "")))
+        thresholds = ui.textarea(
+            "gate_thresholds (key: value per line)",
+            value="\n".join(
+                "{}: {}".format(k, v)
+                for k, v in (current.get("gate_thresholds") or {}).items()
+            ),
+        )
+
+        def _collect() -> None:
+            _save_feasibility(
+                workspace,
+                {
+                    "required_gates": required.value,
+                    "ceiling_count": ceil_count.value,
+                    "ceiling_of": ceil_of.value,
+                    "blocked_gates": blocked.value,
+                    "evidence": evidence.value,
+                    "notes": notes.value,
+                    "thresholds": thresholds.value,
+                },
+            )
+
+        ui.button("Save feasibility facts", on_click=_collect).props("dense")
+
+
 def _has_running_job() -> bool:
     manager = get_job_manager()
     return any(
@@ -166,6 +254,7 @@ def render(job_id: str = "") -> None:
     ui.label("Live Run").classes("text-2xl font-bold")
     _render_readiness(workspace)
     _render_launch_form(workspace)
+    _render_feasibility_form(workspace)
 
     ui.label("Task Board").classes("text-lg font-bold mt-4")
     JobBoard(manager, "run", is_evolution=False)

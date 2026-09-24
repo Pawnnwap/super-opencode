@@ -96,7 +96,19 @@ def _should_ignore(workspace: Path, path: Path) -> bool:
         return True
     if path == workspace / ".checkpoints":
         return True
-    ignore_dirs = {".git", ".venv", "venv", "node_modules", ".mypy_cache", ".opencode"}
+    # Protected archive trees: snapshots inside .archive/ are supervisor
+    # rollback state, not cleanup candidates — and proposing them for
+    # deletion invites the agent into the archive directory at all.
+    ignore_dirs = {
+        ".git",
+        ".venv",
+        "venv",
+        "node_modules",
+        ".mypy_cache",
+        ".opencode",
+        ".archive",
+        "archive",
+    }
     if any(part in ignore_dirs for part in rel.parts):
         return True
     return False

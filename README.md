@@ -26,6 +26,8 @@ Key capabilities:
 - **Task-state journal** — Append-only `TASK_STATE.md` progress journal re-injected after context resets
 - **Vulnerability scanning** — 9-tool static analysis pipeline (Bandit, Semgrep, Ruff, etc.)
 - **Context management** — Token-aware monitoring with graduated warnings and auto-compaction
+- **Feasibility gate** - optional `logs/feasibility_facts.json` (auto-generated from a key-value form on the Live Run page) records known gate ceilings and blocked gates; an unreachable done-condition is surfaced up front instead of being rediscovered over many pre-registered attempts
+- **Judge-context budget** - tiered history compaction plus identical-input verdict reuse: a byte-identical judge input replays the stored verdict without another LLM call
 
 ---
 

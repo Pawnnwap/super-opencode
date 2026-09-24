@@ -273,6 +273,9 @@ class _FakeGuard:
     def sanitize_message(self, text):
         return text, []
 
+    def sanitize_with_protection(self, text, always_inject: bool = False):
+        return text, [], []
+
 
 def _loop_with_bank(tmp_path, *, enable: bool = True):
     from supervisor.core.loop_base import BaseLoop

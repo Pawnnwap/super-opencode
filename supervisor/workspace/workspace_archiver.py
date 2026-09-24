@@ -52,9 +52,10 @@ class ArchiveResult:
 
 
 class WorkspaceArchiver:
-    def __init__(self, workspace: Path):
+    def __init__(self, workspace: Path, keep_last: int = 5):
         self.workspace = workspace.resolve()
         self.archive_root = self.workspace / _ARCHIVE_DIR
+        self.keep_last = keep_last
         self._archive_counter = self._load_counter()
 
     def _load_counter(self) -> int:
@@ -176,11 +177,16 @@ class WorkspaceArchiver:
                 json.dumps(metadata, indent=2), encoding="utf-8",
             )
 
+            pruned = self._prune_old_archives()
+            message = f"Archived {len(archived)} files to {archive_path}"
+            if pruned:
+                message += f"; pruned {len(pruned)} old snapshot(s): {', '.join(pruned)}"
+
             return ArchiveResult(
                 success=True,
                 archive_path=archive_path,
                 archived_files=archived,
-                message=f"Archived {len(archived)} files to {archive_path}",
+                message=message,
             )
 
         except Exception as exc:
@@ -199,6 +205,42 @@ class WorkspaceArchiver:
         This is typically called at the beginning of a supervisor loop execution.
         """
         return self.archive_workspace(label="before_new_run")
+
+    def _prune_old_archives(self) -> list[str]:
+        """Enforce `keep_last` retention: delete the oldest snapshot dirs.
+
+        Snapshot names sort chronologically (``run_<epoch>_<counter>_<slug>``).
+        Old snapshots may carry read-only attributes (set by WorkspaceGuard
+        while a run is active), so attributes are cleared before deletion.
+        keep_last <= 0 disables pruning.
+        """
+        if self.keep_last <= 0 or not self.archive_root.is_dir():
+            return []
+        snapshots = sorted(
+            d
+            for d in self.archive_root.iterdir()
+            if d.is_dir() and not d.name.startswith(".")
+        )
+        excess = snapshots[: max(0, len(snapshots) - self.keep_last)]
+        removed: list[str] = []
+        for snapshot_dir in excess:
+            try:
+                for item in snapshot_dir.rglob("*"):
+                    if item.is_file():
+                        try:
+                            remove_file_readonly(str(item))
+                        except OSError:
+                            pass
+                shutil.rmtree(snapshot_dir, ignore_errors=True)
+                if snapshot_dir.exists():
+                    logger.warning("Could not fully prune archive snapshot %s", snapshot_dir)
+                    continue
+                removed.append(snapshot_dir.name)
+            except OSError as exc:
+                logger.warning("Prune failed for %s: %s", snapshot_dir, exc)
+        if removed:
+            logger.info("Pruned %d old archive snapshot(s): %s", len(removed), removed)
+        return removed
 
     def list_archives(self) -> list[dict]:
         """List all available archives with their metadata."""
