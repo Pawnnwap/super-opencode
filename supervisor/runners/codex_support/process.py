@@ -12,6 +12,7 @@ from collections.abc import Callable, Generator
 from supervisor.analyzers.loop_detector import LoopDetector
 from supervisor.runners.command_common import (
     feed_stdin_prompt,
+    provider_connection_error,
     safe_command_summary,
 )
 from supervisor.runners.codex_support.command_builder import (
@@ -144,10 +145,31 @@ def run_prompt(
                 classify_line=classify_line,
                 timeout=runner.timeout,
                 loop_detector=LoopDetector(),
+                abort_on=provider_connection_error,
             )
 
             if outcome.tokens_total > 0:
                 runner._last_tokens_total = outcome.tokens_total
+
+            if outcome.aborted:
+                # Provider down: the backup model shares the endpoint, so a
+                # fallback turn is doomed — fail this turn immediately.
+                runner._last_result = RunResult(
+                    stdout=outcome.stdout,
+                    stderr=(
+                        "[PROVIDER UNREACHABLE] codex could not reach the "
+                        f"model endpoint ({outcome.abort_reason}); turn "
+                        "aborted fast."
+                    ),
+                    returncode=-1,
+                    prose=outcome.prose,
+                )
+                logger.error(
+                    "codex provider unreachable (%s) — turn aborted fast",
+                    outcome.abort_reason,
+                )
+                runner._chars_exchanged += len(prompt)
+                return
 
             # Prefer the structured thread_id; fall back to a regex over output.
             captured_id = (

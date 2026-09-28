@@ -86,7 +86,21 @@ class LLMSupervisor:
         if base_url:
             client_kwargs["base_url"] = base_url
 
-        self._client = OpenAI(**client_kwargs)
+        # Timeout vs. fast-fail are deliberately separated layers:
+        # - read=600s bounds only SLOW SUCCESSFUL responses — a thinking
+        #   model on this non-streaming call delivers nothing until the
+        #   whole completion is done, so the window must stay generous;
+        # - connect=10s + max_retries=0 make endpoint-down errors fail
+        #   fast (status errors like 502 arrive as quick HTTP responses
+        #   and raise immediately in chat_with_retry; they never wait out
+        #   the read budget).
+        import httpx
+
+        self._client = OpenAI(
+            **client_kwargs,
+            timeout=httpx.Timeout(connect=10.0, read=600.0, write=60.0, pool=600.0),
+            max_retries=0,
+        )
         self._model = model
         self._model_backup = model_backup
         # Thinking-effort control for real runs ("" = provider default):

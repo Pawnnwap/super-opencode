@@ -180,6 +180,16 @@ class GoalGuard:
             )
             return decision
 
+        rubric_problems = self._rubric_exit_checks(verdict)
+        if rubric_problems:
+            decision = self._block(
+                verdict,
+                changed_files,
+                unmet=unmet,
+                reason="gate rubric exit check: " + "; ".join(rubric_problems),
+            )
+            return decision
+
         evidence_files = self._evidence_files(changed_files)
         if getattr(self._config, "goal_require_changes", True) and not evidence_files:
             decision = self._block(
@@ -408,6 +418,47 @@ class GoalGuard:
 
         generated = set(_OPENCODE_GENERATED_MD) | {"TASK_STATE.md"}
         return [f for f in changed_files if Path(f).name not in generated]
+
+    # ------------------------------------------------------------------ #
+    # Gate rubric exit checks (layer 3: entity / assertion / consistency) #
+    # ------------------------------------------------------------------ #
+
+    def _rubric_exit_checks(self, verdict) -> list[str]:
+        """Machine gates are evaluated live here — DONE requires every one
+        PASS, and the judge's claims are checked against the measurements.
+        ERROR ("no record") blocks DONE exactly like FAIL: no record ≠ pass.
+        """
+        from supervisor.protocols.feasibility_gate import (
+            default_facts_path,
+            load_feasibility_facts,
+            parse_gates,
+        )
+        from supervisor.protocols.gate_rubric import (
+            evaluate_rubric,
+            verdict_violations,
+        )
+
+        facts = load_feasibility_facts(default_facts_path(self._workspace))
+        gates = parse_gates(facts or {})
+        if not gates:
+            return []
+        evaluations = evaluate_rubric(gates, self._workspace)
+        if evaluations:
+            self._audit(
+                "rubric_evaluated",
+                decision="evaluated",
+                results={
+                    name: evaluation.outcome for name, evaluation in evaluations.items()
+                },
+            )
+        problems = verdict_violations(verdict.criteria_results, gates, evaluations)
+        for name, evaluation in evaluations.items():
+            if evaluation.outcome != "PASS":
+                problems.append(
+                    f"machine gate {name} measured {evaluation.outcome} "
+                    f"({evaluation.fact}) — DONE requires PASS",
+                )
+        return problems
 
     def _run_test_gate(self) -> tuple[bool, str]:
         from supervisor.runners.test_runner import OcTestRunner

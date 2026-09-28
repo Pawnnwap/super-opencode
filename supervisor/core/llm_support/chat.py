@@ -138,6 +138,10 @@ def chat_with_retry(
     attempt = 0
     transient_attempt = 0
     max_transient_retries = 4
+    # Endpoint-unreachable class: a dead endpoint does not recover inside a
+    # backoff ladder — one quick retry, then fail the turn fast.
+    conn_attempt = 0
+    max_conn_retries = 1
     working_messages = list(messages)
     using_backup = False
     token_limit_retry = 0
@@ -176,7 +180,7 @@ def chat_with_retry(
                 "supervisor response",
             )
             break
-        except (RateLimitError, APIConnectionError, APITimeoutError) as exc:
+        except RateLimitError as exc:
             if transient_attempt >= max_transient_retries:
                 logger.error(
                     "Transient API error after %d retries, giving up: %s",
@@ -194,6 +198,21 @@ def chat_with_retry(
             )
             time.sleep(wait)
             transient_attempt += 1
+            continue
+        except (APIConnectionError, APITimeoutError) as exc:
+            if conn_attempt >= max_conn_retries:
+                logger.error(
+                    "Connection error after %d quick retry, failing fast: %s",
+                    max_conn_retries,
+                    exc,
+                )
+                raise
+            conn_attempt += 1
+            logger.warning(
+                "Connection error %s — one quick retry after 2s, then fast fail",
+                type(exc).__name__,
+            )
+            time.sleep(2)
             continue
         except BadRequestError as exc:
             if _is_token_limit_error(exc):
@@ -228,6 +247,18 @@ def chat_with_retry(
                 continue
             raise
         except (APIError, OpenAIError) as exc:
+            if isinstance(exc, InternalServerError):
+                code = getattr(exc, "code", None) or getattr(
+                    exc, "status_code", None,
+                )
+                body = str(exc)
+                if code != 511 and "max tokens" not in body.lower():
+                    # Endpoint-down 5xx (e.g. 502): the backup model shares
+                    # the endpoint, so a fallback call is doomed — fail fast.
+                    logger.error(
+                        "Endpoint 5xx (code %s), failing fast: %s", code, exc,
+                    )
+                    raise
             if not using_backup and supervisor._model_backup:
                 logger.warning(
                     "Primary model %s failed (%s), falling back to backup %s",

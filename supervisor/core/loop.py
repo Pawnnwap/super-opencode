@@ -141,8 +141,10 @@ class SupervisorLoop(BaseLoop):
         if self._state == LoopState.ENDED_SUCCESS:
             if self.config.enable_occam_razor:
                 yield from self._run_occam_razor()
+            self._harvest_gates()
             yield _ev("success", "All targets met — run finished successfully.")
         else:
+            self._harvest_gates()
             yield _ev(
                 "error", "Run ended with failures. See failure_report.md in workspace.",
             )
@@ -322,6 +324,8 @@ class SupervisorLoop(BaseLoop):
         step_context = self._get_step_context(progress)
         self._fulfill_pending_skills()
         verdict = self.supervisor.judge_with_step_context(output, step_context)
+        # Kept for the run-end gate harvest (PROV record of outcomes).
+        self._last_verdict = verdict
         loaded_skills = self._resolve_skill_requests(verdict)
         evidence = ""
         if self._judge_harness and verdict.evidence_requests:
@@ -477,7 +481,12 @@ class SupervisorLoop(BaseLoop):
             check_feasibility,
             default_facts_path,
             load_feasibility_facts,
+            parse_gates,
             render_feasibility_block,
+        )
+        from supervisor.protocols.gate_rubric import (
+            render_scorecard,
+            validate_refs,
         )
 
         cfg_path = getattr(self.config, "feasibility_facts_path", "") or ""
@@ -485,6 +494,22 @@ class SupervisorLoop(BaseLoop):
         facts = load_feasibility_facts(path)
         if not facts:
             return ""
+        gates = parse_gates(facts)
+        if gates:
+            # Drift guard: refs must still point inside the current TARGET.
+            from supervisor.protocols.feasibility_wizard import count_target_gates
+
+            drift = validate_refs(
+                gates,
+                count_target_gates(
+                    safe_read_text(self.config.protocol_path),
+                ),
+            )
+            if drift and drift != getattr(self, "_rubric_drift_logged", None):
+                logger.warning(
+                    "gate rubric drift (protocol changed?): %s", "; ".join(drift),
+                )
+                self._rubric_drift_logged = drift
         assessment = check_feasibility(facts, facts_source=str(path))
         logger.info(
             "feasibility gate: reachable=%s required_gates=%s "
@@ -494,12 +519,94 @@ class SupervisorLoop(BaseLoop):
             assessment.known_ceiling,
             ", ".join(assessment.blocked_gates),
         )
-        return render_feasibility_block(
+        block = render_feasibility_block(
             assessment,
             max_chars=int(
                 getattr(self.config, "max_feasibility_block_chars", 2200),
             ),
         )
+        if gates:
+            # Layer-1 injection: closed-vocabulary scorecard; determined
+            # facts come from the last harvest (live evaluation happens at
+            # the DONE exit check, not per turn).
+            block += "\n" + render_scorecard(
+                gates, {}, last_harvest=self._last_gate_harvest(),
+            )
+        return block
+
+    def _last_gate_harvest(self) -> dict | None:
+        import json
+
+        path = self.config.workspace / "logs" / "gate_results_last.json"
+        try:
+            if path.is_file():
+                data = json.loads(path.read_text(encoding="utf-8-sig"))
+                return data if isinstance(data, dict) else None
+        except (OSError, ValueError):
+            pass
+        return None
+
+    def _harvest_gates(self) -> None:
+        """Run end: PROV record of gate outcomes + guarded status transitions.
+
+        Machine gates are re-evaluated once (bounded); manual results come
+        from the final judge verdict. PASS flips gates to passing with
+        provenance; FAIL streaks only *propose* blocked for the operator.
+        """
+        import json
+
+        from supervisor.protocols.feasibility_gate import (
+            default_facts_path,
+            load_feasibility_facts,
+            parse_gates,
+            write_feasibility_facts,
+        )
+        from supervisor.protocols.gate_rubric import (
+            apply_harvest,
+            build_harvest,
+            evaluate_rubric,
+        )
+
+        try:
+            path = default_facts_path(self.config.workspace)
+            facts = load_feasibility_facts(path)
+            gates = parse_gates(facts or {})
+            if not gates:
+                return
+            evaluations = evaluate_rubric(gates, self.config.workspace)
+            verdict = getattr(self, "_last_verdict", None)
+            manual: dict[str, tuple[bool, str]] = {}
+            if verdict is not None:
+                for result in verdict.criteria_results:
+                    text = str(getattr(result, "criterion", "") or "")
+                    for gate in gates:
+                        if gate.name and gate.name in text:
+                            manual[gate.name] = (
+                                bool(getattr(result, "met", False)),
+                                str(getattr(result, "evidence", "") or ""),
+                            )
+            harvest = build_harvest(
+                gates,
+                evaluations,
+                manual,
+                run_id=time.strftime("%Y%m%d-%H%M%S"),
+                protocol_text=safe_read_text(self.config.protocol_path),
+            )
+            logs_dir = self.config.workspace / "logs"
+            logs_dir.mkdir(parents=True, exist_ok=True)
+            (logs_dir / "gate_results_last.json").write_text(
+                json.dumps(harvest, indent=2, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
+            updated = apply_harvest(dict(facts or {}), harvest)
+            write_feasibility_facts(updated, path, delete_when_empty=False)
+            logger.info(
+                "gate harvest: %d result(s) recorded, pending_blocked=%s",
+                len(harvest["results"]),
+                [p.get("gate") for p in updated.get("pending_blocked", [])],
+            )
+        except Exception:  # noqa: BLE001 — harvesting must never fail the run
+            logger.warning("gate harvest failed", exc_info=True)
 
     def _goal_checklist_section(self) -> str:
         """Layer-1 constraint injection: the concrete definition of done."""

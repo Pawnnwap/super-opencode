@@ -1,19 +1,32 @@
-"""E2E smoke test: full SupervisorLoop with free models (opencode + LLM judge)."""
+"""E2E smoke test: full SupervisorLoop with free models (opencode + LLM judge).
+
+Paths resolve from the environment (no machine-specific usernames in the
+repo): settings/auth under the user home, repo root relative to this file.
+"""
 import json
+import os
 import sys
 import time
 from pathlib import Path
 
-sys.path.insert(0, r"E:\pyprojects\super-opencode")
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from supervisor.core.loop import SupervisorLoop
 from supervisor.core.loop_base import LoopState
 from supervisor.utils.config import SupervisorConfig
 
-SETTINGS = json.load(open(r"C:\Users\Vladi\.opencode_supervisor_settings.json", encoding="utf-8"))
-WS = Path(sys.argv[1] if len(sys.argv) > 1 else r"E:\e2e_goal_ws")
+SETTINGS_PATH = Path(
+    os.environ.get("SUPERVISOR_SETTINGS", ""),
+) if os.environ.get("SUPERVISOR_SETTINGS") else Path.home() / ".opencode_supervisor_settings.json"
+SETTINGS = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
+WS = Path(sys.argv[1] if len(sys.argv) > 1 else Path.home() / "e2e_goal_ws")
 
-OR_KEY = json.load(open(r"C:\Users\Vladi\.local\share\opencode\auth.json", encoding="utf-8"))["openrouter"]["key"]
+AUTH_PATH = Path(
+    os.environ.get("OPENCODE_AUTH", ""),
+) if os.environ.get("OPENCODE_AUTH") else (
+    Path.home() / ".local" / "share" / "opencode" / "auth.json"
+)
+OR_KEY = json.loads(AUTH_PATH.read_text(encoding="utf-8"))["openrouter"]["key"]
 
 config = SupervisorConfig(
     protocol_path=WS / "protocol.md",

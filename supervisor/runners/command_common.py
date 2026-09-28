@@ -7,6 +7,42 @@ from supervisor.utils.text_utils import coerce_str
 
 logger = logging.getLogger(__name__)
 
+# Provider-unreachable signatures on agent engine output lines. Matched only
+# against raw/error stream lines while the turn has produced nothing yet, so
+# an agent *writing about* connection errors can never trip the abort.
+_CONNECT_PHRASES = (
+    "unable to connect",
+    "bad gateway",
+    "service unavailable",
+    "gateway timeout",
+    "connection refused",
+    "econnrefused",
+    "connection reset",
+    "econnreset",
+    "socket hang up",
+    "fetch failed",
+    "connection error",
+    "network error",
+    "etimed out",
+    "connect timeout",
+)
+
+
+def provider_connection_error(text: str) -> str | None:
+    """Return the matched signature when *text* says the provider is down."""
+    lowered = str(text).lower()
+    for phrase in _CONNECT_PHRASES:
+        if phrase in lowered:
+            return phrase
+    for code in ("502", "503", "504"):
+        idx = lowered.find(code)
+        if idx != -1 and any(
+            word in lowered for word in ("error", "status", "api", "gateway",
+                                          "unavailable", "response")
+        ):
+            return f"http {code}"
+    return None
+
 
 def validate_message(message: str, context: str, engine: str) -> str | None:
     """Return cleaned message or None when empty after coercion.

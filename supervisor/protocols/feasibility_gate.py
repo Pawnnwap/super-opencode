@@ -11,7 +11,20 @@ This module is self-contained and deterministic: no LLM calls, no shared state.
 It reads an optional JSON facts file (default: <workspace>/logs/feasibility_facts.json)
 and renders a bounded block.
 
-JSON schema (all keys optional)::
+JSON schema — gate list (preferred)::
+
+    {
+      "gates": [
+        {"name": "long_shrp_gt_3", "definition": "page.shrp > 3.0",
+         "status": "open" | "passing" | "blocked",
+         "evidence": "one line: where this status was observed"}
+      ],
+      "notes": "optional overall note"
+    }
+
+    Any gate with status "blocked" makes the done condition unreachable.
+
+Legacy count-based schema (still read for older files)::
 
     {
       "required_gates": 10,
@@ -40,6 +53,115 @@ logger = logging.getLogger(__name__)
 DEFAULT_FACTS_NAME = "feasibility_facts.json"
 MAX_BLOCK_CHARS = 2200
 
+# Per-gate status vocabulary. "blocked" marks a gate that failed in every
+# recorded attempt — the run's done condition cannot be met while it holds.
+GATE_STATUSES = ("open", "passing", "blocked")
+
+
+@dataclass(frozen=True)
+class Gate:
+    """One named acceptance criterion and its known status.
+
+    ``ref`` ties the gate to the numbered TARGET item it derives from
+    (drift guard); ``check`` is the typed machine check (see gate_rubric):
+    {"kind": "command", "cmd": ..., "expect_exit": 0} or
+    {"kind": "metric", "metric": ..., "op": ..., "value": ...,
+     "source": "file.json:dotted.key"} — absent means the judge adjudicates.
+    """
+
+    name: str
+    definition: str = ""
+    status: str = "open"
+    evidence: str = ""
+    ref: int | None = None
+    check: dict | None = None
+
+    def to_dict(self) -> dict:
+        data = {
+            "name": self.name,
+            "definition": self.definition,
+            "status": self.status,
+            "evidence": self.evidence,
+        }
+        if self.ref is not None:
+            data["ref"] = self.ref
+        if self.check:
+            data["check"] = dict(self.check)
+        return data
+
+
+def parse_gates(facts: dict) -> tuple[Gate, ...]:
+    """Validated gates from a facts dict; () when it has no gate list."""
+    raw = facts.get("gates") if isinstance(facts, dict) else None
+    if not isinstance(raw, list):
+        return ()
+    gates: list[Gate] = []
+    seen: set[str] = set()
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name", "")).strip()
+        if not name or name.lower() in seen:
+            continue
+        seen.add(name.lower())
+        status = str(item.get("status", "open")).strip().lower()
+        if status not in GATE_STATUSES:
+            status = "open"
+        check = item.get("check")
+        gates.append(
+            Gate(
+                name=name,
+                definition=str(item.get("definition", "")).strip(),
+                status=status,
+                evidence=str(item.get("evidence", "")).strip(),
+                ref=_as_int(item.get("ref")),
+                check=dict(check) if isinstance(check, dict) else None,
+            ),
+        )
+    return tuple(gates)
+
+
+def gates_to_facts(rows, notes: str = "") -> dict | None:
+    """Coerce editor rows into the persisted gates schema; None when empty."""
+    gates: list[Gate] = []
+    for row in rows or []:
+        if isinstance(row, Gate):
+            gate = row
+        elif isinstance(row, dict):
+            check = row.get("check")
+            gate = Gate(
+                name=str(row.get("name", "")),
+                definition=str(row.get("definition", "")),
+                status=str(row.get("status", "open")),
+                evidence=str(row.get("evidence", "")),
+                ref=_as_int(row.get("ref")),
+                check=dict(check) if isinstance(check, dict) else None,
+            )
+        else:
+            continue
+        name = gate.name.strip()
+        if not name:
+            continue
+        status = gate.status.strip().lower()
+        if status not in GATE_STATUSES:
+            status = "open"
+        gates.append(
+            Gate(
+                name,
+                gate.definition.strip(),
+                status,
+                gate.evidence.strip(),
+                gate.ref,
+                dict(gate.check) if gate.check else None,
+            ),
+        )
+    if not gates:
+        return None
+    facts: dict = {"gates": [g.to_dict() for g in gates]}
+    if str(notes).strip():
+        facts["notes"] = str(notes).strip()
+    return facts
+
 
 @dataclass(frozen=True)
 class FeasibilityAssessment:
@@ -53,6 +175,7 @@ class FeasibilityAssessment:
     facts_source: str
     reachable: bool
     reason: str
+    gates: tuple[Gate, ...] = ()
 
     def to_dict(self) -> dict:
         return {
@@ -64,6 +187,7 @@ class FeasibilityAssessment:
             "facts_source": self.facts_source,
             "reachable": self.reachable,
             "reason": self.reason,
+            "gates": [g.to_dict() for g in self.gates],
         }
 
     def render(self, max_chars: int = MAX_BLOCK_CHARS) -> str:
@@ -78,6 +202,18 @@ class FeasibilityAssessment:
             lines.append("- evidence: " + _compact(self.evidence))
         if self.notes:
             lines.append("- notes: " + _compact(self.notes))
+        for gate in self.gates:
+            marker = {"blocked": "✗", "passing": "✓", "open": "?"}[gate.status]
+            ref_note = f" #{gate.ref}" if gate.ref else ""
+            check_note = ""
+            if isinstance(gate.check, dict) and gate.check.get("kind"):
+                check_note = f" {{{gate.check['kind']} checked}}"
+            line = f"- gate {gate.name}{ref_note} [{marker} {gate.status}]{check_note}"
+            if gate.definition:
+                line += ": " + _compact(gate.definition)
+            if gate.evidence:
+                line += f" — {_compact(gate.evidence)}"
+            lines.append(line)
         lines.append("- reachable: " + ("yes" if self.reachable else "no"))
         if self.reason:
             lines.append("- reason: " + _compact(self.reason))
@@ -127,6 +263,39 @@ def check_feasibility(
             facts_source=facts_source,
             reachable=True,
             reason="No feasibility facts recorded.",
+        )
+    gates = parse_gates(facts)
+    if gates:
+        required = len(gates)
+        blocked = tuple(g.name for g in gates if g.status == "blocked")
+        passing = sum(1 for g in gates if g.status == "passing")
+        ceiling = required - len(blocked)
+        reachable = not blocked
+        if blocked:
+            reason = (
+                f"{len(blocked)} of {required} gate(s) never passed "
+                f"({', '.join(blocked)}); the done condition cannot be met "
+                "under the current constraints."
+            )
+        elif passing:
+            reason = (
+                f"{passing} of {required} gate(s) passed in earlier attempts; "
+                f"{required - passing} untested, none blocked."
+            )
+        else:
+            reason = f"All {required} gate(s) untested; none known-blocked."
+        return FeasibilityAssessment(
+            required_gates=required,
+            known_ceiling=ceiling,
+            blocked_gates=blocked,
+            evidence="; ".join(
+                g.evidence for g in gates if g.status == "blocked" and g.evidence
+            ),
+            notes=str(facts.get("notes", "")),
+            facts_source=facts_source,
+            reachable=reachable,
+            reason=reason,
+            gates=gates,
         )
     required = _as_int(facts.get("required_gates"))
     ceiling_raw = facts.get("known_ceiling")
@@ -200,6 +369,29 @@ def protocol_fingerprint(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()[:12]
 
 
+def parse_llm_facts(text: str) -> dict:
+    """Recover the facts JSON from an LLM reply.
+
+    Tolerates markdown code fences and surrounding prose; raises ValueError
+    when no JSON object can be recovered.
+    """
+    cleaned = str(text or "").strip()
+    if cleaned.startswith("```"):
+        first_newline = cleaned.find("\n")
+        cleaned = cleaned[first_newline + 1 :] if first_newline != -1 else ""
+        if cleaned.rstrip().endswith("```"):
+            cleaned = cleaned.rstrip()[:-3]
+    start = cleaned.find("{")
+    end = cleaned.rfind("}")
+    if start == -1 or end <= start:
+        raise ValueError("no JSON object found in the model reply")
+    try:
+        data = json.loads(cleaned[start : end + 1])
+    except ValueError as exc:
+        raise ValueError(f"model reply is not valid JSON: {exc}") from exc
+    return data if isinstance(data, dict) else {}
+
+
 def _as_int(value):
     if value is None:
         return None
@@ -220,65 +412,7 @@ def _bounded(text: str, cap: int) -> str:
     return text[:cap].rstrip() + " ..."
 
 
-__all__ = [
-    "DEFAULT_FACTS_NAME",
-    "MAX_BLOCK_CHARS",
-    "feasibility_facts_from_kv",
-    "write_feasibility_facts",
-    "FeasibilityAssessment",
-    "check_feasibility",
-    "default_facts_path",
-    "load_feasibility_facts",
-    "protocol_fingerprint",
-    "render_feasibility_block",
-]
-
-
-
-# Convert plain form values into the feasibility facts schema.
-# "key: value" lines for thresholds; comma-separated lists for
-# blocked gates and referenced files. None when nothing was given.
-def feasibility_facts_from_kv(
-    *,
-    required_gates=None,
-    ceiling_count=None,
-    ceiling_of=None,
-    blocked_gates: str = "",
-    thresholds: str = "",
-    evidence: str = "",
-    notes: str = "",
-    referenced_files: str = "",
-) -> dict | None:
-    ceiling: dict = {}
-    count = _as_int(ceiling_count)
-    of = _as_int(ceiling_of)
-    if count is not None:
-        ceiling["count"] = count
-    if of is not None:
-        ceiling["of"] = of
-    blocked = _split_list(blocked_gates)
-    if blocked:
-        ceiling["blocked_gates"] = blocked
-    for key, value in (("evidence", evidence), ("notes", notes)):
-        value = str(value).strip()
-        if value:
-            ceiling[key] = value
-    thresh = _kv_lines(thresholds)
-    refs = _split_list(referenced_files)
-    facts: dict = {}
-    required = _as_int(required_gates)
-    if required is not None:
-        facts["required_gates"] = required
-    if ceiling:
-        facts["known_ceiling"] = ceiling
-    if thresh:
-        facts["gate_thresholds"] = thresh
-    if refs:
-        facts["referenced_files"] = refs
-    return facts or None
-
-
-# Persist the auto-generated facts file; an empty form clears it.
+# Persist the facts file; no gates means the file is removed.
 def write_feasibility_facts(
     facts: dict | None,
     path: Path,
@@ -298,16 +432,19 @@ def write_feasibility_facts(
     return path
 
 
-def _split_list(text: str) -> list[str]:
-    return [part.strip() for part in str(text).split(",") if part.strip()]
-
-
-def _kv_lines(text: str) -> dict:
-    result: dict = {}
-    for line in str(text).splitlines():
-        if ":" not in line:
-            continue
-        key, _, value = line.partition(":")
-        if key.strip():
-            result[key.strip()] = value.strip()
-    return result
+__all__ = [
+    "DEFAULT_FACTS_NAME",
+    "MAX_BLOCK_CHARS",
+    "GATE_STATUSES",
+    "Gate",
+    "parse_gates",
+    "gates_to_facts",
+    "write_feasibility_facts",
+    "FeasibilityAssessment",
+    "check_feasibility",
+    "default_facts_path",
+    "load_feasibility_facts",
+    "parse_llm_facts",
+    "protocol_fingerprint",
+    "render_feasibility_block",
+]

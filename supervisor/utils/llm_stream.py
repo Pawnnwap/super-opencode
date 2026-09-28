@@ -113,6 +113,7 @@ def stream_chat_text(
     idle_seconds: float = STREAM_IDLE_SECONDS,
     on_progress: ProgressFn | None = None,
     stop_event: Any = None,
+    extra_body: dict | None = None,
 ) -> str:
     """Run one streamed chat completion and return the assembled text.
 
@@ -126,6 +127,8 @@ def stream_chat_text(
         "messages": messages,
         "stream": True,
     }
+    if extra_body:
+        kwargs["extra_body"] = extra_body
     if temperature is not None and not model.startswith(_TEMPERATURE_FREE_PREFIXES):
         kwargs["temperature"] = temperature
 

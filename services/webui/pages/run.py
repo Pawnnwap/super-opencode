@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import threading
+import time
 from pathlib import Path
 
-from nicegui import ui
+from nicegui import ui, run as nicegui_run
 
 from services.config.supervisor_config_builder import build_supervisor_config
 from services.webui.components.board import JobBoard
@@ -12,6 +14,20 @@ from services.webui.components.busy import busy_buttons
 from services.webui.components.live_screen import LiveJobScreen
 from services.webui.jobs import get_job_manager
 from services.webui.state import app_state
+from supervisor.utils.llm_stream import GenerationCancelled
+
+# Stop event of the feasibility draft currently in flight, if any, so the
+# Cancel button can abort it.
+_cancel_holder: dict = {}
+
+
+def _cancel_draft(status_label) -> None:
+    event = _cancel_holder.get("event")
+    if event is None:
+        ui.notify("No draft is running.")
+        return
+    event.set()
+    status_label.set_text("Cancelling draft…")
 
 
 def _save_draft(workspace: Path, text: str) -> None:
@@ -119,24 +135,70 @@ def _render_launch_form(workspace: Path) -> None:
 
 
 
-def _save_feasibility(workspace: Path, values: dict) -> None:
+def _save_feasibility(
+    workspace: Path, rows: list[dict], notes: str, pending: list[dict],
+) -> None:
     from supervisor.protocols.feasibility_gate import (
-        feasibility_facts_from_kv,
+        gates_to_facts,
         write_feasibility_facts,
     )
 
-    facts = feasibility_facts_from_kv(**values)
-    dropped = write_feasibility_facts(
-        facts, workspace / "logs" / "feasibility_facts.json",
-    )
-    if dropped is None:
-        ui.notify("Cleared feasibility facts (empty form)")
+    facts = gates_to_facts(rows, notes)
+    if facts and pending:
+        facts["pending_blocked"] = pending
+    write_feasibility_facts(facts, workspace / "logs" / "feasibility_facts.json")
+    if facts is None:
+        ui.notify("Cleared feasibility facts (no gates)")
     else:
-        ui.notify(f"Saved {dropped} via auto-generated schema")
+        ui.notify(f"Saved {len(facts['gates'])} gate(s)")
+
+
+_STATUS_LABELS = {
+    "open": "open — untested",
+    "passing": "passing — passed before",
+    "blocked": "blocked — never passed",
+}
+
+
+def _draft_facts(workspace: Path, on_progress=None, stop_event=None) -> dict:
+    """LLM draft of feasibility facts (runs in the io thread pool)."""
+    from supervisor.protocols.feasibility_wizard import (
+        FeasibilityWizard,
+        collect_evidence,
+    )
+
+    protocol = workspace / "protocol.md"
+    protocol_text = (
+        protocol.read_text(encoding="utf-8", errors="replace")
+        if protocol.exists()
+        else ""
+    )
+    wizard = FeasibilityWizard(
+        model=app_state.get("supervisor_model") or "gpt-4o",
+        api_key=app_state.get("openai_key"),
+        base_url=app_state.get("base_url") or None,
+    )
+    return wizard.draft(
+        protocol_text,
+        collect_evidence(workspace),
+        on_progress=on_progress,
+        stop_event=stop_event,
+    )
 
 
 def _render_feasibility_form(workspace: Path) -> None:
     import json as _json
+
+    from supervisor.protocols.feasibility_gate import (
+        check_feasibility,
+        gates_to_facts,
+        parse_gates,
+    )
+    from supervisor.protocols.feasibility_wizard import (
+        facts_to_gate_rows,
+        legacy_facts_to_gate_rows,
+        workspace_sources,
+    )
 
     path = workspace / "logs" / "feasibility_facts.json"
     current: dict = {}
@@ -145,65 +207,285 @@ def _render_feasibility_form(workspace: Path) -> None:
             current = _json.loads(path.read_text(encoding="utf-8-sig"))
         except (ValueError, OSError):
             current = {}
-    ceiling = current.get("known_ceiling") or {}
+    legacy_file = bool(current) and not parse_gates(current)
+    rows: list[dict] = (
+        legacy_facts_to_gate_rows(current)
+        if legacy_file
+        else facts_to_gate_rows(current)
+    )
+    pending: list[dict] = [
+        p for p in (current.get("pending_blocked") or [])
+        if isinstance(p, dict) and p.get("gate")
+    ]
 
-    def _int_value(value):
-        from supervisor.protocols.feasibility_gate import _as_int
-
-        parsed = _as_int(value)
-        return parsed if parsed is not None else None
-
+    sources = workspace_sources(workspace)
     with ui.card().classes("w-full bg-[#161b22]"):
-        ui.label("Feasibility facts (optional)").classes("text-sm font-bold text-[#9ecbff]")
+        ui.label("Feasibility gate (optional)").classes(
+            "text-sm font-bold text-[#9ecbff]",
+        )
         ui.label(
-            "Key-value form; saves logs/feasibility_facts.json (empty form clears it). "
-            "A known_ceiling below required_gates flags an unreachable "
-            "done-condition before the run starts.",
+            "Define what DONE means, gate by gate: one row per acceptance "
+            "criterion — its name, its exact pass condition, and what "
+            "earlier attempts showed. Any gate marked blocked flags the "
+            "goal unreachable before the run starts.",
         ).classes("text-xs text-[#8b949e]")
-        required = ui.number(
-            "required_gates",
-            value=_int_value(current.get("required_gates")),
-            min=0,
+        if sources["protocol_found"]:
+            gate_hint = sources["target_gates"]
+            gate_note = (
+                f"protocol.md found — {gate_hint} numbered TARGET item(s)"
+                if gate_hint
+                else "protocol.md found (no numbered TARGET items detected)"
+            )
+        else:
+            gate_note = "no protocol.md in this workspace yet"
+        artifact_note = (
+            ", ".join(sources["artifacts"])
+            if sources["artifacts"]
+            else "no prior-attempt artifacts found"
         )
-        ceil_count = ui.number(
-            "known_ceiling count",
-            value=_int_value(ceiling.get("count")),
-            min=0,
+        ui.label(
+            f"In {workspace.name}: {gate_note}; prior-attempt evidence: {artifact_note}.",
+        ).classes("text-xs mono text-[#8b949e]")
+
+        # Drift guard: saved refs must still match the current TARGET.
+        from supervisor.protocols.gate_rubric import validate_refs
+
+        drift = validate_refs(
+            parse_gates(gates_to_facts(rows) or {}) or (),
+            sources["target_gates"],
         )
-        ceil_of = ui.number(
-            "known_ceiling of",
-            value=_int_value(ceiling.get("of")),
-            min=0,
-        )
-        blocked = ui.input(
-            "blocked gates (comma-separated)",
-            value=", ".join(str(g) for g in ceiling.get("blocked_gates", [])),
-        )
-        evidence = ui.input("evidence", value=str(ceiling.get("evidence", "")))
-        notes = ui.input("notes", value=str(ceiling.get("notes", "")))
-        thresholds = ui.textarea(
-            "gate_thresholds (key: value per line)",
-            value="\n".join(
-                "{}: {}".format(k, v)
-                for k, v in (current.get("gate_thresholds") or {}).items()
-            ),
-        )
+        if drift:
+            ui.label(
+                "⚠ Protocol changed since these gates were saved: "
+                + "; ".join(drift)
+                + " — re-generate or fix the refs.",
+            ).classes("text-xs text-[#e3b341]")
+
+        # Operator confirmation for blocked proposals from run-end harvests.
+        pending_container = ui.column().classes("w-full gap-1")
+
+        def _rebuild_pending() -> None:
+            pending_container.clear()
+            with pending_container:
+                for entry in list(pending):
+                    name = str(entry.get("gate", ""))
+                    streak = entry.get("streak", "?")
+                    with ui.row().classes("w-full items-center gap-2 flex-nowrap"):
+                        ui.label(
+                            f"⚠ {name} failed {streak} consecutive run(s) — "
+                            "mark it blocked?",
+                        ).classes("text-xs text-[#e3b341] grow")
+
+                        def _accept(_e, e_entry=entry, e_name=name) -> None:
+                            for row in rows:
+                                if row.get("name") == e_name:
+                                    row["status"] = "blocked"
+                                    row["evidence"] = str(
+                                        e_entry.get("evidence", ""),
+                                    ) or row.get("evidence", "")
+                            pending.remove(e_entry)
+                            _rebuild_pending()
+                            _rebuild_rows()
+                            _refresh_verdict()
+
+                        def _dismiss(_e, e_entry=entry) -> None:
+                            pending.remove(e_entry)
+                            _rebuild_pending()
+
+                        ui.button("Mark blocked", on_click=_accept).props(
+                            "dense outline color=warning",
+                        )
+                        ui.button("Dismiss", on_click=_dismiss).props(
+                            "flat dense",
+                        )
+
+        with ui.expansion("What do these fields mean?").classes("w-full").props(
+            "dense",
+        ):
+            for line in (
+                "A gate is one numbered acceptance criterion in this workspace's "
+                'protocol.md TARGET section (e.g. "3. Pass gate corr").',
+                "Pass condition — the exact test that defines acceptance for "
+                "that gate, shown to the agent and judge so \"pass\" means the "
+                "same thing to everyone.",
+                "Status: open = not tested yet; passing = satisfied in at "
+                "least one earlier attempt; blocked = failed in every "
+                "attempt so far.",
+                "Any blocked gate makes the done condition unreachable; the "
+                "supervisor says so up front instead of letting the agent "
+                "rediscover it over many attempts.",
+                "Saved to logs/feasibility_facts.json in this workspace; "
+                "removing every row clears it. Sources for statuses are "
+                "recorded automatically when prior-attempt artifacts exist.",
+            ):
+                ui.label(f"• {line}").classes("text-xs text-[#8b949e]")
+
+        if legacy_file:
+            ui.label(
+                "Loaded an older count-based facts file as rows — review and "
+                "Save to upgrade it to the gate-list format.",
+            ).classes("text-xs text-[#e3b341]")
+
+        def _refresh_verdict() -> None:
+            assessment = check_feasibility(gates_to_facts(rows, notes.value))
+            icon = "✅" if assessment.reachable else "🚫"
+            color = "#3fb950" if assessment.reachable else "#f85149"
+            verdict_label.set_text(f"{icon} {assessment.reason}")
+            verdict_label.style(f"color: {color}")
+
+        def _edit(row: dict, key: str):
+            def _handle(e) -> None:
+                row[key] = e.value
+                _refresh_verdict()
+
+            return _handle
+
+        def _rebuild_rows() -> None:
+            rows_container.clear()
+            with rows_container:
+                if not rows:
+                    ui.label(
+                        "No gates yet — add one manually or Generate them "
+                        "from the protocol.",
+                    ).classes("text-xs text-[#8b949e]")
+                for index, row in enumerate(rows):
+                    with ui.row().classes("w-full gap-2 items-center flex-nowrap"):
+                        ui.input(
+                            "gate name",
+                            value=row.get("name", ""),
+                            on_change=_edit(row, "name"),
+                        ).classes("w-44 mono shrink-0").props("dense")
+                        # autogrow textarea: long conditions wrap and stay
+                        # readable instead of scrolling off one cramped line
+                        ui.textarea(
+                            "pass condition",
+                            value=row.get("definition", ""),
+                            on_change=_edit(row, "definition"),
+                        ).classes("grow mono").props(
+                            "dense autogrow",
+                        ).style("min-height: 2.3rem")
+                        ui.select(
+                            _STATUS_LABELS,
+                            value=row.get("status", "open"),
+                            on_change=_edit(row, "status"),
+                        ).classes("w-56 shrink-0").props("dense")
+                        check = row.get("check")
+                        if isinstance(check, dict) and check.get("kind"):
+                            import json as _json_chip
+
+                            ui.chip(
+                                f"⚙ {check.get('kind')}",
+                            ).props("dense square outline").tooltip(
+                                "Machine-checked gate (deterministic; the "
+                                "judge is never asked): "
+                                + _json_chip.dumps(check, ensure_ascii=False),
+                            )
+
+                        def _remove(_e, r_index=index) -> None:
+                            rows.pop(r_index)
+                            _rebuild_rows()
+                            _refresh_verdict()
+
+                        ui.button(icon="delete", on_click=_remove).props(
+                            "flat dense",
+                        ).tooltip("Remove this gate")
+
+        rows_container = ui.column().classes("w-full gap-2")
+        _rebuild_rows()
+        _rebuild_pending()
+
+        def _add_row() -> None:
+            rows.append(
+                {"name": "", "definition": "", "status": "open", "evidence": ""},
+            )
+            _rebuild_rows()
+            _refresh_verdict()
+
+        ui.button("Add gate", on_click=_add_row).props("dense outline")
+
+        verdict_label = ui.label("").classes("text-xs mono")
+        notes = ui.input(
+            "Overall notes (optional)", value=str(current.get("notes", "")),
+        ).classes("w-full")
+        notes.on_value_change(lambda _e: _refresh_verdict())
+        _refresh_verdict()
+
+        gen_status = ui.label("").classes("text-xs text-[#8b949e]")
 
         def _collect() -> None:
-            _save_feasibility(
-                workspace,
-                {
-                    "required_gates": required.value,
-                    "ceiling_count": ceil_count.value,
-                    "ceiling_of": ceil_of.value,
-                    "blocked_gates": blocked.value,
-                    "evidence": evidence.value,
-                    "notes": notes.value,
-                    "thresholds": thresholds.value,
-                },
+            _save_feasibility(workspace, rows, notes.value, pending)
+
+        async def _generate() -> None:
+            if not (workspace / "protocol.md").exists():
+                gen_status.set_text(
+                    "No protocol.md in this workspace — nothing to derive gates from.",
+                )
+                return
+            app_state.save()
+            app_state.apply_api_config()
+            stop_event = threading.Event()
+            _cancel_holder["event"] = stop_event
+            started = time.monotonic()
+
+            def _on_progress(content_chars: int, reasoning_chars: int, _chunks: int) -> None:
+                elapsed = time.monotonic() - started
+                if reasoning_chars and not content_chars:
+                    gen_status.set_text(
+                        f"Thinking… {reasoning_chars:,} reasoning chars "
+                        f"({elapsed:.0f}s) — Cancel if this drags",
+                    )
+                elif content_chars:
+                    gen_status.set_text(
+                        f"Writing… {content_chars:,} chars ({elapsed:.0f}s)",
+                    )
+
+            gen_status.set_text("Generating gate draft (LLM)…")
+            cancel_button.set_visibility(True)
+            try:
+                async with busy_buttons(gen_button):
+                    try:
+                        facts = await nicegui_run.io_bound(
+                            _draft_facts,
+                            workspace,
+                            on_progress=_on_progress,
+                            stop_event=stop_event,
+                        )
+                    except GenerationCancelled:
+                        gen_status.set_text("Draft cancelled.")
+                        return
+                    except Exception as exc:  # noqa: BLE001 — surface, keep rows
+                        gen_status.set_text(f"Draft failed: {str(exc)[:200]}")
+                        return
+            finally:
+                _cancel_holder["event"] = None
+                cancel_button.set_visibility(False)
+            drafted = facts_to_gate_rows(facts)
+            if not drafted:
+                gen_status.set_text("Draft contained no gates — nothing filled.")
+                return
+            rows[:] = drafted
+            _rebuild_rows()
+            _refresh_verdict()
+            blocked = sum(1 for r in rows if r["status"] == "blocked")
+            gen_status.set_text(
+                f"Drafted {len(rows)} gate(s) ({blocked} blocked) — review, "
+                "edit, then Save.",
             )
 
-        ui.button("Save feasibility facts", on_click=_collect).props("dense")
+        with ui.row().classes("gap-3"):
+            gen_button = ui.button(
+                "Generate gates from protocol (LLM)", on_click=_generate,
+            ).props("dense outline").tooltip(
+                "The supervisor model transcribes one gate per TARGET item, "
+                "with statuses only where prior-attempt artifacts evidence "
+                "them; it never invents results.",
+            )
+            cancel_button = ui.button(
+                "Cancel",
+                on_click=lambda: _cancel_draft(gen_status),
+            ).props("dense outline color=red")
+            cancel_button.set_visibility(False)
+            ui.button("Save feasibility facts", on_click=_collect).props("dense")
 
 
 def _has_running_job() -> bool:

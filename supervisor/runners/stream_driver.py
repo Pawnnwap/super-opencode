@@ -44,6 +44,8 @@ class StreamOutcome:
     looped: bool = False  # killed because the agent was stuck looping
     loop_reason: str = ""  # why, when looped
     prose: str = ""  # model text events only — no tool I/O, stderr, or errors
+    aborted: bool = False  # killed because the provider was unreachable
+    abort_reason: str = ""  # matched connection-error signature
 
 
 def _drain_stderr(proc, sink: list[str]) -> None:
@@ -89,6 +91,7 @@ def consume_process_stream(
     classify_line: Callable[[str | None], LineEvent | None],
     timeout: int,
     loop_detector=None,
+    abort_on: Callable[[str], str | None] | None = None,
 ) -> Generator[dict, None, StreamOutcome]:
     """Stream *proc* stdout via *classify_line*, yield live tool markers.
 
@@ -97,6 +100,11 @@ def consume_process_stream(
     style them distinctly) AND collapsed to markers (verbose I/O dropped);
     tokens/session/error events update the outcome. Returns a
     :class:`StreamOutcome`; never blocks past *timeout*.
+
+    ``abort_on(line) -> reason`` kills the process tree as soon as a raw or
+    error line matches a provider-down signature — but only while the turn
+    has produced no model text and no tool activity, so a healthy run whose
+    agent merely *mentions* connection errors is never aborted.
     """
     text_parts: list[str] = []
     prose_parts: list[str] = []
@@ -160,6 +168,9 @@ def consume_process_stream(
     timed_out = False
     looped = False
     loop_reason = ""
+    aborted = False
+    abort_reason = ""
+    succeeded = False  # any model text or tool activity happened
     while True:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
@@ -172,6 +183,26 @@ def consume_process_stream(
         if item is _STDOUT_DONE:
             break
         event = classify_line(item)
+        if (
+            abort_on is not None
+            and not succeeded
+            and event is not None
+            and event.kind in ("raw", "error")
+        ):
+            reason = abort_on(event.raw or event.text or "")
+            if reason:
+                aborted = True
+                abort_reason = reason
+                logger.error(
+                    "Provider unreachable (%s) before any model output — "
+                    "aborting the turn fast", reason,
+                )
+                _kill_process_tree(proc)
+                break
+        if event is not None and (
+            (event.kind == "text" and event.text) or event.kind == "tool"
+        ):
+            succeeded = True
         if loop_detector is not None and event is not None and event.kind == "text" and event.text:
             loop_detector.record_text()
         marker = _accumulate(event)
@@ -187,7 +218,7 @@ def consume_process_stream(
                     _kill_process_tree(proc)
                     break
 
-    if timed_out or looped:
+    if timed_out or looped or aborted:
         if timed_out:
             _kill_process_tree(proc)
         # Best-effort: fold any lines already buffered before the kill, so a
@@ -228,4 +259,6 @@ def consume_process_stream(
         looped=looped,
         loop_reason=loop_reason,
         prose="\n".join(p for p in prose_parts if p.strip()),
+        aborted=aborted,
+        abort_reason=abort_reason,
     )
