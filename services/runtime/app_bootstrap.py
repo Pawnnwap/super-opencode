@@ -7,8 +7,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-from supervisor.runners.opencode_runner import find_opencode
-
 UPGRADE_SETTINGS_FILE = Path.home() / ".opencode_supervisor_settings.json"
 
 # Default npm registry for CLI auto-upgrades: direct npmjs access is
@@ -284,67 +282,3 @@ def auto_upgrade_codex(
                     file=sys.stderr,
                 )
 
-
-def auto_upgrade_dcp(settings_file: Path = UPGRADE_SETTINGS_FILE) -> None:
-    if should_skip_upgrade(settings_file):
-        print(
-            "[dcp-upgrade] Skipping upgrade: disabled via config/env var",
-            file=sys.stderr,
-        )
-        return
-
-    home_dir = os.path.expanduser("~")
-
-    try:
-        opencode_exe = find_opencode("")
-    except FileNotFoundError:
-        print(
-            "[dcp-upgrade] opencode executable not found — install via 'npm install -g opencode-ai' (Windows) or 'curl -fsSL https://opencode.ai/install | bash' (macOS/Linux) first. Continuing startup.",
-            file=sys.stderr,
-        )
-        return
-
-    try:
-        if sys.platform == "win32":
-            print(
-                "[dcp-upgrade] Spawning detached background upgrade window...",
-                file=sys.stderr,
-            )
-            cmd_string = (
-                f'start "" cmd /c ""{opencode_exe}" plugin '
-                '@tarquinen/opencode-dcp@latest --global"'
-            )
-            subprocess.Popen(
-                cmd_string,
-                shell=True,
-                cwd=home_dir,
-                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
-            )
-        else:
-            print(
-                "[dcp-upgrade] Launching detached background upgrade...",
-                file=sys.stderr,
-            )
-            subprocess.Popen(
-                [opencode_exe, "plugin", "@tarquinen/opencode-dcp@latest", "--global"],
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                cwd=home_dir,
-                start_new_session=True,
-            )
-
-        print(
-            "[dcp-upgrade] Upgrade launched. Web UI startup continues.",
-            file=sys.stderr,
-        )
-    except FileNotFoundError:
-        print(
-            f"[dcp-upgrade] Failed to launch '{opencode_exe}'. Continuing startup.",
-            file=sys.stderr,
-        )
-    except Exception as exc:
-        print(
-            f"[dcp-upgrade] Unexpected error spawning background process: {exc}",
-            file=sys.stderr,
-        )

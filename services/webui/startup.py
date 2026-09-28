@@ -16,7 +16,6 @@ from services.config.opencode_config import (
 )
 from services.runtime.app_bootstrap import (
     auto_upgrade_codex,
-    auto_upgrade_dcp,
     auto_upgrade_opencode,
 )
 from services.runtime.workspace_cleanup import clean_workspace_artifacts

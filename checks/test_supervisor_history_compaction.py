@@ -174,7 +174,7 @@ def test_build_context_messages_respects_budget():
 
     total = sum(estimate_tokens(m["content"]) for m in messages)
     # Budget applies to tiers A+B; the synopsis is a small override, so allow
-    # a generous headroom over the raw budget but it must be far below the
+    # a generous margin over the raw budget but it must be far below the
     # un-compressed 12-turn total (~120k tokens).
     assert total < 40_000
     assert any("compressed to verdicts only" in m["content"] for m in messages)

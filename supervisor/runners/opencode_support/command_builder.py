@@ -4,7 +4,6 @@ import logging
 from pathlib import Path
 
 from supervisor.runners.command_common import (
-    fresh_session_prompt,
     validate_message as _validate_message_common,
 )
 from supervisor.utils.text_utils import coerce_str
@@ -19,7 +18,7 @@ def validate_message(message: str, context: str = "message") -> str | None:
 
 
 def resolve_model(model: str | None, opencode_model: str | None) -> str:
-    """Resolve command model consistently for execution and Headroom routing."""
+    """Resolve the model string for one opencode command."""
     raw_model_arg = coerce_str(model, "model arg (_build_cmd)")
     raw_self_model = coerce_str(opencode_model, "opencode_model (_build_cmd)")
     resolved_model = raw_model_arg or raw_self_model

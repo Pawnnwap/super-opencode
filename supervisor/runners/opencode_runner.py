@@ -22,12 +22,13 @@ from supervisor.analyzers.opencode_step_detector import (
     StepProgress,
 )
 from supervisor.runners.base_runner import BaseRunner
-from supervisor.runners.opencode_support.command_builder import (
+from supervisor.runners.command_common import (
     fresh_session_prompt as _fresh_session_prompt_impl,
+)
+from supervisor.runners.opencode_support.command_builder import (
     validate_message as _validate_message_impl,
 )
 from supervisor.runners.opencode_support.inspection import extract_file_refs
-from supervisor.runners.opencode_support.headroom import release_headroom_proxy
 from supervisor.runners.opencode_support.locator import find_opencode as _find_opencode
 from supervisor.runners.opencode_support.process import run_prompt as _run_prompt_impl
 from supervisor.runners.opencode_support.result import RunResult
@@ -64,9 +65,6 @@ class OpencodeRunner(BaseRunner):
         timeout: int,
         opencode_model: str | None = None,
         opencode_executable: str = "",
-        enable_headroom: bool = True,
-        headroom_executable: str = "",
-        headroom_allow_custom_provider: bool = False,
         opencode_pure: bool = False,
         opencode_variant: str = "",
         agent: str = "",
@@ -102,18 +100,10 @@ class OpencodeRunner(BaseRunner):
             opencode_executable,
             "opencode_executable",
         )
-        self.enable_headroom = bool(enable_headroom)
-        self.headroom_executable = coerce_str(
-            headroom_executable,
-            "headroom_executable",
-        )
-        self.headroom_allow_custom_provider = bool(headroom_allow_custom_provider)
         self.opencode_pure = bool(opencode_pure)
         # Thinking variant (opencode `--variant`); "" = model default. Only
         # values from the model's own variant metadata should be set here.
         self.opencode_variant = coerce_str(opencode_variant, "opencode_variant")
-        self._headroom_lease = None
-        self._headroom_status = ""
         self.agent = coerce_str(agent, "agent")
         if not isinstance(timeout, int):
             logger.warning(
@@ -161,9 +151,6 @@ class OpencodeRunner(BaseRunner):
             timeout=config.timeout,
             opencode_model=config.opencode_model,
             opencode_executable=config.opencode_executable,
-            enable_headroom=config.enable_headroom,
-            headroom_executable=config.headroom_executable,
-            headroom_allow_custom_provider=config.headroom_allow_custom_provider,
             opencode_pure=getattr(config, "opencode_pure", False),
             opencode_variant=str(getattr(config, "agent_reasoning", "") or ""),
             agent=agent,
@@ -275,8 +262,6 @@ class OpencodeRunner(BaseRunner):
             # `.cmd` install; killing only it orphans the real CLI process,
             # which then holds the binary lock and keeps hitting the provider.
             kill_process_tree(self._process)
-        release_headroom_proxy(self._headroom_lease)
-        self._headroom_lease = None
 
     def _prepare_workspace(self) -> None:
         """Ensure workspace exists and contains opencode project marker."""

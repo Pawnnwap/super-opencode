@@ -233,14 +233,6 @@ python app.py
 
 ---
 
-## Headroom 支持
-
-当 `enable_headroom` 开启（默认开启）时，supervisor 会启动（或复用）本地 Headroom 代理，
-并仅通过 `OPENCODE_CONFIG_CONTENT` 为自己的子 OpenCode 进程提供路由。用户的全局
-OpenCode 配置和其他 OpenCode 会话不受影响。
-
----
-
 ## Web UI 页面
 
 三个 NiceGUI 页面，分别位于 `/` 与 `/wizard`（协议向导）、`/run`、`/evolve`。
@@ -254,7 +246,7 @@ OpenCode 配置和其他 OpenCode 会话不受影响。
 向导功能包括：
 - **配置面板** — 执行引擎（OpenCode 或 Codex）、API 密钥与基础 URL、工作区路径、
   监督与代理模型（含备用模型）、最大重试次数、上下文阈值、回合超时、最大 token 数、
-  用于 CLI 升级的 npm registry，以及 Headroom、Python 扫描器、奥卡姆剃刀的开关。
+  用于 CLI 升级的 npm registry，以及 Python 扫描器、奥卡姆剃刀的开关。
   **清理产物**按钮可移除工作区中的运行残留。
 - **受保护文件** — 标记代理无法修改或删除的文件
 - **.opencodeignore** — 配置从上下文检索中排除的文件忽略模式
@@ -341,7 +333,7 @@ supervisor/
     opencode_runner.py              opencode CLI 的子进程包装器
     codex_runner.py                 Codex CLI 的子进程包装器
     opencode_support/               opencode 专属：命令构建、定位器、进程、流、会话、
-                                    检查、结果、Headroom 代理
+                                    检查、结果
     codex_support/                  codex 专属：命令构建、定位器、进程、流
     command_common.py               共享命令构建辅助
     locator_common.py               共享可执行文件发现
@@ -461,7 +453,6 @@ requirements.txt                    备用依赖列表（核心 + 扫描器工�
 | read_external_feedback | False | 允许外部反馈注入 |
 | log_level | "INFO" | 日志详细程度（DEBUG、INFO、WARNING、ERROR） |
 | plan_mode_rounds | 0 | 执行前的规划轮数（0 = 禁用） |
-| enable_headroom | True | 将子 OpenCode 进程路由通过本地 Headroom 代理 |
 | enable_occam_razor | False | 在归档副本上运行成功后的冗余精简阶段 |
 
 ### 自定义模型与提供商

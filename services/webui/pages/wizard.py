@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import asyncio
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 from nicegui import ui, run as nicegui_run
@@ -14,6 +14,10 @@ from services.webui.state import app_state
 from supervisor.utils.llm_stream import GenerationCancelled
 
 _MAX_LISTED_FILES = 2000
+# The scan walks up to _MAX_LISTED_FILES entries, but the droplist only
+# offers the first _DROPLIST_FILES of them to stay responsive.
+_DROPLIST_FILES = 500
+_IGNORE_SUGGEST_FILES = 1000
 
 # Holds the stop event of the refine call currently in flight, if any, so the
 # Cancel button can abort it.
@@ -33,12 +37,21 @@ def _save() -> None:
     app_state.save()
 
 
-def _bind_input(key: str, label: str, *, password: bool = False, classes: str = ""):
+def _bind_input(
+    key: str,
+    label: str,
+    *,
+    password: bool = False,
+    classes: str = "",
+    on_change: Callable[[], None] | None = None,
+):
     value = app_state.get(key) or ""
 
     def _change(e) -> None:
         app_state[key] = e.value
         _save()
+        if on_change is not None:
+            on_change()
 
     return ui.input(
         label,
@@ -76,16 +89,43 @@ def _workspace() -> Path | None:
     return None
 
 
+def _section(title: str, *, open_: bool = False):
+    """One collapsible panel of the wizard, visually consistent."""
+    return ui.expansion(title, value=open_).classes("w-full bg-[#161b22]")
+
+
+def _list_workspace_files(workspace: Path, limit: int) -> list[str]:
+    """Sorted forward-slash relative paths of files under ``workspace``."""
+    return sorted(
+        str(p.relative_to(workspace)).replace("\\", "/")
+        for p in workspace.rglob("*")
+        if p.is_file()
+    )[:limit]
+
+
+def _on_workspace_change() -> None:
+    # Workspace-dependent sections below capture the workspace at render
+    # time; refresh them so they never serve (or write to) the old folder.
+    _protected_section.refresh()
+    _ignore_section.refresh()
+    _skills_listing.refresh()
+    _protocol_file_row.refresh()
+
+
 # ── Configuration section ─────────────────────────────────────────────────────
 
 
 def _config_section() -> None:
-    with ui.expansion("Configuration", value=True).classes("w-full bg-[#161b22]"):
+    with _section("Configuration", open_=True):
         with ui.row().classes("w-full gap-4 flex-wrap"):
             _bind_input("openai_key", "API key", password=True)
             _bind_input("base_url", "API base URL (optional)")
         with ui.row().classes("w-full gap-4 flex-wrap items-end"):
-            _bind_input("workspace", "Workspace path")
+            _bind_input(
+                "workspace",
+                "Workspace path",
+                on_change=_on_workspace_change,
+            )
             ui.button(
                 "Clean artifacts",
                 on_click=lambda: _clean_artifacts(),
@@ -114,11 +154,6 @@ def _config_section() -> None:
                 _bind_input("codex_api_key", "Codex API key", password=True)
         _model_section()
         with ui.row().classes("w-full gap-6 flex-wrap"):
-            _bind_switch("enable_headroom", "Headroom proxy")
-            _bind_switch(
-                "headroom_allow_custom_provider",
-                "Headroom for custom providers",
-            )
             _bind_switch("enable_python_scanner", "Python scanner")
             _bind_switch("enable_occam_razor", "Occam Razor")
             _bind_switch("enable_supervisor_skills", "Supervisor skills")
@@ -136,10 +171,12 @@ def _config_section() -> None:
                 "supervisor_skills_dir",
                 "Supervisor skills extra dir (optional; beyond built-in + "
                 "workspace bank)",
+                on_change=_skills_listing.refresh,
             )
         _skills_listing()
 
 
+@ui.refreshable
 def _skills_listing() -> None:
     """Read-only view of the supervisor skill bank the judge can load from."""
     from supervisor.core.skill_bank import SkillBank, builtin_bank_dir
@@ -214,19 +251,16 @@ def _agent_variant_choices(engine: str, model: str) -> list[str]:
     (codex exposes no per-model enumeration; providers accept their subset).
     Detection failures degrade to the plain effort ladder.
     """
+    from services.config.connectivity import REASONING_EFFORT_CHOICES
+
     if engine == "opencode":
-        from services.config.connectivity import (
-            REASONING_EFFORT_CHOICES,
-            opencode_variant_choices,
-        )
+        from services.config.connectivity import opencode_variant_choices
 
         found = opencode_variant_choices(
             app_state.get("opencode_executable") or "opencode", model or "",
         )
         if found:
             return list(found)
-    else:
-        from services.config.connectivity import REASONING_EFFORT_CHOICES
     return list(REASONING_EFFORT_CHOICES)
 
 
@@ -307,10 +341,12 @@ async def _refresh_models(button=None) -> None:
 # ── Protected files ───────────────────────────────────────────────────────────
 
 
+@ui.refreshable
 def _protected_section() -> None:
-    with ui.expansion("Protected Files").classes("w-full bg-[#161b22]"):
+    with _section("Protected Files"):
         ui.label(
-            "Files the agent may not modify or delete. Stored per workspace.",
+            "Files the agent may not modify or delete (selection lives for "
+            "this app session).",
         ).classes("text-xs text-[#8b949e]")
         workspace = _workspace()
         if not workspace:
@@ -322,16 +358,10 @@ def _protected_section() -> None:
         options_holder: dict[str, list[str]] = {}
 
         async def _load_options() -> None:
-            entries = await nicegui_run.io_bound(_scan_workspace, workspace)
-            options_holder["all"] = entries
-            add_select.options = entries[:500]
-            add_select.update()
-
-        async def _load_options() -> None:
             async with busy_buttons(scan_button):
                 entries = await nicegui_run.io_bound(_scan_workspace, workspace)
                 options_holder["all"] = entries
-                add_select.options = entries[:500]
+                add_select.options = entries[:_DROPLIST_FILES]
                 add_select.update()
 
         scan_button = ui.button("Scan workspace", on_click=_load_options).props(
@@ -355,11 +385,7 @@ def _protected_section() -> None:
 
 
 def _scan_workspace(workspace: Path) -> list[str]:
-    return sorted(
-        str(p.relative_to(workspace)).replace("\\", "/")
-        for p in workspace.rglob("*")
-        if p.is_file()
-    )[:_MAX_LISTED_FILES]
+    return _list_workspace_files(workspace, _MAX_LISTED_FILES)
 
 
 def _refresh_chips(protected: list[str], options_holder: dict, container) -> None:
@@ -386,10 +412,11 @@ def _remove_protected(path: str, options_holder: dict, container) -> None:
 # ── Ignore editor ─────────────────────────────────────────────────────────────
 
 
+@ui.refreshable
 def _ignore_section() -> None:
     from supervisor.workspace.ignore_patterns import IGNORE_FILE
 
-    with ui.expansion(".opencodeignore Editor").classes("w-full bg-[#161b22]"):
+    with _section(".opencodeignore Editor"):
         workspace = _workspace()
         if not workspace:
             ui.label("Set a valid workspace path first.").classes("text-[#e3b341]")
@@ -435,11 +462,7 @@ def _ignore_section() -> None:
 def _suggest_ignore_patterns(workspace: Path) -> str:
     from supervisor.utils.llm_stream import make_stream_client, stream_chat_text
 
-    entries = sorted(
-        str(p.relative_to(workspace)).replace("\\", "/")
-        for p in workspace.rglob("*")
-        if p.is_file()
-    )[:1000]
+    entries = _list_workspace_files(workspace, _IGNORE_SUGGEST_FILES)
     client = make_stream_client(
         api_key=app_state.get("openai_key"),
         base_url=app_state.get("base_url") or None,
@@ -474,7 +497,9 @@ def _connectivity_section() -> None:
         test_supervisor_connectivity,
     )
 
-    with ui.expansion("Connectivity Tests").classes("w-full bg-[#161b22]"):
+    # Engine is captured at render time; safe because switching the engine
+    # reloads the whole page (see _set_engine).
+    with _section("Connectivity Tests"):
         engine = app_state.get("engine") or "opencode"
         status = ui.label("").classes("text-xs")
         _refresh_status(status)
@@ -495,9 +520,6 @@ def _connectivity_section() -> None:
                         45,
                         app_state.get("codex_base_url") or "",
                         app_state.get("codex_api_key") or "",
-                        True,
-                        app_state.get("headroom_executable") or "",
-                        app_state.get("headroom_allow_custom_provider", False),
                     )
                     app_state.flags["opencode_test_passed"] = ok
                     status.set_text(f"{engine}: {'✅' if ok else '❌'} {message[:160]}")
@@ -537,18 +559,27 @@ def _refresh_status(_label) -> None:
 # ── Protocol drafts + refine flow ─────────────────────────────────────────────
 
 
-def _protocol_section() -> None:
+@ui.refreshable
+def _protocol_file_row() -> None:
+    """Existing-protocol indicator; refreshed on workspace switches."""
     workspace = _workspace()
-    with ui.expansion("Protocol Draft", value=True).classes("w-full bg-[#161b22]"):
-        if workspace and (workspace / "protocol.md").exists():
-            with ui.row().classes("items-center gap-2"):
-                ui.label("✅ Existing protocol.md found in this workspace.").classes(
-                    "text-xs text-[#3fb950]",
-                )
-                ui.button(
-                    "Preview",
-                    on_click=lambda: _preview_file(workspace / "protocol.md"),
-                ).props("flat dense")
+    if workspace and (workspace / "protocol.md").exists():
+        with ui.row().classes("items-center gap-2"):
+            ui.label("✅ Existing protocol.md found in this workspace.").classes(
+                "text-xs text-[#3fb950]",
+            )
+            ui.button("Preview", on_click=_preview_protocol).props("flat dense")
+
+
+def _preview_protocol() -> None:
+    workspace = _workspace()
+    if workspace is not None:
+        _preview_file(workspace / "protocol.md")
+
+
+def _protocol_section() -> None:
+    with _section("Protocol Draft", open_=True):
+        _protocol_file_row()
         with ui.row().classes("w-full gap-4"):
             ui.input(
                 "INPUT (context)",
@@ -582,7 +613,7 @@ def _protocol_section() -> None:
         ).props("color=primary")
 
         if app_state.get("protocol_md"):
-            _refined_editor(workspace)
+            _refined_editor()
 
 
 def _set_draft(key: str, value: str, quality_label) -> None:
@@ -670,10 +701,8 @@ async def _refine(status, refine_button, cancel_button) -> None:
     ui.run_javascript("location.reload()")
 
 
-def _refined_editor(workspace: Path | None) -> None:
-    with ui.expansion("Refined protocol — review and accept", value=True).classes(
-        "w-full bg-[#161b22]",
-    ):
+def _refined_editor() -> None:
+    with _section("Refined protocol — review and accept", open_=True):
         area = ui.textarea(
             "protocol.md", value=app_state.get("protocol_md") or "",
         ).classes("w-full mono").props("autogrow")
@@ -701,6 +730,9 @@ def _refined_editor(workspace: Path | None) -> None:
             if not audit.is_actionable:
                 ui.notify("TARGET not ready: " + " ".join(audit.issues))
                 return
+            # Resolve the workspace at accept time: it may have changed
+            # since this editor was rendered.
+            workspace = _workspace()
             if workspace is None:
                 ui.notify("Set a valid workspace first.")
                 return

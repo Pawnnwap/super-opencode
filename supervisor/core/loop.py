@@ -16,7 +16,7 @@ import time
 from collections.abc import Generator
 
 from supervisor.analyzers.opencode_step_detector import StepProgress
-from supervisor.core.llm_supervisor import LLMSupervisor, StepContext, SupervisorVerdict
+from supervisor.core.llm_supervisor import StepContext, SupervisorVerdict
 from supervisor.core.loop_base import BaseLoop, Event, LoopState, _ev
 from supervisor.core.occam_razor import OccamRazorStage
 from supervisor.utils.config import SupervisorConfig
@@ -194,7 +194,10 @@ class SupervisorLoop(BaseLoop):
         protocol_text = safe_read_text(self.config.protocol_path)
         ws = self.config.workspace.resolve()
         protected_files_desc = self.guard.get_all_protected_files_description()
+        # Known gate ceilings / blocked gates shape a realistic plan as much
+        # as the protocol does; the run prompt injects the same block.
         feasibility_block = self._feasibility_section()
+        feasibility_desc = f"\n{feasibility_block}\n" if feasibility_block else ""
         plan_prompt = (
             "@explore PLAN MODE. Do NOT create, modify, or delete any files.\n\n"
             "Read protocol below and produce detailed implementation plan:\n"
@@ -205,6 +208,7 @@ class SupervisorLoop(BaseLoop):
             f"PROTOCOL:\n{protocol_text}\n\n"
             f"Project root (cwd) is: {ws}\n"
             f"{protected_files_desc}\n"
+            f"{feasibility_desc}"
             "Output plan now."
         )
 

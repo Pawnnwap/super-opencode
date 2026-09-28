@@ -7,7 +7,6 @@ from pathlib import Path
 
 from nicegui import ui
 
-from services.webui.components.log_panel import LogPanel
 from services.webui.components.progress_widgets import ProgressWidgets
 from services.webui.layout import format_status_pill
 from services.webui.log_format import fmt_ts, safe_logs

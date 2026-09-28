@@ -25,8 +25,10 @@ from __future__ import annotations
 import logging
 from collections.abc import Generator
 
-from supervisor.runners.codex_support.command_builder import (
+from supervisor.runners.command_common import (
     fresh_session_prompt as _codex_fresh_session_prompt_impl,
+)
+from supervisor.runners.codex_support.command_builder import (
     validate_message as _codex_validate_message_impl,
 )
 from supervisor.runners.codex_support.locator import find_codex as _find_codex

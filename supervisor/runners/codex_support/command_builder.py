@@ -4,7 +4,6 @@ import logging
 from pathlib import Path
 
 from supervisor.runners.command_common import (
-    fresh_session_prompt,
     validate_message as _validate_message_common,
 )
 from supervisor.utils.text_utils import coerce_str

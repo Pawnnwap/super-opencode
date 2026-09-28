@@ -24,11 +24,6 @@ def build_supervisor_config(
         opencode_model=session_state["opencode_model"] or None,
         opencode_model_backup=session_state["opencode_model_backup"] or None,
         opencode_executable=session_state["opencode_executable"],
-        enable_headroom=bool(session_state.get("enable_headroom", True)),
-        headroom_executable=str(session_state.get("headroom_executable", "") or "").strip(),
-        headroom_allow_custom_provider=bool(
-            session_state.get("headroom_allow_custom_provider", False),
-        ),
         supervisor_model=session_state["supervisor_model"] or "gpt-4o",
         supervisor_model_backup=session_state["supervisor_model_backup"] or None,
         supervisor_reasoning=str(session_state.get("supervisor_reasoning", "") or "").strip(),

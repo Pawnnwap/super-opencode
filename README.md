@@ -267,15 +267,6 @@ the restart prompt so the agent resumes with continuity.
 
 ---
 
-## Headroom Support
-
-When `enable_headroom` is on (default `True`), the supervisor starts (or
-reuses) a local Headroom proxy and supplies routing only to its own child
-OpenCode process via `OPENCODE_CONFIG_CONTENT`. The user's global OpenCode
-configuration and other OpenCode sessions remain untouched.
-
----
-
 ## Web UI Pages
 
 Three NiceGUI pages, served at `/` and `/wizard` (Protocol Wizard), `/run`,
@@ -292,7 +283,7 @@ The wizard includes:
 - **Configuration panel** — Execution engine (OpenCode or Codex), API key
   and base URL, workspace path, supervisor and agent models (plus backup
   models), max retries, context threshold, turn timeout, max tokens, npm
-  registry for CLI upgrades, and switches for Headroom, the Python scanner,
+  registry for CLI upgrades, and switches for the Python scanner
   and the Occam's razor pass. A **Clean artifacts** button removes run
   leftovers from the workspace.
 - **Protected Files** — Mark files that the agent cannot modify or delete
@@ -385,7 +376,7 @@ supervisor/
     opencode_runner.py              Subprocess wrapper for the opencode CLI
     codex_runner.py                 Subprocess wrapper for the Codex CLI
     opencode_support/               opencode specifics: command builder, locator, process,
-                                    stream, session, inspection, result, headroom proxy
+                                    stream, session, inspection, result
     codex_support/                  codex specifics: command builder, locator, process, stream
     command_common.py               Shared command construction helpers
     locator_common.py               Shared executable discovery
@@ -506,7 +497,6 @@ Quality ratings: `excellent` (≥90%) → `good` (≥75%) → `fair` (≥50%) �
 | read_external_feedback | False | Allow external feedback injection |
 | log_level | "INFO" | Logging verbosity (DEBUG, INFO, WARNING, ERROR) |
 | plan_mode_rounds | 0 | Number of planning rounds before execution (0 = disabled) |
-| enable_headroom | True | Route the child OpenCode process through a local Headroom proxy |
 | enable_occam_razor | False | Run the post-success redundancy-reduction pass on an archive copy |
 
 ### Custom Models and Providers

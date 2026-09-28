@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import subprocess
-from pathlib import Path
 
 from services.config.codex_config import CODEHELP_SERVER_NAME, ensure_codehelp_codex_mcp
 

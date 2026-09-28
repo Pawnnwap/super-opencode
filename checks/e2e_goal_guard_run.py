@@ -25,7 +25,6 @@ config = SupervisorConfig(
     opencode_model=sys.argv[2] if len(sys.argv) > 2 else "openrouter/poolside/laguna-s-2.1:free",
     opencode_model_backup="openrouter/nvidia/nemotron-3.5-lightning:free",
     opencode_pure=True,
-    enable_headroom=False,
     plan_mode_rounds=0,
     enable_python_scanner=False,
     enable_occam_razor=False,

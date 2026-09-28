@@ -21,12 +21,6 @@ class SupervisorConfig:
     # isolated from global agent customization that could hijack the task;
     # leave off to keep the user's plugin environment.
     opencode_pure: bool = False
-    # When available, run native OpenAI/Anthropic OpenCode providers through
-    # a process-local Headroom proxy. Unsupported custom providers stay direct
-    # unless explicitly allowed below, so savings setup cannot break them.
-    enable_headroom: bool = True
-    headroom_executable: str = ""
-    headroom_allow_custom_provider: bool = False
     supervisor_model: str = "gpt-4o"
     supervisor_model_backup: str | None = None
     # Thinking/reasoning control for real runs ("" = model default).

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import threading
 from collections.abc import Sequence
 
 from supervisor.utils.text_utils import coerce_str

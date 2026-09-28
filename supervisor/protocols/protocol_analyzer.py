@@ -11,7 +11,6 @@ from supervisor.protocols.analyzer_support import (
     SectionScore,
     Severity,
     ValidationIssue,
-    _ACTION_VERBS,
     _TESTABILITY_KEYWORDS,
     _VAGUE_WORDS,
 )

@@ -8,6 +8,7 @@ from enum import Enum, auto
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from supervisor.core.llm_support.models import StepContext
 from supervisor.utils.experience_tracker import (
     EvolutionSummary,
     log_evolution_summary,
@@ -458,8 +459,6 @@ class BaseLoop:
         return read_task_state_tail(self.config.workspace)
 
     def _get_step_context(self, progress) -> StepContext:
-        from supervisor.core.llm_supervisor import StepContext
-
         return StepContext(
             current_step=progress.current_step,
             total_steps_estimate=progress.total_steps_estimate,

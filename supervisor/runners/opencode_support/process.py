@@ -13,14 +13,7 @@ from supervisor.runners.command_common import (
     feed_stdin_prompt,
     safe_command_summary,
 )
-from supervisor.runners.opencode_support.command_builder import build_cmd, resolve_model
-from supervisor.runners.opencode_support.headroom import (
-    acquire_headroom_proxy,
-    build_headroom_environment,
-    is_headroom_proxy_healthy,
-    release_headroom_proxy,
-    resolve_headroom_plan,
-)
+from supervisor.runners.opencode_support.command_builder import build_cmd
 from supervisor.runners.opencode_support.result import RunResult
 from supervisor.runners.opencode_support.stream import classify_line
 from supervisor.runners.stream_driver import consume_process_stream
@@ -29,41 +22,9 @@ from supervisor.utils.text_utils import coerce_str
 logger = logging.getLogger(__name__)
 
 
-def _prepare_child_environment(runner, model: str | None) -> tuple[dict[str, str], str]:
-    """Return direct or Headroom-routed env without changing user config files."""
-    direct_environment = {**os.environ, "NO_COLOR": "1", "TERM": "dumb"}
-    plan = resolve_headroom_plan(
-        enabled=runner.enable_headroom,
-        model=model,
-        executable=runner.headroom_executable,
-        allow_custom_provider=runner.headroom_allow_custom_provider,
-    )
-    if not plan.enabled:
-        return direct_environment, f"Headroom inactive: {plan.reason}"
-
-    try:
-        lease = runner._headroom_lease
-        if lease is not None and not is_headroom_proxy_healthy(lease.port):
-            release_headroom_proxy(lease)
-            runner._headroom_lease = None
-            lease = None
-        if lease is None:
-            lease = acquire_headroom_proxy(
-                plan.executable,
-                preferred_port=plan.port,
-                startup_timeout=min(20.0, max(5.0, runner.timeout / 2)),
-            )
-            runner._headroom_lease = lease
-        environment = build_headroom_environment(
-            direct_environment,
-            executable=plan.executable,
-            port=lease.port,
-            workspace=runner.workspace,
-        )
-    except (OSError, RuntimeError) as exc:
-        logger.warning("Headroom unavailable; continuing directly: %s", exc)
-        return direct_environment, f"Headroom unavailable; running direct: {exc}"
-    return environment, f"Headroom active on port {lease.port}: {plan.reason}"
+def _prepare_child_environment() -> dict[str, str]:
+    """Build the child process environment without touching user config files."""
+    return {**os.environ, "NO_COLOR": "1", "TERM": "dumb"}
 
 
 def run_prompt(
@@ -110,18 +71,11 @@ def run_prompt(
             variant=getattr(runner, "opencode_variant", "") or "",
         )
 
-        resolved_model = resolve_model(model_for_cmd, runner.opencode_model)
-        child_env, headroom_status = _prepare_child_environment(runner, resolved_model)
-        headroom_status_changed = headroom_status != runner._headroom_status
+        child_env = _prepare_child_environment()
 
         msg = f"Running opencode command: {safe_command_summary(cmd)}"
         logger.info(msg)
         yield {"level": "info", "msg": msg}
-        if headroom_status_changed:
-            runner._headroom_status = headroom_status
-            level = "info" if headroom_status.startswith("Headroom active") else "warn"
-            logger.info(headroom_status)
-            yield {"level": level, "msg": headroom_status}
 
         try:
             runner._process = subprocess.Popen(

@@ -268,9 +268,6 @@ def test_opencode_connectivity(
     opencode_model: str | None,
     opencode_model_backup: str | None,
     timeout: int = 30,
-    enable_headroom: bool = True,
-    headroom_executable: str = "",
-    headroom_allow_custom_provider: bool = False,
 ) -> tuple[bool, str]:
     workspace = _ephemeral_workspace("opencode")
     try:
@@ -289,9 +286,6 @@ def test_opencode_connectivity(
             opencode_executable=exe,
             opencode_model_backup=backup,
             timeout=seconds,
-            enable_headroom=enable_headroom,
-            headroom_executable=headroom_executable,
-            headroom_allow_custom_provider=headroom_allow_custom_provider,
         )
         runner.opencode_variant = attempt_variant
 
@@ -465,9 +459,6 @@ def test_agent_connectivity(
     timeout: int = 30,
     base_url: str = "",
     api_key: str = "",
-    enable_headroom: bool = True,
-    headroom_executable: str = "",
-    headroom_allow_custom_provider: bool = False,
 ) -> tuple[bool, str]:
     """Dispatch the execution-agent connectivity probe by engine.
 
@@ -479,15 +470,7 @@ def test_agent_connectivity(
         return test_codex_connectivity(
             executable, model, model_backup, timeout, base_url, api_key
         )
-    return test_opencode_connectivity(
-        executable,
-        model,
-        model_backup,
-        timeout,
-        enable_headroom,
-        headroom_executable,
-        headroom_allow_custom_provider,
-    )
+    return test_opencode_connectivity(executable, model, model_backup, timeout)
 
 
 # Reasoning-suppression conventions passed via extra_body, cheapest first.

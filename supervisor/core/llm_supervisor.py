@@ -42,9 +42,7 @@ from supervisor.core.llm_support.models import (
     _OPENCODE_GENERATED_MD,
     _SKIP_DIR_PREFIXES,
     _SKIP_DIRS,
-    _check_completion_phrases,
     _get_model_token_limit,
-    _is_token_limit_error,
     StepContext,
     SupervisorVerdict,
 )
