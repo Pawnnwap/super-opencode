@@ -20,6 +20,20 @@ class AlignmentResult:
     reinforcement_message: str = ""
 
 
+# Only flag when the negation verb directly governs the restrictions (e.g.
+# "ignore the restrictions", "bypass all rules"). Requiring mere co-occurrence
+# of a keyword and any of ignore/skip/bypass/violate anywhere in the output
+# flagged benign explanations like ".pylintrc makes the import checker skip
+# these known deps" next to a restriction keyword "files" (run_8bff451f).
+_RESTRICTION_EVASION_RE = re.compile(
+    r"\b(?:ignor\w+|skip\w*|bypass\w*|violat\w+|disregard\w*|override\w*)\s+"
+    r"(?:all\s+|any\s+|of\s+the\s+|the\s+|these\s+|those\s+)*"
+    r"(?:protocol\s+|stated\s+|listed\s+)?"
+    r"(?:restrictions?|constraints?|rules?|boundaries?)\b",
+    re.IGNORECASE,
+)
+
+
 def verify_protocol_alignment(
     opencode_output: str,
     protocol: Protocol,
@@ -83,9 +97,8 @@ def verify_protocol_alignment(
     if protocol.restrictions_section:
         restriction_keywords = extract_keywords(protocol.restrictions_section)
         for keyword in restriction_keywords:
-            if keyword.lower() in output_lower and any(
-                word in output_lower
-                for word in ["ignore", "skip", "bypass", "violate"]
+            if keyword.lower() in output_lower and _RESTRICTION_EVASION_RE.search(
+                opencode_output,
             ):
                 violations.append(
                     ProtocolViolation(

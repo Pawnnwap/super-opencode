@@ -116,12 +116,27 @@ _LOAD_SKILL_RE = re.compile(
 # Evidence text that contradicts a [MET] claim: weak judges occasionally mark
 # a criterion MET while their own evidence says the opposite ("[MET] create
 # greet.py — no greet.py found"). Each pattern here was observed in the wild.
+# Deliberately contradiction-*shaped* phrases only: a bare "<negation> <word>"
+# alternative also matches compliance phrasings ("no duplicated scripts",
+# "no pre-made .mat consumed", "0 rows missing id") and vetoed legitimate
+# DONE verdicts (run_8bff451f), so negation words must bind to an
+# existence/verification verb.
+_ISSUE_WORD = (
+    r"(?!issues?\b|problems?\b|errors?\b|violations?\b|warnings?\b|"
+    r"findings?\b|crashes?\b|regressions?\b|conflicts?\b|duplicates?\b|"
+    r"changes?\b|modifications?\b|updates?\b)"
+)
 _NEGATIVE_EVIDENCE_RE = re.compile(
-    r"\b(no|not|none|never|cannot|can't|unable|missing|absent|lacks?|lacking|"
-    r"without)\s+\w+|"
-    r"\bnot\s+found\b|\bdoes\s+not\s+exist\b|\bno\s+changes?\b|"
-    r"\bnot\s+created\b|\bnot\s+modified\b|\bno\s+evidence\b|"
-    r"\bstill\s+(missing|absent|empty)\b|\bempty\b",
+    r"\bnot\s+(?:found|created|modified|implemented|fixed|written|updated|installed|added|present|available)\b"
+    r"|\bdoes\s+not\s+(?:exist|appear|run|pass|work)\b"
+    r"|\bdoesn'?t\s+exist\b"
+    r"|\bno\s+" + _ISSUE_WORD + r"[\w.\-]+\s+found\b"
+    r"|\bno\s+(?:changes?|evidence|such|sign|trace|output|results?)\b"
+    r"|\bstill\s+(?:missing|absent|empty|failing|failed|broken)\b"
+    r"|\bunable\s+to\b"
+    r"|\b(?:cannot|can't|could\s+not|couldn't)\s+(?:find|locate|verify|confirm|access)\b"
+    r"|\b(?:missing|absent)\s+from\b"
+    r"|\bis\s+(?:still\s+)?empty\b",
     re.IGNORECASE,
 )
 
