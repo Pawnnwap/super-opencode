@@ -126,15 +126,50 @@ def regex_token_current(logs: list) -> tuple[int, float] | None:
 
 
 def phase_breadcrumb(current_phase: str, completed_phases: list | None) -> str:
-    """Breadcrumb 'plan -> code -> test -> review' with current bold."""
+    """Breadcrumb 'plan -> code -> test -> review' as inline HTML.
+
+    The only consumer renders it via ui.html, so phases are marked up with
+    real tags (<strong> current, <s> completed) instead of markdown — a
+    plain-text label would show the asterisks/tildes literally.
+    Labels come from the constant PHASE_SEQUENCE, so no escaping is needed.
+    """
     current = (current_phase or "").lower()
     done = {str(p).lower() for p in (completed_phases or [])}
     parts: list[str] = []
     for label, name in PHASE_SEQUENCE:
         if name == current:
-            parts.append(f"**{label}**")
+            parts.append(f"<strong>{label}</strong>")
         elif name in done:
-            parts.append(f"~~{label}~~")
+            parts.append(f"<s>{label}</s>")
         else:
             parts.append(label)
     return " → ".join(parts)
+
+
+# Inline markers whose unbalanced leftovers would show literally once a
+# markdown renderer sees them without their closing pair.
+_MD_PAIR_MARKS = ("**", "~~", "__", "`")
+
+
+def markdown_preview(text: str, limit: int) -> str:
+    """Truncate a markdown document for a preview without literal markup.
+
+    A hard slice can land inside an emphasis run, so the renderer meets an
+    unclosed ** / ~~ / ` and prints it as-is. Cut at the last blank-line
+    boundary within ``limit``, then drop any trailing fragment left with an
+    odd marker count. Text already within ``limit`` is returned unchanged.
+    """
+    text = text or ""
+    if len(text) <= limit:
+        return text
+    preview = text[:limit]
+    # Prefer ending at a paragraph edge, but only when that still keeps at
+    # least half the budget — otherwise the hard cut + marker cleanup below
+    # preserves more content.
+    boundary = preview.rfind("\n\n")
+    if boundary >= limit // 2:
+        preview = preview[:boundary]
+    for mark in _MD_PAIR_MARKS:
+        if preview.count(mark) % 2:
+            preview = preview[:preview.rfind(mark)]
+    return preview

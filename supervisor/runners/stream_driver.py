@@ -46,6 +46,7 @@ class StreamOutcome:
     prose: str = ""  # model text events only — no tool I/O, stderr, or errors
     aborted: bool = False  # killed because the provider was unreachable
     abort_reason: str = ""  # matched connection-error signature
+    tool_count: int = 0  # tool items observed in this turn (≈ model requests - 1)
 
 
 def _drain_stderr(proc, sink: list[str]) -> None:
@@ -261,4 +262,5 @@ def consume_process_stream(
         prose="\n".join(p for p in prose_parts if p.strip()),
         aborted=aborted,
         abort_reason=abort_reason,
+        tool_count=len(markers),
     )

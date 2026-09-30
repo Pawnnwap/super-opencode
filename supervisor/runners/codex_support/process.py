@@ -19,7 +19,10 @@ from supervisor.runners.codex_support.command_builder import (
     CODEX_API_KEY_ENV,
     build_cmd,
 )
-from supervisor.runners.codex_support.stream import classify_line
+from supervisor.runners.codex_support.stream import (
+    classify_line,
+    context_estimate_from_turn_usage,
+)
 from supervisor.runners.opencode_support.result import RunResult
 from supervisor.runners.stream_driver import consume_process_stream
 from supervisor.utils.text_utils import coerce_str
@@ -149,7 +152,13 @@ def run_prompt(
             )
 
             if outcome.tokens_total > 0:
-                runner._last_tokens_total = outcome.tokens_total
+                # Turn-aggregated usage -> average-per-request context
+                # estimate (see context_estimate_from_turn_usage: raw usage
+                # read 5.0M/320k "context" and spiralled compaction).
+                runner._last_tokens_total = context_estimate_from_turn_usage(
+                    outcome.tokens_total,
+                    outcome.tool_count,
+                )
 
             if outcome.aborted:
                 # Provider down: the backup model shares the endpoint, so a

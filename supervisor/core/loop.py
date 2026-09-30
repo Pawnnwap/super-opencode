@@ -397,16 +397,29 @@ class SupervisorLoop(BaseLoop):
 
     def _on_final_failure(self, output: str) -> Generator[Event]:
         yield from super()._on_final_failure(output)
+        abort_reason = self._abort_reason
+        if abort_reason:
+            # Loop-persist abort: the retry counter never advanced, so the
+            # retries-exhausted wording would read "failed 0 consecutive
+            # times" and misstate the cause (seen in run_6057fb62).
+            reason = f"{self._engine_name} aborted — {abort_reason}"
+            outcome_msg = (
+                f"Run aborted: {abort_reason}. "
+                f"Loop survived {self._max_loop_restarts} restart(s)."
+            )
+        else:
+            reason = f"{self._engine_name} failed {self._failures} consecutive times"
+            outcome_msg = (
+                f"All {self.config.max_retries} "
+                f"{'retry' if self.config.max_retries == 1 else 'retries'} exhausted. "
+                f"Run terminated after {self._failures} failures."
+            )
         report = self.supervisor.report_final_status(
-            reason=f"{self._engine_name} failed {self._failures} consecutive times",
+            reason=reason,
             opencode_output=output,
         )
         self._write(report, "failure_report.md")
-        yield _ev(
-            "error",
-            f"All {self.config.max_retries} {'retry' if self.config.max_retries == 1 else 'retries'} exhausted. "
-            f"Run terminated after {self._failures} failures.\n\n{report}",
-        )
+        yield _ev("error", f"{outcome_msg}\n\n{report}")
 
     def _verify_success(
         self,

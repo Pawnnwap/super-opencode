@@ -16,7 +16,9 @@ class ProgressWidgets:
 
     def __init__(self, max_tokens: int):
         self.max_tokens = max_tokens
-        self.breadcrumb_label = ui.label("").classes("text-xs text-[#8b949e]")
+        # ui.html (not ui.label): the breadcrumb carries <strong>/<s> markup
+        # that a plain-text label would show literally.
+        self.breadcrumb_label = ui.html("").classes("text-xs text-[#8b949e]")
         self.status_label = ui.label("").classes("text-sm")
         with ui.row().classes("w-full items-center gap-2"):
             self.token_bar = ui.linear_progress(value=0, show_value=False).classes(
@@ -31,14 +33,14 @@ class ProgressWidgets:
         ]
         if progress_events:
             last = progress_events[-1]
-            self.breadcrumb_label.set_text(
+            self.breadcrumb_label.set_content(
                 phase_breadcrumb(
                     last.get("phase", ""),
                     last.get("completed_phases"),
                 ),
             )
         else:
-            self.breadcrumb_label.set_text("")
+            self.breadcrumb_label.set_content("")
 
         if state == "RUNNING":
             heartbeat_count = sum(

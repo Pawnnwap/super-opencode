@@ -655,11 +655,14 @@ async def _refine(status, refine_button, cancel_button) -> None:
     _cancel_holder["event"] = stop_event
     cancel_button.set_visibility(True)
     async with busy_buttons(refine_button):
+        from supervisor.protocols.protocol_wizard import (
+            ProtocolGateError,
+            ProtocolWizard,
+        )
+
         app_state.save()
         app_state.apply_api_config()
         try:
-            from supervisor.protocols.protocol_wizard import ProtocolWizard
-
             wizard = ProtocolWizard(
                 model=app_state.get("supervisor_model") or "gpt-4o",
                 api_key=app_state.get("openai_key") or None,
@@ -678,6 +681,17 @@ async def _refine(status, refine_button, cancel_button) -> None:
                 )
                 status.update()
 
+            def _on_gate_round(
+                fix_round: int, max_fix_rounds: int, issues: tuple[str, ...],
+            ) -> None:
+                # Same worker-thread contract as _on_progress: the audit
+                # rejected the draft and the wizard is editing it again.
+                status.set_text(
+                    f"Gate check failed — auto-fix round {fix_round}/"
+                    f"{max_fix_rounds}: " + " ".join(issues),
+                )
+                status.update()
+
             markdown, _protocol = await nicegui_run.io_bound(
                 wizard.refine,
                 app_state.get("raw_input") or "",
@@ -685,9 +699,13 @@ async def _refine(status, refine_button, cancel_button) -> None:
                 app_state.get("raw_restrictions") or "",
                 on_progress=_on_progress,
                 stop_event=stop_event,
+                on_round=_on_gate_round,
             )
         except GenerationCancelled:
             status.set_text("Refine cancelled.")
+            return
+        except ProtocolGateError as exc:
+            status.set_text(f"Refine failed: {exc}")
             return
         except Exception as exc:
             status.set_text(f"Refine failed: {exc}")
@@ -697,7 +715,9 @@ async def _refine(status, refine_button, cancel_button) -> None:
             cancel_button.set_visibility(False)
     app_state["protocol_md"] = markdown
     app_state.save()
-    status.set_text("Refined protocol ready — review and accept below.")
+    status.set_text(
+        "Refined protocol ready — target audit passed; review and accept below.",
+    )
     ui.run_javascript("location.reload()")
 
 

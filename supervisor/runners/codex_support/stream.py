@@ -44,7 +44,12 @@ import json
 
 from supervisor.runners.opencode_support.stream import LineEvent, build_output
 
-__all__ = ["LineEvent", "build_output", "classify_line"]
+__all__ = [
+    "LineEvent",
+    "build_output",
+    "classify_line",
+    "context_estimate_from_turn_usage",
+]
 
 # Cap the intent detail kept in a tool marker (a breadcrumb, not a transcript).
 _MAX_TOOL_DETAIL = 200
@@ -110,6 +115,27 @@ def _error_message(event: dict) -> str:
         if isinstance(inner, str) and inner.strip():
             return inner.strip()
     return ""
+
+
+def context_estimate_from_turn_usage(tokens_total: int, tool_count: int) -> int:
+    """Estimate the session context size from codex turn-level usage.
+
+    codex ``turn.completed`` usage is aggregated across EVERY model request in
+    the exec turn (verified live: 3 tool calls -> one turn.completed whose
+    ``input_tokens`` is the sum of all 4 request inputs). That is throughput,
+    not context size — feeding it raw into the supervisor's context monitor
+    read e.g. 5.0M/320k tokens (1572%) and forced compaction after every
+    judged turn: run_6057fb62's session-restart death spiral.
+
+    Each tool item implies one extra model request, plus the final prose
+    request. Averaging the aggregated usage over those requests under-reads
+    the final (largest) request by at most 2x — the safe direction, since
+    codex itself auto-compacts via ``model_context_window``.
+    """
+    if tokens_total <= 0:
+        return 0
+    requests = max(1, tool_count + 1)
+    return tokens_total // requests
 
 
 def classify_line(line: str | None) -> LineEvent | None:

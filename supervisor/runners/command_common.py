@@ -61,18 +61,6 @@ def validate_message(message: str, context: str, engine: str) -> str | None:
     return message
 
 
-def fresh_session_prompt(prompt: str) -> str:
-    """Return the task prompt unchanged for the first turn of a session.
-
-    Inlining brevity/style rules here was removed empirically: several free
-    models (nemotron ultra, laguna) fixate on a trailing rules block and reply
-    "mode active — awaiting command" / "please provide the protocol" instead
-    of executing the task. The bare task prompt works everywhere; style
-    guidance already lives in the supervisor-driven protocol when needed.
-    """
-    return prompt
-
-
 def safe_command_summary(command: Sequence[str]) -> str:
     """Describe an agent invocation without logging prompt, URL, or overrides."""
     visible = [str(part) for part in command[:2] if str(part)]

@@ -15,8 +15,8 @@ unchanged. Only the engine-specific seams differ:
   * session handling      -> codex `resume`/`--last` instead of opencode
                              session-id list diffing
 
-Continuation: codex tracks the most recent rollout, so the first turn inlines
-the brevity rules and subsequent turns ``resume`` (by captured session id when
+Continuation: codex tracks the most recent rollout, so the first turn starts
+a fresh session and subsequent turns ``resume`` (by captured session id when
 available, else ``--last``). No session-list enumeration is required.
 """
 
@@ -25,9 +25,6 @@ from __future__ import annotations
 import logging
 from collections.abc import Generator
 
-from supervisor.runners.command_common import (
-    fresh_session_prompt as _codex_fresh_session_prompt_impl,
-)
 from supervisor.runners.codex_support.command_builder import (
     validate_message as _codex_validate_message_impl,
 )
@@ -126,25 +123,18 @@ class CodexRunner(OpencodeRunner):
             yield from self._run_prompt(validated)
             return
 
-        logger.info("New codex session — inlining brevity rules into first prompt.")
-        yield {
-            "level": "info",
-            "msg": "New codex session — inlining brevity rules into first prompt.",
-        }
-        # Fresh session: no resume, brevity inlined. The process layer captures
-        # the codex session id from output (when present) so the next turn can
-        # resume precisely.
+        logger.info("New codex session (no resume).")
+        yield {"level": "info", "msg": "New codex session (no resume)."}
+        # The process layer captures the codex session id from output (when
+        # present) so the next turn can resume precisely.
         self._session_id = None
         self.enable_continuation(False)
-        yield from self._run_prompt(self._fresh_session_prompt(validated))
+        yield from self._run_prompt(validated)
         self._session_active = True
         self.enable_continuation(True)
 
     def _run_prompt(self, prompt: str) -> Generator[dict]:
         yield from _codex_run_prompt_impl(self, prompt, find_codex_fn=find_codex)
-
-    def _fresh_session_prompt(self, prompt: str) -> str:
-        return _codex_fresh_session_prompt_impl(prompt)
 
     # Codex has no opencode-style session-list command. Continuation relies on
     # `resume <id|--last>`, so these enumeration hooks are intentionally inert.

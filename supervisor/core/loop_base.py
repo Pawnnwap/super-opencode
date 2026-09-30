@@ -49,6 +49,29 @@ def _ev(level: str, msg: object, **kwargs) -> Event:
     return event
 
 
+def loop_breaker_section(reason: str) -> str:
+    """Restart-prompt section telling the agent how to break its loop.
+
+    The original note only said "do NOT repeat it" and quoted the offending
+    command verbatim — run_dd910ecc still looped through both restarts
+    because the agent knew which call to avoid but not which *mechanism*
+    was broken. Name the mechanism and the way out instead. ``reason`` is
+    the loop detector's verdict ("repeated the same tool call (...)",
+    "ran many tools without producing any output (...)", ...).
+    """
+    from supervisor.prompts import SHELL_HEREDOC_RULE
+
+    return (
+        "IMPORTANT: the previous session was killed because it got stuck in a loop:\n"
+        f"{reason}\n"
+        "Do not simply retry it. Break the loop:\n"
+        "- If a shell command failed or returned nothing twice, change the "
+        f"mechanism, not the wording: {SHELL_HEREDOC_RULE}\n"
+        "- If you only need to inspect state, use a read-only command "
+        "(cat, ls) instead of re-running the failing script.\n\n"
+    )
+
+
 class BaseLoop:
     def __init__(self, config=None):
         self.config = config
@@ -68,6 +91,10 @@ class BaseLoop:
         self._loop_restarts: int = 0
         self._max_loop_restarts: int = 2
         self._loop_breaker: str = ""
+        # Why the run is aborting, when it is NOT the normal max-retries path
+        # (e.g. loop-persists abort). Drives the final failure report wording;
+        # empty = retries exhausted.
+        self._abort_reason: str = ""
         from supervisor.analyzers.loop_detector import CrossTurnLoopDetector
 
         self._cross_turn_detector = CrossTurnLoopDetector()
@@ -412,6 +439,7 @@ class BaseLoop:
             f"context (loop-restart {self._loop_restarts}/{self._max_loop_restarts}).",
         )
         if self._loop_restarts > self._max_loop_restarts:
+            self._abort_reason = f"stuck in a tool loop: {reason}"
             yield _ev(
                 "error",
                 f"Loop persists after {self._max_loop_restarts} restart(s) — aborting run.",
@@ -423,7 +451,9 @@ class BaseLoop:
         yield from self._restart_from_summary_output("")
 
     def _on_final_failure(self, output: str) -> Generator[Event]:
-        failure_reason = self._last_feedback or "Reached max retries"
+        failure_reason = (
+            self._abort_reason or self._last_feedback or "Reached max retries"
+        )
         update_experience(self.config.workspace, failed=[failure_reason])
         self._record_structured_failure(
             failure_reason,
@@ -1033,10 +1063,7 @@ class BaseLoop:
         guard_section = self._guard_restart_section()
         loop_section = ""
         if self._loop_breaker:
-            loop_section = (
-                "IMPORTANT: the previous session was stuck repeating the same action "
-                f"({self._loop_breaker}). Do NOT repeat it — change your approach.\n\n"
-            )
+            loop_section = loop_breaker_section(self._loop_breaker)
             self._loop_breaker = ""
         return RESTART_PROMPT_TEMPLATE.format(
             loop_section=guard_section + loop_section,

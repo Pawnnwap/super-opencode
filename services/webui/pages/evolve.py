@@ -11,6 +11,7 @@ from services.webui.components.board import JobBoard
 from services.webui.components.busy import busy_buttons
 from services.webui.components.live_screen import LiveJobScreen
 from services.webui.jobs import get_job_manager
+from services.webui.log_format import markdown_preview
 from services.webui.state import app_state
 
 
@@ -125,7 +126,7 @@ def render(job_id: str = "") -> None:
             status_label.set_text("meta_protocol.md written to workspace.")
             meta_exp.classes(remove="hidden")
             with meta_exp:
-                ui.markdown(content[:3000])
+                ui.markdown(markdown_preview(content, 3000))
 
         build_button = ui.button(
             "Build meta-protocol", on_click=_generate,

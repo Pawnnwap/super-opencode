@@ -9,7 +9,7 @@ from nicegui import ui
 
 from services.webui.components.progress_widgets import ProgressWidgets
 from services.webui.layout import format_status_pill
-from services.webui.log_format import fmt_ts, safe_logs
+from services.webui.log_format import fmt_ts, markdown_preview, safe_logs
 from services.webui.state import app_state
 
 ACTIVE_JOB_STATES = {"PENDING", "RUNNING"}
@@ -287,7 +287,7 @@ class JobBoard:
         report = selected["status"].get("report")
         if report:
             with ui.expansion("Report preview").classes("w-full"):
-                ui.markdown(report[:2000])
+                ui.markdown(markdown_preview(report, 2000))
 
 
 def sanitize_short(msg: str) -> str:

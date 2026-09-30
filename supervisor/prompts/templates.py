@@ -1,4 +1,19 @@
-INIT_PROMPT_TEMPLATE = """\
+# Appended to every SHELL POLICY block. run_dd910ecc aborted because the
+# agent kept re-issuing `python - <<'EOF'` heredocs through bash/PowerShell
+# one-liners: stdin is mangled through the shell layers here, so the call
+# fails or silently produces nothing and the agent retries it in a loop.
+# Keep this free of braces — every template embedding it goes through
+# str.format().
+SHELL_HEREDOC_RULE = (
+    "Never pass interpreter code through a stdin heredoc (`python - <<'EOF'`) "
+    "inside a `bash -lc` / `powershell -Command` one-liner — stdin gets "
+    "mangled in this environment and the call silently returns nothing. "
+    "Write the code to a script file in the workspace and run it, or pass "
+    "it with `python -c`."
+)
+
+INIT_PROMPT_TEMPLATE = (
+    """\
 Here is your protocol:
 
 {protocol_text}
@@ -14,11 +29,15 @@ IMPORTANT:
 The .archive/ directory preserves historical versions — do not modify it.
 SHELL POLICY: command-line force deletions (PowerShell `Remove-Item -Force`,
 `rm -f`) are rejected by the runner's exec policy. Perform file deletions via
-the python interpreter (os.unlink / shutil.rmtree) instead.
+the python interpreter (os.unlink / shutil.rmtree) instead. """
+    + SHELL_HEREDOC_RULE
+    + """
 {protected_files_desc}
 Begin."""
+)
 
-SELF_EVOLUTION_INIT_PROMPT_TEMPLATE = """\
+SELF_EVOLUTION_INIT_PROMPT_TEMPLATE = (
+    """\
 Modify the codebase you live in. Read the protocol carefully.
 
 PROTOCOL:
@@ -32,12 +51,16 @@ Do NOT delete or manually manage version files — the archive system handles th
 Do NOT delete or modify the .opencode directory or its contents.
 SHELL POLICY: command-line force deletions (PowerShell `Remove-Item -Force`,
 `rm -f`) are rejected by the runner's exec policy. Perform file deletions via
-the python interpreter (os.unlink / shutil.rmtree) instead.
+the python interpreter (os.unlink / shutil.rmtree) instead. """
+    + SHELL_HEREDOC_RULE
+    + """
 {protected_files_desc}
 Make your changes surgical and minimal.
 Run tests after every logical change. Begin."""
+)
 
-RESTART_PROMPT_TEMPLATE = """\
+RESTART_PROMPT_TEMPLATE = (
+    """\
 {loop_section}\
 Context was reset due to token limits. Here is a summary of progress so far:
 
@@ -52,8 +75,11 @@ All files you create or modify MUST be inside this directory.
 The .archive/ directory preserves historical versions — do not modify it.
 SHELL POLICY: command-line force deletions (PowerShell `Remove-Item -Force`,
 `rm -f`) are rejected by the runner's exec policy. Perform file deletions via
-the python interpreter (os.unlink / shutil.rmtree) instead.
+the python interpreter (os.unlink / shutil.rmtree) instead. """
+    + SHELL_HEREDOC_RULE
+    + """
 Continue from where the summary left off. All files you create or modify MUST be inside this directory."""
+)
 
 VERDICT_FORMAT = """\
 End your reply with this exact block:

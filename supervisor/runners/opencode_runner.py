@@ -22,9 +22,6 @@ from supervisor.analyzers.opencode_step_detector import (
     StepProgress,
 )
 from supervisor.runners.base_runner import BaseRunner
-from supervisor.runners.command_common import (
-    fresh_session_prompt as _fresh_session_prompt_impl,
-)
 from supervisor.runners.opencode_support.command_builder import (
     validate_message as _validate_message_impl,
 )
@@ -189,13 +186,13 @@ class OpencodeRunner(BaseRunner):
             yield from self._run_prompt(validated)
             return
 
-        # Bootstrap + work in ONE turn: the first real prompt (with brevity
-        # rules inlined) creates the session, and the capture diff pins its
-        # ID. A standalone rules-only bootstrap turn wastes a full model call
-        # and, with slow models, times out before creating any session.
+        # Bootstrap + work in ONE turn: the first real prompt creates the
+        # session, and the capture diff pins its ID. A standalone bootstrap
+        # turn wastes a full model call and, with slow models, times out
+        # before creating any session.
         with _SESSION_CAPTURE_LOCK:
             before = self._list_all_session_ids()
-            yield from self._run_prompt(self._fresh_session_prompt(validated))
+            yield from self._run_prompt(validated)
             self._session_id = self._capture_new_session_id(before)
 
         self._session_active = True
@@ -313,9 +310,6 @@ class OpencodeRunner(BaseRunner):
         self._session_active = False
         self._use_continue = False
         self._session_id = None
-
-    def _fresh_session_prompt(self, prompt: str) -> str:
-        return _fresh_session_prompt_impl(prompt)
 
     def _list_all_session_ids(self) -> set[str]:
         return _list_all_session_ids_impl(
