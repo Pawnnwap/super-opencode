@@ -27,6 +27,13 @@ if TYPE_CHECKING:
 _IGNORE_EXTS = {".pyc", ".pyo", ".egg-info", ".DS_Store", ".bak", ".isorted"}
 _MAX_FILE_CHARS = 6_000
 
+# Digest guards: workspaces accumulate generated artifacts over a long run
+# (literature/, logs/, ab/, output/, ...). An unbounded tree listing once
+# pushed a 5,720-file listing — ~80k tokens — into the judge's system prompt
+# on every turn, crowding the agent's evidence out of the request entirely.
+_MAX_TREE_ENTRIES = 200
+_MAX_DIGEST_CHARS = 48_000  # ~12k tokens ceiling for a whole digest block
+
 
 # ------------------------------------------------------------------ #
 # Code skimming                                                        #
@@ -154,35 +161,69 @@ class CodebaseSnapshot:
     # Formatted views (original methods — unchanged)                       #
     # ------------------------------------------------------------------ #
 
-    def tree(self) -> str:
-        """ASCII file tree."""
+    def tree(self, max_entries: int | None = None) -> str:
+        """ASCII file tree.
+
+        ``max_entries`` bounds the file lines (root line and a trailing
+        overflow notice are extra). None renders every file — only for
+        callers that display or diff the tree, never for prompt injection.
+        """
         lines = [f"{self.root.name}/"]
         paths = sorted(f.rel_path for f in self.files)
+        overflow = 0
+        if max_entries is not None and len(paths) > max_entries:
+            overflow = len(paths) - max_entries
+            paths = paths[:max_entries]
         for p in paths:
             depth = p.count("/")
             name = p.rsplit("/", 1)[-1] if "/" in p else p
             lines.append("  " * depth + f"└─ {name}")
+        if overflow:
+            lines.append(f"  … (+{overflow} more files not listed)")
         return "\n".join(lines)
+
+    def _tree_for_digest(self, budget_chars: int) -> str:
+        """Largest bounded tree that fits ``budget_chars``."""
+        rendered = self.tree(max_entries=_MAX_TREE_ENTRIES)
+        if len(rendered) <= budget_chars or len(self.files) <= 1:
+            return rendered
+        # The capped tree alone is over budget: halve the entry cap until it
+        # fits — a partial map beats an 80k-token listing.
+        cap = _MAX_TREE_ENTRIES
+        while cap > 1:
+            cap //= 2
+            rendered = self.tree(max_entries=cap)
+            if len(rendered) <= budget_chars:
+                return rendered
+        return self.tree(max_entries=1)
 
     def digest_for_prompt(self, max_files: int = 30) -> str:
         """Compact multi-file listing suitable for an LLM system prompt.
         Keeps the most important files (Python source first, then others).
+        The whole block is capped at ``_MAX_DIGEST_CHARS`` so it can never
+        crowd the agent's evidence out of the judge request.
         """
         ranked = sorted(
             self.files,
             key=lambda f: (0 if f.rel_path.endswith(".py") else 1, f.rel_path),
         )[:max_files]
 
-        parts: list[str] = [
-            f"## Codebase snapshot  ({len(self.files)} files total)\n",
-            "### File tree\n```\n" + self.tree() + "\n```\n",
-        ]
+        header = f"## Codebase snapshot  ({len(self.files)} files total)\n"
+        tree_block = "### File tree\n```\n" + self._tree_for_digest(
+            _MAX_DIGEST_CHARS // 2,
+        ) + "\n```\n"
+        parts: list[str] = [header, tree_block]
+        used = len(header) + len(tree_block)
         for snap in ranked:
             suffix = "  [TRUNCATED]" if snap.truncated else ""
-            parts.append(
+            section = (
                 f"### {snap.rel_path}{suffix}\n"
-                f"```python\n{snap.content}\n```\n",
+                f"```python\n{snap.content}\n```\n"
             )
+            if used + len(section) > _MAX_DIGEST_CHARS:
+                break
+            parts.append(section)
+            used += len(section)
         return "\n".join(parts)
 
     def file_hashes(self) -> dict[str, str]:
@@ -225,17 +266,24 @@ class CodebaseSnapshot:
 
         parts: list[str] = [
             f"## Codebase skeleton  ({len(self.files)} files total — signatures only)\n",
-            "### File tree\n```\n" + self.tree() + "\n```\n",
+            "### File tree\n```\n" + self._tree_for_digest(
+                _MAX_DIGEST_CHARS // 2,
+            ) + "\n```\n",
             "### Structural signatures\n",
         ]
+        used = sum(len(p) for p in parts)
         for snap in ranked:
             if snap.skeleton and not snap.skeleton.is_empty():
-                parts.append(
-                    f"```python\n{snap.skeleton.to_prompt_str(snap.rel_path)}\n```\n",
+                section = (
+                    f"```python\n{snap.skeleton.to_prompt_str(snap.rel_path)}\n```\n"
                 )
             else:
                 # Non-Python or unparseable: just name it so the LLM knows it exists
-                parts.append(f"- {snap.rel_path}\n")
+                section = f"- {snap.rel_path}\n"
+            if used + len(section) > _MAX_DIGEST_CHARS:
+                break
+            parts.append(section)
+            used += len(section)
 
         return "\n".join(parts)
 

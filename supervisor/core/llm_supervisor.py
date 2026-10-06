@@ -43,6 +43,7 @@ from supervisor.core.llm_support.models import (
     _SKIP_DIR_PREFIXES,
     _SKIP_DIRS,
     _get_model_token_limit,
+    resolve_max_tokens,
     StepContext,
     SupervisorVerdict,
 )
@@ -120,7 +121,7 @@ class LLMSupervisor:
         self._history: list[dict] = []
         self._read_external_feedback = read_external_feedback
         self._model_input_limit = _get_model_token_limit(model)
-        self._max_tokens = min(max_tokens, self._model_input_limit)
+        self._max_tokens = resolve_max_tokens(max_tokens, self._model_input_limit)
         self._token_warnings: list[str] = []
         self._max_protected_files_for_suggestions = (
             max_protected_files_for_suggestions

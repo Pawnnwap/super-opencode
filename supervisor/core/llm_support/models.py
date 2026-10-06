@@ -14,6 +14,25 @@ def _get_model_token_limit(model: str) -> int:
     return 128_000
 
 
+# Absolute sanity cap mirroring _extract_token_limit_from_error's bounds.
+_ABSOLUTE_MAX_TOKENS = 10_000_000
+
+
+def resolve_max_tokens(configured: int, fallback_limit: int) -> int:
+    """Effective judge token budget.
+
+    An explicitly configured budget is the user's declared context window
+    for the endpoint; the static per-model lookup is only a fallback for
+    configs that don't set one — it must not silently clamp a larger
+    configured budget to 128k. The endpoint itself stays the final
+    authority: a token-limit BadRequest re-triggers truncation at the
+    real extracted limit in chat_with_retry.
+    """
+    if configured and configured > 0:
+        return min(configured, _ABSOLUTE_MAX_TOKENS)
+    return fallback_limit
+
+
 _TOKEN_LIMIT_ERROR_MARKERS = (
     "range of input length",
     "input length",

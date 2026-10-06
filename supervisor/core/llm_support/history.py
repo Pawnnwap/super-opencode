@@ -9,6 +9,9 @@ from supervisor.utils.text_utils import head_tail_excerpt
 
 logger = logging.getLogger(__name__)
 
+# Rotate the raw-prompt debug log at this size (one .1 backup kept).
+_MAX_PROMPT_LOG_BYTES = 64 * 1024 * 1024
+
 
 def should_record_turn(supervisor, content: str, role: str = "user") -> bool:
     """Determine whether turn should be added to history."""
@@ -153,11 +156,25 @@ def estimate_current_tokens(supervisor) -> int:
 
 
 def log_prompt(supervisor, title: str, messages: list[dict]) -> None:
-    """Write raw prompt messages to debug log file."""
+    """Write raw prompt messages to debug log file.
+
+    The file is rotated at ``_MAX_PROMPT_LOG_BYTES`` to a single ``.1``
+    backup: multi-day runs append every judge prompt in full, and an
+    unbounded log once reached 543 MB (and invited the coding agent to
+    grep it mid-run). Two generations bound the disk cost.
+    """
     try:
         log_dir = supervisor._workspace / ".opencode"
         log_dir.mkdir(parents=True, exist_ok=True)
         log_file = log_dir / "supervisor_prompts.log"
+
+        try:
+            if log_file.exists() and log_file.stat().st_size > _MAX_PROMPT_LOG_BYTES:
+                backup = log_file.with_name(log_file.name + ".1")
+                backup.unlink(missing_ok=True)
+                log_file.replace(backup)
+        except OSError:
+            logger.debug("Could not rotate supervisor_prompts.log", exc_info=True)
 
         with open(log_file, "a", encoding="utf-8") as f:
             f.write(f"\n{'=' * 80}\n")

@@ -74,15 +74,18 @@ def chat(
         supervisor._token_warnings.append(msg)
 
     if should_truncate(estimate, supervisor._max_tokens):
+        # Sizes only: dumping the full over-limit prompt to stderr every turn
+        # once bloated the shared app error log by hundreds of MB (the raw
+        # prompts are already archived in .opencode/supervisor_prompts.log).
         logger.warning(
-            "--- FULL PROMPT EXCEEDING MAX TOKENS ---\n"
-            "SYSTEM:\n%s\n"
-            "HISTORY:\n%s\n"
-            "USER:\n%s\n"
-            "----------------------------------------",
-            supervisor._system,
-            conv_text,
-            user_content,
+            "Judge prompt exceeds budget: total=%d system=%d history=%d user=%d "
+            "(max_tokens=%d, available=%d)",
+            estimate.total,
+            estimate.system_prompt,
+            estimate.conversation_history,
+            estimate.user_input,
+            supervisor._max_tokens,
+            int(supervisor._max_tokens * 0.75),
         )
 
     if supervisor._truncation_enabled and should_truncate(
@@ -333,12 +336,22 @@ def chat_with_retry(
 
 
 def fit_request_to_budget(supervisor, user_content: str) -> str:
-    """Shrink history and user content to fit within token budget."""
+    """Shrink history and user content to fit within token budget.
+
+    When the agent's evidence (user content) must be cut, a visible
+    truncation receipt is appended so the judge knows it is ruling on a
+    partial excerpt — verdicts must treat everything outside the excerpt
+    as UNSEEN instead of confidently marking targets [MET] on evidence
+    that never reached the model.
+    """
     from supervisor.monitoring.token_estimator import estimate_tokens, truncate_prompt
 
     available = int(supervisor._max_tokens * 0.75)
     system_tokens = estimate_tokens(supervisor._system)
-    budget = max(available - system_tokens, supervisor._max_tokens // 8)
+    # Even a pathologically large system prompt must leave the evidence a
+    # real slice: floor at a quarter of the available budget, not 1/8 of
+    # the raw max (which once shredded a 98k-token agent output to 16k).
+    budget = max(available - system_tokens, available // 4)
 
     def _msg_tokens(msg: dict) -> int:
         return estimate_tokens(msg.get("content", ""))
@@ -373,7 +386,18 @@ def fit_request_to_budget(supervisor, user_content: str) -> str:
 
     if history_tokens + user_tokens > budget:
         remaining_for_user = max(budget - history_tokens, budget // 4)
+        original_chars = len(user_content)
+        original_tokens = user_tokens
         user_content = truncate_prompt(user_content, remaining_for_user)
+        if len(user_content) < original_chars:
+            user_content += (
+                "\n\n[SYSTEM NOTE — PARTIAL EVIDENCE: the coding agent's output "
+                f"above was truncated from ~{original_tokens} to "
+                f"~{estimate_tokens(user_content)} tokens to fit the judge-model "
+                "budget. Everything NOT shown must be treated as UNSEEN: never "
+                "mark a target [MET] on the strength of evidence outside this "
+                "excerpt — state what evidence you need instead.]"
+            )
 
     if dropped_any:
         logger.warning(
