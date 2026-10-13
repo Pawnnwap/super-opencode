@@ -44,6 +44,39 @@ def _marginalia_results(html_content: str, max_results: int) -> list[dict[str, s
     return [{"title": text or url, "url": url, "snippet": ""} for url, text in titled.items()][:max_results]
 
 
+def _search_both(
+    query: str,
+    max_results: int,
+) -> list[dict[str, str]]:
+    """Query global Bing AND the Marginalia index, merged, Bing first, deduped."""
+    merged: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for r in _search(query, _SEARCH_ENDPOINT, "q", _bing_results, max_results) + _search(
+        query, _FALLBACK_ENDPOINT, "query", _marginalia_results, max_results
+    ):
+        if r["url"] in seen:
+            continue
+        seen.add(r["url"])
+        merged.append(r)
+    return merged
+
+
+def _search(
+    query: str,
+    endpoint: str,
+    param: str,
+    parse,
+    max_results: int,
+) -> list[dict[str, str]]:
+    try:
+        sep = "&" if "?" in endpoint else "?"
+        url = endpoint + sep + urllib.parse.urlencode({param: query})
+        text = _http_get_text(url, timeout=20)
+        return parse(text, max_results)
+    except (urllib.error.URLError, urllib.error.HTTPError, ValueError, TimeoutError):
+        return []
+
+
 def _bing_results(html_content: str, max_results: int) -> list[dict[str, str]]:
     results = []
     for block in re.findall(r'<li class="b_algo".*?</li>', html_content, re.DOTALL):
@@ -68,7 +101,7 @@ async def list_tools() -> list[Tool]:
         Tool(
             name="web_search",
             description=(
-                "Search the web (global Bing first, Marginalia fallback). "
+                "Search the web (global Bing and the Marginalia index, both merged). "
                 "Returns titles, URLs, and snippets."
             ),
             inputSchema={
@@ -102,20 +135,7 @@ async def call_tool(name: str, arguments: dict[str, str]) -> list[TextContent]:
         if not query:
             raise ValueError("query is required")
         max_results = int(arguments.get("max_results", 5))
-        results: list[dict[str, str]] = []
-        for endpoint, param, parse in (
-            (_SEARCH_ENDPOINT, "q", _bing_results),
-            (_FALLBACK_ENDPOINT, "query", _marginalia_results),
-        ):
-            try:
-                sep = "&" if "?" in endpoint else "?"
-                url = endpoint + sep + urllib.parse.urlencode({param: query})
-                text = _http_get_text(url, timeout=20)
-                results = parse(text, max_results)
-            except (urllib.error.URLError, urllib.error.HTTPError, ValueError, TimeoutError):
-                continue
-            if results:
-                break
+        results = _search_both(query, max_results)
         lines = "\n".join(
             f"{i + 1}. {r['title']}\n   {r['url']}\n   {r['snippet']}"
             for i, r in enumerate(results)
