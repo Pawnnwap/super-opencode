@@ -61,8 +61,18 @@ _ITEM_TOOL_LABELS: dict[str, tuple[str, tuple[str, ...]]] = {
     "file_changes": ("edit", ("path", "file_path", "files")),
     "patch_apply": ("edit", ("path", "file_path", "files")),
     "mcp_tool_call": ("mcp", ("tool", "name", "server")),
-    "web_search": ("search", ("query",)),
+    "web_search": ("search", ("query", "q", "url")),
+    "web_fetch": ("fetch", ("url", "query", "path")),
 }
+
+# Fields inside a tool payload ("input"/"arguments"/"parameters") that carry a
+# tool's intent: MCP tools (web_search/web_fetch/...) bury the query/URL there.
+# The loop detector keys on the marker string — repeated web calls on DIFFERENT
+# content are legitimate work and MUST produce different markers; only
+# same-content repeats are a loop.
+_MCP_CONTENT_KEYS = (
+    "query", "q", "url", "path", "prompt", "input", "arguments", "parameters",
+)
 
 # item.type values that are model bookkeeping, not turn output — dropped.
 _DROP_ITEM_TYPES = frozenset({"reasoning", "plan_update", "todo_list"})
@@ -84,19 +94,48 @@ def _stringify_detail(val) -> str:
     return ""
 
 
+def _mcp_content(item: dict) -> str:
+    """Pull the actual intent (query/URL/...) out of an MCP-style payload."""
+    for container in ("input", "arguments", "parameters", "tool_input"):
+        payload = item.get(container)
+        if isinstance(payload, dict):
+            for key in _MCP_CONTENT_KEYS:
+                cand = _stringify_detail(payload.get(key))
+                if cand.strip():
+                    return cand.strip()
+            for key in ("arguments", "input", "parameters"):
+                inner = payload.get(key)
+                if isinstance(inner, dict):
+                    for key2 in _MCP_CONTENT_KEYS:
+                        cand = _stringify_detail(inner.get(key2))
+                        if cand.strip():
+                            return cand.strip()
+        elif isinstance(payload, str) and payload.strip():
+            return payload.strip()
+    return ""
+
+
 def _tool_marker(item: dict) -> str:
-    """Build a compact ``[label] <intent>`` marker from a tool-ish item."""
+    """Build a compact ``[label] <intent>`` marker from a tool-ish item.
+
+    The marker must carry the tool's CONTENT, not just its name: the loop
+    detector keys on the marker, so web_search/web_fetch calls on different
+    content must not collapse into one identical breadcrumb (the four
+    academic_study_1012_* runs all aborted because ``[mcp] web_search`` /
+    ``[mcp] web_fetch`` hid the differing query/URL).
+    """
     itype = item.get("type") or "tool"
     if not isinstance(itype, str) or not itype.strip():
         itype = "tool"
     label, keys = _ITEM_TOOL_LABELS.get(itype, (itype, ()))
 
-    detail = ""
-    for key in keys:
-        cand = _stringify_detail(item.get(key))
-        if cand.strip():
-            detail = cand.strip()
-            break
+    detail = _mcp_content(item)
+    if not detail:
+        for key in keys:
+            cand = _stringify_detail(item.get(key))
+            if cand.strip():
+                detail = cand.strip()
+                break
 
     if detail:
         detail = " ".join(detail.split())[:_MAX_TOOL_DETAIL]
