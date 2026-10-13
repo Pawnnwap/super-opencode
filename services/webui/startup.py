@@ -46,6 +46,32 @@ def _run_task(task: str, fn) -> None:
         _record(task, "failed", str(exc)[:200])
 
 
+
+def _replay_job() -> str:
+    """Re-enqueue one stored job when SUPERVISOR_REPLAY_JOB=<job_id> is set.
+    Runs inside this app process so the worker thread and cancel path work;
+    a fresh job id is minted and the stored config is reused verbatim.
+    """
+    import os
+
+    from services.webui.jobs import get_job_manager
+    from supervisor.utils.config import SupervisorConfig
+
+    job_id = os.environ.get("SUPERVISOR_REPLAY_JOB", "").strip()
+    if not job_id:
+        return "no replay request"
+    manager = get_job_manager()
+    state = manager.store.get_job_state(job_id)
+    if not state:
+        return f"replay job {job_id} not found in store"
+    raw = state.get("config") or {}
+    fields = set(SupervisorConfig.__dataclass_fields__)
+    kwargs = {k: v for k, v in dict(raw).items() if k in fields}
+    kwargs["protocol_path"] = Path(kwargs["protocol_path"])
+    kwargs["workspace"] = Path(kwargs["workspace"])
+    config = SupervisorConfig(**kwargs)
+    new_id = manager.enqueue_job(str(state.get("type", "run")), config)
+    return f"replayed {job_id} -> {new_id}"
 def launch_startup_tasks() -> None:
     """Kick off all startup work in a daemon thread (idempotent)."""
     global _started
@@ -93,6 +119,7 @@ def launch_startup_tasks() -> None:
         _run_task("upgrade codex", _upgrade_codex)
         _run_task("install MCP config", _install_mcp)
         _run_task("clean workspace artifacts", _clean_artifacts)
+        _run_task("replay job from env", _replay_job)
 
     thread = threading.Thread(target=_pipeline, name="webui-startup", daemon=True)
     thread.start()
