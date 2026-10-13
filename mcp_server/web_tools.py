@@ -112,7 +112,7 @@ async def call_tool(name: str, arguments: dict[str, str]) -> list[TextContent]:
                 url = endpoint + sep + urllib.parse.urlencode({param: query})
                 text = _http_get_text(url, timeout=20)
                 results = parse(text, max_results)
-            except (URLError, HTTPError, ValueError, TimeoutError):
+            except (urllib.error.URLError, urllib.error.HTTPError, ValueError, TimeoutError):
                 continue
             if results:
                 break
