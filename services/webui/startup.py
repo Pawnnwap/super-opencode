@@ -47,6 +47,47 @@ def _run_task(task: str, fn) -> None:
 
 
 
+def _launch_from_env() -> str:
+    # Multi-workspace launcher: SUPERVISOR_LAUNCH_WORKSPACES="a;b;c" plus
+    # SUPERVISOR_LAUNCH_PLAN_ROUNDS (default 3) enqueue one run job per
+    # workspace inside this app process, mirroring the UI launch path.
+    import os
+
+    from services.config.supervisor_config_builder import build_supervisor_config
+    from services.webui.jobs import get_job_manager
+    from services.webui.state import app_state
+
+    raw = os.environ.get("SUPERVISOR_LAUNCH_WORKSPACES", "").strip()
+    if not raw:
+        return "no launch request"
+    rounds_raw = os.environ.get("SUPERVISOR_LAUNCH_PLAN_ROUNDS", "3").strip()
+    try:
+        rounds = int(rounds_raw)
+    except ValueError:
+        rounds = 3
+    manager = get_job_manager()
+    launched: list[str] = []
+    for part in raw.split(";"):
+        ws = Path(part.strip())
+        if not ws.exists():
+            launched.append(f"skip missing {ws}")
+            continue
+        config = build_supervisor_config(
+            app_state.as_mapping(),
+            protocol_path=ws / "protocol.md",
+            workspace=ws,
+            plan_mode_rounds=rounds,
+            enable_python_scanner=bool(app_state.get("enable_python_scanner")),
+            enable_occam_razor=bool(app_state.get("enable_occam_razor", False)),
+            enable_supervisor_skills=bool(
+                app_state.get("enable_supervisor_skills", True),
+            ),
+        )
+        job_id = manager.enqueue_job("run", config)
+        launched.append(f"{ws.name} -> {job_id}")
+    return "; ".join(launched)
+
+
 def _replay_job() -> str:
     """Re-enqueue one stored job when SUPERVISOR_REPLAY_JOB=<job_id> is set.
     Runs inside this app process so the worker thread and cancel path work;
@@ -120,6 +161,7 @@ def launch_startup_tasks() -> None:
         _run_task("install MCP config", _install_mcp)
         _run_task("clean workspace artifacts", _clean_artifacts)
         _run_task("replay job from env", _replay_job)
+        _run_task("launch workspaces from env", _launch_from_env)
 
     thread = threading.Thread(target=_pipeline, name="webui-startup", daemon=True)
     thread.start()

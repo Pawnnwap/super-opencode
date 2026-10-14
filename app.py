@@ -5,10 +5,22 @@ Run with: python app.py   (serves http://127.0.0.1:8501)
 
 from __future__ import annotations
 
-from nicegui import app, ui
+from nicegui import app, core, ui
 
 from services.webui import layout, startup
 from services.webui.jobs import get_job_manager
+
+# Engine.IO 4.14 turns a websocket disconnect into an empty request and then
+# crashes on REQUEST_METHOD; return a benign stub so navigation stays quiet.
+_original_translate_request = core.sio.eio._async["translate_request"]
+
+async def _translate_request_without_disconnect(scope, receive, send):
+    environ = await _original_translate_request(scope, receive, send)
+    if not environ:
+        return {"REQUEST_METHOD": "GET"}
+    return environ
+
+core.sio.eio._async["translate_request"] = _translate_request_without_disconnect
 
 
 @ui.page("/")
