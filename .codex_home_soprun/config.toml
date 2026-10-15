@@ -1,0 +1,36 @@
+# Dedicated CODEX_HOME for supervised runs (super-opencode).
+# Isolated from the user's ~/.codex: no MCP servers, no goal/agent tools,
+# so a supervised agent gets a plain codex tool surface and cannot touch the
+# operator's own codex sessions.
+model = "deepseek-ai/DeepSeek-V4-Flash-0731"
+model_provider = "super_opencode"
+# Ask for what the old scripts asked for; codex_compat_proxy.py clamps it to a
+# value this endpoint actually accepts (probe-learned), so the same config works
+# on an endpoint that does support the higher effort.
+model_reasoning_effort = "high"
+plan_mode_reasoning_effort = "low"
+model_context_window = 262144
+approval_policy = "never"
+sandbox_mode = "danger-full-access"
+
+[model_providers.super_opencode]
+name = "super_opencode"
+base_url = "http://127.0.0.1:8321/v1"
+wire_api = "responses"
+env_key = "SUPER_OPENCODE_CODEX_KEY"
+
+[features]
+multi_agent = false
+code_mode = false
+plugins = false
+
+# Restored capabilities: the probe says namespace (MCP group) tools are
+# accepted, so the data-research MCP servers are available to the agent without
+# the operator's own codex surface (no codex-tui / goal / agent-control tools).
+[mcp_servers.super_opencode_codehelp]
+command = 'E:\pyprojects\super-opencode\venv\Scripts\python.exe'
+args = ['E:\pyprojects\super-opencode\mcp_server\codehelp.py']
+
+[mcp_servers.web_tools]
+command = 'E:\pyprojects\super-opencode\venv\Scripts\python.exe'
+args = ['E:\pyprojects\super-opencode\mcp_server\web_tools.py']

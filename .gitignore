@@ -237,3 +237,16 @@ experience.md
 
 # ZCode agent session directory
 .zcode/
+
+# Capability-proxy runtime artifacts + one-off local probes/launchers
+/.codex_home_soprun/*
+!/.codex_home_soprun/config.toml
+codex_capability_cache.json
+codex_capability_cache.json.*
+codex_compat_proxy.[0-9]*
+.codex_pinned/
+probe_*.py
+probe_*.ps1
+smoke_*.ps1
+headless_launch_*.py
+tools_payload_probe.py
