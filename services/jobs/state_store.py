@@ -39,12 +39,16 @@ class JobStateStore:
                 time.sleep(0.1 * (attempt + 1))
 
     def get_job_state(self, job_id: str) -> dict[str, Any] | None:
-        """Load job metadata and state."""
+        """Load job metadata and state.
+
+        ``utf-8-sig`` so a state file carrying a UTF-8 BOM (written by an
+        editor or an ad-hoc script) still loads; plain UTF-8 is unaffected.
+        """
         path = self._get_job_path(job_id)
         if not path.exists():
             return None
         try:
-            with open(path, encoding="utf-8") as f:
+            with open(path, encoding="utf-8-sig") as f:
                 return json.load(f)
         except json.JSONDecodeError as exc:
             logger.warning("Corrupt job state file for %s: %s", job_id, exc)
@@ -87,7 +91,7 @@ class JobStateStore:
             return []
         logs = []
         try:
-            with open(path, encoding="utf-8") as f:
+            with open(path, encoding="utf-8-sig") as f:
                 for lineno, line in enumerate(f, 1):
                     if not line.strip():
                         continue

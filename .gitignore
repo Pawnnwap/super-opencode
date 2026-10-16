@@ -250,3 +250,4 @@ probe_*.ps1
 smoke_*.ps1
 headless_launch_*.py
 tools_payload_probe.py
+headless_launch_sop101*.py
