@@ -105,6 +105,55 @@ class JobStateStore:
             logger.warning("Cannot read logs for job %s: %s", job_id, exc)
         return logs
 
+    def tail_logs(self, job_id: str, max_events: int) -> list[dict[str, Any]]:
+        """Return at most the last ``max_events`` log events, reading only the
+        tail of the file.
+
+        ``get_logs`` parses the whole file, which is fine for one job's detail
+        view but ruinous when a board scans every job on a timer - job logs grow
+        to tens of megabytes. Reads backwards in growing byte chunks so a small
+        file costs one read and a huge file never loads wholesale.
+        """
+        path = self._get_logs_path(job_id)
+        if max_events <= 0 or not path.exists():
+            return []
+        chunk = 65536
+        raw = b""
+        full_read = False
+        try:
+            size = path.stat().st_size
+            with open(path, "rb") as f:
+                span = min(chunk, size)
+                while True:
+                    # Re-read the whole tail span each round (never prepend:
+                    # the wider slice already contains the previous one).
+                    f.seek(size - span)
+                    raw = f.read(span)
+                    if span >= size:
+                        full_read = True
+                        break
+                    if raw.count(b"\n") > max_events:
+                        break
+                    span = min(size, span * 4)
+        except OSError as exc:
+            logger.warning("Cannot read logs for job %s: %s", job_id, exc)
+            return []
+        lines = raw.decode("utf-8-sig", errors="replace").splitlines()
+        if not full_read and lines:
+            # We started mid-file, so the leading line is a fragment.
+            lines = lines[1:]
+        logs: list[dict[str, Any]] = []
+        for line in lines:
+            if not line.strip():
+                continue
+            try:
+                parsed = json.loads(line)
+            except json.JSONDecodeError:
+                continue  # partial leading line / corrupt tail; skip quietly
+            if isinstance(parsed, dict):
+                logs.append(parsed)
+        return logs[-max_events:]
+
     def delete_job(self, job_id: str):
         """Clean up job files."""
         for path in [self._get_job_path(job_id), self._get_logs_path(job_id)]:

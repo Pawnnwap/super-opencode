@@ -54,7 +54,9 @@ class JobBoard:
     def _collect(self) -> list[dict]:
         jobs: list[dict] = []
         for job_id in self.job_manager.store.list_jobs():
-            status = self.job_manager.get_job_status(job_id)
+            # Cards never read logs, so do not pay for parsing them: on a 1.5 s
+            # timer across every historical job this was the dominant cost.
+            status = self.job_manager.get_job_summary(job_id)
             if status and status.get("type") == self.job_type:
                 jobs.append({"id": job_id, "status": status})
         jobs.sort(key=lambda j: j["status"].get("updated_at", 0), reverse=True)

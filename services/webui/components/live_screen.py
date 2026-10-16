@@ -41,7 +41,11 @@ class LiveJobScreen:
     # ------------------------------------------------------------------ #
 
     def render(self) -> None:
-        status = self.job_manager.get_job_status(self.job_id)
+        # Capped tail: the largest job log measured here is 14.6 MB (~7k events)
+        # and this screen re-renders on a timer, so the whole file is never
+        # wanted. 20000 events is far above any real study, so nothing is lost
+        # in practice; pass max_logs=None for the true full history.
+        status = self.job_manager.get_job_status(self.job_id, max_logs=20000)
         if not status:
             ui.label(f"Job {self.job_id} not found.").classes("text-[#f85149]")
             ui.button("Back to board", on_click=lambda: ui.navigate.to(self.base_path))
@@ -75,7 +79,7 @@ class LiveJobScreen:
     # ------------------------------------------------------------------ #
 
     def tick(self) -> None:
-        status = self.job_manager.get_job_status(self.job_id) or {}
+        status = self.job_manager.get_job_status(self.job_id, max_logs=20000) or {}
         state = status.get("state", "UNKNOWN")
         logs = safe_logs(status)
         self.progress.update(logs, state, self.is_evolution)
@@ -107,27 +111,30 @@ class LiveJobScreen:
             ).props("flat")
 
     def _render_switcher(self, status: dict, state: str) -> None:
-        siblings: list[str] = []
+        # Summaries only (no logs) and read ONCE per job: this widget used to
+        # call get_job_status in the scan, in fmt() and in the sort key, i.e.
+        # full log-file parses O(N log N) times per refresh.
+        siblings: dict[str, dict] = {}
         for job_id in self.job_manager.store.list_jobs():
-            sibling = self.job_manager.get_job_status(job_id) or {}
+            sibling = self.job_manager.get_job_summary(job_id) or {}
             if sibling.get("type") != self.job_type:
                 continue
             if sibling.get("state") in ACTIVE_JOB_STATES or job_id == self.job_id:
-                siblings.append(job_id)
+                siblings[job_id] = sibling
         if len(siblings) <= 1:
             return
 
         def fmt(job_id: str) -> str:
-            s = self.job_manager.get_job_status(job_id) or {}
+            s = siblings.get(job_id) or {}
             workspace = s.get("config", {}).get("workspace", "")
             name = Path(workspace).name if workspace else ""
             return f"{job_id} [{s.get('state', '?')}{(' - ' + name) if name else ''}]"
 
         ordered = sorted(
-            set(siblings),
+            siblings,
             key=lambda j: (
                 j != self.job_id,
-                -float((self.job_manager.get_job_status(j) or {}).get("updated_at") or 0),
+                -float(siblings[j].get("updated_at") or 0),
             ),
         )
         ui.select(

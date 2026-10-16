@@ -70,15 +70,34 @@ class JobManager:
 
         return job_id
 
-    def get_job_status(self, job_id: str) -> dict[str, Any] | None:
-        """Retrieve current status and logs for a job."""
+    def get_job_status(self, job_id: str, max_logs: int | None = None) -> dict[str, Any] | None:
+        """Retrieve current status and logs for a job.
+
+        ``max_logs`` caps the log payload to the newest N events (see
+        ``JobStateStore.tail_logs``); ``None`` keeps the historical
+        read-the-whole-file behaviour used by the detail screen.
+        """
         state = self.store.get_job_state(job_id)
         if not state:
             return None
 
         # Add logs to the state payload
-        state["logs"] = self.store.get_logs(job_id)
+        state["logs"] = (
+            self.store.get_logs(job_id)
+            if max_logs is None
+            else self.store.tail_logs(job_id, max_logs)
+        )
         return state
+
+    def get_job_summary(self, job_id: str) -> dict[str, Any] | None:
+        """State WITHOUT logs - for board/switcher scans.
+
+        Those widgets call this for every job on a 1.5 s timer, and attaching
+        logs there meant parsing every job's whole log file on every refresh
+        (tens of MB with a few hundred historical jobs), which is what made
+        ``/run`` unrenderable. Nothing in the list widgets reads logs.
+        """
+        return self.store.get_job_state(job_id)
 
     def cancel_job(self, job_id: str):
         """Request cancellation of a running job."""
