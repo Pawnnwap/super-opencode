@@ -35,6 +35,9 @@ _PERSIST_KEYS = [
     "max_tokens",
     "timeout",
     "plan_mode_rounds",
+    "log_detail",
+    "max_parallel_jobs",
+    "max_stored_jobs",
     "raw_input",
     "raw_target",
     "raw_restrictions",
@@ -72,6 +75,14 @@ DEFAULTS: dict = {
     "max_tokens": 150000,
     "timeout": 120,
     "plan_mode_rounds": 1,
+    # "headline" = one key line per event, full bodies in the job sidecar;
+    # "full" = verbatim events (debugging).
+    "log_detail": "headline",
+    # Upper bound on concurrently RUNNING jobs; extras queue as PENDING.
+    "max_parallel_jobs": 4,
+    # Terminal jobs beyond this count lose their log payloads (.logs/.full)
+    # on the next enqueue; state summaries stay for the board history.
+    "max_stored_jobs": 50,
     "protected_files": [],
     "evo_goal": "",
     "evo_extra_restrictions": "",

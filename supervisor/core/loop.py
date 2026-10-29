@@ -122,7 +122,7 @@ class SupervisorLoop(BaseLoop):
             yield _ev("info", f"Running initial prompt with {self._engine_name}…")
 
             init_prompt = self._init_prompt()
-            yield _ev("opencode_prompt", init_prompt)  # ← full prompt visible
+            yield _ev("opencode_prompt", init_prompt, prompt_kind="initial")
             self.runner.reset_step_detector()
             yield from self.runner.start(init_prompt)
             self._last_step_time = time.time()
@@ -234,7 +234,7 @@ class SupervisorLoop(BaseLoop):
             else:
                 prompt = plan_prompt
 
-            yield _ev("opencode_prompt", prompt)
+            yield _ev("opencode_prompt", prompt, prompt_kind="plan")
             plan_runner.reset_step_detector()
             if round_num > 1:
                 plan_runner.enable_continuation(True)
@@ -270,7 +270,7 @@ class SupervisorLoop(BaseLoop):
                 step_context=step_context,
             )
 
-            yield _ev("supervisor_response", verdict.raw)
+            yield _ev("supervisor_response", verdict.raw, digest=verdict.headline())
             yield _ev(
                 "log-plan_phase",
                 f"[plan mode] Round {round_num}/{total} complete — "

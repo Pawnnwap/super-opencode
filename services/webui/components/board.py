@@ -184,7 +184,19 @@ class JobBoard:
             ui.label(f"Active Queue ({len(active)})").classes(
                 "text-sm font-bold text-[#9ecbff]",
             )
+            # Parallel-study replicas render as ONE group card per batch;
+            # standalone jobs keep their individual cards.
+            by_batch: dict[str, list[dict]] = {}
+            standalone: list[dict] = []
             for job in active:
+                batch_id = job["status"].get("batch_id")
+                if batch_id:
+                    by_batch.setdefault(batch_id, []).append(job)
+                else:
+                    standalone.append(job)
+            for batch_id, members in sorted(by_batch.items()):
+                self._render_batch_card(batch_id, members)
+            for job in standalone:
                 self._render_card(job)
         if history:
             expanded = not active and not filters_active
@@ -193,6 +205,37 @@ class JobBoard:
             ):
                 for job in history[:20]:
                     self._render_card(job)
+
+    def _render_batch_card(self, batch_id: str, members: list[dict]) -> None:
+        states = [m["status"].get("state", "?") for m in members]
+        running = states.count("RUNNING")
+        queued = states.count("PENDING")
+        summary = f"{running} running / {queued} queued" if queued else f"{running} running"
+        with ui.card().classes("w-full bg-[#161b22]"):
+            with ui.row().classes("w-full items-center justify-between"):
+                ui.label(
+                    f"🗂 Study batch {batch_id} · {len(members)} replica(s) · {summary}",
+                ).classes("text-sm")
+                ui.button(
+                    "Cancel batch",
+                    on_click=lambda b=batch_id: self._cancel_batch(b),
+                ).props("flat dense color=red")
+            with ui.row().classes("w-full gap-2 flex-wrap"):
+                for member in sorted(
+                    members, key=lambda m: int(m["status"].get("replica_index") or 0),
+                ):
+                    state = member["status"].get("state", "?")
+                    index = member["status"].get("replica_index", "?")
+                    ui.button(
+                        f"r{index} · {state}",
+                        on_click=lambda j=member["id"]: ui.navigate.to(
+                            f"{self.base_path}/{j}",
+                        ),
+                    ).props("outline dense").classes("text-xs")
+
+    def _cancel_batch(self, batch_id: str) -> None:
+        cancelled = self.job_manager.cancel_batch(batch_id)
+        ui.notify(f"Cancelled {len(cancelled)} job(s) of batch {batch_id}")
 
     def _render_card(self, job: dict) -> None:
         job_id = job["id"]

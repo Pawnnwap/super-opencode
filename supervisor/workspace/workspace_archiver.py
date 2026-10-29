@@ -31,6 +31,22 @@ from supervisor.workspace.ignore_patterns import IgnoreMatcher
 logger = logging.getLogger(__name__)
 
 
+def create_archiver(
+    workspace: Path, keep_last: int = 5, backend: str = "git",
+) -> "WorkspaceArchiver":
+    """Build the configured archiver backend.
+
+    "git" (default): incremental snapshots via GitWorkspaceArchiver — same
+    API, content-addressed storage, automatic copy fallback when git is
+    unavailable or keeps failing. "copy": this full-copy class.
+    """
+    if str(backend).strip().lower() == "git":
+        from supervisor.workspace.git_archiver import GitWorkspaceArchiver
+
+        return GitWorkspaceArchiver(workspace, keep_last=keep_last)  # type: ignore[return-value]
+    return WorkspaceArchiver(workspace, keep_last=keep_last)
+
+
 _ARCHIVE_DIR = ".archive"
 _ARCHIVE_EXTRA_IGNORE_DIRS = {
     "_deps",

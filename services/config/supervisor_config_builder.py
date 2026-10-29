@@ -1,10 +1,21 @@
 from __future__ import annotations
 
+import os
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
 from supervisor.utils.config import SupervisorConfig
+
+
+def _resolve_log_detail(session_state: Mapping[str, Any]) -> str:
+    """SOP_LOG_DETAIL env wins, then the persisted setting, then headline."""
+    env = (os.environ.get("SOP_LOG_DETAIL") or "").strip().lower()
+    if env in ("headline", "full"):
+        return env
+    value = str(session_state.get("log_detail", "headline") or "headline")
+    value = value.strip().lower()
+    return value if value in ("headline", "full") else "headline"
 
 
 def build_supervisor_config(
@@ -29,6 +40,7 @@ def build_supervisor_config(
         supervisor_reasoning=str(session_state.get("supervisor_reasoning", "") or "").strip(),
         agent_reasoning=str(session_state.get("agent_reasoning", "") or "").strip(),
         timeout=int(session_state["timeout"]) * 60,
+        log_detail=_resolve_log_detail(session_state),
         protected_files=tuple(session_state.get("protected_files", [])),
         max_tokens=int(session_state["max_tokens"]),
         enable_python_scanner=bool(session_state["enable_python_scanner"]),

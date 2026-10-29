@@ -40,7 +40,7 @@ from supervisor.workspace.cleanup_candidates import (
     build_cleanup_inquiry,
     identify_cleanup_candidates as discover_cleanup_candidates,
 )
-from supervisor.workspace.workspace_archiver import ArchiveResult, WorkspaceArchiver
+from supervisor.workspace.workspace_archiver import ArchiveResult, WorkspaceArchiver, create_archiver
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +67,7 @@ class OpencodeRunner(BaseRunner):
         agent: str = "",
         opencode_model_backup: str | None = None,
         archive_keep_last: int = 5,
+        archive_backend: str = "git",
         step_detector: OpencodeStepDetector | None = None,
         on_step: Callable[[Step], None] | None = None,
         on_transition: Callable[[PhaseTransition], None] | None = None,
@@ -127,9 +128,10 @@ class OpencodeRunner(BaseRunner):
         # chars/4 estimate when available.
         self._last_tokens_total: int = 0
         self._process: subprocess.Popen | None = None
-        self._archiver = WorkspaceArchiver(
+        self._archiver = create_archiver(
             workspace,
             keep_last=int(archive_keep_last),
+            backend=archive_backend,
         )
         self._session_active = False
         self._use_continue = False
@@ -153,6 +155,7 @@ class OpencodeRunner(BaseRunner):
             agent=agent,
             opencode_model_backup=config.opencode_model_backup,
             archive_keep_last=getattr(config, "archive_keep_last", 5),
+            archive_backend=getattr(config, "archive_backend", "git"),
         )
 
     @property

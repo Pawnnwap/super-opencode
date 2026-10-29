@@ -7,7 +7,7 @@ from pathlib import Path
 
 from nicegui import ui
 
-from services.webui.components.log_panel import LogPanel
+from services.webui.components.log_panel import LogPanel, TailStrip
 from services.webui.components.progress_widgets import ProgressWidgets
 from services.webui.layout import format_status_pill
 from services.webui.log_format import safe_logs
@@ -41,11 +41,10 @@ class LiveJobScreen:
     # ------------------------------------------------------------------ #
 
     def render(self) -> None:
-        # Capped tail: the largest job log measured here is 14.6 MB (~7k events)
-        # and this screen re-renders on a timer, so the whole file is never
-        # wanted. 20000 events is far above any real study, so nothing is lost
-        # in practice; pass max_logs=None for the true full history.
-        status = self.job_manager.get_job_status(self.job_id, max_logs=20000)
+        # Capped tail. Events are headline-sized since the write-time
+        # recorder landed, so 2000 covers a full run's stream; the true full
+        # history stays on disk (max_logs=None) for the download button.
+        status = self.job_manager.get_job_status(self.job_id, max_logs=2000)
         if not status:
             ui.label(f"Job {self.job_id} not found.").classes("text-[#f85149]")
             ui.button("Back to board", on_click=lambda: ui.navigate.to(self.base_path))
@@ -58,14 +57,17 @@ class LiveJobScreen:
         with ui.row().classes("w-full gap-4 flex-nowrap"):
             with ui.column().classes("flex-[2]"):
                 self.progress = ProgressWidgets(self.max_tokens)
-                ui.label(
-                    f"{'Evolution' if self.is_evolution else 'Live'} Log",
-                ).classes("text-sm font-bold text-[#9ecbff]")
-                self.log_panel = LogPanel()
+                ui.label("Latest").classes("text-sm font-bold text-[#9ecbff]")
+                self.tail = TailStrip(keep=8)
+                with ui.expansion("完整日志", value=False).classes("w-full"):
+                    self.log_panel = LogPanel(
+                        detail_fetcher=self._fetch_event_detail,
+                    )
             with ui.column().classes("flex-1 gap-2"):
                 self._render_details(status)
 
         self.progress.update(safe_logs(status), state, self.is_evolution)
+        self.tail.update(safe_logs(status))
         self.log_panel.update(safe_logs(status))
 
         if state in ACTIVE_JOB_STATES:
@@ -79,16 +81,20 @@ class LiveJobScreen:
     # ------------------------------------------------------------------ #
 
     def tick(self) -> None:
-        status = self.job_manager.get_job_status(self.job_id, max_logs=20000) or {}
+        status = self.job_manager.get_job_status(self.job_id, max_logs=2000) or {}
         state = status.get("state", "UNKNOWN")
         logs = safe_logs(status)
         self.progress.update(logs, state, self.is_evolution)
+        self.tail.update(logs)
         self.log_panel.update(logs)
         self.state_pill.set_content(format_status_pill(state))
         if state not in ACTIVE_JOB_STATES:
             self.timer.active = False
             self._render_report(status)
             ui.notify(f"Job {self.job_id} finished: {state}")
+
+    def _fetch_event_detail(self, ref: int) -> dict | None:
+        return self.job_manager.get_event_detail(self.job_id, ref)
 
     # ------------------------------------------------------------------ #
 
@@ -128,7 +134,13 @@ class LiveJobScreen:
             s = siblings.get(job_id) or {}
             workspace = s.get("config", {}).get("workspace", "")
             name = Path(workspace).name if workspace else ""
-            return f"{job_id} [{s.get('state', '?')}{(' - ' + name) if name else ''}]"
+            # Batch replicas swap the random job suffix for r1/r2/… so the
+            # switcher reads as "the same study, instance 2 of 3".
+            replica = (
+                f" r{s.get('replica_index', '?')}/{s.get('replica_count', '?')}"
+                if s.get("batch_id") else ""
+            )
+            return f"{job_id}{replica} [{s.get('state', '?')}{(' - ' + name) if name else ''}]"
 
         ordered = sorted(
             siblings,

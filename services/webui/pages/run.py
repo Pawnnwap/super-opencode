@@ -12,7 +12,7 @@ from services.config.supervisor_config_builder import build_supervisor_config
 from services.webui.components.board import JobBoard
 from services.webui.components.busy import busy_buttons
 from services.webui.components.live_screen import LiveJobScreen
-from services.webui.jobs import get_job_manager
+from services.webui.jobs import get_job_manager, sync_max_parallel_jobs
 from services.webui.state import app_state
 from supervisor.utils.llm_stream import GenerationCancelled
 
@@ -77,9 +77,10 @@ def _render_readiness(workspace: Path) -> bool:
 
 def _launch_run(
     workspace: Path, plan_rounds: int, scanner: bool, occam: bool, skills: bool,
-) -> None:
+) -> str:
     app_state.save()
     app_state.apply_api_config()
+    sync_max_parallel_jobs()
     config = build_supervisor_config(
         app_state.as_mapping(),
         protocol_path=workspace / "protocol.md",
@@ -91,7 +92,7 @@ def _launch_run(
     )
     job_id = get_job_manager().enqueue_job("run", config)
     ui.notify(f"Task launched: {job_id}")
-    ui.navigate.to(f"/run/{job_id}")
+    return job_id
 
 
 def _render_launch_form(workspace: Path) -> None:
@@ -118,18 +119,62 @@ def _render_launch_form(workspace: Path) -> None:
                 "Show the supervisor a skill catalog it may load on demand "
                 "(LOAD_SKILL); judge-context only.",
             )
+        with ui.row().classes("items-end gap-4 flex-wrap"):
+            replicas = ui.number(
+                "Parallel instances",
+                value=1,
+                min=1,
+                max=16,
+            ).tooltip(
+                ">1 clones this workspace N times (one isolated study per "
+                "copy) and launches them as one batch.",
+            )
+            init_mode = ui.select(
+                {"copy": "复制工作区（排除产物）", "protocol": "仅 protocol.md"},
+                value="copy",
+                label="Replica init",
+            ).tooltip(
+                "How each parallel instance's workspace is seeded.",
+            )
+
         async def _launch() -> None:
             # Disabling is brief here — the enqueue is fast — but it stops a
             # rapid double click from launching the same task twice before
             # the browser leaves the page.
             async with busy_buttons(launch_button):
-                _launch_run(
-                    workspace,
-                    int(plan_rounds.value or 0),
-                    bool(scanner.value),
-                    bool(occam.value),
-                    bool(skills.value),
-                )
+                count = int(replicas.value or 1)
+                if count > 1:
+                    from services.webui.batch_launch import launch_study_batch
+
+                    app_state.save()
+                    app_state.apply_api_config()
+                    sync_max_parallel_jobs()
+                    try:
+                        _batch_id, job_ids, _cfgs = launch_study_batch(
+                            app_state.as_mapping(),
+                            get_job_manager(),
+                            workspace,
+                            count,
+                            init_mode=str(init_mode.value or "copy"),
+                            plan_mode_rounds=int(plan_rounds.value or 0),
+                            enable_python_scanner=bool(scanner.value),
+                            enable_occam_razor=bool(occam.value),
+                            enable_supervisor_skills=bool(skills.value),
+                        )
+                    except ValueError as exc:
+                        ui.notify(str(exc), type="negative")
+                        return
+                    ui.notify(f"Batch launched: {len(job_ids)} instance(s)")
+                    ui.navigate.to(f"/run/{job_ids[0]}")
+                else:
+                    job_id = _launch_run(
+                        workspace,
+                        int(plan_rounds.value or 0),
+                        bool(scanner.value),
+                        bool(occam.value),
+                        bool(skills.value),
+                    )
+                    ui.navigate.to(f"/run/{job_id}")
 
         launch_button = ui.button("Launch", on_click=_launch).props("color=primary")
 

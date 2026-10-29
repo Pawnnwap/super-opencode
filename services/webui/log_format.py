@@ -14,6 +14,15 @@ from supervisor.utils.text_utils import sanitize_event_message
 # Levels hidden from the log box unless the user opts in ("Show noise").
 DEFAULT_HIDDEN_LEVELS = ("heartbeat", "step_progress", "tokens")
 
+# Large-block headline events; hidden when the LogPanel "Verbose" switch is
+# off so the box shows lifecycle/decision lines only.
+VERBOSE_ONLY_LEVELS = (
+    "opencode_prompt",
+    "opencode_output",
+    "supervisor_response",
+    "supervisor_suggestions",
+)
+
 # Phase pipeline shown as a breadcrumb above the live log.
 PHASE_SEQUENCE = [
     ("plan", "planning"),

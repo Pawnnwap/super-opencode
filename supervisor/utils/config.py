@@ -34,6 +34,11 @@ class SupervisorConfig:
     opencode_model_backup: str | None = None
     timeout: int = 300
     log_level: str = "INFO"
+    # Job-log detail mode: "headline" (default) condenses large blocks
+    # (prompts/outputs/verdicts/suggestions) to one key line each with the
+    # full body in the job's .full sidecar; "full" restores verbatim events.
+    # Error events are always written in full either way.
+    log_detail: str = "headline"
     protected_files: tuple[str, ...] = ()
     read_external_feedback: bool = False
     max_tokens: int = 128_000
@@ -79,6 +84,11 @@ class SupervisorConfig:
     # snapshots grow unbounded (a 49 GB .archive once pushed the agent into
     # deleting the whole directory on its own initiative).
     archive_keep_last: int = 5
+    # Archive backend: "git" = incremental snapshots (orphan commits + tags in
+    # .archive/snapshots.git, unchanged files shared by hash); "copy" = the
+    # legacy full-copy snapshot directories. git falls back to copy when the
+    # git executable is missing or fails twice in a row.
+    archive_backend: str = "git"
     # Additionally run the workspace test suite as the DONE gate.
     goal_verify_tests: bool = False
     # Judge evidence harness: auto-inject workspace facts into judge prompts

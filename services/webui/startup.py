@@ -51,10 +51,14 @@ def _launch_from_env() -> str:
     # Multi-workspace launcher: SUPERVISOR_LAUNCH_WORKSPACES="a;b;c" plus
     # SUPERVISOR_LAUNCH_PLAN_ROUNDS (default 3) enqueue one run job per
     # workspace inside this app process, mirroring the UI launch path.
+    # Multiple workspaces launch as ONE study batch (grouped board card,
+    # one-click batch cancel), matching the UI parallel-launch semantics.
     import os
+    import time as time_mod
+    import uuid
 
     from services.config.supervisor_config_builder import build_supervisor_config
-    from services.webui.jobs import get_job_manager
+    from services.webui.jobs import get_job_manager, sync_max_parallel_jobs
     from services.webui.state import app_state
 
     raw = os.environ.get("SUPERVISOR_LAUNCH_WORKSPACES", "").strip()
@@ -65,13 +69,19 @@ def _launch_from_env() -> str:
         rounds = int(rounds_raw)
     except ValueError:
         rounds = 3
+    sync_max_parallel_jobs()
     manager = get_job_manager()
+    batch_id = (
+        f"study_{time_mod.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:4]}"
+    )
     launched: list[str] = []
+    index = 0
     for part in raw.split(";"):
         ws = Path(part.strip())
         if not ws.exists():
             launched.append(f"skip missing {ws}")
             continue
+        index += 1
         config = build_supervisor_config(
             app_state.as_mapping(),
             protocol_path=ws / "protocol.md",
@@ -83,7 +93,11 @@ def _launch_from_env() -> str:
                 app_state.get("enable_supervisor_skills", True),
             ),
         )
-        job_id = manager.enqueue_job("run", config)
+        job_id = manager.enqueue_job("run", config, meta={
+            "batch_id": batch_id,
+            "replica_index": index,
+            "replica_count": len(raw.split(";")),
+        })
         launched.append(f"{ws.name} -> {job_id}")
     return "; ".join(launched)
 

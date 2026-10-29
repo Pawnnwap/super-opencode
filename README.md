@@ -24,6 +24,9 @@ Key capabilities:
 - **Plan mode** — Configurable pre-execution planning rounds with read-only opencode analysis
 - **Occam's razor pass** — Optional post-success redundancy-reduction stage that runs on an archive copy, never the live workspace
 - **Task-state journal** — Append-only `TASK_STATE.md` progress journal re-injected after context resets
+- **Headline job logs** — every event persists as one key line; large blocks (prompts / outputs / verdicts / suggestions) keep their full bodies in a per-job sidecar (`.job_store/<job>.full`), and error events are always written in full
+- **Parallel study batches** — launch N isolated instances of one protocol from the Run page (workspace clones or protocol-only seeds); the board groups them into one batch card with one-click cancel, under a configurable concurrency cap
+- **Incremental workspace archiving** — `.archive/` snapshots are git object stores (one orphan commit per snapshot): unchanged files are shared by hash and retention actually frees space, with automatic full-copy fallback when git is unavailable
 - **Vulnerability scanning** — 9-tool static analysis pipeline (Bandit, Semgrep, Ruff, etc.)
 - **Context management** — Token-aware monitoring with graduated warnings and auto-compaction
 - **Feasibility gate** - optional `logs/feasibility_facts.json` records known gate ceilings and blocked gates; an unreachable done-condition is surfaced up front instead of being rediscovered over many pre-registered attempts. The Live Run form offers **Generate draft**: the supervisor model transcribes gates from `protocol.md` and ceilings evidenced in prior-attempt artifacts (`status.json`, `REPORT.md`, …) into the form for review — it never invents numbers
@@ -275,6 +278,13 @@ the `JobManager` — job state and logs persist under `.job_store/`, so runs
 continue independently of the browser. The left drawer shows live queue
 stats and locks Run/Evolve until the connectivity tests pass.
 
+Job logs are headline-sized by default: each event persists as one key
+line, full bodies of large blocks go to `<job_id>.full` sidecar files
+(retrievable per event via the live screen's **查看全文**), error events
+are always written in full, and repeated warnings coalesce into ×N
+markers. Terminal jobs beyond the *Stored jobs* cap lose their log
+payloads on the next enqueue (state summaries stay).
+
 ### ① Protocol Wizard
 Fill in INPUT / TARGET / RESTRICTIONS in plain language → click
 **Refine with AI** → review the generated `protocol.md` → Accept & Save.
@@ -303,8 +313,15 @@ Features:
 - Step-by-step progress tracking with a phase breadcrumb
 - Plan mode — configurable planning rounds in the launch form (default 1,
   0 disables)
+- **Parallel instances** — set *Parallel instances* above 1 to clone the
+  workspace N times (or seed protocol-only copies) and launch them as one
+  study batch; replicas land under `<workspace>_studies/<batch>_r1..rN`,
+  render as a single grouped board card with a **Cancel batch** button,
+  and respect the *Max parallel jobs* cap (extras queue as PENDING)
 - Token usage bar with color-coded thresholds (green / yellow / red)
-- Heartbeat and step counters to detect stalled processes
+- Compact rolling **Latest** strip (newest events) plus the full log panel
+  behind an expansion — headline events link to their full bodies via
+  *event #* + **查看全文**
 - Log search, noise filter, and download
 - Stop a running job at any time
 - Final report with download button (available after the run completes)
@@ -485,6 +502,9 @@ Quality ratings: `excellent` (≥90%) → `good` (≥75%) → `fair` (≥50%) �
 | Max tokens | 150,000 | Model context window size |
 | Timeout | 120 min | Silence before opencode is deemed unresponsive |
 | Protected files | *(empty)* | User-defined files that opencode cannot modify |
+| Full job logs (debug) | off | off = headline events (full bodies in the sidecar); on = verbatim events. `SOP_LOG_DETAIL=full` overrides |
+| Max parallel jobs | 4 | Concurrent RUNNING jobs; extras queue as PENDING |
+| Stored jobs (log retention) | 50 | Terminal jobs beyond this count lose `.logs`/`.full` payloads on the next enqueue; state summaries stay |
 
 ### Advanced Configuration (SupervisorConfig)
 
@@ -496,6 +516,8 @@ Quality ratings: `excellent` (≥90%) → `good` (≥75%) → `fair` (≥50%) �
 | max_protected_files_for_suggestions | 5 | Max protected files shown in suggestions |
 | read_external_feedback | False | Allow external feedback injection |
 | log_level | "INFO" | Logging verbosity (DEBUG, INFO, WARNING, ERROR) |
+| log_detail | "headline" | Job-log detail: headline digests + `.full` sidecar, or "full" for verbatim events. Errors are always inline in full |
+| archive_backend | "git" | "git" = incremental snapshots in `.archive/snapshots.git`; "copy" = legacy full-copy snapshot dirs |
 | plan_mode_rounds | 0 | Number of planning rounds before execution (0 = disabled) |
 | enable_occam_razor | False | Run the post-success redundancy-reduction pass on an archive copy |
 
@@ -565,11 +587,34 @@ Automatic compaction triggers at the configured `context_threshold`
 ## Workspace Archiving
 
 Every run preserves workspace state in `.archive/`:
-- Archives are organized into `code/`, `results/`, `logs/`, `other/` subdirectories
-- Metadata is stored in `archive_metadata.json`
-- Archives are numbered with timestamps and a counter
-- The `.archive/` directory itself is protected from modification
-- Version files are never deleted — only archived
+
+**Git backend (default, `archive_backend: "git"`)** — snapshots live in a
+private bare repo at `.archive/snapshots.git`, driven with
+`--git-dir/--work-tree` so the workspace's own `.git` is never touched:
+
+- One snapshot = `git add -A` → `write-tree` → an **orphan commit**
+  (no parent) → lightweight tag `snap/run_<ts>_<counter>_<slug>`; unchanged
+  files are shared across snapshots by content hash, so a snapshot of an
+  unchanged workspace costs nothing
+- `keep_last` retention deletes the oldest tags and runs `git gc
+  --prune=now`, which actually reclaims the dropped snapshots' unique
+  objects (no branch pins history)
+- Restore overlays the tagged files back (never deletes newer files) —
+  the same semantics as the legacy restore; legacy `run_*` directories
+  remain listed and restorable
+- Exclusions regenerate into the repo's `info/exclude` per snapshot:
+  canonical skip dirs, dot-entries, `.opencodeignore`, plus `*.log`
+  (rotating prompt logs are not code state — one 64 MB log re-blobbed per
+  snapshot is the bloat this backend exists to prevent)
+- If git is missing or fails twice in a row, the archiver falls back to
+  the full-copy backend for the rest of the process
+
+**Copy backend (`archive_backend: "copy"`)** — the legacy behaviour:
+timestamped `run_*` directories with `code/`, `results/`, `logs/`,
+`other/` subdirectories and `archive_metadata.json`.
+
+Both: the `.archive/` directory itself is protected from modification, and
+version files are never deleted — only archived.
 
 ---
 

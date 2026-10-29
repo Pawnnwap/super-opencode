@@ -157,11 +157,26 @@ def _config_section() -> None:
             _bind_switch("enable_python_scanner", "Python scanner")
             _bind_switch("enable_occam_razor", "Occam Razor")
             _bind_switch("enable_supervisor_skills", "Supervisor skills")
+
+            def _log_detail_change(e) -> None:
+                app_state["log_detail"] = "full" if e.value else "headline"
+                _save()
+
+            ui.switch(
+                "Full job logs (debug)",
+                value=(app_state.get("log_detail") or "headline") == "full",
+                on_change=_log_detail_change,
+            ).tooltip(
+                "Off: one key line per event, full bodies kept in the job's "
+                "sidecar (errors always inline). On: verbatim events.",
+            )
         with ui.row().classes("w-full gap-4 flex-wrap"):
             _bind_number("max_retries", "Max retries", min=1, max=10)
             _bind_number("context_threshold", "Context threshold %", min=10, max=95)
             _bind_number("max_tokens", "Max tokens", min=1000, max=2000000)
             _bind_number("timeout", "Turn timeout (min)", min=1, max=120)
+            _bind_number("max_parallel_jobs", "Max parallel jobs", min=1, max=32)
+            _bind_number("max_stored_jobs", "Stored jobs (log retention)", min=5, max=1000)
         with ui.row().classes("w-full gap-4 flex-wrap"):
             _bind_input(
                 "npm_registry", "npm registry for CLI upgrades (empty = default)",

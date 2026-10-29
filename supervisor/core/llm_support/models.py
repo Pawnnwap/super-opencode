@@ -281,6 +281,25 @@ class SupervisorVerdict:
     def unmet_criteria(self) -> list[CriterionResult]:
         return [c for c in self.criteria_results if not c.met]
 
+    def headline(self) -> str:
+        """One-line digest of the verdict for the job-log headline view.
+
+        The full raw text still goes to the event sidecar; this is the key
+        line a human scans: decision, criteria score, next action.
+        """
+        parts = ["DONE" if self.all_targets_met else "CONTINUE"]
+        if self.criteria_results:
+            met = sum(1 for c in self.criteria_results if c.met)
+            parts.append(f"criteria {met}/{len(self.criteria_results)}")
+        if self.unmet_criteria:
+            names = ", ".join(c.criterion[:40] for c in self.unmet_criteria[:3])
+            more = len(self.unmet_criteria) - 3
+            parts.append(f"unmet: {names}" + (f" +{more}" if more > 0 else ""))
+        if self.next_action:
+            action = self.next_action.strip().splitlines()[0]
+            parts.append(f"next: {action[:120]}")
+        return "⚖ " + " — ".join(parts)
+
 
 @dataclass
 class StepContext:

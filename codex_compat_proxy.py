@@ -58,8 +58,9 @@ _profiles: dict[str, dict] = {}
 _probing: set[str] = set()
 _last_auth = {"value": ""}
 _stats = {"requests": 0, "rewrites": 0, "learned": 0, "errors": 0}
-# Flat function name -> (namespace, original name); filled only when flattening.
-_flat_map: dict[str, tuple[str, str]] = {}
+# NOTE: the flattened-name map is REQUEST-scoped (threaded server, several
+# models flatten concurrently) — a module-global map once let one model's
+# rewrite leak into another model's response-name restore.
 
 
 def _blank_profile() -> dict:
@@ -227,7 +228,9 @@ def clamp_effort(effort: str, allowed: list[str] | None) -> str:
     return min(allowed, key=lambda a: (abs(LADDER.index(a) - rank), sign * LADDER.index(a)))
 
 
-def _flatten_namespace(ns: dict, notes: list[str]) -> list[dict]:
+def _flatten_namespace(
+    ns: dict, notes: list[str], name_map: dict[str, tuple[str, str]],
+) -> list[dict]:
     prefix = str(ns.get("name") or "mcp").replace(".", "_")
     out: list[dict] = []
     for item in ns.get("tools") or []:
@@ -237,15 +240,22 @@ def _flatten_namespace(ns: dict, notes: list[str]) -> list[dict]:
         original = str(flat.get("name") or "")
         name = original if original.startswith(prefix + "__") else f"{prefix}__{original}"
         flat["name"] = name[:64]
-        _flat_map[flat["name"]] = (prefix, original)
+        name_map[flat["name"]] = (prefix, original)
         out.append(flat)
     notes.append(f"flatten:{prefix}({len(out)})")
     return out
 
 
-def apply_profile(data: dict, prof: dict, kind: str) -> tuple[dict, list[str]]:
-    """Downgrade only where the profile says the endpoint cannot take it."""
+def apply_profile(
+    data: dict, prof: dict, kind: str,
+) -> tuple[dict, list[str], dict[str, tuple[str, str]]]:
+    """Downgrade only where the profile says the endpoint cannot take it.
+
+    Returns ``(payload, notes, name_map)``; ``name_map`` holds this
+    request's flattened-name mapping for the response-side restore.
+    """
     notes: list[str] = []
+    name_map: dict[str, tuple[str, str]] = {}
     tools = data.get("tools")
     if isinstance(tools, list):
         out: list = []
@@ -260,7 +270,7 @@ def apply_profile(data: dict, prof: dict, kind: str) -> tuple[dict, list[str]]:
                     tool["format"] = {"type": "text"}
                     notes.append(f"grammar->text:{tool.get('name')}")
             elif ttype == "namespace" and prof.get("namespace_tools") is False:
-                out.extend(_flatten_namespace(tool, notes))
+                out.extend(_flatten_namespace(tool, notes, name_map))
                 continue
             elif ttype == "web_search" and prof.get("web_search_tool") is False:
                 notes.append("drop:web_search")
@@ -279,11 +289,11 @@ def apply_profile(data: dict, prof: dict, kind: str) -> tuple[dict, list[str]]:
     else:
         allowed = prof.get("chat_efforts")
         if data.get("reasoning_effort") and allowed:
-            new = clamp_effort(str(data["reasoning_effort"]), allowed)
-            if new != data["reasoning_effort"]:
+            new = clamp_effort(str(data.get("reasoning_effort")), allowed)
+            if new != data.get("reasoning_effort"):
                 data["reasoning_effort"] = new
                 notes.append(f"effort:{new}")
-    return data, notes
+    return data, notes, name_map
 
 
 REASON_RULES = [
@@ -320,9 +330,9 @@ def learn_from_400(text: str, prof: dict, kind: str) -> bool:
     return changed
 
 
-def _restore_names(blob: bytes) -> bytes:
+def _restore_names(blob: bytes, name_map: dict[str, tuple[str, str]]) -> bytes:
     """Map flattened tool-call names back so codex can route them."""
-    if not _flat_map:
+    if not name_map:
         return blob
     try:
         data = json.loads(blob.decode("utf-8"))
@@ -333,8 +343,8 @@ def _restore_names(blob: bytes) -> bytes:
     def fix(obj) -> None:
         if isinstance(obj, dict):
             name = obj.get("name")
-            if isinstance(name, str) and name in _flat_map:
-                ns, original = _flat_map[name]
+            if isinstance(name, str) and name in name_map:
+                ns, original = name_map[name]
                 obj["name"] = original
                 obj["namespace"] = ns
                 state["changed"] = True
@@ -418,7 +428,9 @@ class Handler(BaseHTTPRequestHandler):
         attempts = 0
         while True:
             attempts += 1
-            payload, notes = apply_profile(json.loads(json.dumps(data)), prof, kind)
+            payload, notes, name_map = apply_profile(
+                json.loads(json.dumps(data)), prof, kind,
+            )
             body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
             if notes:
                 with _lock:
@@ -454,7 +466,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(502, {"Content-Type": "application/json"},
                            json.dumps({"error": {"message": f"proxy upstream error: {exc}"}}).encode())
                 return
-            self._relay_response(resp)
+            self._relay_response(resp, name_map)
             return
 
     def _relay(self, forward, raw: bytes) -> None:
@@ -466,7 +478,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         self._relay_response(resp)
 
-    def _relay_response(self, resp) -> None:
+    def _relay_response(self, resp, name_map: dict | None = None) -> None:
         ctype = resp.headers.get("Content-Type", "")
         if "text/event-stream" in ctype:
             self.send_response(resp.status)
@@ -487,8 +499,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         payload = resp.read()
         resp.close()
-        if _flat_map:
-            payload = _restore_names(payload)
+        if name_map:
+            payload = _restore_names(payload, name_map)
         self._send(resp.status, {"Content-Type": ctype or "application/json"}, payload)
 
     def log_message(self, *args):

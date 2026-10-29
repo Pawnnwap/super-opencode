@@ -1,10 +1,14 @@
 import json
 import logging
+import os
 import time
 from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+# Full-body sidecar rotation bound (single .full.1 backup kept).
+_MAX_FULL_BYTES = 16 * 1024 * 1024
 
 
 class JobStateStore:
@@ -13,6 +17,8 @@ class JobStateStore:
     def __init__(self, store_dir: str = ".job_store"):
         self.store_dir = Path(store_dir)
         self.store_dir.mkdir(parents=True, exist_ok=True)
+        # Per-job next sidecar ref, seeded lazily from existing files.
+        self._full_next_ref: dict[str, int] = {}
 
     def _get_job_path(self, job_id: str) -> Path:
         return self.store_dir / f"{job_id}.json"
@@ -20,16 +26,110 @@ class JobStateStore:
     def _get_logs_path(self, job_id: str) -> Path:
         return self.store_dir / f"{job_id}.logs"
 
+    def _get_full_path(self, job_id: str) -> Path:
+        return self.store_dir / f"{job_id}.full"
+
+    def _seed_full_ref(self, job_id: str) -> int:
+        """Recover the highest ref ever written so refs stay unique."""
+        highest = 0
+        for suffix in ("", ".1"):
+            path = self._get_full_path(job_id).with_name(
+                self._get_full_path(job_id).name + suffix
+            )
+            if not path.exists():
+                continue
+            try:
+                with open(path, encoding="utf-8-sig") as f:
+                    for line in f:
+                        try:
+                            ref = json.loads(line).get("ref")
+                        except json.JSONDecodeError:
+                            continue
+                        if isinstance(ref, int) and ref > highest:
+                            highest = ref
+            except OSError as exc:
+                logger.warning("Cannot seed sidecar refs for %s: %s", job_id, exc)
+        return highest
+
+    def append_full(self, job_id: str, record: dict[str, Any]) -> int:
+        """Append a full event body to the job's sidecar; return its ref.
+
+        One JSON line per body: ``{"ref": N, "ts": ..., "level": ..., "body": ...}``.
+        Rotates to ``.full.1`` (single backup) past 16 MB, mirroring the
+        supervisor_prompts.log pattern — headline events in ``.logs`` keep
+        working, only very old bodies become unretrievable.
+        """
+        if job_id not in self._full_next_ref:
+            self._full_next_ref[job_id] = self._seed_full_ref(job_id)
+        self._full_next_ref[job_id] += 1
+        ref = self._full_next_ref[job_id]
+
+        record = {**record, "ref": ref, "ts": time.time()}
+        path = self._get_full_path(job_id)
+        self.store_dir.mkdir(parents=True, exist_ok=True)
+        for attempt in range(3):
+            try:
+                if (
+                    path.exists()
+                    and path.stat().st_size > _MAX_FULL_BYTES
+                ):
+                    backup = path.with_name(path.name + ".1")
+                    if backup.exists():
+                        backup.unlink()
+                    path.rename(backup)
+                with open(path, "a", encoding="utf-8") as f:
+                    f.write(json.dumps(record) + "\n")
+                return ref
+            except OSError as exc:
+                if attempt == 2:
+                    logger.error("Failed to append sidecar for %s: %s", job_id, exc)
+                    raise
+                logger.warning(
+                    "Transient error appending sidecar for %s (attempt %d): %s",
+                    job_id, attempt + 1, exc,
+                )
+                time.sleep(0.05 * (attempt + 1))
+        return ref  # unreachable; for type-checkers
+
+    def read_full(self, job_id: str, ref: int) -> dict[str, Any] | None:
+        """Fetch one sidecar record by ref (current file first, then backup)."""
+        base = self._get_full_path(job_id)
+        for suffix in ("", ".1"):
+            path = base.with_name(base.name + suffix)
+            if not path.exists():
+                continue
+            try:
+                with open(path, encoding="utf-8-sig") as f:
+                    for line in f:
+                        try:
+                            parsed = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        if parsed.get("ref") == ref:
+                            return parsed
+            except OSError as exc:
+                logger.warning("Cannot read sidecar for %s: %s", job_id, exc)
+        return None
+
     def save_job_state(self, job_id: str, state: dict[str, Any]):
-        """Save job metadata and current state."""
+        """Save job metadata and current state.
+
+        Writes go to a temp file then ``os.replace``: another thread (an
+        enqueue's collision scan, a cancel) may read this file at any
+        moment, and a plain open("w") truncates first — a concurrent reader
+        saw an empty file and treated the job as unknown.
+        """
         state["job_id"] = job_id
         state["updated_at"] = time.time()
         path = self._get_job_path(job_id)
         self.store_dir.mkdir(parents=True, exist_ok=True)
+        tmp_path = path.with_name(path.name + ".tmp")
+        payload = json.dumps(state, indent=2)
         for attempt in range(3):
             try:
-                with open(path, "w", encoding="utf-8") as f:
-                    json.dump(state, f, indent=2)
+                with open(tmp_path, "w", encoding="utf-8") as f:
+                    f.write(payload)
+                os.replace(tmp_path, path)
                 return
             except OSError as exc:
                 if attempt == 2:
@@ -156,9 +256,32 @@ class JobStateStore:
 
     def delete_job(self, job_id: str):
         """Clean up job files."""
-        for path in [self._get_job_path(job_id), self._get_logs_path(job_id)]:
+        base = self._get_logs_path(job_id)
+        for path in [self._get_job_path(job_id), base] + [
+            base.with_name(base.name + suffix) for suffix in (".full", ".full.1")
+        ]:
             if path.exists():
                 path.unlink()
+
+    def drop_job_logs(self, job_id: str) -> bool:
+        """Remove a terminal job's bulky log files, keeping the state json.
+
+        Retention pruning: the state summary stays for the board's history
+        list, while the multi-MB .logs/.full payloads go. Returns True when
+        anything was removed.
+        """
+        removed = False
+        base = self._get_logs_path(job_id)
+        for path in [base] + [
+            base.with_name(base.name + suffix) for suffix in (".full", ".full.1")
+        ]:
+            if path.exists():
+                try:
+                    path.unlink()
+                    removed = True
+                except OSError as exc:
+                    logger.warning("Could not prune %s: %s", path, exc)
+        return removed
 
     def list_jobs(self) -> list[str]:
         """List all tracked job IDs."""

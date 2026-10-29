@@ -271,7 +271,7 @@ class OccamRazorStage:
         yield _ev("info", f"[occam] Manifest: {manifest_path}")
 
         prompt = self._build_prompt(copied, before_metrics, copy_workspace)
-        yield _ev("opencode_prompt", prompt)
+        yield _ev("opencode_prompt", prompt, prompt_kind="occam")
 
         output = ""
         timed_out = False
@@ -447,7 +447,7 @@ class OccamRazorStage:
             },
         )
         self._write_manifest(manifest_path, manifest)
-        yield _ev("supervisor_response", verdict.raw)
+        yield _ev("supervisor_response", verdict.raw, digest=verdict.headline())
 
         if verdict.all_targets_met:
             yield _ev("info", "[occam] Reduced copy still meets protocol.")

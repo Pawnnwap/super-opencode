@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 
 from supervisor.runners.command_common import (
@@ -193,10 +194,17 @@ def build_cmd(
         cmd += ["--model", resolved_model]
 
     if use_continue:
-        cmd.append("resume")
-        # Prefer an explicit session id (captured from prior output) so
-        # concurrent codex runs never cross sessions; fall back to --last.
-        cmd.append(session_id if session_id else "--last")
+        if session_id:
+            # Prefer an explicit session id (captured from prior output) so
+            # concurrent codex runs never cross sessions.
+            cmd += ["resume", session_id]
+        elif os.environ.get("SOP_PARALLEL_RUNS") == "1":
+            # No captured id while several runs share one CODEX_HOME:
+            # `resume --last` could pick another replica's rollout, so
+            # degrade to a fresh session instead of risking cross-talk.
+            pass
+        else:
+            cmd += ["resume", "--last"]
 
     cmd.append("--")
     # The prompt is NEVER placed on the command line: Windows caps command

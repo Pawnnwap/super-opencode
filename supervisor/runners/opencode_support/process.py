@@ -74,9 +74,9 @@ def run_prompt(
 
         child_env = _prepare_child_environment()
 
-        msg = f"Running opencode command: {safe_command_summary(cmd)}"
-        logger.info(msg)
-        yield {"level": "info", "msg": msg}
+        # Event stream only — the same line lands in the job log; a stdlib
+        # mirror here wrote every turn twice to shared stderr.
+        yield {"level": "info", "msg": f"Running opencode command: {safe_command_summary(cmd)}"}
 
         try:
             runner._process = subprocess.Popen(
@@ -191,7 +191,9 @@ def run_prompt(
                 returncode=returncode,
                 prose=outcome.prose,
             )
-            logger.info(
+            # Per-turn accounting is already visible in the event stream
+            # (output/diagnostic events); stderr keeps only anomalies.
+            logger.debug(
                 "opencode exit=%d stdout=%d chars stderr=%d chars tokens=%d",
                 returncode,
                 len(stdout),
@@ -199,7 +201,7 @@ def run_prompt(
                 outcome.tokens_total,
             )
             if stderr.strip():
-                logger.info("stderr snippet: %s", stderr[:400])
+                logger.debug("stderr snippet: %s", stderr[:400])
 
             if (
                 not runner._last_result.ok

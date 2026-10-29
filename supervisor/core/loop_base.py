@@ -133,7 +133,7 @@ class BaseLoop:
         from supervisor.analyzers.codebase_analyzer import snapshot_codebase
         from supervisor.protocols.protocol import load_protocol
         from supervisor.utils.filesystem.gitignore_utils import update_gitignore_files
-        from supervisor.workspace.workspace_archiver import WorkspaceArchiver
+        from supervisor.workspace.workspace_archiver import create_archiver
 
         # Update .gitignore files
         modified_gitignores = update_gitignore_files(self.config.workspace)
@@ -144,9 +144,10 @@ class BaseLoop:
 
         self.protocol = load_protocol(self.config.protocol_path)
         self._cached_snapshot = snapshot_codebase(self.config.workspace)
-        self.archiver = WorkspaceArchiver(
+        self.archiver = create_archiver(
             self.config.workspace,
             keep_last=self.config.archive_keep_last,
+            backend=getattr(self.config, "archive_backend", "git"),
         )
         self._init_components(agent=agent)
 
@@ -621,7 +622,7 @@ class BaseLoop:
         actual_output = augmented_output if augmented_output is not None else output
 
         verdict = self._get_verdict(actual_output, progress)
-        yield _ev("supervisor_response", verdict.raw)
+        yield _ev("supervisor_response", verdict.raw, digest=verdict.headline())
         validation_notes = getattr(verdict, "validation_notes", None)
         if validation_notes:
             yield _ev(
@@ -699,7 +700,7 @@ class BaseLoop:
                 yield _ev("warn", f"Cross-turn loop: agent {cross.reason}.")
                 return
 
-        yield _ev("opencode_prompt", safe_msg)
+        yield _ev("opencode_prompt", safe_msg, prompt_kind="turn")
         yield from self.runner.send(safe_msg)
 
         yield from self._yield_suggestions(
@@ -918,7 +919,10 @@ class BaseLoop:
             candidates,
             self.config.workspace,
         )
-        yield _ev("supervisor_response", deletion_permission.raw)
+        yield _ev(
+            "supervisor_response", deletion_permission.raw,
+            digest=deletion_permission.headline(),
+        )
         # always_inject: this prompt invites the agent to delete files, so the
         # protected-path reminder must be present even when the message itself
         # matches no protected pattern (a compaction prompt that omitted the
@@ -932,7 +936,7 @@ class BaseLoop:
                 "warn",
                 f"Protected-path references in compaction instructions: {protected_hits}",
             )
-        yield _ev("opencode_prompt", msg)
+        yield _ev("opencode_prompt", msg, prompt_kind="compaction")
         yield from self.runner.send(msg)
         compaction_output, _timed_out = self.runner.read_output()
         if compaction_output.strip():
@@ -952,7 +956,7 @@ class BaseLoop:
         self.runner.reset_context_counter()
         self.ctx_monitor.reset()
         restart_prompt = self._get_restart_prompt_for_continuation()
-        yield _ev("opencode_prompt", restart_prompt)
+        yield _ev("opencode_prompt", restart_prompt, prompt_kind="restart")
         yield from self.runner.start(restart_prompt)
         self.runner.mark_session_active()
 
@@ -1209,7 +1213,7 @@ class BaseLoop:
         from supervisor.workspace.ignore_patterns import IgnoreMatcher
 
         workspace = self.config.workspace.resolve()
-        logger.info("Starting vulnerability scan on workspace: %s", workspace)
+        logger.debug("Starting vulnerability scan on workspace: %s", workspace)
 
         ignore_matcher = IgnoreMatcher(workspace)
         ignore_matcher.load_from_workspace(workspace)
@@ -1241,12 +1245,12 @@ class BaseLoop:
                 break
 
         if not has_py:
-            logger.info(
+            logger.debug(
                 "No Python files found in workspace, skipping vulnerability scan",
             )
             return None
 
-        logger.info("Python files present; running vulnerability scan")
+        logger.debug("Python files present; running vulnerability scan")
         try:
             # Autofix is a workspace-mutating pass — run it only on the first
             # scan of a run; later judgements scan without re-applying autofixes.
@@ -1259,7 +1263,7 @@ class BaseLoop:
                 scan_deps=False,
                 print_output=False,
             )
-            logger.info("Vulnerability scan returned %d finding(s)", len(findings))
+            logger.debug("Vulnerability scan returned %d finding(s)", len(findings))
         except Exception:
             logger.exception("Vulnerability scan failed with exception")
             return None
@@ -1280,7 +1284,7 @@ class BaseLoop:
         logger.debug("After filtering: %d finding(s) remain", len(findings))
 
         if not findings:
-            logger.info("No relevant vulnerability findings after filtering")
+            logger.debug("No relevant vulnerability findings after filtering")
             return None
 
         by_severity = {}
@@ -1300,5 +1304,5 @@ class BaseLoop:
                         lines.append(f"    Fix: {f.suggestion}")
 
         result = "\n".join(lines)
-        logger.info("Vulnerability scan results formatted: %d issue(s)", len(findings))
+        logger.debug("Vulnerability scan results formatted: %d issue(s)", len(findings))
         return result

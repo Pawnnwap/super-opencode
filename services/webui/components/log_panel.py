@@ -1,11 +1,24 @@
-"""Incremental live log panel (ui.log — appends lines, no re-render flicker)."""
+"""Incremental live log panel (ui.log — appends lines, no re-render flicker).
+
+Two widgets live here:
+
+- :class:`TailStrip` — the compact always-visible strip showing only the
+  newest K events, auto-scrolling. This is the primary view: the user asked
+  for "scroll and keep the latest few lines", not a wall of history.
+- :class:`LogPanel` — the full history box (behind an expansion), with the
+  "Verbose" switch hiding big-block headline events and a ref viewer that
+  fetches a headline event's full body from the job's sidecar.
+"""
 
 from __future__ import annotations
+
+from collections.abc import Callable
 
 from nicegui import ui
 
 from services.webui.log_format import (
     DEFAULT_HIDDEN_LEVELS,
+    VERBOSE_ONLY_LEVELS,
     event_counts,
     filter_events,
     fmt_elapsed,
@@ -21,17 +34,60 @@ _BLOCK_LABELS = {
     "supervisor_read_files": "📂 SUPERVISOR READ FILES",
 }
 
+_ICONS = {
+    "tool": "🔧 ",
+    "warn": "⚠️ ",
+    "error": "❌ ",
+    "success": "✅ ",
+}
+
+
+def _one_line(event: dict, start: float | None) -> str:
+    """Single-line format for the tail strip: icon + first line of msg."""
+    level = event.get("level") or "info"
+    msg = sanitize_event_message(event.get("msg") or "")
+    first = msg.splitlines()[0] if msg.splitlines() else ""
+    ts = fmt_ts(event)
+    prefix = f"[{ts} {fmt_elapsed(event.get('ts'), start)}] " if ts else ""
+    return f"{prefix}{_ICONS.get(level, '')}{first}"
+
+
+class TailStrip:
+    """Compact rolling view of the newest K events (one line each)."""
+
+    def __init__(self, keep: int = 8):
+        self.keep = keep
+        self._pushed = 0
+        self.log = ui.log(max_lines=keep).classes("log-box w-full h-[150px]")
+
+    def update(self, logs: list[dict]) -> None:
+        logs = [e for e in (logs or []) if isinstance(e, dict)]
+        # Noise never reaches the strip — it exists to answer "what's
+        # happening right now", not to be exhaustive.
+        visible = [e for e in logs if (e.get("level") or "info") not in DEFAULT_HIDDEN_LEVELS]
+        start = start_ts(logs)
+        if len(visible) < self._pushed:
+            self.log.clear()
+            self._pushed = 0
+        for event in visible[max(self._pushed, len(visible) - self.keep):]:
+            self.log.push(_one_line(event, start))
+        self._pushed = len(visible)
+
 
 class LogPanel:
     """Renders the job's event stream into a ui.log, pushing only new lines."""
 
-    def __init__(self, max_lines: int = 1000):
+    def __init__(
+        self,
+        max_lines: int = 1000,
+        detail_fetcher: Callable[[int], dict | None] | None = None,
+    ):
         self.show_verbose = True
         self.newest_first = False
         self.show_noise = False
-        self.search = ""
         self._pushed = 0
         self._signature = None
+        self._detail_fetcher = detail_fetcher
 
         with ui.row().classes("w-full items-center gap-3 flex-wrap"):
             self.search_input = ui.input(placeholder="🔍 Search logs…").classes(
@@ -40,13 +96,16 @@ class LogPanel:
             self.counts_label = ui.label("").classes("text-xs text-[#8b949e]")
             self.verbose_switch = ui.switch(
                 "Verbose", value=True, on_change=self._reset,
-            )
+            ).tooltip("Off hides prompt/output/verdict headline events.")
             self.newest_switch = ui.switch(
                 "Newest first", value=False, on_change=self._reset,
             )
             self.noise_switch = ui.switch(
                 "Show noise", value=False, on_change=self._reset,
-            ).tooltip("Heartbeats, step-progress pings, and token events.")
+            ).tooltip("Step-progress pings and token events.")
+            if detail_fetcher is not None:
+                self.ref_input = ui.input(placeholder="event #").classes("mono w-24")
+                ui.button("查看全文", on_click=self._show_ref).props("flat dense")
             self.download_button = ui.button(
                 icon="download", on_click=self._download,
             ).props("flat dense")
@@ -63,6 +122,30 @@ class LogPanel:
     async def _download(self) -> None:
         ui.download(self._download_data.encode("utf-8"), "log.txt")
 
+    def _show_ref(self) -> None:
+        """Fetch one headline event's full body from the job sidecar."""
+        if self._detail_fetcher is None:
+            return
+        try:
+            ref = int(str(self.ref_input.value).strip().lstrip("#"))
+        except ValueError:
+            ui.notify("Enter an event # from a headline line, e.g. 12", type="warning")
+            return
+        detail = self._detail_fetcher(ref)
+        if not detail:
+            ui.notify(f"No sidecar record for event #{ref}", type="negative")
+            return
+        body = sanitize_event_message(detail.get("body") or "")
+        ts = time_str(detail.get("ts"))
+        with ui.dialog() as dialog, ui.card().classes("w-[900px] h-[70vh]"):
+            ui.label(
+                f"Event #{ref} · {detail.get('level', '?')} · {len(body):,} chars · {ts}",
+            ).classes("text-xs text-[#8b949e]")
+            with ui.scroll_area().classes("w-full flex-grow"):
+                ui.markdown(f"```\n{body}\n```")
+            ui.button("Close", on_click=dialog.close).props("flat")
+        dialog.open()
+
     @staticmethod
     def _format_line(event: dict, start: float | None) -> str:
         level = event.get("level") or "info"
@@ -71,13 +154,7 @@ class LogPanel:
         prefix = f"[{ts} {fmt_elapsed(event.get('ts'), start)}] " if ts else ""
         if level in _BLOCK_LABELS:
             return f"{prefix}{_BLOCK_LABELS[level]}\n{msg}"
-        icons = {
-            "tool": "🔧 ",
-            "warn": "⚠️ ",
-            "error": "❌ ",
-            "success": "✅ ",
-        }
-        return f"{prefix}{icons.get(level, '')}{msg}"
+        return f"{prefix}{_ICONS.get(level, '')}{msg}"
 
     def update(self, logs: list[dict]) -> None:
         logs = logs or []
@@ -92,9 +169,11 @@ class LogPanel:
             if isinstance(e, dict)
         )
 
-        hidden = set(DEFAULT_HIDDEN_LEVELS)
-        if self.noise_switch.value:
-            hidden = set()
+        hidden = set()
+        if not self.verbose_switch.value:
+            hidden |= set(VERBOSE_ONLY_LEVELS)
+        if not self.noise_switch.value:
+            hidden |= set(DEFAULT_HIDDEN_LEVELS)
         search = (self.search_input.value or "").strip()
         filtered = filter_events(logs, search, hidden)
         start = start_ts(logs)
@@ -110,3 +189,11 @@ class LogPanel:
         for event in new_events:
             self.log.push(self._format_line(event, start))
         self._pushed = len(filtered)
+
+
+def time_str(ts) -> str:
+    if not isinstance(ts, (int, float)) or ts <= 0:
+        return ""
+    import time
+
+    return time.strftime("%H:%M:%S", time.localtime(ts))
