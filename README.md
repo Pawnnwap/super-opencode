@@ -159,11 +159,16 @@ auto-fix helpers (autoflake, isort, autopep8, pyupgrade).
 
 ## Running the Application
 
-```bash
-python app.py
+```powershell
+.\start_suprun.ps1                # proxy (127.0.0.1:8321) + app (127.0.0.1:8501)
+.\start_suprun.ps1 -Upstream http://127.0.0.1:8111   # model endpoint (default)
+.\start_suprun.ps1 -Restart       # relaunch the app; -ProxyOnly / -AppOnly scope the run
 ```
 
-The app serves `http://127.0.0.1:8501` — open it in your browser.
+`start_suprun.ps1` is idempotent: pieces already listening are left
+running, and a proxy whose live upstream differs from `-Upstream` is
+restarted so the parameter always wins. Equivalent manual start:
+`python app.py` (then the app serves `http://127.0.0.1:8501`).
 
 ---
 

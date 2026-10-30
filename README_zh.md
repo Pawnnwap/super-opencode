@@ -151,11 +151,15 @@ pip install -r requirements.txt
 
 ## 运行应用程序
 
-```bash
-python app.py
+```powershell
+.\start_suprun.ps1                # 代理 (127.0.0.1:8321) + 应用 (127.0.0.1:8501)
+.\start_suprun.ps1 -Upstream http://127.0.0.1:8111   # 模型端点（默认值）
+.\start_suprun.ps1 -Restart       # 重启应用；-ProxyOnly / -AppOnly 只启动其中一部分
 ```
 
-应用将在 `http://127.0.0.1:8501` 提供服务 —— 请在浏览器中打开该地址。
+`start_suprun.ps1` 是幂等的：已在监听的组件保持运行；若代理的实时上游与
+`-Upstream` 不一致会自动重启代理，保证参数生效。等效的手动方式：
+`python app.py`（应用在 `http://127.0.0.1:8501` 提供服务）。
 
 ---
 

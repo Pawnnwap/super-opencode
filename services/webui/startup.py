@@ -102,6 +102,36 @@ def _launch_from_env() -> str:
     return "; ".join(launched)
 
 
+def mark_abandoned_jobs(manager) -> str:
+    """Flag PENDING/RUNNING store entries as abandoned at process start.
+
+    Startup runs before any worker thread exists, so every non-terminal job
+    state in the store belongs to a dead process (a crash or an app restart
+    mid-run) — leaving them RUNNING made the board and drawer show ghost
+    queue entries forever. ``ABANDONED`` keeps them visible in history with
+    an honest label; SUPERVISOR_REPLAY_JOB can still re-enqueue them.
+    """
+    flagged: list[str] = []
+    for job_id in manager.store.list_jobs():
+        state = manager.store.get_job_state(job_id) or {}
+        if state.get("state") in ("PENDING", "RUNNING"):
+            state["state"] = "ABANDONED"
+            manager.store.save_job_state(job_id, state)
+            manager.store.append_log(job_id, {
+                "level": "warn",
+                "msg": "App restarted while this job was active — marked ABANDONED "
+                       "(re-enqueue via SUPERVISOR_REPLAY_JOB=<job_id>).",
+            })
+            flagged.append(job_id)
+    return f"marked {len(flagged)} abandoned job(s)" if flagged else "no abandoned jobs"
+
+
+def _mark_abandoned() -> str:
+    from services.webui.jobs import get_job_manager
+
+    return mark_abandoned_jobs(get_job_manager())
+
+
 def _replay_job() -> str:
     """Re-enqueue one stored job when SUPERVISOR_REPLAY_JOB=<job_id> is set.
     Runs inside this app process so the worker thread and cancel path work;
@@ -174,6 +204,7 @@ def launch_startup_tasks() -> None:
         _run_task("upgrade codex", _upgrade_codex)
         _run_task("install MCP config", _install_mcp)
         _run_task("clean workspace artifacts", _clean_artifacts)
+        _run_task("mark abandoned jobs", _mark_abandoned)
         _run_task("replay job from env", _replay_job)
         _run_task("launch workspaces from env", _launch_from_env)
 
