@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Sequence
 
 from supervisor.utils.text_utils import coerce_str
@@ -65,6 +66,75 @@ def safe_command_summary(command: Sequence[str]) -> str:
     """Describe an agent invocation without logging prompt, URL, or overrides."""
     visible = [str(part) for part in command[:2] if str(part)]
     return " ".join(visible) + " [arguments redacted]"
+
+
+# Quoted or bare absolute paths to common shells/interpreters, optionally
+# preceded by the PowerShell call operator. On Windows every agent shell tool
+# call repeats the full exe path (C:\\WINDOWS\\...\\powershell.exe, the conda
+# python, ...) — pure noise in a one-line tool breadcrumb.
+_EXE_PATH_RE = re.compile(
+    r'(?:&\s+)?["\']?'
+    r'[A-Za-z]:[\\/](?:[^\s"\']*?[\\/])*'
+    r'(?P<name>powershell|pwsh|cmd|pythonw?|bash|sh|node|npm|npx|uvx?|conda)'
+    r'(?:\.exe|\.cmd|\.bat|\.ps1)?'
+    r'["\']?',
+    re.IGNORECASE,
+)
+# Leading `$env:NAME="value"; ` segments that the agents' Windows shell
+# wrappers repeat on every single call (PYTHONIOENCODING and friends) — both
+# at the very start and right after `-Command`.
+_ENV_PRELUDE_RE = re.compile(r'^\$env:[A-Za-z_]\w*\s*=\s*(?:"[^"]*"|\'[^\']*\'|\S+);\s*')
+_ENV_AFTER_COMMAND_RE = re.compile(
+    r"(-Command\s+['\"]?)(?:\$env:[A-Za-z_]\w*\s*=\s*(?:\"[^\"]*\"|'[^']*'|\S+);\s*)+",
+    re.IGNORECASE,
+)
+# Flags the wrappers always pass and no human needs in a breadcrumb.
+_NOISE_FLAGS_RE = re.compile(r'\s+(?:-NoProfile|-NonInteractive)\b', re.IGNORECASE)
+# The whole `powershell -Command` wrapper: the payload IS the command — the
+# shell name and flag repeat on every Windows call and add nothing.
+_SHELL_WRAPPER_RE = re.compile(
+    r'^(?:powershell|pwsh)\s+'
+    r'(?:-NoProfile\s+|-NonInteractive\s+|-ExecutionPolicy\s+\S+\s+|-Sta\s+|-MTA\s+)*'
+    r'-Command\s*["\']?',
+    re.IGNORECASE,
+)
+
+
+def compact_tool_detail(detail: str, limit: int = 200) -> str:
+    """Compact a tool-call detail string for the ``[tool] …`` breadcrumb.
+
+    Collapses whitespace, replaces absolute paths to well-known shells and
+    interpreters with the bare executable name (``"C:\\...\\powershell.exe"``
+    → ``powershell``, ``& "C:/.../python.exe"`` → ``python``), drops the
+    repeating ``$env:VAR="…"; `` prelude and -NoProfile/-NonInteractive flags,
+    and unwraps a leading ``powershell -Command "…"`` so only the executed
+    payload remains. The payload itself is preserved — the loop detector keys
+    on the marker, so distinct calls must stay distinct; only the
+    ever-repeating wrapper noise is removed. Capped at *limit* chars.
+    """
+    text = " ".join((detail or "").split())
+    if not text:
+        return ""
+    text = _EXE_PATH_RE.sub(lambda m: m.group("name"), text)
+    while True:
+        stripped = _ENV_PRELUDE_RE.sub("", text)
+        if stripped == text:
+            break
+        text = stripped
+    text = _ENV_AFTER_COMMAND_RE.sub(r"\1", text)
+    text = _NOISE_FLAGS_RE.sub("", text)
+    wrapper = _SHELL_WRAPPER_RE.match(text)
+    if wrapper:
+        text = text[wrapper.end():].lstrip()
+        # The wrapper consumed the payload's OPENING quote — drop its
+        # matching closing quote (when it survives the 200-char cap it
+        # would just read as a stray character).
+        opening = wrapper.group(0)[-1]
+        if opening in ('"', "'") and text.endswith(opening):
+            text = text[:-1]
+    if text.startswith("& "):
+        text = text[2:]
+    return text[:limit]
 
 
 def feed_stdin_prompt(proc, prompt: str) -> None:

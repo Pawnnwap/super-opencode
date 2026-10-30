@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import json
 
+from supervisor.runners.command_common import compact_tool_detail
 from supervisor.runners.opencode_support.stream import LineEvent, build_output
 
 __all__ = [
@@ -138,7 +139,7 @@ def _tool_marker(item: dict) -> str:
                 break
 
     if detail:
-        detail = " ".join(detail.split())[:_MAX_TOOL_DETAIL]
+        detail = compact_tool_detail(detail, _MAX_TOOL_DETAIL)
         return f"[{label}] {detail}"
     return f"[{label}]"
 

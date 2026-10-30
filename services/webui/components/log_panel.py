@@ -53,12 +53,17 @@ def _one_line(event: dict, start: float | None) -> str:
 
 
 class TailStrip:
-    """Compact rolling view of the newest K events (one line each)."""
+    """Fixed strip showing exactly the newest K events, one line each.
 
-    def __init__(self, keep: int = 8):
+    Plain labels in a plain column — deliberately NOT ui.log, whose box
+    scrolls. The strip always fits its content (at most K rows), so there is
+    no scrollbar: when a new event arrives the oldest row simply falls off.
+    """
+
+    def __init__(self, keep: int = 5):
         self.keep = keep
-        self._pushed = 0
-        self.log = ui.log(max_lines=keep).classes("log-box w-full h-[150px]")
+        self._signature = None
+        self.container = ui.column().classes("w-full gap-0.5")
 
     def update(self, logs: list[dict]) -> None:
         logs = [e for e in (logs or []) if isinstance(e, dict)]
@@ -66,12 +71,17 @@ class TailStrip:
         # happening right now", not to be exhaustive.
         visible = [e for e in logs if (e.get("level") or "info") not in DEFAULT_HIDDEN_LEVELS]
         start = start_ts(logs)
-        if len(visible) < self._pushed:
-            self.log.clear()
-            self._pushed = 0
-        for event in visible[max(self._pushed, len(visible) - self.keep):]:
-            self.log.push(_one_line(event, start))
-        self._pushed = len(visible)
+        lines = [_one_line(e, start) for e in visible[-self.keep:]]
+        signature = tuple(lines)
+        if signature == self._signature:
+            return
+        self._signature = signature
+        self.container.clear()
+        with self.container:
+            for line in lines:
+                ui.label(line).classes(
+                    "mono text-xs whitespace-nowrap overflow-hidden text-ellipsis",
+                )
 
 
 class LogPanel:

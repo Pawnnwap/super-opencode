@@ -32,6 +32,8 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 
+from supervisor.runners.command_common import compact_tool_detail
+
 # Cap how much of a tool's intent we keep in its compact marker. The marker is
 # a breadcrumb of *what the agent did*, not a transcript — so a short slice is
 # plenty and keeps history lean.
@@ -85,7 +87,7 @@ def _tool_marker(part: dict) -> str:
                 break
 
     if detail:
-        detail = " ".join(detail.split())[:_MAX_TOOL_DETAIL]
+        detail = compact_tool_detail(detail, _MAX_TOOL_DETAIL)
         return f"[{tool}] {detail}"
     return f"[{tool}]"
 

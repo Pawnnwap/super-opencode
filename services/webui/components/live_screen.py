@@ -58,7 +58,7 @@ class LiveJobScreen:
             with ui.column().classes("flex-[2]"):
                 self.progress = ProgressWidgets(self.max_tokens)
                 ui.label("Latest").classes("text-sm font-bold text-[#9ecbff]")
-                self.tail = TailStrip(keep=8)
+                self.tail = TailStrip(keep=5)
                 with ui.expansion("完整日志", value=False).classes("w-full"):
                     self.log_panel = LogPanel(
                         detail_fetcher=self._fetch_event_detail,
