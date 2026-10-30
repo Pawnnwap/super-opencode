@@ -2,7 +2,8 @@
 # Isolated from the user's ~/.codex: no MCP servers, no goal/agent tools,
 # so a supervised agent gets a plain codex tool surface and cannot touch the
 # operator's own codex sessions.
-model = "deepseek-ai/DeepSeek-V4-Flash-0731"
+model_catalog_json = 'E:/pyprojects/super-opencode/.codex_home_soprun/models.json'
+model = "swift-1.5"
 model_provider = "super_opencode"
 # Ask for what the old scripts asked for; codex_compat_proxy.py clamps it to a
 # value this endpoint actually accepts (probe-learned), so the same config works

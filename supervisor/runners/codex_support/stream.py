@@ -64,6 +64,10 @@ _ITEM_TOOL_LABELS: dict[str, tuple[str, tuple[str, ...]]] = {
     "mcp_tool_call": ("mcp", ("tool", "name", "server")),
     "web_search": ("search", ("query", "q", "url")),
     "web_fetch": ("fetch", ("url", "query", "path")),
+    # codex emits session-level problems (stale model metadata, MCP init
+    # failures, ...) as an `error` ITEM — dropping the message rendered it
+    # as an unexplained bare `[error]` on every session init.
+    "error": ("error", ("message", "detail")),
 }
 
 # Fields inside a tool payload ("input"/"arguments"/"parameters") that carry a

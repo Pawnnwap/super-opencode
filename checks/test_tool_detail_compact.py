@@ -100,3 +100,20 @@ def test_opencode_engine_emits_compact_marker():
     assert event is not None and event.kind == "tool"
     assert event.marker.startswith("[bash] python -c")
     assert "conda" not in event.marker and "powershell" not in event.marker
+
+
+def test_codex_error_item_keeps_its_message():
+    # Session-init problems (stale model metadata, MCP init failures) arrive
+    # as an `error` ITEM; the marker must carry the message, not render an
+    # unexplained bare `[error]`.
+    event = codex_classify(json.dumps({
+        "type": "item.completed",
+        "item": {
+            "type": "error",
+            "message": "Model metadata for `deepseek-ai/X` not found. "
+                       "Defaulting to fallback metadata.",
+        },
+    }))
+    assert event is not None and event.kind == "tool"
+    assert event.marker.startswith("[error] Model metadata for")
+    assert "fallback metadata" in event.marker
