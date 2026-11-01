@@ -35,3 +35,26 @@ args = ['E:\pyprojects\super-opencode\mcp_server\codehelp.py']
 [mcp_servers.web_tools]
 command = 'E:\pyprojects\super-opencode\venv\Scripts\python.exe'
 args = ['E:\pyprojects\super-opencode\mcp_server\web_tools.py']
+
+[[hooks.PostToolUse]]
+matcher = "apply_patch|Edit|Write|MultiEdit|edit_file|write_file"
+hooks = [
+  { type = "command", command = 'C:\Users\a\.conda\envs\work\python.exe C:\Users\a\.codex\scripts\py_edit_gate.py', timeout = 25 },
+]
+
+[[hooks.PostToolUse]]
+matcher = "apply_patch|Edit|Write|MultiEdit|edit_file|write_file"
+hooks = [
+  { type = "command", command = 'C:\Users\a\.conda\envs\work\python.exe C:\Users\a\.codex\scripts\rs_edit_gate.py', timeout = 25 },
+]
+
+[[hooks.Stop]]
+hooks = [
+  { type = "command", command = 'C:\Users\a\.conda\envs\work\python.exe C:\Users\a\.codex\scripts\rs_edit_gate.py --stop', timeout = 60 },
+]
+
+[[hooks.PostToolUse]]
+matcher = "apply_patch|Edit|Write|MultiEdit|edit_file|write_file"
+hooks = [
+  { type = "command", command = 'C:\Users\a\.conda\envs\work\python.exe C:\Users\a\.codex\scripts\win_edit_gate.py', timeout = 25 },
+]

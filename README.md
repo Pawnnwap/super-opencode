@@ -253,6 +253,27 @@ Two pure, LLM-free detectors keep runs honest:
   restart, so legitimate read/test phases are not punished (only the
   workspace fingerprint counts).
 
+### BLOCKED exit (unreachable target)
+
+Every escape hatch above still required `all_targets_met` to be true first —
+so a target the judge refuses to mark MET (a study whose gates peak at 7/10,
+say) had no exit at all: the loop re-judged the identical unmet criteria
+forever. Those runs now close as **BLOCKED** — terminal, exit code 2, amber
+on the board — instead of FAILED, because the run is not broken, the target
+is unreachable under recorded constraints (`enable_blocked_exit`, default
+on). Two evidence-bound triggers, both behind a turn floor
+(`min_turns_before_blocked`, default 12):
+
+- the judge repeats an identical unmet-criteria set for
+  `blocked_after_stagnant_verdicts` (6) consecutive turns with zero workspace
+  change — the ceiling case;
+- the recorded feasibility facts already declare the target unreachable and
+  the passing-gate count has stopped improving for
+  `blocked_after_unreachable_turns` (4) turns — the deterministic path.
+
+A blocked run writes `blocked_report.md` with the reason and lands as a
+BLOCKED job on the board; the operator, not the loop, chooses the next move.
+
 ---
 
 ## Occam's Razor Pass
@@ -686,6 +707,164 @@ dead code, dependency CVEs, and clone detection. Auto-fix is available via
 autoflake, isort, autopep8, pyupgrade, and ruff. The scanner is invoked during
 the self-evolution loop and after each supervisor judgement to flag risky
 patterns before they are accepted into the codebase.
+
+### Per-Edit Python Gate (global Codex hook)
+
+`vulnerability/py_edit_gate.py` is a fast, standalone counterpart to that
+full scan. It is registered as a Codex `PostToolUse` lifecycle hook, so every
+Codex session on the machine checks Python the moment the agent edits it. It is
+standalone (stdlib only, imports nothing from this repo) and is installed to
+`~/.codex/scripts/py_edit_gate.py`, which is the single copy every registered
+hook runs.
+
+Per edited `.py` file, in order:
+
+1. **Safe autofix, deliberately narrow** - `ruff check --fix` on
+   `F401,F811,F841,I` (unused/duplicate imports, unused locals, import order)
+   only, and the blank-file-header left behind by a removed import block is
+   repaired. A step is reverted byte-for-byte if the result stops compiling, if
+   the file's existing CRLF endings are lost, or if it changes more than
+   `max(20 lines, 10%)` of the file.
+
+   `E`/`W`/`UP`/`COM` are advisory-only **on purpose**, and `ruff format` is
+   opt-in (`--format`, or `PY_EDIT_GATE_FORMAT=1`). They rewrite code anywhere
+   in the file, and one reformatted line inside the agent's next patch context
+   is enough to make that patch fail with `Failed to find expected lines` -
+   which is how an agent ends up resubmitting a whole file, and how a long
+   patch gets truncated with a missing `*** End Patch`. The gate must not
+   invalidate the diff the agent is about to write.
+
+   `E501` (line too long) is ignored outright, not even advised: a long line is
+   not a defect, and fixing it means reflowing code the agent did not edit.
+   Line length belongs to the project's own formatter.
+2. **Auto-import** - for an undefined name in a curated stdlib/typing map, the
+   import is inserted (after shebang/docstring/import block). Accepted only if
+   the file still compiles *and* that `F821` is gone; otherwise rolled back.
+   Names outside the map are advisory only, never guessed.
+3. **Checks** - `compile()`, then `ruff`, `pyflakes`, and `bandit` (HIGH/MEDIUM)
+   on the touched file. 6s per tool, 18s wall-clock cap.
+
+Findings come back to the agent as a short `additionalContext` advisory
+(auto-fix summary first, then missing imports, syntax errors, lint, security).
+When the gate edits a file it says so explicitly and tells the agent to re-read
+the file and **not** resubmit it whole. The gate never blocks a tool call,
+dedupes a repeated verdict for 6 hours, and **fails open**: any internal error
+means a silent exit 0.
+
+Install / refresh (idempotent; backs up and re-validates `config.toml`, and
+refuses to touch a config that does not parse):
+
+```
+python -m services.config.codex_edit_gate_install
+python -m services.config.codex_edit_gate_install --remove
+python -m services.config.codex_edit_gate_install --no-autofix   # advisory only
+python -m services.config.codex_edit_gate_install --format        # re-enable ruff format
+```
+
+Supervised runs use a separate `CODEX_HOME`, so their config gets its own
+`[[hooks.PostToolUse]]` block pointing at the same installed script, and
+`codex-suprun.cmd` passes `--dangerously-bypass-hook-trust` (per-invocation,
+vetted-source only; it does not affect approvals):
+
+```
+python -m services.config.codex_edit_gate_install --codex-home .codex_home_soprun --shared-script %USERPROFILE%\.codex\scripts\py_edit_gate.py
+```
+
+Notes:
+
+- **Trust**: interactive sessions prompt once to accept a new hook; the hash
+  lands in `[hooks.state]` keyed by that config path, so one acceptance covers
+  the CLI, `codex exec`, and the Desktop app. Until accepted, the hook is
+  skipped - `codex doctor` does not report hooks, so check the audit log.
+- **Audit log**: `~/.codex/logs/py_edit_gate.jsonl` (rotated at 1 MB) records
+  every fire: files, tool tier (`ruff+pyflakes+bandit` or degraded), duration.
+  This is how you confirm the gate is alive.
+- **Opt out**: `PY_EDIT_GATE=0` (env, off entirely); a `.edit-gate-disable`
+  file in a project root (advisory only, no in-place edits); `--no-autofix`
+  (in the hook command).
+- Checker rules run `--isolated --no-cache`, so behaviour is identical in every
+  repo and no `.ruff_cache` is littered into projects you merely open.
+- Tool discovery tries `PATH`, then known venv/conda interpreters, and degrades
+  to syntax-only if no checker is installed. Files over 400 KB, read-only
+  files, and `.venv`/`site-packages`/`node_modules`/build dirs are skipped.
+- Out of scope: shell-written `.py` files (agent writes via `python -c`),
+  argument-count/type errors (needs a type checker), and opencode runs.
+
+Tests: `checks/test_py_edit_gate.py`, `checks/test_codex_edit_gate_install.py`.
+
+#### Per-Edit Rust Gate
+
+`vulnerability/rs_edit_gate.py` is the Rust sibling, installed to
+`~/.codex/scripts/rs_edit_gate.py` and registered as a **second**
+`[[hooks.PostToolUse]]` block. Codex matches hooks on the tool name, not the
+script path, so a new language costs one extra block - no new config surface.
+
+Per edited `.rs` file: `rustfmt --edition <from Cargo.toml>` acts as the syntax
+gate (rustfmt is a rustup shim here, so its toolchain noise is classified as a
+note, never as a parse error), then `cargo check --offline
+--message-format=json` supplies real type/borrow errors, mapped to
+`src/lib.rs:line`. Checks are crate-scoped and cadenced by measured crate cost:
+fast crates run on every edit (20 s floor), slow ones every 120 s, and a cold
+crate with no `target/` is skipped with a warming hint rather than costing a
+five-minute build. A `Blocking waiting for file lock` reply is swallowed.
+`--stop` (registered on `[[hooks.Stop]]`) runs `cargo clippy` once per crate per
+interval and replies with `systemMessage` only - `hookSpecificOutput` on a Stop
+event makes Codex report `hook: Stop Failed`.
+
+`rustfmt` as a formatter stays opt-in (`--format`): 29 of 51 `orderpipe` files
+are not rustfmt-clean, so formatting on edit is churn, not hygiene. Measured
+warm `cargo check`: 0.10 s (fixture crate), 2.5 s (`rust_ext`), 4.85 s
+(`orderpipe`), 11 s (`snapshotpipe`).
+
+```
+python -m services.config.codex_edit_gate_install --rust
+python -m services.config.codex_edit_gate_install --rust --codex-home .codex_home_soprun --shared-script %USERPROFILE%\.codex\scripts\rs_edit_gate.py
+```
+
+Kill switch `RS_EDIT_GATE=0`; audit log `~/.codex/logs/rs_edit_gate.jsonl`
+(records `mode: edit|stop`, per-crate `policy`, seconds, error counts).
+Tests: `checks/test_rs_edit_gate.py`.
+
+#### Per-Edit Windows Script Gate (.ps1 / .psm1 / .psd1 / .cmd / .bat)
+
+`vulnerability/win_edit_gate.py` is the third sibling on the same
+`[[hooks.PostToolUse]]` event.
+
+- **PowerShell** gets a real syntax check from PowerShell's own parser
+  (`[System.Management.Automation.Language.Parser]::ParseFile`), which parses
+  and never executes - asserted by a test that a script's side effect does not
+  happen. `pwsh` is preferred, `powershell.exe` is the fallback, and the child
+  console is forced to UTF-8 so a localized (zh-CN) parse message reaches the
+  agent as text instead of CP936 mojibake.
+- **Batch** has no parser, so the gate checks the two bugs that produce no error
+  message at all - running `helper.bat` without `call` (control never returns)
+  and `!var!` without `setlocal EnableDelayedExpansion` (expands to nothing) -
+  and encoding traps: UTF-16 (cmd cannot read it), UTF-8 BOM (cmd eats the first
+  line), LF-only endings (cmd mis-parses blocks), and BOM-less non-ASCII under
+  PowerShell 5.1 (read as ANSI, garbled). LF-only `.ps1` is *not* a finding.
+- Opt-in: `--ps-format` (`Invoke-Formatter`, churn-guarded, reverted if the
+  result stops parsing) and `--ps-lint` (`Invoke-ScriptAnalyzer`, throttled 300 s
+  per file). PSScriptAnalyzer is not installed on this box, and the gate says so
+  as a note rather than failing silently.
+
+Cost: 133 ms for a PowerShell parse, 2 ms for a batch scan.
+
+```
+python -m services.config.codex_edit_gate_install --windows
+python -m services.config.codex_edit_gate_install --windows --ps-format --ps-lint   # opt-ins
+python -m services.config.codex_edit_gate_install --windows --codex-home .codex_home_soprun --shared-script %USERPROFILE%\.codex\scripts\win_edit_gate.py
+```
+
+Kill switch `WIN_EDIT_GATE=0`; audit log `~/.codex/logs/win_edit_gate.jsonl`
+carries per-section finding counts (`syntax`, `encoding`, `batch`, `lint`).
+Out of scope: scripts the agent writes from a shell (`Set-Content`,
+`Add-Content`) - the matcher sees edit-tool calls only, which is how the gate
+missed a shell-written `.ps1` in the first live run.
+Tests: `checks/test_win_edit_gate.py`.
+
+Three gates means three advisories per edit; measured overhead is about half a
+second for a Python edit and 0.2 s for a script edit. All three are advisory,
+never block a tool call, and fail open.
 
 ---
 
