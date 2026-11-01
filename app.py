@@ -63,7 +63,13 @@ log = logging.getLogger("ui.watchdog")
 async def _start_ui_watchdog() -> None:
     _watchdog["loop"] = asyncio.get_running_loop()
     threading.Thread(target=_ui_watchdog, name="ui-watchdog", daemon=True).start()
-    log.info("UI watchdog started (loop + serving probes every 10s)")
+    # print, not logging: basicConfig only runs when the first job creates a
+    # SupervisorLoop, so a lifespan-time INFO record would be dropped.
+    print(
+        f"UI watchdog started (loop + serving probes every 10s, port {_UI_PORT})",
+        file=sys.stderr,
+        flush=True,
+    )
 
 
 def _ui_watchdog() -> None:
