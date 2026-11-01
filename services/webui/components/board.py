@@ -66,7 +66,7 @@ class JobBoard:
         with ui.row().classes("w-full items-end gap-3 flex-wrap"):
             self.state_filter = ui.select(
                 ["All states", "Active queue", "RUNNING", "PENDING", "SUCCESS",
-                 "FAILED", "CANCELLED"],
+                 "FAILED", "CANCELLED", "BLOCKED"],
                 value="All states",
                 label="State",
                 on_change=self.refresh,
@@ -112,6 +112,7 @@ class JobBoard:
 
         counts = {
             "running": 0, "pending": 0, "success": 0, "failed": 0, "cancelled": 0,
+            "blocked": 0,
         }
         for job in jobs:
             state = job["status"].get("state", "UNKNOWN")
@@ -121,8 +122,8 @@ class JobBoard:
         self.metrics_label.set_text(
             f"{len(jobs)} task(s) · {active} active "
             f"({counts['running']} running / {counts['pending']} queued) · "
-            f"{counts['success']} success · {counts['failed'] + counts['cancelled']}"
-            " need attention",
+            f"{counts['success']} success · {counts['blocked']} blocked · "
+            f"{counts['failed'] + counts['cancelled']} need attention",
         )
 
         filtered = self._apply_filters(jobs)
@@ -252,7 +253,7 @@ class JobBoard:
                         ui.button(
                             icon="stop", on_click=lambda j=job_id: self._stop(j),
                         ).props("flat dense color=red")
-                    elif state in ("SUCCESS", "FAILED", "CANCELLED"):
+                    elif state in ("SUCCESS", "FAILED", "CANCELLED", "BLOCKED"):
                         ui.button(
                             icon="delete",
                             on_click=lambda j=job_id: self._delete(j),

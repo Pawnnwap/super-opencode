@@ -75,6 +75,22 @@ class SupervisorConfig:
     # Blocked DONE proposals tolerated before the guard accepts an unverified
     # completion instead of looping forever (Claude-Code Stop-hook cap).
     max_blocked_stops: int = 2
+    # BLOCKED exit: a run whose done-condition is demonstrably unreachable ends
+    # BLOCKED (terminal, exit code 2) instead of re-judging the same unmet
+    # criteria forever. max_blocked_stops only caps *blocked DONE proposals*,
+    # which requires all_targets_met to be true first - so a target the judge
+    # refuses to mark MET (the ceiling case: 4 runs at 28h+, 164 judge turns on
+    # a study whose gates peak at 7/10) had no exit at all.
+    enable_blocked_exit: bool = True
+    # Consecutive judged turns with an identical unmet-criteria set AND no
+    # workspace change before the run is declared blocked.
+    blocked_after_stagnant_verdicts: int = 6
+    # Turn floor: never declare blocked this early, the target may be slow-starting.
+    min_turns_before_blocked: int = 12
+    # Recorded feasibility facts already say the target is unreachable: this
+    # many consecutive judged turns with no passing-gate improvement is enough
+    # on its own (deterministic path, no judge involvement).
+    blocked_after_unreachable_turns: int = 4
     # Require observable workspace file changes before accepting completion
     # (disable for pure-analysis goals that legitimately change no files).
     goal_require_changes: bool = True

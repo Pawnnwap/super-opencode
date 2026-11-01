@@ -103,7 +103,10 @@ class SupervisorLoop(BaseLoop):
                 if lvl == "warn"
                 else logger.info
             )(msg)
-        return 0 if self._state == LoopState.ENDED_SUCCESS else 1
+        if self._state == LoopState.ENDED_SUCCESS:
+            return 0
+        # Exit code 2 = BLOCKED: the target is unreachable, the run is not broken.
+        return 2 if self._state == LoopState.ENDED_BLOCKED else 1
 
     # ------------------------------------------------------------------ #
 
@@ -143,6 +146,16 @@ class SupervisorLoop(BaseLoop):
                 yield from self._run_occam_razor()
             self._harvest_gates()
             yield _ev("success", "All targets met — run finished successfully.")
+        elif self._state == LoopState.ENDED_BLOCKED:
+            # Terminal and evidence-backed: the done condition cannot be met
+            # under the recorded constraints. Distinct from FAILED so the event
+            # stream, the job store, and the exit code all say the same thing.
+            self._harvest_gates()
+            yield _ev(
+                "blocked",
+                "Target unreachable - run closed as BLOCKED. "
+                f"{self._blocked_reason} See blocked_report.md in workspace.",
+            )
         else:
             self._harvest_gates()
             yield _ev(

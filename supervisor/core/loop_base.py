@@ -41,6 +41,8 @@ class LoopState(Enum):
     RUNNING = auto()
     ENDED_SUCCESS = auto()
     ENDED_FAILURE = auto()
+    # Target demonstrably unreachable: terminal, but not an execution failure.
+    ENDED_BLOCKED = auto()
 
 
 def _ev(level: str, msg: object, **kwargs) -> Event:
@@ -91,6 +93,15 @@ class BaseLoop:
         self._loop_restarts: int = 0
         self._max_loop_restarts: int = 2
         self._loop_breaker: str = ""
+        # BLOCKED exit accounting (config.enable_blocked_exit): the judge's
+        # unmet-criteria signature repeated across turns, the feasibility-facts
+        # streak, and the passing-gate high-water mark that proves a streak is
+        # "no progress" rather than "slow progress".
+        self._unmet_streak: int = 0
+        self._unmet_streak_sig: str = ""
+        self._unreachable_streak: int = 0
+        self._last_passing_gates: int | None = None
+        self._blocked_reason: str = ""
         # Why the run is aborting, when it is NOT the normal max-retries path
         # (e.g. loop-persists abort). Drives the final failure report wording;
         # empty = retries exhausted.
@@ -463,6 +474,136 @@ class BaseLoop:
         )
         yield from []
 
+    def _unmet_signature(self, verdict) -> str:
+        """Stable signature of the judge's unmet set ('' when unmeasurable)."""
+        items = [
+            str(criterion).strip()[:160]
+            for criterion in (getattr(verdict, "unmet_criteria", None) or [])
+            if str(criterion).strip()
+        ]
+        return "\n".join(sorted(items))
+
+    def _feasibility_block_reason(self) -> str:
+        """Deterministic 'target unreachable' reason from recorded facts, '' if reachable."""
+        from pathlib import Path
+
+        from supervisor.protocols.feasibility_gate import (
+            check_feasibility,
+            default_facts_path,
+            load_feasibility_facts,
+        )
+
+        cfg_path = str(getattr(self.config, "feasibility_facts_path", "") or "")
+        path = Path(cfg_path) if cfg_path else default_facts_path(self.config.workspace)
+        facts = load_feasibility_facts(path)
+        if not facts:
+            return ""
+        assessment = check_feasibility(facts, facts_source=str(path))
+        if assessment.reachable:
+            return ""
+        return (
+            f"recorded feasibility facts say the done condition is unreachable "
+            f"(known ceiling {assessment.known_ceiling} of {assessment.required_gates} "
+            f"gates; blocked gates: {', '.join(assessment.blocked_gates) or 'n/a'}): "
+            f"{assessment.reason}"
+        )
+
+    def _passing_gate_count(self) -> int | None:
+        """PASS count from the last gate harvest; None when there is none."""
+        import json
+
+        path = self.config.workspace / "logs" / "gate_results_last.json"
+        try:
+            data = json.loads(path.read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError):
+            return None
+        if not isinstance(data, dict) or not isinstance(data.get("results"), list):
+            return None
+        return sum(
+            1
+            for row in data["results"]
+            if isinstance(row, dict)
+            and str(row.get("conclusion", "")).upper() == "PASS"
+        )
+
+    def _blocked_assessment(self, verdict) -> str:
+        """Non-empty reason when this run must close as BLOCKED instead of looping.
+
+        Two triggers, both evidence-bound, both gated by the turn floor:
+        (a) the judge repeats an identical unmet-criteria set for N consecutive
+        turns with zero workspace change - the ceiling case, where the judge
+        refuses DONE:yes forever and max_blocked_stops can never fire (that cap
+        applies to blocked DONE *proposals*, which requires all_targets_met);
+        (b) the feasibility facts already declare the target unreachable and the
+        passing-gate count has stopped improving.
+        """
+        if not getattr(self.config, "enable_blocked_exit", True):
+            return ""
+        if verdict.all_targets_met:
+            self._unmet_streak, self._unmet_streak_sig = 0, ""
+            return ""
+        signature = self._unmet_signature(verdict)
+        if (
+            signature
+            and signature == self._unmet_streak_sig
+            and not self._last_changed_files
+        ):
+            self._unmet_streak += 1
+        else:
+            self._unmet_streak = 1 if signature else 0
+        self._unmet_streak_sig = signature
+        floor = int(getattr(self.config, "min_turns_before_blocked", 12))
+        if self._task_turn < floor:
+            return ""
+        needed = max(2, int(getattr(self.config, "blocked_after_stagnant_verdicts", 6)))
+        if self._unmet_streak >= needed:
+            unmet = "; ".join(signature.splitlines()[:4])
+            return (
+                f"{self._unmet_streak} consecutive judged turns reported the same "
+                f"unmet criteria with no workspace change: {unmet}"
+            )
+        reason = self._feasibility_block_reason()
+        if not reason:
+            self._unreachable_streak = 0
+            return ""
+        passing = self._passing_gate_count()
+        if (
+            passing is None
+            or self._last_passing_gates is None
+            or passing > self._last_passing_gates
+        ):
+            # No evidence base yet, or gates are still being won: stay patient.
+            self._unreachable_streak = 0
+        else:
+            self._unreachable_streak += 1
+        self._last_passing_gates = passing
+        needed = max(1, int(getattr(self.config, "blocked_after_unreachable_turns", 4)))
+        if self._unreachable_streak >= needed:
+            return (
+                f"{reason}; no passing-gate improvement across "
+                f"{self._unreachable_streak} judged turns."
+            )
+        return ""
+
+    def _on_blocked(self, verdict, reason: str) -> Generator[Event]:
+        """Write the blocked report + memory record; the operator decides next."""
+        report = self.supervisor.report_final_status(
+            reason=f"Target unreachable, run closed as BLOCKED: {reason}",
+            opencode_output="",
+        )
+        self._write(report, "blocked_report.md")
+        update_experience(self.config.workspace, failed=[f"blocked: {reason}"])
+        self._record_structured_failure(
+            reason,
+            goal=self._memory_goal(),
+            challenges=[reason],
+        )
+        yield _ev(
+            "warn",
+            f"Blocked exit: {reason}\n\nWrote blocked_report.md. The run is closing "
+            "as BLOCKED so the operator, not the loop, chooses the next move.",
+        )
+
     def _memory_goal(self) -> str:
         """Stable task description stored with a durable memory decision."""
         protocol = getattr(self, "protocol", None)
@@ -636,6 +777,13 @@ class BaseLoop:
 
         self._task_turn += 1
         self._record_task_state(verdict, progress)
+
+        blocked_reason = self._blocked_assessment(verdict)
+        if blocked_reason:
+            self._blocked_reason = blocked_reason
+            self._state = LoopState.ENDED_BLOCKED
+            yield from self._on_blocked(verdict, blocked_reason)
+            return
 
         yield from self._emit_token_warnings()
 

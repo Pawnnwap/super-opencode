@@ -15,11 +15,30 @@ from supervisor.utils.text_utils import sanitize_event_message
 
 logger = logging.getLogger(__name__)
 
+# Level -> terminal state. The newest one in the log wins: a run that emitted
+# success long ago and then aborted must not be recorded SUCCESS off that old
+# event (the previous `any(...)` scan did exactly that over 28h job logs).
+_TERMINAL_EVENT_STATES = {"success": "SUCCESS", "blocked": "BLOCKED"}
+
+
+def final_state_from_logs(logs: list[dict[str, Any]]) -> str:
+    """Map a job's event log to its terminal state (last terminal event wins)."""
+    for index in range(len(logs) - 1, -1, -1):
+        state = _TERMINAL_EVENT_STATES.get(str(logs[index].get("level")))
+        if not state:
+            continue
+        # An error newer than the closing marker means the run broke on its way
+        # out (cleanup, occam pass, worker) - the marker cannot vouch for it.
+        if any(str(e.get("level")) == "error" for e in logs[index + 1:]):
+            return "FAILED"
+        return state
+    return "FAILED"
+
 
 class JobManager:
     """Manages long-running supervisor and self-evolution jobs."""
 
-    TERMINAL_STATES = {"SUCCESS", "FAILED", "CANCELLED"}
+    TERMINAL_STATES = {"SUCCESS", "FAILED", "CANCELLED", "BLOCKED"}
 
     def __init__(
         self,
@@ -369,7 +388,7 @@ class JobManager:
                 return
             # Determine final state
             logs = self.store.get_logs(job_id)
-            final_state = "SUCCESS" if any(e.get("level") == "success" for e in logs) else "FAILED"
+            final_state = final_state_from_logs(logs)
 
             # Final report check if not captured during streaming
             if not report_content:
@@ -404,7 +423,9 @@ class JobManager:
         """Try to read final report files from workspace."""
         report_files = []
         if job_type == "run":
-            report_files = ["failure_report.md", "summary.md"]
+            # A BLOCKED run writes blocked_report.md, not failure_report.md -
+            # without it the job's stored report (and its preview) is empty.
+            report_files = ["failure_report.md", "blocked_report.md", "summary.md"]
         elif job_type == "evolve":
             report_files = ["evolution_report.md"]
 

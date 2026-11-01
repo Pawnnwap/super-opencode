@@ -33,6 +33,8 @@ h3 { font-family: 'Syne', sans-serif; font-weight: 600; color: #9ecbff; }
 .pill-running { background:#1f6feb22; color:#58a6ff; border: 1px solid #1f6feb55; }
 .pill-success { background:#23863633; color:#3fb950; border: 1px solid #23863655; }
 .pill-failure { background:#da363333; color:#f85149; border: 1px solid #da363355; }
+.pill-blocked { background:#e3b34133; color:#e3b341; border: 1px solid #e3b34155; }
+.log-blocked { color: #e3b341; font-weight: 600; }
 """
 
 PILL_MAP = {
@@ -41,6 +43,8 @@ PILL_MAP = {
     "SUCCESS": '<span class="pill pill-success">SUCCESS</span>',
     "FAILED": '<span class="pill pill-failure">FAILED</span>',
     "CANCELLED": '<span class="pill pill-failure">CANCELLED</span>',
+    # Target unreachable under recorded constraints: amber, not red.
+    "BLOCKED": '<span class="pill pill-blocked">BLOCKED</span>',
 }
 
 _PAGES = [

@@ -39,6 +39,7 @@ _ICONS = {
     "warn": "⚠️ ",
     "error": "❌ ",
     "success": "✅ ",
+    "blocked": "[BLOCKED] ",
 }
 
 
