@@ -553,7 +553,11 @@ def render(job_id: str = "") -> None:
 
     manager = get_job_manager()
     if job_id:
-        status = manager.get_job_status(job_id)
+        # Summary only: this check used get_job_status, which parses the job's
+        # WHOLE log file just to read type/state - a multi-MB parse on the
+        # event loop per detail-page navigation. LiveJobScreen re-fetches the
+        # capped tail it actually renders.
+        status = manager.get_job_summary(job_id)
         if not status or status.get("type") != "run":
             ui.label(f"Run job {job_id} not found.").classes("text-[#f85149]")
             ui.button(

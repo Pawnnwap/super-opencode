@@ -70,7 +70,9 @@ def render(job_id: str = "") -> None:
 
     manager = get_job_manager()
     if job_id:
-        status = manager.get_job_status(job_id)
+        # Summary only - get_job_status here parsed the whole log file on the
+        # event loop per navigation (see pages/run.py).
+        status = manager.get_job_summary(job_id)
         if not status or status.get("type") != "evolve":
             ui.label(f"Evolution job {job_id} not found.").classes("text-[#f85149]")
             ui.button(

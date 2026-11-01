@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from nicegui import ui
+from nicegui import ui, run as nicegui_run
 
 from services.webui.log_format import (
     DEFAULT_HIDDEN_LEVELS,
@@ -92,6 +92,7 @@ class LogPanel:
         self,
         max_lines: int = 1000,
         detail_fetcher: Callable[[int], dict | None] | None = None,
+        download_fetcher: Callable[[], list] | None = None,
     ):
         self.show_verbose = True
         self.newest_first = False
@@ -99,6 +100,7 @@ class LogPanel:
         self._pushed = 0
         self._signature = None
         self._detail_fetcher = detail_fetcher
+        self._download_fetcher = download_fetcher
 
         with ui.row().classes("w-full items-center gap-3 flex-wrap"):
             self.search_input = ui.input(placeholder="🔍 Search logs…").classes(
@@ -117,10 +119,10 @@ class LogPanel:
             if detail_fetcher is not None:
                 self.ref_input = ui.input(placeholder="event #").classes("mono w-24")
                 ui.button("查看全文", on_click=self._show_ref).props("flat dense")
-            self.download_button = ui.button(
-                icon="download", on_click=self._download,
-            ).props("flat dense")
-            self._download_data = ""
+            if download_fetcher is not None:
+                ui.button(
+                    icon="download", on_click=self._download,
+                ).props("flat dense")
         self.log = ui.log(max_lines=max_lines).classes("log-box w-full h-[520px]")
 
     # ------------------------------------------------------------------ #
@@ -131,7 +133,19 @@ class LogPanel:
         self.log.clear()
 
     async def _download(self) -> None:
-        ui.download(self._download_data.encode("utf-8"), "log.txt")
+        """Full log text, built on a worker thread on demand (one click)."""
+        if self._download_fetcher is None:
+            return
+        data = await nicegui_run.io_bound(self._download_text)
+        ui.download(data.encode("utf-8"), "log.txt")
+
+    def _download_text(self) -> str:
+        return "\n".join(
+            f"[{fmt_ts(e) or '--:--:--'}] {e.get('level', 'info')}: "
+            f"{sanitize_event_message(e.get('msg') or '')}"
+            for e in (self._download_fetcher() or [])
+            if isinstance(e, dict)
+        )
 
     def _show_ref(self) -> None:
         """Fetch one headline event's full body from the job sidecar."""
@@ -172,12 +186,6 @@ class LogPanel:
         counts = event_counts(logs)
         self.counts_label.set_text(
             f"🔴 {counts['error']}  ·  🟡 {counts['warn']}  ·  🔧 {counts['tool']}",
-        )
-        self._download_data = "\n".join(
-            f"[{fmt_ts(e) or '--:--:--'}] {e.get('level', 'info')}: "
-            f"{sanitize_event_message(e.get('msg') or '')}"
-            for e in logs
-            if isinstance(e, dict)
         )
 
         hidden = set()

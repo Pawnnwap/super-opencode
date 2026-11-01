@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
-from nicegui import ui
+from nicegui import ui, run as nicegui_run
 
 from services.webui.components.log_panel import LogPanel, TailStrip
 from services.webui.components.progress_widgets import ProgressWidgets
@@ -62,6 +62,7 @@ class LiveJobScreen:
                 with ui.expansion("完整日志", value=False).classes("w-full"):
                     self.log_panel = LogPanel(
                         detail_fetcher=self._fetch_event_detail,
+                        download_fetcher=self._fetch_full_logs,
                     )
             with ui.column().classes("flex-1 gap-2"):
                 self._render_details(status)
@@ -80,8 +81,16 @@ class LiveJobScreen:
 
     # ------------------------------------------------------------------ #
 
-    def tick(self) -> None:
-        status = self.job_manager.get_job_status(self.job_id, max_logs=2000) or {}
+    async def tick(self) -> None:
+        # The 2 s poll reads the job's tail (up to 2000 events) off the event
+        # loop: on the loop it stalled every open detail page behind disk and
+        # JSON work whenever the job's codex stream burst.
+        status = (
+            await nicegui_run.io_bound(
+                self.job_manager.get_job_status, self.job_id, 2000,
+            )
+            or {}
+        )
         state = status.get("state", "UNKNOWN")
         logs = safe_logs(status)
         self.progress.update(logs, state, self.is_evolution)
@@ -95,6 +104,10 @@ class LiveJobScreen:
 
     def _fetch_event_detail(self, ref: int) -> dict | None:
         return self.job_manager.get_event_detail(self.job_id, ref)
+
+    def _fetch_full_logs(self) -> list[dict]:
+        """Full log history for the download button (worker thread only)."""
+        return self.job_manager.store.get_logs(self.job_id)
 
     # ------------------------------------------------------------------ #
 

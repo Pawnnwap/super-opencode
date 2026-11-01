@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
-from nicegui import ui
+from nicegui import ui, run as nicegui_run
 
 from services.webui.components.progress_widgets import ProgressWidgets
 from services.webui.layout import format_status_pill
@@ -47,7 +47,7 @@ class JobBoard:
         self._queue_signature = None
         self._snapshot_signature = None
         self.timer = ui.timer(1.5, self.refresh)
-        self.refresh()
+        self.refresh_sync()
 
     # ------------------------------------------------------------------ #
 
@@ -102,8 +102,26 @@ class JobBoard:
 
     # ------------------------------------------------------------------ #
 
-    def refresh(self) -> None:
-        jobs = self._collect()
+    def refresh_sync(self) -> None:
+        """One-off synchronous refresh (page load, after delete).
+
+        The per-store scan is milliseconds against small state files — fine
+        once, but never on the 1.5 s timer: see :meth:`refresh`.
+        """
+        self._render(self._collect())
+
+    async def refresh(self) -> None:
+        """Timer/filter refresh: collect job states on a worker thread.
+
+        The collect reads one state JSON per stored job; run synchronously on
+        the event loop (this timer fires on every open board page) it stalled
+        the loop behind worker-thread disk/GIL pressure whenever jobs streamed
+        heavily - the browser saw the websocket die: "UI loses connection".
+        """
+        jobs = await nicegui_run.io_bound(self._collect)
+        self._render(jobs)
+
+    def _render(self, jobs: list[dict]) -> None:
         workspaces = sorted({_workspace_name(j) for j in jobs} - {""})
         known = {w for w in (self.workspace_filter.options or []) if w != "All workspaces"}
         if set(workspaces) != known:
@@ -290,7 +308,7 @@ class JobBoard:
 
     def _delete(self, job_id: str) -> None:
         self.job_manager.store.delete_job(job_id)
-        self.refresh()
+        self.refresh_sync()
 
     # ------------------------------------------------------------------ #
 
