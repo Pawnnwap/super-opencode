@@ -180,7 +180,7 @@ def test_board_and_pills_know_the_blocked_state():
     assert '"BLOCKED"' in board
     assert "pill-blocked" in layout
     # The board metrics line counts blocked jobs instead of dropping them.
-    assert '"blocked": 0' in board
+    assert '"BLOCKED": 0' in board
     assert "blocked" in board.split("metrics_label.set_text")[1]
     # A blocked run's report reaches the job store via blocked_report.md.
     assert "blocked_report.md" in manager

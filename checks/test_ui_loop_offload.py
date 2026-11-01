@@ -45,3 +45,12 @@ def test_log_download_is_built_on_demand_not_per_tick():
     assert "await nicegui_run.io_bound(self._download_text)" in panel
     update_body = panel.split("def update")[1].split("\n    def ")[0]
     assert "_download" not in update_body
+
+
+def test_board_metrics_keys_match_store_state_vocabulary():
+    board = _read("services", "webui", "components", "board.py")
+    # Store states are UPPERCASE; lowercase keys silently zeroed every count
+    # and the metrics line read "0 active / 0 success" forever.
+    assert '"RUNNING": 0' in board
+    assert '"running": 0' not in board
+    assert ".upper()" in board

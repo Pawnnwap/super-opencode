@@ -128,20 +128,23 @@ class JobBoard:
             self.workspace_filter.options = ["All workspaces"] + workspaces
             self.workspace_filter.update()
 
+        # Keys must match the STORE's state vocabulary (RUNNING/SUCCESS/...)
+        # exactly - the lowercase keys here once made every count stay 0 and
+        # the metrics line read "0 active / 0 success" forever.
         counts = {
-            "running": 0, "pending": 0, "success": 0, "failed": 0, "cancelled": 0,
-            "blocked": 0,
+            "RUNNING": 0, "PENDING": 0, "SUCCESS": 0, "FAILED": 0,
+            "CANCELLED": 0, "BLOCKED": 0,
         }
         for job in jobs:
-            state = job["status"].get("state", "UNKNOWN")
+            state = str(job["status"].get("state", "")).upper()
             if state in counts:
                 counts[state] += 1
-        active = counts["running"] + counts["pending"]
+        active = counts["RUNNING"] + counts["PENDING"]
         self.metrics_label.set_text(
             f"{len(jobs)} task(s) · {active} active "
-            f"({counts['running']} running / {counts['pending']} queued) · "
-            f"{counts['success']} success · {counts['blocked']} blocked · "
-            f"{counts['failed'] + counts['cancelled']} need attention",
+            f"({counts['RUNNING']} running / {counts['PENDING']} queued) · "
+            f"{counts['SUCCESS']} success · {counts['BLOCKED']} blocked · "
+            f"{counts['FAILED'] + counts['CANCELLED']} need attention",
         )
 
         filtered = self._apply_filters(jobs)
