@@ -71,16 +71,18 @@ def _bind_switch(key: str, label: str):
     return ui.switch(label, value=bool(app_state.get(key)), on_change=_change)
 
 
-def _bind_number(key: str, label: str, *, min: int, max: int, format: str = "%.0f"):
+def _bind_number(key: str, label: str, *, min: int, max: int, format: str = "%.0f",
+                 classes: str = "w-44"):
     def _change(e) -> None:
         if e.value is not None:
             app_state[key] = int(e.value)
             _save()
 
+    # w-44 so the LABEL fits: a cramped field ellipsizes its own title.
     return ui.number(
         label, value=int(app_state.get(key) or 0), min=min, max=max,
         format=format, on_change=_change,
-    )
+    ).classes(classes)
 
 
 def _workspace() -> Path | None:
@@ -173,23 +175,33 @@ def _config_section() -> None:
                 "Off: one key line per event, full bodies kept in the job's "
                 "sidecar (errors always inline). On: verbatim events.",
             )
-        with ui.row().classes("w-full gap-4 flex-wrap"):
+        # Larger gap + per-field widths sized to their titles: readable
+        # labels beat cramming six params onto one line.
+        with ui.row().classes("w-full gap-6 flex-wrap"):
             _bind_number("max_retries", "Max retries", min=1, max=10)
             _bind_number("context_threshold", "Context threshold %", min=10, max=95)
             _bind_number("max_tokens", "Max tokens", min=1000, max=2000000)
             _bind_number("timeout", "Turn timeout (min)", min=1, max=120)
             _bind_number("max_parallel_jobs", "Max parallel jobs", min=1, max=32)
-            _bind_number("max_stored_jobs", "Stored jobs (log retention)", min=5, max=1000)
-        # Both rarely-touched optional strings: one line, not two.
-        with ui.row().classes("w-full gap-4 flex-wrap"):
-            _bind_input(
-                "npm_registry", "npm registry for CLI upgrades (empty = default)",
+            _bind_number(
+                "max_stored_jobs", "Stored jobs (log retention)",
+                min=5, max=1000, classes="w-56",
             )
-            _bind_input(
+        # Both rarely-touched optional strings share one line; the detail
+        # lives in the tooltip so the label itself never ellipsizes.
+        with ui.row().classes("w-full gap-4 flex-wrap"):
+            npm_registry = _bind_input("npm_registry", "npm registry for CLI upgrades",
+                                       classes="flex-grow mono")
+            npm_registry.tooltip("Empty = the default registry.")
+            skills_dir = _bind_input(
                 "supervisor_skills_dir",
-                "Supervisor skills extra dir (optional; beyond built-in + "
-                "workspace bank)",
+                "Supervisor skills extra dir (optional)",
+                classes="flex-grow mono",
                 on_change=_skills_listing.refresh,
+            )
+            skills_dir.tooltip(
+                "Beyond the built-in bank and the workspace's "
+                ".opencode/supervisor_skills directory.",
             )
         _skills_listing()
 
