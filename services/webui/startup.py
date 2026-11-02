@@ -204,7 +204,9 @@ def launch_startup_tasks() -> None:
         _run_task("upgrade codex", _upgrade_codex)
         _run_task("install MCP config", _install_mcp)
         _run_task("clean workspace artifacts", _clean_artifacts)
-        _run_task("mark abandoned jobs", _mark_abandoned)
+        # No abandoned-marking here: the UI process does not own job
+        # lifecycle any more - the worker daemon marks orphans at ITS start,
+        # so restarting the UI never touches running jobs.
         _run_task("replay job from env", _replay_job)
         _run_task("launch workspaces from env", _launch_from_env)
 

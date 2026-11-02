@@ -220,6 +220,61 @@ class JobManager:
         """Fetch one full event body from the job's sidecar by ref."""
         return self.store.read_full(job_id, ref)
 
+    def config_from_state(self, job_id: str) -> SupervisorConfig | None:
+        """Rebuild a SupervisorConfig from the job's stored record."""
+        from dataclasses import fields as dataclass_fields
+
+        state = self.store.get_job_state(job_id)
+        if not state:
+            return None
+        raw = dict(state.get("config") or {})
+        names = {f.name for f in dataclass_fields(SupervisorConfig)}
+        kwargs = {k: v for k, v in raw.items() if k in names}
+        kwargs["protocol_path"] = Path(kwargs["protocol_path"])
+        kwargs["workspace"] = Path(kwargs["workspace"])
+        kwargs["protected_files"] = tuple(kwargs.get("protected_files") or ())
+        return SupervisorConfig(**kwargs)
+
+    def run_stored_job(self, job_id: str) -> bool:
+        """Claim a PENDING store record and execute it in this process.
+
+        The worker daemon's claim path: the UI enqueues by writing a PENDING
+        record, and this turns the record into a live worker thread here.
+        Callers must keep their own claimed-id set - a parked job stays
+        PENDING until a run slot frees.
+        """
+        state = self.store.get_job_state(job_id)
+        if not state or state.get("state") != "PENDING":
+            return False
+        config = self.config_from_state(job_id)
+        if config is None:
+            return False
+        job_type = str(state.get("type") or "run")
+        meta = {
+            k: state[k]
+            for k in ("batch_id", "replica_index", "replica_count")
+            if state.get(k) is not None
+        }
+        stop_event = threading.Event()
+        with self._lock:
+            self._active_jobs[job_id] = {"stop_event": stop_event, "loop": None}
+        thread = threading.Thread(
+            target=self._worker,
+            args=(job_id, job_type, config, stop_event, meta),
+            daemon=True,
+            name=f"job-{job_id}",
+        )
+        thread.start()
+        return True
+
+    def cancel_if_live(self, job_id: str) -> bool:
+        """Cancel only when this process actually owns the live job."""
+        with self._lock:
+            if job_id not in self._active_jobs:
+                return False
+        self.cancel_job(job_id)
+        return True
+
     def cancel_job(self, job_id: str):
         """Request cancellation of a running job."""
         with self._lock:

@@ -1,0 +1,162 @@
+"""Store-backed job client for the UI process.
+
+The UI never executes jobs: enqueueing writes a PENDING record that the
+worker daemon (:mod:`services.jobs.worker_service`, ``SOP_JOB_WORKER=1``)
+claims and runs in its own process. Codex turns, scanner subprocess storms
+and every other job-side side effect stay out of the serving process - two
+serving deaths (2026-11-01 under IOCP, 2026-11-02 under the selector loop)
+happened in the old shared process while the worker threads themselves kept
+running. The job store is the IPC: state files already carry config, logs,
+heartbeat and report.
+
+This class mirrors the JobManager surface the UI touches (enqueue, cancel,
+reads, settings handoff); anything that would spawn threads belongs to the
+daemon's JobManager, not here.
+"""
+
+from __future__ import annotations
+
+import json
+import threading
+import time
+import uuid
+from pathlib import Path
+from typing import Any
+
+from services.jobs.job_manager import JobManager
+from services.jobs.state_store import JobStateStore
+
+_SETTINGS_FILE = "worker_settings.json"
+_ACTIVE_STATES = {"PENDING", "RUNNING"}
+
+
+class StoreJobClient:
+    """UI-side JobManager surface, backed purely by the job store."""
+
+    TERMINAL_STATES = JobManager.TERMINAL_STATES
+
+    def __init__(
+        self,
+        store_dir: str = ".job_store",
+        max_parallel_jobs: int = 4,
+        max_stored_jobs: int = 50,
+    ):
+        self.store = JobStateStore(store_dir)
+        self._lock = threading.Lock()
+        self._max_parallel = max(1, int(max_parallel_jobs))
+        self._max_stored = max(0, int(max_stored_jobs))
+        self._write_settings()
+
+    # ------------------------------------------------- settings handoff -- #
+
+    def _write_settings(self) -> None:
+        payload = {
+            "max_parallel_jobs": self._max_parallel,
+            "max_stored_jobs": self._max_stored,
+        }
+        self.store.store_dir.mkdir(parents=True, exist_ok=True)
+        (self.store.store_dir / _SETTINGS_FILE).write_text(
+            json.dumps(payload), encoding="utf-8",
+        )
+
+    def set_max_parallel_jobs(self, value: int) -> None:
+        with self._lock:
+            self._max_parallel = max(1, int(value))
+            self._write_settings()
+
+    def set_max_stored_jobs(self, value: int) -> None:
+        with self._lock:
+            self._max_stored = max(0, int(value))
+            self._write_settings()
+
+    # ---------------------------------------------------- enqueue/cancel -- #
+
+    def enqueue_job(
+        self,
+        job_type: str,
+        config,
+        meta: dict[str, Any] | None = None,
+    ) -> str:
+        """Write a PENDING record; the worker daemon claims and runs it."""
+        new_workspace = Path(config.workspace).resolve()
+        job_id = f"{job_type}_{uuid.uuid4().hex[:8]}"
+        meta = dict(meta or {})
+
+        # Same lock discipline as JobManager.enqueue_job: the collision scan
+        # and the PENDING write are atomic, so two concurrent enqueues for
+        # one workspace cannot both pass.
+        with self._lock:
+            for jid in self.store.list_jobs():
+                state = self.store.get_job_state(jid)
+                if state and state.get("state") in _ACTIVE_STATES:
+                    existing = Path(
+                        state.get("config", {}).get("workspace", ""),
+                    ).resolve()
+                    if existing == new_workspace:
+                        raise ValueError(
+                            f"Another task is already active in this workspace: {new_workspace}",
+                        )
+            self.store.save_job_state(job_id, {
+                "type": job_type,
+                "state": "PENDING",
+                "progress": 0.0,
+                "heartbeat_at": time.time(),
+                "config": config.to_state_dict(),
+                "report": "",
+                **meta,
+            })
+        return job_id
+
+    def cancel_job(self, job_id: str) -> None:
+        """Request cancellation by writing the state; the daemon honours it.
+
+        Terminal jobs are left untouched - rewriting a finished job's state
+        would corrupt the board history.
+        """
+        state = self.store.get_job_state(job_id) or {}
+        if state.get("state") not in _ACTIVE_STATES:
+            return
+        self.store.append_log(job_id, {"level": "warn", "msg": "Job cancelled by user."})
+        state["state"] = "CANCELLED"
+        state["heartbeat_at"] = time.time()
+        self.store.save_job_state(job_id, state)
+
+    def cancel_batch(self, batch_id: str) -> list[str]:
+        """Cancel every still-active job of a batch. Returns cancelled ids."""
+        cancelled: list[str] = []
+        for jid in self.store.list_jobs():
+            state = self.store.get_job_state(jid) or {}
+            if state.get("batch_id") == batch_id and state.get("state") in _ACTIVE_STATES:
+                self.cancel_job(jid)
+                cancelled.append(jid)
+        return cancelled
+
+    # ----------------------------------------------------------- reads -- #
+
+    def get_job_status(
+        self, job_id: str, max_logs: int | None = None,
+    ) -> dict[str, Any] | None:
+        state = self.store.get_job_state(job_id)
+        if not state:
+            return None
+        state["logs"] = (
+            self.store.get_logs(job_id)
+            if max_logs is None
+            else self.store.tail_logs(job_id, max_logs)
+        )
+        return state
+
+    def get_job_summary(self, job_id: str) -> dict[str, Any] | None:
+        return self.store.get_job_state(job_id)
+
+    def get_event_detail(self, job_id: str, ref: int) -> dict[str, Any] | None:
+        return self.store.read_full(job_id, ref)
+
+    def list_batch_jobs(self, batch_id: str) -> list[dict[str, Any]]:
+        out = []
+        for jid in self.store.list_jobs():
+            state = self.store.get_job_state(jid) or {}
+            if state.get("batch_id") == batch_id:
+                out.append(state)
+        out.sort(key=lambda s: int(s.get("replica_index") or 0))
+        return out

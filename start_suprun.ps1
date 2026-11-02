@@ -143,10 +143,66 @@ function Start-SupervisorApp {
   exit 1
 }
 
+function Test-JobWorkerAlive {
+  # The daemon touches .job_store/worker.lock every poll cycle; a lock older
+  # than ~15s belongs to a dead predecessor.
+  $lock = Join-Path $root '.job_store\worker.lock'
+  if (-not (Test-Path $lock)) { return $false }
+  return ((Get-Date) - (Get-Item $lock).LastWriteTime).TotalSeconds -lt 15
+}
+
+function Start-JobWorker {
+  # Execute jobs in a dedicated process (SOP_JOB_WORKER=1) so codex
+  # subprocess chains and scanner storms never run in the serving process.
+  # Singleton via the daemon's own lock; -Restart leaves it untouched, so
+  # running jobs survive UI restarts.
+  if (Test-JobWorkerAlive) {
+    Write-Output 'worker: daemon already running (lock fresh) - skipped'
+    return
+  }
+  foreach ($name in @('job_worker.out.log', 'job_worker.err.log')) {
+    $p = Join-Path $root $name
+    if (Test-Path $p) {
+      try {
+        Move-Item -Force -Path $p -Destination (Join-Path $root "$name.$stamp")
+      } catch {
+        Remove-Item -Force -Path $p -ErrorAction SilentlyContinue
+      }
+    }
+  }
+  $inner = 'set SOP_JOB_WORKER=1&& cd /d "{0}" && "{1}" -u -m services.jobs.worker_service > "{2}" 2> "{3}"' -f `
+    $root, $python, (Join-Path $root 'job_worker.out.log'), (Join-Path $root 'job_worker.err.log')
+  Start-Process -FilePath 'cmd.exe' `
+    -ArgumentList @('/c', $inner) `
+    -WorkingDirectory $root -WindowStyle Hidden
+  $deadline = (Get-Date).AddSeconds(15)
+  while ((Get-Date) -lt $deadline) {
+    Start-Sleep -Seconds 1
+    if (Test-JobWorkerAlive) {
+      Write-Output 'worker: READY (lock acquired)'
+      return
+    }
+  }
+  Write-Output 'worker: NOT READY after 15s - inspect job_worker.err.log'
+  exit 1
+}
+
+function Start-UiWatcher {
+  # Self-heal: relaunch the app (never the worker) when serving dies.
+  $inner = 'powershell -NoProfile -ExecutionPolicy Bypass -File "{0}\watch_suprun.ps1" -AppPort {1}' -f $root, $AppPort
+  Start-Process -FilePath 'cmd.exe' `
+    -ArgumentList @('/c', $inner) `
+    -WorkingDirectory $root -WindowStyle Hidden
+  Write-Output "watcher: UI self-heal probe armed (port $AppPort, relaunches app only)"
+}
+
 if ($ProxyOnly -and $AppOnly) {
   Write-Output 'pick at most one of -ProxyOnly / -AppOnly'
   exit 2
 }
 if (-not $AppOnly) { Start-CapabilityProxy }
-if (-not $ProxyOnly) { Start-SupervisorApp }
+if (-not $ProxyOnly) {
+  Start-JobWorker
+  Start-SupervisorApp
+}
 Write-Output "service: http://127.0.0.1:$AppPort  (proxy $ProxyPort -> $upstream)"
