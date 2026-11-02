@@ -5,9 +5,10 @@ Two widgets live here:
 - :class:`TailStrip` — the compact always-visible strip showing only the
   newest K events, auto-scrolling. This is the primary view: the user asked
   for "scroll and keep the latest few lines", not a wall of history.
-- :class:`LogPanel` — the full history box (behind an expansion), with the
-  "Verbose" switch hiding big-block headline events and a ref viewer that
-  fetches a headline event's full body from the job's sidecar.
+- :class:`LogPanel` — the full history box (behind an expansion), with
+  "Agent speech" / "Tool use" toggles choosing which agent-content
+  categories render, and a ref viewer that fetches a headline event's
+  full body from the job's sidecar. Noise levels are never shown.
 """
 
 from __future__ import annotations
@@ -18,7 +19,6 @@ from nicegui import ui, run as nicegui_run
 
 from services.webui.log_format import (
     DEFAULT_HIDDEN_LEVELS,
-    VERBOSE_ONLY_LEVELS,
     event_counts,
     filter_events,
     fmt_elapsed,
@@ -107,15 +107,18 @@ class LogPanel:
                 "mono w-64",
             )
             self.counts_label = ui.label("").classes("text-xs text-[#8b949e]")
-            self.verbose_switch = ui.switch(
-                "Verbose", value=True, on_change=self._reset,
-            ).tooltip("Off hides prompt/output/verdict headline events.")
+            self.speech_switch = ui.switch(
+                "Agent speech", value=True, on_change=self._reset,
+            ).tooltip(
+                "The agent's plain-text prose. The runner already drops "
+                "thinking and commands; tool markers have their own toggle.",
+            )
+            self.tool_switch = ui.switch(
+                "Tool use", value=True, on_change=self._reset,
+            ).tooltip("Shell / edit / mcp tool markers from the agent.")
             self.newest_switch = ui.switch(
                 "Newest first", value=False, on_change=self._reset,
             )
-            self.noise_switch = ui.switch(
-                "Show noise", value=False, on_change=self._reset,
-            ).tooltip("Step-progress pings and token events.")
             if detail_fetcher is not None:
                 self.ref_input = ui.input(placeholder="event #").classes("mono w-24")
                 ui.button("查看全文", on_click=self._show_ref).props("flat dense")
@@ -188,11 +191,13 @@ class LogPanel:
             f"🔴 {counts['error']}  ·  🟡 {counts['warn']}  ·  🔧 {counts['tool']}",
         )
 
-        hidden = set()
-        if not self.verbose_switch.value:
-            hidden |= set(VERBOSE_ONLY_LEVELS)
-        if not self.noise_switch.value:
-            hidden |= set(DEFAULT_HIDDEN_LEVELS)
+        # Noise (heartbeat / step-progress / token pings) is never shown.
+        # The two toggles choose the agent-content categories.
+        hidden = set(DEFAULT_HIDDEN_LEVELS)
+        if not self.tool_switch.value:
+            hidden.add("tool")
+        if not self.speech_switch.value:
+            hidden.add("opencode_output")
         search = (self.search_input.value or "").strip()
         filtered = filter_events(logs, search, hidden)
         start = start_ts(logs)

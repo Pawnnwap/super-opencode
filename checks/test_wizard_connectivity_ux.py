@@ -21,6 +21,21 @@ def _read(*parts: str) -> str:
     return (_REPO.joinpath(*parts)).read_text(encoding="utf-8")
 
 
+def test_log_panel_has_speech_and_tool_toggles_and_no_noise_switch():
+    """The log display offers explicit Agent-speech / Tool-use toggles; the
+    noise switch is gone and noise levels are never rendered."""
+    panel = _read("services", "webui", "components", "log_panel.py")
+    assert 'ui.switch(\n                "Agent speech"' in panel
+    assert 'ui.switch(\n                "Tool use"' in panel
+    assert "Show noise" not in panel
+    assert "verbose_switch" not in panel
+    # Noise is unconditionally in the hidden set; both toggles gate their
+    # category.
+    assert "hidden = set(DEFAULT_HIDDEN_LEVELS)" in panel
+    assert 'hidden.add("tool")' in panel
+    assert 'hidden.add("opencode_output")' in panel
+
+
 def test_connectivity_section_is_flat_not_an_expansion():
     src = _read("services", "webui", "pages", "wizard.py")
     body = src.split("def _connectivity_section")[1].split("\ndef ", 1)[0]

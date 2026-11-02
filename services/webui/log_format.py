@@ -11,11 +11,11 @@ import time
 
 from supervisor.utils.text_utils import sanitize_event_message
 
-# Levels hidden from the log box unless the user opts in ("Show noise").
+# Noise levels (heartbeat / step-progress / token pings) — never rendered.
 DEFAULT_HIDDEN_LEVELS = ("heartbeat", "step_progress", "tokens")
 
-# Large-block headline events; hidden when the LogPanel "Verbose" switch is
-# off so the box shows lifecycle/decision lines only.
+# Large-block headline events. The log panel's "Agent speech" toggle governs
+# opencode_output; prompts and supervisor verdicts always render.
 VERBOSE_ONLY_LEVELS = (
     "opencode_prompt",
     "opencode_output",
