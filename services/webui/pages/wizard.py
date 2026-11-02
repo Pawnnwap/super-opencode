@@ -514,7 +514,9 @@ def _connectivity_section() -> None:
 
     # Engine is captured at render time; safe because switching the engine
     # reloads the whole page (see _set_engine).
-    with _section("Connectivity Tests"):
+    # Always open: the first-run flow is "configure the LLM, then prove it" -
+    # a folded section hid the one action the user had to take next.
+    with _section("Connectivity Tests", open_=True):
         engine = app_state.get("engine") or "opencode"
         status = ui.label("").classes("text-xs")
         _refresh_status(status)
@@ -804,7 +806,8 @@ def _preview_file(path: Path) -> None:
 def render() -> None:
     ui.label("Protocol Wizard").classes("text-2xl font-bold")
     _config_section()
+    # Directly after the LLM configuration: the tests prove that config.
+    _connectivity_section()
     _protected_section()
     _ignore_section()
-    _connectivity_section()
     _protocol_section()

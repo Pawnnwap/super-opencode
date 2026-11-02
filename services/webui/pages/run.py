@@ -534,9 +534,10 @@ def _render_feasibility_form(workspace: Path) -> None:
 
 
 def _has_running_job() -> bool:
+    """Any live work in the store: running or queued for a slot."""
     manager = get_job_manager()
     return any(
-        (manager.store.get_job_state(j) or {}).get("state") == "RUNNING"
+        (manager.store.get_job_state(j) or {}).get("state") in ("RUNNING", "PENDING")
         for j in manager.store.list_jobs()
     )
 

@@ -78,6 +78,17 @@ def _queue_stats_line(job_manager, job_type: str) -> str:
     return f"{running} running · {pending} queued"
 
 
+def _has_active_jobs(job_manager) -> bool:
+    """Any run/evolve job queued or running right now (store read)."""
+    for job_id in job_manager.store.list_jobs():
+        state = job_manager.store.get_job_state(job_id) or {}
+        if state.get("state") in ("RUNNING", "PENDING") and state.get(
+            "type",
+        ) in ("run", "evolve"):
+            return True
+    return False
+
+
 def render_shell(active: str, job_manager) -> None:
     """Left drawer (nav + queue stats + lock badges) and a slim header."""
     tests_ok = app_state.tests_ok()
@@ -87,7 +98,13 @@ def render_shell(active: str, job_manager) -> None:
         ui.label("opencode Supervisor").classes("text-xl font-bold text-[#58a6ff]")
         ui.separator()
         for key, label, icon in _PAGES:
-            locked = key in {"run", "evolve"} and not tests_ok
+            # The lock gates new work only: with a live/queued job the pages
+            # must stay open - that is where the run is watched and stopped.
+            locked = (
+                key in {"run", "evolve"}
+                and not tests_ok
+                and not _has_active_jobs(job_manager)
+            )
             nav = ui.link(label, f"/{key}").classes(
                 "block w-full text-left px-3 py-2 rounded"
                 + (" opacity-50" if locked else " hover:bg-[#161b22]"),
