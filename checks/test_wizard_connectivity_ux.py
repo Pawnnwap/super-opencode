@@ -21,9 +21,12 @@ def _read(*parts: str) -> str:
     return (_REPO.joinpath(*parts)).read_text(encoding="utf-8")
 
 
-def test_connectivity_section_renders_open():
+def test_connectivity_section_is_flat_not_an_expansion():
     src = _read("services", "webui", "pages", "wizard.py")
-    assert '_section("Connectivity Tests", open_=True)' in src
+    body = src.split("def _connectivity_section")[1].split("\ndef ", 1)[0]
+    # Plain heading + buttons on the page; no collapsible wrapper.
+    assert 'ui.label("Connectivity Tests")' in body
+    assert "_section(" not in body
 
 
 def test_connectivity_section_comes_right_after_llm_configuration():

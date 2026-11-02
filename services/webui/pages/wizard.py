@@ -514,9 +514,10 @@ def _connectivity_section() -> None:
 
     # Engine is captured at render time; safe because switching the engine
     # reloads the whole page (see _set_engine).
-    # Always open: the first-run flow is "configure the LLM, then prove it" -
-    # a folded section hid the one action the user had to take next.
-    with _section("Connectivity Tests", open_=True):
+    # Not an expansion: the first-run flow is "configure the LLM, then prove
+    # it", so the buttons sit flat on the page right below the config.
+    with ui.column().classes("w-full gap-2"):
+        ui.label("Connectivity Tests").classes("text-lg font-bold mt-2")
         engine = app_state.get("engine") or "opencode"
         status = ui.label("").classes("text-xs")
         _refresh_status(status)
