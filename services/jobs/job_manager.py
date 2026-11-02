@@ -246,6 +246,11 @@ class JobManager:
         state = self.store.get_job_state(job_id)
         if not state or state.get("state") != "PENDING":
             return False
+        if self.cancel_sentinel_exists(job_id):
+            # Cancelled between enqueue and claim: never start it.
+            state["state"] = "CANCELLED"
+            self.store.save_job_state(job_id, state)
+            return False
         config = self.config_from_state(job_id)
         if config is None:
             return False
@@ -275,8 +280,25 @@ class JobManager:
         self.cancel_job(job_id)
         return True
 
+    def _cancel_sentinel_path(self, job_id: str) -> Path:
+        return self.store.store_dir / f"{job_id}.cancel"
+
+    def cancel_sentinel_exists(self, job_id: str) -> bool:
+        return self._cancel_sentinel_path(job_id).exists()
+
     def cancel_job(self, job_id: str):
         """Request cancellation of a running job."""
+        # Sentinel FIRST, before any state write: the worker heartbeat
+        # rewrites the state file (RUNNING) every few seconds, so a cancel
+        # that lives only in the state field can be erased by the very
+        # process it targets. The file is the durable intent; the state
+        # write is just immediate board feedback.
+        try:
+            self._cancel_sentinel_path(job_id).write_text(
+                str(time.time()), encoding="utf-8",
+            )
+        except OSError as exc:
+            logger.warning("Could not write cancel sentinel for %s: %s", job_id, exc)
         with self._lock:
             if job_id in self._active_jobs:
                 entry = self._active_jobs[job_id]
@@ -340,6 +362,7 @@ class JobManager:
         # Only release the run slot in `finally` if one was actually taken —
         # the cancelled-while-parked path never increments the counter.
         slot_held = False
+        sentinel = self._cancel_sentinel_path(job_id)
         try:
             # Park in PENDING while all run slots are taken. A cancellation
             # while parked has already written CANCELLED — just leave.
@@ -389,10 +412,18 @@ class JobManager:
 
             # Run the loop and stream events
             stream = loop.run_streaming()
+            # Cross-process cancel: the UI (or another process) may drop a
+            # sentinel file at any moment - the state field alone is racy
+            # against this worker's own RUNNING heartbeats.
+            stop_requested = (
+                lambda: stop_event.is_set() or sentinel.exists()
+            )
             for event in stream:
-                if stop_event.is_set():
+                if stop_requested():
                     self._request_loop_stop(loop)
                     stream.close()
+                    if sentinel.exists():
+                        self._update_state(job_id, "CANCELLED", report=report_content)
                     return
 
                 # Handle non-dict events (e.g., strings) by converting to event dict
@@ -422,9 +453,11 @@ class JobManager:
                 # run and nothing in the UI consumed them.
                 now = time.time()
                 if now - last_heartbeat >= heartbeat_interval:
-                    if stop_event.is_set():
+                    if stop_requested():
                         self._request_loop_stop(loop)
                         stream.close()
+                        if sentinel.exists():
+                            self._update_state(job_id, "CANCELLED", report=report_content)
                         return
 
                     self.store.save_job_state(job_id, {
@@ -438,8 +471,10 @@ class JobManager:
                     })
                     last_heartbeat = now
 
-            if stop_event.is_set():
+            if stop_requested():
                 self._request_loop_stop(loop)
+                if sentinel.exists():
+                    self._update_state(job_id, "CANCELLED", report=report_content)
                 return
             # Determine final state
             logs = self.store.get_logs(job_id)
@@ -463,6 +498,12 @@ class JobManager:
             with self._lock:
                 if job_id in self._active_jobs:
                     del self._active_jobs[job_id]
+            # The request has been fully consumed (worker exited); leave no
+            # stale sentinel behind to cancel a future re-enqueue.
+            try:
+                sentinel.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     def _update_state(self, job_id: str, state_name: str, report: str = ""):
         """Helper to update the stored job state."""

@@ -136,6 +136,15 @@ def main() -> int:
 
             for job_id in manager.store.list_jobs():
                 if job_id in claimed:
+                    # Claimed jobs are never re-claimed, but a cross-process
+                    # cancel can arrive at any moment: the sentinel file (not
+                    # the state field - the worker heartbeat rewrites it) is
+                    # the durable request, honoured here AND by the worker
+                    # itself, so even a worker parked in a silent stream get
+                    # gets its codex tree killed within one poll cycle.
+                    if manager.cancel_sentinel_exists(job_id):
+                        if manager.cancel_if_live(job_id):
+                            logger.info("honoured cancel request for %s", job_id)
                     continue
                 state = manager.store.get_job_state(job_id) or {}
                 st = state.get("state")

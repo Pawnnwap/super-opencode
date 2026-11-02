@@ -175,3 +175,69 @@ def test_ui_process_factory_hands_out_store_client(monkeypatch, tmp_path):
     monkeypatch.setattr(webui_jobs, "_manager", None)
     assert isinstance(webui_jobs.get_job_manager(), JobManager)
     monkeypatch.setattr(webui_jobs, "_manager", None)
+
+
+def test_cancel_sentinel_survives_heartbeat_state_rewrite(tmp_path):
+    """The 2026-11-02 batch-cancel miss: the UI's CANCELLED state write was
+    resurrected to RUNNING by the worker's own heartbeat, and the daemon
+    never re-read claimed jobs - three replicas kept burning provider turns.
+    The sentinel file is the intent; state writes must not erase it."""
+    client, manager = _make(tmp_path)
+    job_id = client.enqueue_job("run", _config(tmp_path / "ws_a"))
+    client.cancel_job(job_id)
+    # Heartbeat-shaped full-state write lands AFTER the cancel...
+    state = manager.store.get_job_state(job_id) or {}
+    state["state"] = "RUNNING"
+    manager.store.save_job_state(job_id, state)
+    # ...the intent survives and the daemon-side check still sees it.
+    assert manager.cancel_sentinel_exists(job_id)
+
+
+def test_daemon_honours_cancel_of_claimed_running_job(tmp_path):
+    """The poll-loop branch that was skipped for claimed jobs: a sentinel on
+    a live, claimed job must reach cancel_if_live and stop the loop."""
+    client, manager = _make(tmp_path)
+    job_id = client.enqueue_job("run", _config(tmp_path / "ws_a"))
+    # Register as a claimed/live job without a streaming worker, so the
+    # worker-side sentinel consumer cannot win the race this test targets.
+    loop = StubLoop(None)
+    stop_event = threading.Event()
+    manager._active_jobs[job_id] = {"stop_event": stop_event, "loop": loop}
+    (manager.store.store_dir / f"{job_id}.cancel").write_text("x", encoding="utf-8")
+
+    # The exact check the daemon poll runs for every claimed job.
+    assert manager.cancel_sentinel_exists(job_id)
+    assert manager.cancel_if_live(job_id)
+    assert loop.stop_flag.is_set()
+    # The worker's own cleanup path removes the consumed sentinel.
+    stop_event.set()
+    sentinel = manager.store.store_dir / f"{job_id}.cancel"
+    sentinel.unlink(missing_ok=True)
+
+
+def test_worker_exits_cancelled_when_sentinel_drops_mid_stream(tmp_path):
+    client, manager = _make(tmp_path)
+    job_id = client.enqueue_job("run", _config(tmp_path / "ws_a"))
+    manager.run_stored_job(job_id)
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        if (manager.store.get_job_state(job_id) or {}).get("state") == "RUNNING":
+            break
+        time.sleep(0.05)
+    client.cancel_job(job_id)
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        state = manager.store.get_job_state(job_id) or {}
+        if state.get("state") == "CANCELLED" and not manager.cancel_sentinel_exists(job_id):
+            break
+        time.sleep(0.05)
+    assert state.get("state") == "CANCELLED"
+    assert not manager.cancel_sentinel_exists(job_id)  # consumed, not stale
+
+
+def test_sentinel_marked_pending_job_is_never_claimed(tmp_path):
+    client, manager = _make(tmp_path)
+    job_id = client.enqueue_job("run", _config(tmp_path / "ws_a"))
+    client.cancel_job(job_id)
+    assert not manager.run_stored_job(job_id)
+    assert (manager.store.get_job_state(job_id) or {}).get("state") == "CANCELLED"

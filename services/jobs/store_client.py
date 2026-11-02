@@ -108,14 +108,21 @@ class StoreJobClient:
         return job_id
 
     def cancel_job(self, job_id: str) -> None:
-        """Request cancellation by writing the state; the daemon honours it.
+        """Request cancellation by writing state; the daemon honours it.
 
-        Terminal jobs are left untouched - rewriting a finished job's state
-        would corrupt the board history.
+        The sentinel file carries the durable intent: the daemon worker
+        rewrites the state field (RUNNING heartbeat) every few seconds, so
+        the request must not live only there. Terminal jobs are left
+        untouched - rewriting a finished job's state would corrupt history.
         """
         state = self.store.get_job_state(job_id) or {}
         if state.get("state") not in _ACTIVE_STATES:
             return
+        sentinel = self.store.store_dir / f"{job_id}.cancel"
+        try:
+            sentinel.write_text(str(time.time()), encoding="utf-8")
+        except OSError:
+            pass
         self.store.append_log(job_id, {"level": "warn", "msg": "Job cancelled by user."})
         state["state"] = "CANCELLED"
         state["heartbeat_at"] = time.time()
