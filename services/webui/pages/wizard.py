@@ -58,7 +58,9 @@ def _bind_input(
         value=value,
         password=password,
         on_change=_change,
-    ).classes(classes or "w-full mono")
+    # Bounded, not w-full: a full-width input pushes its row-mates onto the
+    # next line, which is how every row of settings became one-per-line.
+    ).classes(classes or "w-72 mono")
 
 
 def _bind_switch(key: str, label: str):
@@ -124,30 +126,31 @@ def _config_section() -> None:
             _bind_input(
                 "workspace",
                 "Workspace path",
+                classes="flex-grow mono",
                 on_change=_on_workspace_change,
             )
             ui.button(
                 "Clean artifacts",
                 on_click=lambda: _clean_artifacts(),
             ).props("flat dense")
-        with ui.row().classes("w-full gap-4 flex-wrap"):
-            _bind_input("supervisor_model", "Supervisor (judge) model")
-            _bind_input("supervisor_model_backup", "Supervisor backup model")
         from services.config.connectivity import REASONING_EFFORT_CHOICES
 
-        _reasoning_select(
-            "supervisor_reasoning",
-            "Supervisor thinking effort",
-            choices=REASONING_EFFORT_CHOICES,
-        )
+        # One line: engine + the supervisor pair + its effort - four short
+        # fields that each had (or shared) a row before.
         with ui.row().classes("w-full gap-4 flex-wrap items-end"):
-            engine_select = ui.select(
+            ui.select(
                 ["opencode", "codex"],
                 value=app_state.get("engine") or "opencode",
                 label="Execution engine",
                 on_change=lambda e: _set_engine(e.value),
             ).classes("w-48")
-            _ = engine_select
+            _bind_input("supervisor_model", "Supervisor (judge) model")
+            _bind_input("supervisor_model_backup", "Supervisor backup model")
+            _reasoning_select(
+                "supervisor_reasoning",
+                "Supervisor thinking effort",
+                choices=REASONING_EFFORT_CHOICES,
+            )
         if (app_state.get("engine") or "opencode") == "codex":
             with ui.row().classes("w-full gap-4 flex-wrap"):
                 _bind_input("codex_base_url", "Codex base URL (responses API)")
@@ -177,11 +180,11 @@ def _config_section() -> None:
             _bind_number("timeout", "Turn timeout (min)", min=1, max=120)
             _bind_number("max_parallel_jobs", "Max parallel jobs", min=1, max=32)
             _bind_number("max_stored_jobs", "Stored jobs (log retention)", min=5, max=1000)
+        # Both rarely-touched optional strings: one line, not two.
         with ui.row().classes("w-full gap-4 flex-wrap"):
             _bind_input(
                 "npm_registry", "npm registry for CLI upgrades (empty = default)",
             )
-        with ui.row().classes("w-full gap-4 flex-wrap"):
             _bind_input(
                 "supervisor_skills_dir",
                 "Supervisor skills extra dir (optional; beyond built-in + "
