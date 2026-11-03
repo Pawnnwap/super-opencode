@@ -149,7 +149,7 @@ pip install -r requirements.txt
 ```
 
 Core dependencies are defined in `pyproject.toml`: `openai`, `nicegui`,
-`tiktoken`, `pytest`, `cryptography`, `rich`, `psutil`, and `mcp`. The
+`tiktoken`, `pytest`, `rich`, `psutil`, and `mcp`. The
 `requirements.txt` file additionally pins the scanner toolchain (Bandit,
 Pylint, pyflakes, Semgrep, pip-audit, Ruff, Vulture, deadcode, pyscn) and the
 auto-fix helpers (autoflake, isort, autopep8, pyupgrade).

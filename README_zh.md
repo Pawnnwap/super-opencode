@@ -142,7 +142,7 @@ pip install -r requirements.txt
 ```
 
 核心依赖定义在 `pyproject.toml` 中：`openai`、`nicegui`、`tiktoken`、`pytest`、
-`cryptography`、`rich`、`psutil` 和 `mcp`。`requirements.txt` 额外固定了扫描器工具链
+`rich`、`psutil` 和 `mcp`。`requirements.txt` 额外固定了扫描器工具链
 （Bandit、Pylint、pyflakes、Semgrep、pip-audit、Ruff、Vulture、deadcode、pyscn）以及
 自动修复辅助工具（autoflake、isort、autopep8、pyupgrade）。
 
