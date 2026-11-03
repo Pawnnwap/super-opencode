@@ -162,12 +162,14 @@ class JobStateStore:
         Transient OSErrors (Windows EACCES while a concurrent ``os.replace``
         is in flight — the exact failure behind the 2026-11-02 UI freeze)
         are retried before the read is given up on; a single blip must not
-        surface to callers as "job unknown".
+        surface to callers as "job unknown". Five attempts: under the
+        two-writer contention of a live job (heartbeat + cancel) three were
+        still occasionally exhausted back-to-back (checks/test_state_store_race).
         """
         path = self._get_job_path(job_id)
         if not path.exists():
             return None
-        for attempt in range(3):
+        for attempt in range(5):
             try:
                 with open(path, encoding="utf-8-sig") as f:
                     return json.load(f)
@@ -175,7 +177,7 @@ class JobStateStore:
                 logger.warning("Corrupt job state file for %s: %s", job_id, exc)
                 return None
             except OSError as exc:
-                if attempt == 2:
+                if attempt == 4:
                     logger.warning("Cannot read job state for %s: %s", job_id, exc)
                     return None
                 time.sleep(0.02 * (attempt + 1))

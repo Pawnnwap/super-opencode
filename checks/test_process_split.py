@@ -48,10 +48,24 @@ class StubLoop:
 
 @pytest.fixture(autouse=True)
 def stub_loops(monkeypatch):
-    StubLoop.release.clear()
-    StubLoop.stop_flag.clear()
-    monkeypatch.setattr(jm, "SupervisorLoop", StubLoop)
-    monkeypatch.setattr(jm, "SelfEvolutionLoop", StubLoop)
+    """Per-test StubLoop subclass with FRESH end-signal events.
+
+    StubLoop's class-level release/stop_flag events leak across tests: a
+    worker thread still terminating from test N can miss its end signal
+    (the fixture used to clear it) and later call ``_request_loop_stop()``
+    - which sets the shared stop_flag - inside test N+1, ending that
+    test's job stream instantly. That race wrote state FAILED 14 ms after
+    job start and lost-update-clobbered _mark_orphans' ABANDONED write
+    (flake, 2026-11-03). Fresh events per test keep zombies talking to
+    their own flags, and an end signal is never erased before it is seen.
+    """
+    loops = type("StubLoop", (StubLoop,), {
+        "release": threading.Event(),
+        "stop_flag": threading.Event(),
+    })
+    monkeypatch.setattr(jm, "SupervisorLoop", loops)
+    monkeypatch.setattr(jm, "SelfEvolutionLoop", loops)
+    return loops
 
 
 def _config(ws: Path) -> SupervisorConfig:
@@ -99,7 +113,7 @@ def test_ui_cancel_writes_state_and_spares_terminal_jobs(tmp_path):
     assert manager.store.get_job_state(job_id)["state"] == "SUCCESS"
 
 
-def test_daemon_claims_pending_and_runs_it(tmp_path):
+def test_daemon_claims_pending_and_runs_it(tmp_path, stub_loops):
     client, manager = _make(tmp_path)
     job_id = client.enqueue_job(
         "run", _config(tmp_path / "ws_a"),
@@ -114,7 +128,7 @@ def test_daemon_claims_pending_and_runs_it(tmp_path):
         time.sleep(0.05)
     assert state["state"] == "RUNNING"
     assert state["batch_id"] == "b1"
-    StubLoop.release.set()
+    stub_loops.release.set()
     deadline = time.time() + 10
     while time.time() < deadline:
         state = manager.store.get_job_state(job_id) or {}
@@ -125,7 +139,7 @@ def test_daemon_claims_pending_and_runs_it(tmp_path):
     assert not manager.run_stored_job(job_id)  # terminal: not claimable
 
 
-def test_daemon_honours_ui_cancel_of_live_job(tmp_path):
+def test_daemon_honours_ui_cancel_of_live_job(tmp_path, stub_loops):
     client, manager = _make(tmp_path)
     job_id = client.enqueue_job("run", _config(tmp_path / "ws_a"))
     manager.run_stored_job(job_id)
@@ -136,10 +150,10 @@ def test_daemon_honours_ui_cancel_of_live_job(tmp_path):
         time.sleep(0.05)
     client.cancel_job(job_id)
     assert manager.cancel_if_live(job_id)
-    assert StubLoop.stop_flag.is_set()
+    assert stub_loops.stop_flag.is_set()
     # Foreign/unknown ids are ignored, not fatal.
     assert not manager.cancel_if_live("run_unknown00")
-    StubLoop.release.set()
+    stub_loops.release.set()
 
 
 def test_lock_is_single_and_stale_locks_are_recycled(tmp_path):
@@ -155,10 +169,14 @@ def test_lock_is_single_and_stale_locks_are_recycled(tmp_path):
 
 def test_daemon_start_marks_orphans_abandoned(tmp_path):
     _, manager = _make(tmp_path)
-    ws = tmp_path / "ws_a"
-    stale = manager.enqueue_job("run", _config(ws))
+    # Write the stale RUNNING record directly: enqueue_job spawns a live
+    # worker thread whose state writes race _mark_orphans' write and can
+    # clobber ABANDONED (last-writer-wins lost update - the flake this
+    # test kept hitting). The contract under test is _mark_orphans only.
+    stale = "run_stale00000001"
     manager.store.save_job_state(stale, {
-        **(manager.store.get_job_state(stale) or {}), "state": "RUNNING",
+        "type": "run", "state": "RUNNING", "progress": 0.0,
+        "heartbeat_at": time.time(), "config": {},
     })
     flagged = _mark_orphans(manager)
     assert flagged == [stale]
@@ -193,14 +211,14 @@ def test_cancel_sentinel_survives_heartbeat_state_rewrite(tmp_path):
     assert manager.cancel_sentinel_exists(job_id)
 
 
-def test_daemon_honours_cancel_of_claimed_running_job(tmp_path):
+def test_daemon_honours_cancel_of_claimed_running_job(tmp_path, stub_loops):
     """The poll-loop branch that was skipped for claimed jobs: a sentinel on
     a live, claimed job must reach cancel_if_live and stop the loop."""
     client, manager = _make(tmp_path)
     job_id = client.enqueue_job("run", _config(tmp_path / "ws_a"))
     # Register as a claimed/live job without a streaming worker, so the
     # worker-side sentinel consumer cannot win the race this test targets.
-    loop = StubLoop(None)
+    loop = stub_loops(None)
     stop_event = threading.Event()
     manager._active_jobs[job_id] = {"stop_event": stop_event, "loop": loop}
     (manager.store.store_dir / f"{job_id}.cancel").write_text("x", encoding="utf-8")
