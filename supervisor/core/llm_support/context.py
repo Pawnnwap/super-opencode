@@ -8,6 +8,7 @@ from pathlib import Path
 
 from supervisor.monitoring.session_tracker import estimate_tokens, truncate_prompt
 from supervisor.utils.filesystem.file_ops import safe_read_text
+from supervisor.utils.filesystem.path_filters import is_candidate_file
 from supervisor.utils.text_utils import normalize_model_response
 
 logger = logging.getLogger(__name__)
@@ -207,12 +208,14 @@ class SupervisorContextManager:
         file_meta: dict[str, int] = {}
         try:
             for path in workspace.rglob("*"):
-                if not path.is_file():
-                    continue
-                rel_parts = path.relative_to(workspace).parts
-                if any(part.startswith(".") for part in rel_parts):
-                    continue
                 if path.name in self._generated_markdown_files:
+                    continue
+                # Candidate filter: cache dirs (__pycache__, node_modules,
+                # build outputs, ...), binary extensions, and files whose
+                # content sniffs as binary or cannot be read. Without it the
+                # LLM's selection pool filled with byte-compiled junk, and a
+                # picked binary burned a selection slot on safe_read_text("") .
+                if not is_candidate_file(path):
                     continue
                 try:
                     file_meta[str(path.relative_to(workspace))] = path.stat().st_size
