@@ -7,7 +7,8 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-from nicegui import ui, run as nicegui_run
+from nicegui import run as nicegui_run
+from nicegui import ui
 
 from services.webui.components.busy import busy_buttons
 from services.webui.state import app_state
@@ -99,11 +100,19 @@ def _section(title: str, *, open_: bool = False):
 
 
 def _list_workspace_files(workspace: Path, limit: int) -> list[str]:
-    """Sorted forward-slash relative paths of files under ``workspace``."""
+    """Sorted forward-slash relative paths of readable, non-cache files.
+
+    Feeds the protected-files droplist and the ignore-pattern suggester, so
+    the candidate list excludes cache dirs (__pycache__, node_modules, build
+    outputs, ...) and unreadable/binary files — the agent can neither protect
+    nor meaningfully ignore-generate for byte-compiled junk.
+    """
+    from supervisor.utils.filesystem.path_filters import is_candidate_file
+
     return sorted(
         str(p.relative_to(workspace)).replace("\\", "/")
         for p in workspace.rglob("*")
-        if p.is_file()
+        if is_candidate_file(p)
     )[:limit]
 
 
@@ -141,7 +150,7 @@ def _config_section() -> None:
         # fields that each had (or shared) a row before.
         with ui.row().classes("w-full gap-4 flex-wrap items-end"):
             ui.select(
-                ["opencode", "codex"],
+                ["opencode", "codex", "pi"],
                 value=app_state.get("engine") or "opencode",
                 label="Execution engine",
                 on_change=lambda e: _set_engine(e.value),
@@ -279,9 +288,13 @@ def _agent_variant_choices(engine: str, model: str) -> list[str]:
     opencode: exact per-model variants from its own model metadata (the same
     names `--variant` accepts). codex: the standard reasoning-effort ladder
     (codex exposes no per-model enumeration; providers accept their subset).
-    Detection failures degrade to the plain effort ladder.
+    pi: its own `--thinking` ladder. Detection failures degrade to the plain
+    effort ladder.
     """
-    from services.config.connectivity import REASONING_EFFORT_CHOICES
+    from services.config.connectivity import (
+        PI_THINKING_CHOICES,
+        REASONING_EFFORT_CHOICES,
+    )
 
     if engine == "opencode":
         from services.config.connectivity import opencode_variant_choices
@@ -291,6 +304,8 @@ def _agent_variant_choices(engine: str, model: str) -> list[str]:
         )
         if found:
             return list(found)
+    if engine == "pi":
+        return list(PI_THINKING_CHOICES)
     return list(REASONING_EFFORT_CHOICES)
 
 
@@ -320,9 +335,12 @@ def _model_section() -> None:
                 "Fetch models", on_click=lambda: _refresh_models(refresh_button),
             ).props("flat dense")
         _bind_input("opencode_model_backup", "Agent backup model")
-        variant_label = (
-            "Codex reasoning effort" if engine == "codex" else "Thinking variant"
-        )
+        if engine == "codex":
+            variant_label = "Codex reasoning effort"
+        elif engine == "pi":
+            variant_label = "Pi thinking level"
+        else:
+            variant_label = "Thinking variant"
         _reasoning_select(
             "agent_reasoning", variant_label, _agent_variant_choices(
                 engine, app_state.get("opencode_model") or "",
@@ -364,7 +382,8 @@ async def _refresh_models(button=None) -> None:
     else:
         ui.notify(
             f"No models returned for {engine} "
-            "(codex needs a base URL with a /models endpoint).",
+            "(codex needs a base URL with a /models endpoint; "
+            "pi needs a working `pi --list-models`).",
         )
 
 

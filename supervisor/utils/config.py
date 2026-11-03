@@ -10,10 +10,11 @@ class SupervisorConfig:
     workspace: Path
     max_retries: int = 3
     context_threshold: float = 0.60
-    # Execution agent backend: "opencode" (default) or "codex". Both are
-    # open-source coding CLIs and work on Windows + Linux. The opencode_model
-    # / opencode_executable / opencode_model_backup fields below are reused
-    # generically as the chosen agent's model / executable / fallback model.
+    # Execution agent backend: "opencode" (default), "codex", or "pi". All
+    # are open-source coding CLIs and work on Windows + Linux. The
+    # opencode_model / opencode_executable / opencode_model_backup fields
+    # below are reused generically as the chosen agent's model / executable /
+    # fallback model.
     engine: str = "opencode"
     opencode_model: str | None = None
     opencode_executable: str = ""

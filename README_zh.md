@@ -14,12 +14,12 @@
 核心能力：
 
 - **双循环架构** — `SupervisorLoop` 处理外部任务，`SelfEvolutionLoop` 实现自我改进
-- **双执行后端** — OpenCode（默认）或 Codex，通过 `config.engine` 选择；监督循环与后端无关
+- **三执行后端** — OpenCode（默认）、Codex 或 pi，通过 `config.engine` 选择；监督循环与后端无关
 - **证据锚定评判器** — `LLMSupervisor` 在每一步评估代理输出是否符合协议目标，
   并通过 `JudgeHarness` 证据注册表锚定到确定性的工作区事实
 - **目标守卫** — 证据门控完成："all targets met" 只是一个提议，须对照确定性证据校验
 - **循环与停滞检测** — 回合内工具循环检测，加上跨回合的工作区指纹停滞提示阶梯
-- **原生文件编辑** — OpenCode 和 Codex 使用各自维护的读取、编辑、补丁和写入工具
+- **原生文件编辑** — OpenCode、Codex 和 pi 使用各自维护的读取、编辑、补丁和写入工具
 - **Web UI** — NiceGUI 仪表盘：协议向导、实时运行、自我演进三个页面，带持久化的后台任务看板和整页实时任务屏幕
 - **计划模式** — 可配置的执行前规划轮数，使用只读 opencode 分析
 - **奥卡姆剃刀阶段** — 可选的成功后冗余精简阶段，只在归档副本上运行，绝不触碰实时工作区
@@ -36,7 +36,8 @@
 
 - Python 3.11 或更高版本
 - OpenAI 或任何兼容提供商（如 NVIDIA NIM、Ollama）的 API 密钥
-- 已安装 opencode CLI（参见下方安装说明）；若选择 Codex 执行后端，则需安装 Codex CLI
+- 已安装 opencode CLI（参见下方安装说明）；若选择 Codex 执行后端，则需安装 Codex CLI；
+  若选择 pi 执行后端，则需安装 pi CLI（`npm install -g @earendil-works/pi-coding-agent`）
 
 ---
 
@@ -256,7 +257,7 @@ pip install -r requirements.txt
 用自然语言填写 INPUT / TARGET / RESTRICTIONS → 点击 **用 AI 优化** → 查看生成的 `protocol.md` → 接受并保存。
 
 向导功能包括：
-- **配置面板** — 执行引擎（OpenCode 或 Codex）、API 密钥与基础 URL、工作区路径、
+- **配置面板** — 执行引擎（OpenCode、Codex 或 pi）、API 密钥与基础 URL、工作区路径、
   监督与代理模型（含备用模型）、最大重试次数、上下文阈值、回合超时、最大 token 数、
   用于 CLI 升级的 npm registry，以及 Python 扫描器、奥卡姆剃刀的开关。
   **清理产物**按钮可移除工作区中的运行残留。
@@ -346,14 +347,19 @@ supervisor/
     analyzer_support.py             共享分析辅助
 
   runners/
-    factory.py                      根据 config.engine 构造 OpencodeRunner 或 CodexRunner
-    base_runner.py                  通用工作区管理和生命周期状态
+    factory.py                      根据 config.engine 构造 OpencodeRunner / CodexRunner / PiRunner
+    base_runner.py                  共享运行器基类：完整回合/会话/步骤/归档表面；
+                                    各引擎只实现自己的接缝（_run_prompt、工作区准备）
     opencode_runner.py              opencode CLI 的子进程包装器
     codex_runner.py                 Codex CLI 的子进程包装器
+    pi_runner.py                    pi CLI 的子进程包装器
     opencode_support/               opencode 专属：命令构建、定位器、进程、流、会话、
                                     检查、结果
     codex_support/                  codex 专属：命令构建、定位器、进程、流
+    pi_support/                     pi 专属：命令构建、定位器、进程、流
     command_common.py               共享命令构建辅助
+    process_common.py               三引擎共享的子进程驱动（stdin 提示词、事件流消费、
+                                    中止/循环/超时处理、模型回退）
     locator_common.py               共享可执行文件发现
     process_utils.py                进程生命周期辅助
     stream_driver.py                共享 JSON 事件流读取器（线程 + 队列，超时安全）
@@ -452,8 +458,8 @@ requirements.txt                    备用依赖列表（核心 + 扫描器工�
 | Base URL | *(留空 = OpenAI)* | 覆盖本地/代理端点，例如 `http://localhost:11434/v1` |
 | 工作区路径 | — | 项目目录的绝对路径 |
 | Supervisor / 向导模型 | — | 您的提供商接受的任何模型字符串 |
-| 执行引擎 | opencode | 代理后端：`opencode` 或 `codex` |
-| Agent 模型 | *(引擎默认)* | 转发到 opencode/codex CLI |
+| 执行引擎 | opencode | 代理后端：`opencode`、`codex` 或 `pi` |
+| Agent 模型 | *(引擎默认)* | 转发到 opencode/codex/pi CLI |
 | 最大重试次数 | 3 | 强制停止前的连续失败次数 |
 | 上下文阈值 | 60% | 压缩在此估算最大值的比例时触发 |
 | 最大 token 数 | 150,000 | 模型上下文窗口大小 |
@@ -565,7 +571,8 @@ Token 估算在可用时使用 `tiktoken`（o200k_base 编码），
 ## 原生文件编辑
 
 Super-Opencode 使用执行后端原生的文件工具。OpenCode 提供 `read`、精确匹配
-`edit`、`apply_patch` 和 `write`；Codex 使用 `apply_patch`。监督器会在这些
+`edit`、`apply_patch` 和 `write`；Codex 使用 `apply_patch`；pi 提供 `read`、
+精确匹配 `edit`、`write` 以及 `bash` 工具。监督器会在这些
 修改之外提供协议检查、测试门控演进、工作区归档和回滚。
 
 旧版本创建的 OpenCode 配置会在启动时迁移：移除受本应用管理的 Hashline MCP
@@ -586,7 +593,8 @@ Super-Opencode 使用执行后端原生的文件工具。OpenCode 提供 `read`�
 - **search_package_examples** — 查找 Stack Overflow 和 Real Python 的使用示例和最佳实践；仅作社区补充
 
 这些工具会在启动时自动配置给 OpenCode 和 Codex。它们只提供研究能力；
-文件编辑仍使用各后端的原生工具。
+文件编辑仍使用各后端的原生工具。pi 引擎不会自动配置 Codehelp —— pi
+监督运行只使用其内置工具。
 
 ## 计划模式
 

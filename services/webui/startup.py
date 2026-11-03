@@ -17,6 +17,7 @@ from services.config.opencode_config import (
 from services.runtime.app_bootstrap import (
     auto_upgrade_codex,
     auto_upgrade_opencode,
+    auto_upgrade_pi,
 )
 from services.runtime.workspace_cleanup import clean_workspace_artifacts
 
@@ -174,6 +175,10 @@ def launch_startup_tasks() -> None:
         auto_upgrade_codex(registry=app_state.get("npm_registry"))
         return "codex CLI"
 
+    def _upgrade_pi() -> str:
+        auto_upgrade_pi(registry=app_state.get("npm_registry"))
+        return "pi CLI"
+
     def _install_mcp() -> str:
         infos: list[str] = []
         mcp_dir = find_opencode_config_dir()
@@ -201,6 +206,8 @@ def launch_startup_tasks() -> None:
     def _pipeline() -> None:
         if app_state.get("engine") == "opencode":
             _run_task("upgrade opencode", _upgrade_opencode)
+        if app_state.get("engine") == "pi":
+            _run_task("upgrade pi", _upgrade_pi)
         _run_task("upgrade codex", _upgrade_codex)
         _run_task("install MCP config", _install_mcp)
         _run_task("clean workspace artifacts", _clean_artifacts)

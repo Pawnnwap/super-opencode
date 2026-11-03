@@ -49,13 +49,20 @@ def should_skip_upgrade(settings_file: Path = UPGRADE_SETTINGS_FILE) -> bool:
     return False
 
 
-def auto_upgrade_opencode(
+def _auto_upgrade_npm_cli(
+    package: str,
+    label: str,
     settings_file: Path = UPGRADE_SETTINGS_FILE,
     registry: str | None = None,
 ) -> None:
+    """`npm install -g <package>@latest` with the shared skip/registry/mirror logic.
+
+    Shared by the opencode and pi CLI upgrades (plain npm packages, no config
+    to protect); codex keeps its own routine because it guards ~/.codex.
+    """
     if should_skip_upgrade(settings_file):
         print(
-            "[opencode-upgrade] Skipping upgrade: disabled via config/env var",
+            f"[{label}-upgrade] Skipping upgrade: disabled via config/env var",
             file=sys.stderr,
         )
         return
@@ -67,8 +74,8 @@ def auto_upgrade_opencode(
 
         # npm everywhere (with registry mirror support); the old curl-based
         # installer cannot honor a mirror and is the access-restricted path.
-        cmd = _npm_install_cmd("opencode-ai", registry or "")
-        print(f"[opencode-upgrade] Running: {cmd}", file=sys.stderr)
+        cmd = _npm_install_cmd(package, registry or "")
+        print(f"[{label}-upgrade] Running: {cmd}", file=sys.stderr)
 
         proc = subprocess.Popen(
             cmd,
@@ -81,31 +88,49 @@ def auto_upgrade_opencode(
         )
         stdout, stderr = proc.communicate(timeout=180)
         if stdout:
-            print(f"[opencode-upgrade] stdout: {stdout.strip()}", file=sys.stderr)
+            print(f"[{label}-upgrade] stdout: {stdout.strip()}", file=sys.stderr)
         if stderr:
-            print(f"[opencode-upgrade] stderr: {stderr.strip()}", file=sys.stderr)
+            print(f"[{label}-upgrade] stderr: {stderr.strip()}", file=sys.stderr)
 
         code_msg = (
             "successfully"
             if proc.returncode == 0
             else f"with code {proc.returncode}. Continuing startup."
         )
-        print(f"[opencode-upgrade] Upgrade completed {code_msg}.", file=sys.stderr)
+        print(
+            f"[{label}-upgrade] Upgrade completed {code_msg}.", file=sys.stderr
+        )
     except subprocess.TimeoutExpired:
         print(
-            "[opencode-upgrade] Upgrade timed out after 180 seconds. Continuing startup.",
+            f"[{label}-upgrade] Upgrade timed out after 180 seconds. Continuing startup.",
             file=sys.stderr,
         )
     except FileNotFoundError:
         print(
-            "[opencode-upgrade] npm not found — install Node.js to enable auto-upgrade. Continuing startup.",
+            f"[{label}-upgrade] npm not found — install Node.js to enable auto-upgrade. Continuing startup.",
             file=sys.stderr,
         )
     except Exception as exc:
         print(
-            f"[opencode-upgrade] Unexpected error: {exc}. Continuing startup.",
+            f"[{label}-upgrade] Unexpected error: {exc}. Continuing startup.",
             file=sys.stderr,
         )
+
+
+def auto_upgrade_opencode(
+    settings_file: Path = UPGRADE_SETTINGS_FILE,
+    registry: str | None = None,
+) -> None:
+    _auto_upgrade_npm_cli("opencode-ai", "opencode", settings_file, registry)
+
+
+def auto_upgrade_pi(
+    settings_file: Path = UPGRADE_SETTINGS_FILE,
+    registry: str | None = None,
+) -> None:
+    _auto_upgrade_npm_cli(
+        "@earendil-works/pi-coding-agent", "pi", settings_file, registry
+    )
 
 
 def _is_root() -> bool:

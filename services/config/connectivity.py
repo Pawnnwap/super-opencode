@@ -25,6 +25,7 @@ from supervisor.runners.opencode_runner import (
     OpencodeRunner,
     find_opencode,
 )
+from supervisor.runners.pi_runner import PiRunner, find_pi
 from supervisor.utils.text_utils import normalize_model_response
 
 
@@ -73,6 +74,8 @@ def run_test_with_timeout(
 #     order, first configuration the model accepts wins (plain fallback).
 #   opencode: `--variant <lowest>` — variant metadata from opencode's own
 #     model listing, lowest reasoning effort first (plain fallback).
+#   pi: `--thinking off` — pi's own lowest level, accepted directly (single
+#     attempt).
 #
 # Real (supervised) runs are untouched: these flags are only set by probes.
 
@@ -96,6 +99,11 @@ _LOW_EFFORT_MAX_RANK = 2
 # support. The UI offers them (plus "Default") for real runs; probes always
 # auto-cascade from the bottom instead.
 REASONING_EFFORT_CHOICES = ["none", "minimal", "low", "medium", "high", "xhigh"]
+
+# pi's own `--thinking` ladder (superset spelling: "off" instead of "none",
+# plus "max"). The UI offers these for the pi engine; probes always use the
+# bottom entry, which pi accepts directly.
+PI_THINKING_CHOICES = ["off", "minimal", "low", "medium", "high", "xhigh", "max"]
 
 
 def _effort_rank(name: str) -> int:
@@ -451,6 +459,74 @@ def test_codex_connectivity(
     return result
 
 
+def test_pi_connectivity(
+    pi_executable: str,
+    pi_model: str | None,
+    pi_model_backup: str | None,
+    timeout: int = 30,
+) -> tuple[bool, str]:
+    workspace = _ephemeral_workspace("pi")
+    try:
+        exe = find_pi(pi_executable or "")
+    except FileNotFoundError as exc:
+        shutil.rmtree(workspace, ignore_errors=True)
+        return False, str(exc)
+
+    backup = _distinct_backup(pi_model, pi_model_backup)
+
+    def _probe(thinking: str, seconds: int) -> tuple[bool, str]:
+        runner = PiRunner(
+            workspace=workspace,
+            opencode_model=pi_model,
+            opencode_executable=exe,
+            opencode_model_backup=backup,
+            timeout=seconds,
+        )
+        runner.opencode_variant = thinking
+
+        def _inner():
+            runner._alive = True
+            # pi needs no session-capture lock (the session id arrives on the
+            # stream's `session` event), so the probe is a single
+            # self-contained `pi -p` call (the prompt travels over stdin like
+            # every supervised run).
+            for _ in runner._run_prompt("hi"):
+                pass
+            # Connectivity criterion: the model returned text. Exit-code
+            # oddities (non-zero exits, cleanup running past the stream
+            # timeout, provider stream errors arriving after the answer) do
+            # not mean the endpoint is unreachable, so model text wins over
+            # them. `.prose` excludes stderr, tool I/O and error events.
+            prose = (runner._last_result.prose or "") if runner._last_result else ""
+            if prose.strip():
+                note = f" (thinking: {thinking})" if thinking else ""
+                return True, f"pi responded{note}."
+            _output, timed_out = runner.read_output(timeout=25)
+            if timed_out:
+                return False, "pi timed out without model text."
+            diag = runner.last_diagnostic() if runner._last_result else "(no result)"
+            return False, f"pi returned an error without model text.\n{diag}"
+
+        try:
+            return run_with_timeout(_inner, seconds=seconds)
+        except TimeoutError:
+            return False, "pi test timed out."
+        except Exception as exc:  # noqa: BLE001
+            return False, f"pi test failed: {exc}"
+        finally:
+            try:
+                runner.stop()
+            except Exception:  # noqa: BLE001
+                pass
+
+    deadline = time.monotonic() + timeout
+    # pi accepts its lowest thinking level ("off") directly — no effort
+    # ladder to walk, one probe attempt.
+    result = _probe("off", max(10, int(deadline - time.monotonic())))
+    shutil.rmtree(workspace, ignore_errors=True)
+    return result
+
+
 def test_agent_connectivity(
     engine: str,
     executable: str,
@@ -463,13 +539,16 @@ def test_agent_connectivity(
     """Dispatch the execution-agent connectivity probe by engine.
 
     ``base_url`` / ``api_key`` configure codex's external OpenAI-compatible
-    (Responses API) endpoint; they are ignored for opencode, which manages its
-    own provider config.
+    (Responses API) endpoint; they are ignored for opencode and pi, which
+    manage their own provider config.
     """
-    if (engine or "opencode").strip().lower() == "codex":
+    engine = (engine or "opencode").strip().lower()
+    if engine == "codex":
         return test_codex_connectivity(
             executable, model, model_backup, timeout, base_url, api_key
         )
+    if engine == "pi":
+        return test_pi_connectivity(executable, model, model_backup, timeout)
     return test_opencode_connectivity(executable, model, model_backup, timeout)
 
 

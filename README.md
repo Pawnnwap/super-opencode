@@ -15,11 +15,11 @@ execution backend's native read, edit, patch, and write tools.
 Key capabilities:
 
 - **Dual-loop architecture** — `SupervisorLoop` for external tasks, `SelfEvolutionLoop` for self-improvement
-- **Dual execution backend** — OpenCode (default) or Codex, selected via `config.engine`; the supervisor loop is backend-agnostic
+- **Triple execution backend** — OpenCode (default), Codex, or pi, selected via `config.engine`; the supervisor loop is backend-agnostic
 - **Evidence-grounded judge** — `LLMSupervisor` evaluates agent output against protocol targets at every step, grounded in deterministic workspace facts via the `JudgeHarness` evidence registry
 - **Goal guard** — Evidence-gated completion: "all targets met" is a proposal, validated against deterministic evidence
 - **Loop & stagnation detection** — Intra-turn tool-loop detection plus cross-turn workspace-fingerprint stagnation with a nudge ladder
-- **Native file editing** — OpenCode and Codex use their maintained read, edit, patch, and write tools
+- **Native file editing** — OpenCode, Codex, and pi use their maintained read, edit, patch, and write tools
 - **Web UI** — NiceGUI dashboard: Protocol Wizard, Live Run, and Self-Evolution pages, with a persisted background-job board and full-page live job screens
 - **Plan mode** — Configurable pre-execution planning rounds with read-only opencode analysis
 - **Occam's razor pass** — Optional post-success redundancy-reduction stage that runs on an archive copy, never the live workspace
@@ -38,8 +38,9 @@ Key capabilities:
 
 - Python 3.11 or higher
 - An API key for OpenAI or any compatible provider (e.g., NVIDIA NIM, Ollama)
-- opencode CLI installed (see installation below) — or the Codex CLI if you
-  select the Codex execution backend
+- opencode CLI installed (see installation below) — or the Codex CLI / pi CLI
+  if you select the Codex / pi execution backend
+  (pi: `npm install -g @earendil-works/pi-coding-agent`)
 
 ---
 
@@ -316,7 +317,7 @@ Fill in INPUT / TARGET / RESTRICTIONS in plain language → click
 **Refine with AI** → review the generated `protocol.md` → Accept & Save.
 
 The wizard includes:
-- **Configuration panel** — Execution engine (OpenCode or Codex), API key
+- **Configuration panel** — Execution engine (OpenCode, Codex, or pi), API key
   and base URL, workspace path, supervisor and agent models (plus backup
   models), max retries, context threshold, turn timeout, max tokens, npm
   registry for CLI upgrades, and switches for the Python scanner
@@ -414,14 +415,19 @@ supervisor/
     analyzer_support.py             Shared analyzer helpers
 
   runners/
-    factory.py                      Constructs OpencodeRunner or CodexRunner from config.engine
-    base_runner.py                  Common workspace management and lifecycle state
+    factory.py                      Constructs OpencodeRunner / CodexRunner / PiRunner from config.engine
+    base_runner.py                  Shared runner base: full turn/session/step/archive surface;
+                                    engines implement only their seams (_run_prompt, workspace prep)
     opencode_runner.py              Subprocess wrapper for the opencode CLI
     codex_runner.py                 Subprocess wrapper for the Codex CLI
+    pi_runner.py                    Subprocess wrapper for the pi CLI
     opencode_support/               opencode specifics: command builder, locator, process,
                                     stream, session, inspection, result
     codex_support/                  codex specifics: command builder, locator, process, stream
+    pi_support/                     pi specifics: command builder, locator, process, stream
     command_common.py               Shared command construction helpers
+    process_common.py               Shared three-engine subprocess driver (stdin prompt, stream
+                                    consumption, abort/loop/timeout handling, model fallback)
     locator_common.py               Shared executable discovery
     process_utils.py                Process lifecycle helpers
     stream_driver.py                Shared JSON-event stream reader (thread + queue, timeout-safe)
@@ -521,8 +527,8 @@ Quality ratings: `excellent` (≥90%) → `good` (≥75%) → `fair` (≥50%) �
 | Base URL | *(blank = OpenAI)* | Override for local/proxy endpoints e.g. `http://localhost:11434/v1` |
 | Workspace path | — | Absolute path to the project directory |
 | Supervisor / wizard model | — | Any model string your provider accepts |
-| Execution engine | opencode | Agent backend: `opencode` or `codex` |
-| Agent model | *(engine default)* | Forwarded to the opencode/codex CLI |
+| Execution engine | opencode | Agent backend: `opencode`, `codex`, or `pi` |
+| Agent model | *(engine default)* | Forwarded to the opencode/codex/pi CLI |
 | Max retries | 3 | Consecutive failures before forced stop |
 | Context threshold | 60% | Compaction fires at this fraction of estimated max |
 | Max tokens | 150,000 | Model context window size |
@@ -648,7 +654,8 @@ version files are never deleted — only archived.
 
 Super-Opencode uses the execution backend's native file tools. OpenCode offers
 `read`, exact-match `edit`, `apply_patch`, and `write`; Codex uses
-`apply_patch`. The supervisor supplies protocol checks, test-gated evolution,
+`apply_patch`; pi offers `read`, exact-match `edit`, `write`, and a `bash`
+tool. The supervisor supplies protocol checks, test-gated evolution,
 workspace archives, and rollback around those changes.
 
 OpenCode configurations created by earlier versions are migrated on startup:
@@ -677,7 +684,9 @@ code assistance and documentation lookup:
   examples and best practices; community fallback only
 
 These tools are automatically configured for OpenCode and Codex on startup.
-They provide research only; file editing stays with each backend's native tools.
+They provide research only; file editing stays with each backend's native
+tools. The pi engine is not auto-configured with Codehelp — pi supervised
+runs use its built-in tools only.
 
 ## Plan Mode
 
