@@ -154,4 +154,12 @@ ui.run(
     dark=True,
     storage_secret="opencode-supervisor",
     loop="none",
+    # Reconnect grace. This single knob derives the engine.io keepalive
+    # (ping_interval = 0.8x, ping_timeout = 0.4x of it) and how long the
+    # server keeps a disconnected client before deleting it. NiceGUI's 3.0 s
+    # default meant a 2 s pong delay or a 3 s socket blip - routine while
+    # long jobs burst log renders into the browser - permanently deleted the
+    # page client mid-task ("UI silently disconnects"). 60 s rides out such
+    # blips transparently (outbox rewind covers the gap).
+    reconnect_timeout=60.0,
 )

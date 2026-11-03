@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -114,48 +115,71 @@ class JobStateStore:
     def save_job_state(self, job_id: str, state: dict[str, Any]):
         """Save job metadata and current state.
 
-        Writes go to a temp file then ``os.replace``: another thread (an
-        enqueue's collision scan, a cancel) may read this file at any
-        moment, and a plain open("w") truncates first — a concurrent reader
-        saw an empty file and treated the job as unknown.
+        Writes go to a per-call temp file then ``os.replace``: another
+        thread (an enqueue's collision scan, a cancel) may read this file at
+        any moment, and a plain open("w") truncates first — a concurrent
+        reader saw an empty file and treated the job as unknown.
+
+        The temp name is unique per call: the worker's RUNNING heartbeat and
+        the UI process's cancel write race on the same state file, and with
+        one fixed ``.tmp`` name a writer truncated the temp file another
+        writer was mid-replace on, publishing torn JSON (2026-11-02 UI
+        freeze). On Windows ``os.replace`` also fails with EACCES while any
+        reader holds the destination open, hence the retries — 5 of them,
+        because readers poll every 2 s and hold the file briefly.
         """
         state["job_id"] = job_id
         state["updated_at"] = time.time()
         path = self._get_job_path(job_id)
         self.store_dir.mkdir(parents=True, exist_ok=True)
-        tmp_path = path.with_name(path.name + ".tmp")
+        tmp_path = path.with_name(f"{path.name}.{uuid.uuid4().hex[:8]}.tmp")
         payload = json.dumps(state, indent=2)
-        for attempt in range(3):
+        try:
+            for attempt in range(5):
+                try:
+                    with open(tmp_path, "w", encoding="utf-8") as f:
+                        f.write(payload)
+                    os.replace(tmp_path, path)
+                    return
+                except OSError as exc:
+                    if attempt == 4:
+                        logger.error("Failed to save job state for %s after 5 attempts: %s", job_id, exc)
+                        raise
+                    logger.warning("Transient error saving job state for %s (attempt %d): %s", job_id, attempt + 1, exc)
+                    time.sleep(0.1 * (attempt + 1))
+        finally:
             try:
-                with open(tmp_path, "w", encoding="utf-8") as f:
-                    f.write(payload)
-                os.replace(tmp_path, path)
-                return
-            except OSError as exc:
-                if attempt == 2:
-                    logger.error("Failed to save job state for %s after 3 attempts: %s", job_id, exc)
-                    raise
-                logger.warning("Transient error saving job state for %s (attempt %d): %s", job_id, attempt + 1, exc)
-                time.sleep(0.1 * (attempt + 1))
+                tmp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     def get_job_state(self, job_id: str) -> dict[str, Any] | None:
         """Load job metadata and state.
 
         ``utf-8-sig`` so a state file carrying a UTF-8 BOM (written by an
         editor or an ad-hoc script) still loads; plain UTF-8 is unaffected.
+
+        Transient OSErrors (Windows EACCES while a concurrent ``os.replace``
+        is in flight — the exact failure behind the 2026-11-02 UI freeze)
+        are retried before the read is given up on; a single blip must not
+        surface to callers as "job unknown".
         """
         path = self._get_job_path(job_id)
         if not path.exists():
             return None
-        try:
-            with open(path, encoding="utf-8-sig") as f:
-                return json.load(f)
-        except json.JSONDecodeError as exc:
-            logger.warning("Corrupt job state file for %s: %s", job_id, exc)
-            return None
-        except OSError as exc:
-            logger.warning("Cannot read job state for %s: %s", job_id, exc)
-            return None
+        for attempt in range(3):
+            try:
+                with open(path, encoding="utf-8-sig") as f:
+                    return json.load(f)
+            except json.JSONDecodeError as exc:
+                logger.warning("Corrupt job state file for %s: %s", job_id, exc)
+                return None
+            except OSError as exc:
+                if attempt == 2:
+                    logger.warning("Cannot read job state for %s: %s", job_id, exc)
+                    return None
+                time.sleep(0.02 * (attempt + 1))
+        return None  # unreachable; for type-checkers
 
     def append_log(self, job_id: str, log_event: dict[str, Any]):
         """Append a log event to the job's log file.

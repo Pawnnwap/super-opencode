@@ -15,6 +15,19 @@ from services.webui.state import app_state
 ACTIVE_JOB_STATES = {"PENDING", "RUNNING"}
 
 
+def may_pause_autorefresh(
+    auto_refresh: bool, active: int, scan_incomplete: bool,
+) -> bool:
+    """Whether the 1.5 s board timer may pause itself.
+
+    Only a COMPLETE idle scan may pause: when a listed job's state was
+    momentarily unreadable (the store is shared with the worker's writes),
+    that job may well be the RUNNING one being watched — pausing on an
+    incomplete scan froze the board silently (2026-11-02).
+    """
+    return bool(auto_refresh) and not active and not scan_incomplete
+
+
 def _workspace_name(job: dict) -> str:
     workspace = job.get("status", {}).get("config", {}).get("workspace", "")
     return Path(workspace).name if workspace else ""
@@ -51,16 +64,25 @@ class JobBoard:
 
     # ------------------------------------------------------------------ #
 
-    def _collect(self) -> list[dict]:
+    def _collect(self) -> tuple[list[dict], int]:
+        """Return (matching jobs, count of listed-but-unreadable jobs).
+
+        The unreadable count marks the scan incomplete: a failed state read
+        is not a deleted job, and treating it as one once made the only
+        active job vanish and paused the board's timer forever.
+        """
         jobs: list[dict] = []
+        unreadable = 0
         for job_id in self.job_manager.store.list_jobs():
             # Cards never read logs, so do not pay for parsing them: on a 1.5 s
             # timer across every historical job this was the dominant cost.
             status = self.job_manager.get_job_summary(job_id)
-            if status and status.get("type") == self.job_type:
+            if status is None:
+                unreadable += 1
+            elif status.get("type") == self.job_type:
                 jobs.append({"id": job_id, "status": status})
         jobs.sort(key=lambda j: j["status"].get("updated_at", 0), reverse=True)
-        return jobs
+        return jobs, unreadable
 
     def _build_filters(self) -> None:
         with ui.row().classes("w-full items-end gap-3 flex-wrap"):
@@ -108,7 +130,7 @@ class JobBoard:
         The per-store scan is milliseconds against small state files — fine
         once, but never on the 1.5 s timer: see :meth:`refresh`.
         """
-        self._render(self._collect())
+        self._render(*self._collect())
 
     async def refresh(self) -> None:
         """Timer/filter refresh: collect job states on a worker thread.
@@ -118,10 +140,10 @@ class JobBoard:
         the loop behind worker-thread disk/GIL pressure whenever jobs streamed
         heavily - the browser saw the websocket die: "UI loses connection".
         """
-        jobs = await nicegui_run.io_bound(self._collect)
-        self._render(jobs)
+        collected = await nicegui_run.io_bound(self._collect)
+        self._render(*collected)
 
-    def _render(self, jobs: list[dict]) -> None:
+    def _render(self, jobs: list[dict], incomplete: int = 0) -> None:
         workspaces = sorted({_workspace_name(j) for j in jobs} - {""})
         known = {w for w in (self.workspace_filter.options or []) if w != "All workspaces"}
         if set(workspaces) != known:
@@ -154,7 +176,7 @@ class JobBoard:
                 ui.label("No matching tasks.").classes("text-[#8b949e]")
             self._queue_signature = None
             self._snapshot_signature = None
-            if self.auto_refresh.value and not active:
+            if may_pause_autorefresh(self.auto_refresh.value, active, incomplete):
                 self.timer.active = False
             return
 

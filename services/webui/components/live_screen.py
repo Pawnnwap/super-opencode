@@ -15,6 +15,11 @@ from services.webui.state import app_state
 
 ACTIVE_JOB_STATES = {"PENDING", "RUNNING"}
 
+# Consecutive unreadable status reads before the poller gives up (each tick
+# is 2 s, so 5 ≈ 10 s of store unreachability). The stop is announced; a
+# single failed read never stops anything (see tick).
+_MAX_CONSECUTIVE_READ_FAILURES = 5
+
 
 class LiveJobScreen:
     """Renders one job full-page with a 2s self-refresh timer."""
@@ -37,6 +42,7 @@ class LiveJobScreen:
         self.running_message = running_message
         self.max_tokens = int(app_state.get("max_tokens") or 150000)
         self._last_state = ""
+        self._read_failures = 0
 
     # ------------------------------------------------------------------ #
 
@@ -85,12 +91,28 @@ class LiveJobScreen:
         # The 2 s poll reads the job's tail (up to 2000 events) off the event
         # loop: on the loop it stalled every open detail page behind disk and
         # JSON work whenever the job's codex stream burst.
-        status = (
-            await nicegui_run.io_bound(
-                self.job_manager.get_job_status, self.job_id, 2000,
-            )
-            or {}
+        status = await nicegui_run.io_bound(
+            self.job_manager.get_job_status, self.job_id, 2000,
         )
+        if status is None:
+            # An unreadable status is NOT a terminal state. The store is
+            # shared with the worker's writes, and one transient read error
+            # (2026-11-02: "[Errno 13] Permission denied" during a concurrent
+            # os.replace) used to fall through to ``or {}`` → state UNKNOWN →
+            # "finished", permanently freezing this screen while the job kept
+            # running. Keep the last rendered state and try again next tick.
+            self._read_failures += 1
+            if self._read_failures < _MAX_CONSECUTIVE_READ_FAILURES:
+                return
+            self.timer.active = False
+            self.state_pill.set_content(format_status_pill("UNKNOWN"))
+            ui.notify(
+                f"Job {self.job_id} state is unreadable "
+                f"({self._read_failures} consecutive failed reads) — use Refresh",
+                type="warning",
+            )
+            return
+        self._read_failures = 0
         state = status.get("state", "UNKNOWN")
         logs = safe_logs(status)
         self.progress.update(logs, state, self.is_evolution)
