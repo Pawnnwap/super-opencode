@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 
 from supervisor.runners.command_common import (
-    validate_message as _validate_message_common,
+    resolve_model_arg,
 )
 from supervisor.utils.text_utils import coerce_str
 
@@ -108,10 +108,6 @@ def reasoning_effort_flags(effort: str) -> list[str]:
     return ["-c", f"model_reasoning_effort={e}"]
 
 
-def validate_message(message: str, context: str = "message") -> str | None:
-    return _validate_message_common(message, context, engine="codex")
-
-
 def build_cmd(
     *,
     exe: str,
@@ -150,11 +146,9 @@ def build_cmd(
 
     raw_model_arg = coerce_str(model, "model arg (codex build_cmd)")
     raw_self_model = coerce_str(codex_model, "codex_model (codex build_cmd)")
-    resolved_model = raw_model_arg or raw_self_model
-
-    if not resolved_model and _DOT_MODEL_FILE.exists():
-        resolved_model = _DOT_MODEL_FILE.read_text(encoding="utf-8").strip()
-        logger.debug("Model resolved from .codex_model file: %r", resolved_model)
+    resolved_model = resolve_model_arg(
+        raw_model_arg, raw_self_model, _DOT_MODEL_FILE, "codex"
+    )
 
     logger.debug(
         "codex build_cmd - exe=%r agent=%r use_continue=%s session_id=%r "

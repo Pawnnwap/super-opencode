@@ -1,46 +1,44 @@
-"""supervisor/opencode_runner.py
+"""supervisor/runners/opencode_runner.py
 
 Drives opencode via its non-interactive CLI:
 
     opencode run "<prompt>" [--model <model>]
 
-- stdin=DEVNULL guarantees no TTY, no interactive prompts
+Thin engine subclass of :class:`BaseRunner` — the full runner surface (turn
+lifecycle, session pinning, step detection, archiving) lives there. Only the
+opencode-specific seams remain:
+
+  * executable location  -> opencode_support.locator.find_opencode
+  * workspace marker     -> .opencode/config.json (auto-approve permissions)
+  * session capture      -> out-of-band `opencode session list` diffing.
+                            opencode does NOT report its session id on the
+                            event stream (unlike codex/pi), so start() is
+                            overridden and the enumeration hooks are real.
+  * subprocess driving   -> opencode_support.process.run_prompt
+
+- stdin=DEVNULL-equivalent: the prompt is piped, guaranteeing no TTY
 - All permissions auto-approved in `run` mode
 """
 
 from __future__ import annotations
 
 import logging
-import subprocess
-from collections.abc import Callable, Generator
-from pathlib import Path
+from collections.abc import Generator
 
-from supervisor.analyzers.opencode_step_detector import (
-    OpencodeStepDetector,
-    PhaseTransition,
-    Step,
-    StepProgress,
-)
 from supervisor.runners.base_runner import BaseRunner
-from supervisor.runners.opencode_support.command_builder import (
-    validate_message as _validate_message_impl,
-)
-from supervisor.runners.opencode_support.inspection import extract_file_refs
+from supervisor.runners.command_common import validate_message
 from supervisor.runners.opencode_support.locator import find_opencode as _find_opencode
 from supervisor.runners.opencode_support.process import run_prompt as _run_prompt_impl
 from supervisor.runners.opencode_support.result import RunResult
-from supervisor.runners.process_utils import kill_process_tree
 from supervisor.runners.opencode_support.session import (
     SESSION_CAPTURE_LOCK as _SESSION_CAPTURE_LOCK,
+)
+from supervisor.runners.opencode_support.session import (
     capture_new_session_id as _capture_new_session_id_impl,
+)
+from supervisor.runners.opencode_support.session import (
     list_all_session_ids as _list_all_session_ids_impl,
 )
-from supervisor.utils.text_utils import coerce_str, strip_thinking_blocks
-from supervisor.workspace.cleanup_candidates import (
-    build_cleanup_inquiry,
-    identify_cleanup_candidates as discover_cleanup_candidates,
-)
-from supervisor.workspace.workspace_archiver import ArchiveResult, WorkspaceArchiver, create_archiver
 
 logger = logging.getLogger(__name__)
 
@@ -49,135 +47,33 @@ def find_opencode(explicit: str = "") -> str:
     return _find_opencode(explicit)
 
 
-def _validate_message(message: str, context: str = "message") -> str | None:
-    return _validate_message_impl(message, context)
-
-
 class OpencodeRunner(BaseRunner):
     """One send()/start() call = one `opencode run "<prompt>"` subprocess."""
 
-    def __init__(
-        self,
-        workspace: Path,
-        timeout: int,
-        opencode_model: str | None = None,
-        opencode_executable: str = "",
-        opencode_pure: bool = False,
-        opencode_variant: str = "",
-        agent: str = "",
-        opencode_model_backup: str | None = None,
-        archive_keep_last: int = 5,
-        archive_backend: str = "git",
-        step_detector: OpencodeStepDetector | None = None,
-        on_step: Callable[[Step], None] | None = None,
-        on_transition: Callable[[PhaseTransition], None] | None = None,
-        on_progress: Callable[[StepProgress], None] | None = None,
-    ):
-        super().__init__(workspace)
-        logger.debug(
-            "__init__ raw inputs - opencode_model=%r (type=%s) opencode_executable=%r (type=%s) "
-            "agent=%r (type=%s) opencode_model_backup=%r (type=%s) timeout=%r (type=%s)",
-            opencode_model,
-            type(opencode_model).__name__,
-            opencode_executable,
-            type(opencode_executable).__name__,
-            agent,
-            type(agent).__name__,
-            opencode_model_backup,
-            type(opencode_model_backup).__name__,
-            timeout,
-            type(timeout).__name__,
-        )
+    _engine = "opencode"
 
-        self.workspace = workspace
-        self.opencode_model = coerce_str(opencode_model, "opencode_model") or None
-        self.opencode_model_backup = (
-            coerce_str(opencode_model_backup, "opencode_model_backup") or None
-        )
-        self.opencode_executable = coerce_str(
-            opencode_executable,
-            "opencode_executable",
-        )
-        self.opencode_pure = bool(opencode_pure)
-        # Thinking variant (opencode `--variant`); "" = model default. Only
-        # values from the model's own variant metadata should be set here.
-        self.opencode_variant = coerce_str(opencode_variant, "opencode_variant")
-        self.agent = coerce_str(agent, "agent")
-        if not isinstance(timeout, int):
-            logger.warning(
-                "Type coercion: 'timeout' received %r (type=%s) - casting to int.",
-                timeout,
-                type(timeout).__name__,
+    def _prepare_workspace(self) -> None:
+        """Ensure workspace exists and contains opencode project marker."""
+        self.workspace.mkdir(parents=True, exist_ok=True)
+        oc_dir = self.workspace / ".opencode"
+        oc_dir.mkdir(exist_ok=True)
+        config_path = oc_dir / "config.json"
+        if not config_path.exists():
+            import json
+
+            config_path.write_text(
+                json.dumps({"autoapprove": True}, indent=2),
+                encoding="utf-8",
             )
-        self.timeout = int(timeout)
-
-        logger.info(
-            "__init__ coerced values - opencode_model=%r opencode_model_backup=%r "
-            "agent=%r timeout=%d workspace=%s",
-            self.opencode_model,
-            self.opencode_model_backup,
-            self.agent,
-            self.timeout,
-            self.workspace,
-        )
-
-        self._last_result: RunResult | None = None
-        self._chars_exchanged: int = 0
-        # Real cumulative context tokens from opencode's step_finish events
-        # (0 until the first json stream reports them). Preferred over the
-        # chars/4 estimate when available.
-        self._last_tokens_total: int = 0
-        self._process: subprocess.Popen | None = None
-        self._archiver = create_archiver(
-            workspace,
-            keep_last=int(archive_keep_last),
-            backend=archive_backend,
-        )
-        self._session_active = False
-        self._use_continue = False
-        self._session_id: str | None = None
-
-        self._step_detector = step_detector or OpencodeStepDetector(
-            step_callback=on_step,
-            transition_callback=on_transition,
-            progress_callback=on_progress,
-        )
-
-    @classmethod
-    def from_config(cls, config, agent: str = "") -> OpencodeRunner:
-        return cls(
-            workspace=config.workspace,
-            timeout=config.timeout,
-            opencode_model=config.opencode_model,
-            opencode_executable=config.opencode_executable,
-            opencode_pure=getattr(config, "opencode_pure", False),
-            opencode_variant=str(getattr(config, "agent_reasoning", "") or ""),
-            agent=agent,
-            opencode_model_backup=config.opencode_model_backup,
-            archive_keep_last=getattr(config, "archive_keep_last", 5),
-            archive_backend=getattr(config, "archive_backend", "git"),
-        )
-
-    @property
-    def step_detector(self) -> OpencodeStepDetector:
-        return self._step_detector
-
-    @property
-    def estimated_context_tokens(self) -> int:
-        # Prefer opencode's reported token total (exact) over the heuristic
-        # chars/4 estimate, which is all the codex path / non-json output has.
-        if self._last_tokens_total > 0:
-            return self._last_tokens_total
-        return self._chars_exchanged // 4
-
-    def get_step_progress(self) -> StepProgress:
-        return self._step_detector.progress
-
-    def reset_step_detector(self) -> None:
-        self._step_detector.reset()
+            logger.info("Created .opencode/config.json in workspace")
 
     def start(self, initial_prompt: str) -> Generator[dict]:
-        validated = _validate_message(initial_prompt, "initial_prompt (start)")
+        # opencode does not report its session id on the event stream, so the
+        # first turn runs under the session-capture lock and the new session
+        # is found by diffing `opencode session list` before/after.
+        validated = validate_message(
+            initial_prompt, "initial_prompt (start)", engine=self._engine
+        )
         if validated is None:
             logger.warning(
                 "Empty initial prompt in start(). Using fallback to continue session.",
@@ -215,104 +111,8 @@ class OpencodeRunner(BaseRunner):
             }
             self.enable_continuation(False)
 
-    def send(self, message: str) -> Generator[dict]:
-        validated = _validate_message(message, "message (send)")
-        resolved_message = (
-            validated
-            if validated is not None
-            else "Continue based on the current context and proceed."
-        )
-        # Single-threaded driver: nothing flips _alive back to True mid-call, so
-        # a stopped runner can never recover here. Fail fast instead of sleeping
-        # through a doomed exponential backoff before the inevitable raise.
-        if not self._alive:
-            raise RuntimeError(
-                "OpencodeRunner has been stopped. "
-                f"(Operation: send, alive={self._alive}, session_active={self._session_active})",
-            )
-
-        if self._session_active:
-            self.enable_continuation(True)
-        logger.info("send() - message length=%d chars", len(resolved_message))
-        yield from self._run_prompt(resolved_message)
-
-    def read_output(self, timeout: int | None = None) -> tuple[str, bool]:
-        if self._last_result is None:
-            return "", False
-        return strip_thinking_blocks(self._last_result.output), self._last_result.timed_out
-
-    @property
-    def last_looped(self) -> tuple[bool, str]:
-        """(looped, reason) from the most recent run; (False, "") if none."""
-        if self._last_result is None:
-            return False, ""
-        return (
-            getattr(self._last_result, "looped", False),
-            getattr(self._last_result, "loop_reason", ""),
-        )
-
-    def last_diagnostic(self) -> str:
-        return self._last_result.diagnostic() if self._last_result else "(no run yet)"
-
-    def stop(self) -> None:
-        self._alive = False
-        self._session_active = False
-        if self._process is not None:
-            # Tree-kill: on Windows the direct child is the cmd.exe shim of a
-            # `.cmd` install; killing only it orphans the real CLI process,
-            # which then holds the binary lock and keeps hitting the provider.
-            kill_process_tree(self._process)
-
-    def _prepare_workspace(self) -> None:
-        """Ensure workspace exists and contains opencode project marker."""
-        self.workspace.mkdir(parents=True, exist_ok=True)
-        oc_dir = self.workspace / ".opencode"
-        oc_dir.mkdir(exist_ok=True)
-        config_path = oc_dir / "config.json"
-        if not config_path.exists():
-            import json
-
-            config_path.write_text(
-                json.dumps({"autoapprove": True}, indent=2),
-                encoding="utf-8",
-            )
-            logger.info("Created .opencode/config.json in workspace")
-
     def _run_prompt(self, prompt: str) -> Generator[dict]:
         yield from _run_prompt_impl(self, prompt, find_opencode_fn=find_opencode)
-
-    def enable_continuation(self, enabled: bool = True) -> None:
-        # Bare `--continue` attaches to opencode's globally-last session, which
-        # on a multi-project machine can be a session from a different
-        # workspace. Continuation is therefore only allowed when a captured
-        # session id pins the target; otherwise each turn runs session-less
-        # (prompts carry protocol + feedback, so this stays correct).
-        if enabled and not self._session_id:
-            logger.debug(
-                "Continuation requested without a captured session id; "
-                "staying session-less.",
-            )
-            return
-        self._use_continue = enabled
-
-    def is_continuation_enabled(self) -> bool:
-        return self._use_continue
-
-    def is_session_pinned(self) -> bool:
-        """True when a captured session id pins the conversation.
-
-        Session-less turns (capture failure, fresh fallback) have no
-        conversation memory, so callers must send self-contained prompts.
-        """
-        return bool(self._session_id)
-
-    def mark_session_active(self) -> None:
-        self._session_active = True
-
-    def reset_session(self) -> None:
-        self._session_active = False
-        self._use_continue = False
-        self._session_id = None
 
     def _list_all_session_ids(self) -> set[str]:
         return _list_all_session_ids_impl(
@@ -336,75 +136,5 @@ class OpencodeRunner(BaseRunner):
             delay_seconds=delay_seconds,
         )
 
-    def reset_context_counter(self) -> None:
-        self._chars_exchanged = 0
-        self._last_tokens_total = 0
 
-    def process_step_detection(self, output: str) -> Generator[dict]:
-        yield from self._step_detector.process_output(output)
-
-    def get_step_events(self, output: str) -> list[dict]:
-        return list(self._step_detector.process_output(output))
-
-    def get_current_phase(self) -> str:
-        return self._step_detector.progress.phase.name.lower()
-
-    def is_progressing(self) -> bool:
-        return self._step_detector.is_progressing()
-
-    def is_waiting_for_output(self) -> bool:
-        return self._step_detector.is_waiting_for_output()
-
-    def get_activity_state(self) -> str:
-        return self._step_detector.get_activity_state()
-
-    def get_step_summary(self) -> dict:
-        progress = self._step_detector.progress
-        return {
-            "current_step": progress.current_step,
-            "total_steps": progress.total_steps_estimate,
-            "percentage": progress.percentage,
-            "phase": progress.phase.name.lower(),
-            "completed_phases": list(progress.completed_phases),
-            "step_count": len(progress.steps),
-        }
-
-    def send_cleanup_inquiry(self, candidates: list[str]) -> None:
-        inquiry = build_cleanup_inquiry(self.workspace, candidates)
-        if not inquiry:
-            return
-        logger.info(
-            "Sending cleanup inquiry to opencode for %d candidates",
-            len(candidates),
-        )
-        for _ in self.send(inquiry):
-            pass
-
-    def identify_cleanup_candidates(self) -> list[str]:
-        candidates = discover_cleanup_candidates(self.workspace)
-        if candidates:
-            self.send_cleanup_inquiry(candidates)
-        return candidates
-
-    def archive_files(self, files: list[str]) -> ArchiveResult:
-        return self._archiver.archive_workspace(label="cleanup", files_to_archive=files)
-
-    def archive_before_new_run(self) -> ArchiveResult:
-        return self._archiver.archive_before_new_run()
-
-    def get_archiver(self) -> WorkspaceArchiver:
-        return self._archiver
-
-    def list_archives(self) -> list[dict]:
-        return self._archiver.list_archives()
-
-    def get_archive_stats(self) -> dict:
-        return self._archiver.get_archive_stats()
-
-    def get_files_read(self) -> list[str]:
-        if not self._last_result or not self._last_result.output:
-            return []
-        return extract_file_refs(self._last_result.output)
-
-
-__all__ = ["OpencodeRunner", "RunResult", "find_opencode"]
+__all__ = ["_SESSION_CAPTURE_LOCK", "OpencodeRunner", "RunResult", "find_opencode"]

@@ -17,6 +17,7 @@ from types import SimpleNamespace
 
 from supervisor.runners.opencode_support import process as opencode_process
 from supervisor.runners.opencode_support.command_builder import build_cmd
+from supervisor.runners import process_common
 
 # ~260k chars: far past both Windows limits, routine size for a turn prompt
 # that carries roll-up / summary content.
@@ -115,8 +116,8 @@ def test_run_prompt_feeds_prompt_via_stdin(tmp_path):
         _last_tokens_total=0,
     )
 
-    orig_popen = opencode_process.subprocess.Popen
-    opencode_process.subprocess.Popen = fake_popen
+    orig_popen = process_common.subprocess.Popen
+    process_common.subprocess.Popen = fake_popen
     try:
         list(
             opencode_process.run_prompt(
@@ -124,9 +125,9 @@ def test_run_prompt_feeds_prompt_via_stdin(tmp_path):
             )
         )
     finally:
-        opencode_process.subprocess.Popen = orig_popen
+        process_common.subprocess.Popen = orig_popen
 
-    assert captured["kwargs"]["stdin"] == opencode_process.subprocess.PIPE
+    assert captured["kwargs"]["stdin"] == process_common.subprocess.PIPE
     assert runner._last_result.ok
 
     # The stdin writer runs in a daemon thread; close() is its last action.

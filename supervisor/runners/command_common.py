@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import re
 from collections.abc import Sequence
+from pathlib import Path
 
 from supervisor.utils.text_utils import coerce_str
 
@@ -66,6 +67,28 @@ def safe_command_summary(command: Sequence[str]) -> str:
     """Describe an agent invocation without logging prompt, URL, or overrides."""
     visible = [str(part) for part in command[:2] if str(part)]
     return " ".join(visible) + " [arguments redacted]"
+
+
+def resolve_model_arg(
+    model: str | None,
+    self_model: str | None,
+    dot_model_file: Path,
+    engine: str,
+) -> str:
+    """Resolve one engine's model string for a single command (shared helper).
+
+    Precedence: explicit per-call argument > the runner's configured model >
+    the repo-root ``.<engine>_model`` pin file (a debugging escape hatch —
+    drop a model string in the file and every run uses it when nothing is
+    configured).
+    """
+    resolved = coerce_str(model, f"model arg ({engine} build_cmd)") or coerce_str(
+        self_model, f"{engine}_model ({engine} build_cmd)"
+    )
+    if not resolved and dot_model_file.exists():
+        resolved = dot_model_file.read_text(encoding="utf-8").strip()
+        logger.debug("Model resolved from %s file: %r", dot_model_file.name, resolved)
+    return resolved
 
 
 # Quoted or bare absolute paths to common shells/interpreters, optionally
@@ -132,8 +155,7 @@ def compact_tool_detail(detail: str, limit: int = 200) -> str:
         opening = wrapper.group(0)[-1]
         if opening in ('"', "'") and text.endswith(opening):
             text = text[:-1]
-    if text.startswith("& "):
-        text = text[2:]
+    text = text.removeprefix("& ")
     return text[:limit]
 
 

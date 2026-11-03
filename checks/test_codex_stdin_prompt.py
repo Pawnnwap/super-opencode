@@ -13,6 +13,7 @@ from types import SimpleNamespace
 
 from supervisor.runners.codex_support import process as codex_process
 from supervisor.runners.codex_support.command_builder import build_cmd
+from supervisor.runners import process_common
 
 # ~260k chars: far past both Windows limits, routine size for a turn prompt
 # that carries roll-up / summary content.
@@ -111,14 +112,14 @@ def test_run_prompt_feeds_prompt_via_stdin(tmp_path):
         _last_tokens_total=0,
     )
 
-    orig_popen = codex_process.subprocess.Popen
-    codex_process.subprocess.Popen = fake_popen
+    orig_popen = process_common.subprocess.Popen
+    process_common.subprocess.Popen = fake_popen
     try:
         list(codex_process.run_prompt(runner, LONG_PROMPT, find_codex_fn=lambda exe: exe))
     finally:
-        codex_process.subprocess.Popen = orig_popen
+        process_common.subprocess.Popen = orig_popen
 
-    assert captured["kwargs"]["stdin"] == codex_process.subprocess.PIPE
+    assert captured["kwargs"]["stdin"] == process_common.subprocess.PIPE
     assert captured["cmd"][-2:] == ["--", "-"]
     assert runner._last_result.ok
     assert "codex says done" in runner._last_result.stdout

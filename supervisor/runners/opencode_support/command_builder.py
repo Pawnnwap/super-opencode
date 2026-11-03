@@ -3,29 +3,12 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from supervisor.runners.command_common import (
-    validate_message as _validate_message_common,
-)
+from supervisor.runners.command_common import resolve_model_arg
 from supervisor.utils.text_utils import coerce_str
 
 logger = logging.getLogger(__name__)
 
 _DOT_MODEL_FILE = Path(__file__).resolve().parents[2] / ".opencode_model"
-
-
-def validate_message(message: str, context: str = "message") -> str | None:
-    return _validate_message_common(message, context, engine="opencode")
-
-
-def resolve_model(model: str | None, opencode_model: str | None) -> str:
-    """Resolve the model string for one opencode command."""
-    raw_model_arg = coerce_str(model, "model arg (_build_cmd)")
-    raw_self_model = coerce_str(opencode_model, "opencode_model (_build_cmd)")
-    resolved_model = raw_model_arg or raw_self_model
-    if not resolved_model and _DOT_MODEL_FILE.exists():
-        resolved_model = _DOT_MODEL_FILE.read_text(encoding="utf-8").strip()
-        logger.debug("Model resolved from .opencode_model file: %r", resolved_model)
-    return resolved_model
 
 
 def build_cmd(
@@ -60,7 +43,9 @@ def build_cmd(
 
     raw_model_arg = coerce_str(model, "model arg (_build_cmd)")
     raw_self_model = coerce_str(opencode_model, "opencode_model (_build_cmd)")
-    resolved_model = resolve_model(raw_model_arg, raw_self_model)
+    resolved_model = resolve_model_arg(
+        raw_model_arg, raw_self_model, _DOT_MODEL_FILE, "opencode"
+    )
 
     logger.debug(
         "_build_cmd - exe=%r agent=%r use_continue=%s model_arg=%r "

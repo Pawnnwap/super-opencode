@@ -216,7 +216,7 @@ def classify_line(line: str | None) -> LineEvent | None:
             inp = inp if isinstance(inp, (int, float)) else 0
             out = out if isinstance(out, (int, float)) else 0
             total = int(inp + out)
-        return LineEvent(kind="tokens", tokens_total=total if total > 0 else 0)
+        return LineEvent(kind="tokens", tokens_total=max(0, total))
 
     if etype in ("turn.failed", "error"):
         return LineEvent(kind="error", text=_error_message(event))

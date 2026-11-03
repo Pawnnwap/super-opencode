@@ -69,14 +69,16 @@ class LineEvent:
     session_id: str = ""  # populated for kind == "session"
 
 
-def _tool_marker(part: dict) -> str:
-    """Build a compact ``[tool] <intent>`` marker from a tool_use part."""
-    tool = part.get("tool") or "tool"
+def tool_marker_from(tool, inp) -> str:
+    """Compact ``[tool] <intent>`` marker from a tool name + input payload.
+
+    Shared by the opencode parser (``tool_use`` part) and the pi parser
+    (``toolCall`` block): the loop detector keys on the marker, so the tool's
+    CONTENT must be preserved — repeated calls on different content must
+    yield different markers.
+    """
     if not isinstance(tool, str) or not tool.strip():
         tool = "tool"
-
-    state = part.get("state")
-    inp = state.get("input") if isinstance(state, dict) else None
 
     detail = ""
     if isinstance(inp, dict):
@@ -90,6 +92,14 @@ def _tool_marker(part: dict) -> str:
         detail = compact_tool_detail(detail, _MAX_TOOL_DETAIL)
         return f"[{tool}] {detail}"
     return f"[{tool}]"
+
+
+def _tool_marker(part: dict) -> str:
+    """Build a compact ``[tool] <intent>`` marker from a tool_use part."""
+    tool = part.get("tool") or "tool"
+    state = part.get("state")
+    inp = state.get("input") if isinstance(state, dict) else None
+    return tool_marker_from(tool, inp)
 
 
 def classify_line(line: str | None) -> LineEvent | None:
