@@ -230,6 +230,8 @@ nul
 test_*.py
 !checks/test_*.py
 .job_store
+# Launcher exit-code sentinels (start_suprun.ps1 death forensics)
+*.exitcode
 *.isorted
 *.bak
 *.txt

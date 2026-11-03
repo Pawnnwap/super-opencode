@@ -7,13 +7,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import sys
 import threading
 import time
 import urllib.request
+from pathlib import Path
 
 from nicegui import app, core, ui
 
+from services.runtime import death_capture
 from services.webui import layout, startup
 from services.webui.jobs import get_job_manager
 
@@ -57,6 +60,51 @@ core.sio.eio._async["translate_request"] = _translate_request_without_disconnect
 # every 10s and logs the failing half with a timestamp.
 _watchdog: dict = {}
 log = logging.getLogger("ui.watchdog")
+lifecycle_log = logging.getLogger("ui.lifecycle")
+
+# Liveness clock for the whole UI process: the watchdog thread touches it
+# every 10s, so after a silent death (2026-11-03: process gone, empty
+# stderr, no event log) its mtime is the exact time of death - the same
+# trick as .job_store/worker.lock for the worker daemon. Not a *.json file:
+# the job store globs those as jobs.
+_UI_LOCK = Path(".job_store") / "ui.lock"
+
+
+@app.on_startup
+def _install_forensics() -> None:
+    """Arm crash capture + client lifecycle logging before any traffic.
+
+    Every UI death so far left zero evidence (see death_capture module doc),
+    so the forensics must be armed at startup, not on demand.
+    """
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%H:%M:%S",
+        stream=sys.stderr,
+    )
+    death_capture.install("app.fatal.log")
+    log.info("death capture armed (app.fatal.log), pid %d", os.getpid())
+
+    @app.on_connect
+    def _log_connect(client) -> None:
+        lifecycle_log.info(
+            "client connected id=%s ip=%s tab=%s", client.id, client.ip, client.tab_id,
+        )
+
+    @app.on_disconnect
+    def _log_disconnect(client) -> None:
+        # Called on every socket loss AND on reconnects: a string of these
+        # without deletes = transport flapping; a delete right after =
+        # the reconnect window expired (the old silent page death).
+        lifecycle_log.info("client socket lost id=%s", client.id)
+
+    @app.on_delete
+    def _log_delete(client) -> None:
+        lifecycle_log.info(
+            "client deleted id=%s (page gone: closed tab or reconnect window expired)",
+            client.id,
+        )
 
 
 @app.on_startup
@@ -72,11 +120,23 @@ async def _start_ui_watchdog() -> None:
     )
 
 
+def _touch_ui_lock() -> None:
+    try:
+        _UI_LOCK.parent.mkdir(parents=True, exist_ok=True)
+        if not _UI_LOCK.exists():
+            _UI_LOCK.write_text(f'{{"pid": {os.getpid()}}}', encoding="utf-8")
+        else:
+            os.utime(_UI_LOCK)
+    except OSError:
+        pass  # forensics must never take the watchdog down
+
+
 def _ui_watchdog() -> None:
     cycles = 0
     while True:
         time.sleep(10)
         cycles += 1
+        _touch_ui_lock()
         loop = _watchdog.get("loop")
         if loop is not None:
             done = threading.Event()

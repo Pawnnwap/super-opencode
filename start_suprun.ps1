@@ -81,11 +81,18 @@ function Start-CapabilityProxy {
   # one more quote pair, and cmd /c strips the outer quotes - an inner
   # command starting with a quoted path then loses its opening quote and
   # cmd dies on the mangled line before any redirection happens.
-  $inner = 'cd /d "{0}" && "{1}" -u codex_compat_proxy.py {2} {3} > "{4}" 2> "{5}"' -f `
+  # The trailing exit-code sentinel is the death recorder: a clean exit
+  # appends its code here, a hard kill (taskkill / job-object teardown)
+  # leaves the file absent - the one distinction stderr can no longer make.
+  # Delayed expansion (!VAR!) on purpose: cmd expands %VAR% once at parse
+  # time, which would record the LAUNCH-time errorlevel/date instead of the
+  # exit-time one. No launched path may contain "!" (none do).
+  $inner = 'cd /d "{0}" && "{1}" -u codex_compat_proxy.py {2} {3} > "{4}" 2> "{5}" & echo !DATE! !TIME! exitcode=!ERRORLEVEL!>> "{6}"' -f `
     $root, $python, $ProxyPort, $upstream,
-    (Join-Path $root 'codex_compat_proxy.out.log'), (Join-Path $root 'codex_compat_proxy.err.log')
+    (Join-Path $root 'codex_compat_proxy.out.log'), (Join-Path $root 'codex_compat_proxy.err.log'),
+    (Join-Path $root 'codex_compat_proxy.exitcode')
   Start-Process -FilePath 'cmd.exe' `
-    -ArgumentList @('/c', $inner) `
+    -ArgumentList @('/v:on', '/c', $inner) `
     -WorkingDirectory $root -WindowStyle Hidden
   $deadline = (Get-Date).AddSeconds(30)
   while ((Get-Date) -lt $deadline) {
@@ -123,10 +130,14 @@ function Start-SupervisorApp {
   # launcher itself runs with its stdout attached to a pipe, Start-Process
   # children can inherit that pipe write-end and whoever captures our
   # output (a pipeline) then hangs waiting for EOF forever.
-  $inner = 'set PYTHONDONTWRITEBYTECODE=1&& cd /d "{0}" && "{1}" -u app.py > "{2}" 2> "{3}"' -f `
-    $root, $python, (Join-Path $root 'supervisor_app.out.log'), (Join-Path $root 'supervisor_app.err.log')
+  # Exit-code sentinel: appended only when python exits on its own (see
+  # Start-CapabilityProxy) - its absence marks a hard kill. Delayed
+  # expansion so the recorded code/time are the EXIT ones, not launch-time.
+  $inner = 'set PYTHONDONTWRITEBYTECODE=1&& cd /d "{0}" && "{1}" -u app.py > "{2}" 2> "{3}" & echo !DATE! !TIME! exitcode=!ERRORLEVEL!>> "{4}"' -f `
+    $root, $python, (Join-Path $root 'supervisor_app.out.log'), (Join-Path $root 'supervisor_app.err.log'),
+    (Join-Path $root 'supervisor_app.exitcode')
   Start-Process -FilePath 'cmd.exe' `
-    -ArgumentList @('/c', $inner) `
+    -ArgumentList @('/v:on', '/c', $inner) `
     -WorkingDirectory $root `
     -WindowStyle Hidden
   # "Started" is not success: the import graph (openai + NiceGUI) can take
@@ -170,10 +181,14 @@ function Start-JobWorker {
       }
     }
   }
-  $inner = 'set SOP_JOB_WORKER=1&& cd /d "{0}" && "{1}" -u -m services.jobs.worker_service > "{2}" 2> "{3}"' -f `
-    $root, $python, (Join-Path $root 'job_worker.out.log'), (Join-Path $root 'job_worker.err.log')
+  # Exit-code sentinel: appended only when python exits on its own (see
+  # Start-CapabilityProxy) - its absence marks a hard kill. Delayed
+  # expansion so the recorded code/time are the EXIT ones, not launch-time.
+  $inner = 'set SOP_JOB_WORKER=1&& cd /d "{0}" && "{1}" -u -m services.jobs.worker_service > "{2}" 2> "{3}" & echo !DATE! !TIME! exitcode=!ERRORLEVEL!>> "{4}"' -f `
+    $root, $python, (Join-Path $root 'job_worker.out.log'), (Join-Path $root 'job_worker.err.log'),
+    (Join-Path $root 'job_worker.exitcode')
   Start-Process -FilePath 'cmd.exe' `
-    -ArgumentList @('/c', $inner) `
+    -ArgumentList @('/v:on', '/c', $inner) `
     -WorkingDirectory $root -WindowStyle Hidden
   $deadline = (Get-Date).AddSeconds(15)
   while ((Get-Date) -lt $deadline) {
@@ -204,5 +219,9 @@ if (-not $AppOnly) { Start-CapabilityProxy }
 if (-not $ProxyOnly) {
   Start-JobWorker
   Start-SupervisorApp
+  # Self-heal was defined but never armed - the 2026-11-03 silent UI death
+  # then stayed dead until a manual restart. The watcher's relaunch path
+  # (-Restart -AppOnly) also revives a dead worker via Start-JobWorker.
+  Start-UiWatcher
 }
 Write-Output "service: http://127.0.0.1:$AppPort  (proxy $ProxyPort -> $upstream)"

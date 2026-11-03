@@ -26,6 +26,7 @@ import time
 from pathlib import Path
 
 from services.jobs.job_manager import JobManager
+from services.runtime import death_capture
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +95,9 @@ def main() -> int:
         datefmt="%H:%M:%S",
         stream=sys.stderr,
     )
+    # Silent-death forensics (2026-11-03: the daemon vanished with its three
+    # RUNNING jobs mid-stream and left no trace) - same capture as app.py.
+    death_capture.install("job_worker.fatal.log")
     store_dir = Path(".job_store")
     store_dir.mkdir(parents=True, exist_ok=True)
 

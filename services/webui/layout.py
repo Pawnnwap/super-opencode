@@ -104,8 +104,69 @@ _PAGES = [
 ]
 
 
+# Browser-side death recorder: forwards tab lifecycle + socket events to the
+# server log via NiceGUI's "log" channel, so "the page went silent" leaves a
+# server-side trail (socket reason, reconnect attempts, tab freeze/resume,
+# uncaught JS errors). Kept dependency-free and fail-safe: any internal error
+# must never break the page it instruments.
+BEACON_JS = """
+<script>
+(function () {
+  function send(level, message) {
+    try {
+      if (window.socket && window.clientId) {
+        window.socket.emit('log', {
+          client_id: window.clientId,
+          level: level,
+          message: '[beacon] ' + message,
+        });
+      }
+    } catch (e) {}
+  }
+  window.addEventListener('error', function (e) {
+    send('error', 'window.onerror: ' + (e.message || e.type));
+  });
+  window.addEventListener('unhandledrejection', function (e) {
+    send('error', 'unhandledrejection: ' + ((e.reason && e.reason.message) || e.reason));
+  });
+  document.addEventListener('visibilitychange', function () {
+    send('info', 'visibilitychange -> ' + document.visibilityState);
+  });
+  window.addEventListener('freeze', function () { send('warning', 'page freeze (tab frozen by browser)'); });
+  window.addEventListener('resume', function () { send('warning', 'page resume'); });
+  var tries = 0;
+  var timer = setInterval(function () {
+    tries++;
+    if (window.socket && window.clientId) {
+      clearInterval(timer);
+      window.socket.on('connect', function () { send('info', 'socket connect'); });
+      window.socket.on('disconnect', function (reason) {
+        send('warning', 'socket disconnect: ' + reason);
+      });
+      window.socket.on('connect_error', function (err) {
+        send('warning', 'connect_error: ' + (err && err.message));
+      });
+      if (window.socket.io) {
+        window.socket.io.on('reconnect_attempt', function (n) {
+          send('warning', 'reconnect attempt ' + n);
+        });
+        window.socket.io.on('reconnect_failed', function () {
+          send('error', 'reconnect failed (gave up)');
+        });
+      }
+      send('info', 'beacon armed');
+    } else if (tries > 120) {
+      clearInterval(timer);
+    }
+  }, 500);
+})();
+</script>
+"""
+
+
 def apply_theme() -> None:
     ui.add_head_html(f"<style>{CUSTOM_CSS}</style>")
+    ui.add_head_html(BEACON_JS)
     ui.colors(primary="#1f6feb", secondary="#21262d", accent="#58a6ff")
     ui.dark_mode(True)
 
