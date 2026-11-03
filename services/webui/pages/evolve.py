@@ -15,13 +15,6 @@ from services.webui.log_format import markdown_preview
 from services.webui.state import app_state
 
 
-def _snapshot_digest(workspace: Path) -> str:
-    from supervisor.analyzers.codebase_analyzer import snapshot_codebase
-
-    snapshot = snapshot_codebase(workspace)
-    return snapshot.digest_for_prompt(max_files=15)
-
-
 def _build_meta_protocol(workspace: Path, goal: str, extra: str) -> str:
     from supervisor.analyzers.codebase_analyzer import snapshot_codebase
     from supervisor.protocols.meta_protocol_builder import MetaProtocolBuilder

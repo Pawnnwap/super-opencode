@@ -127,12 +127,6 @@ def mark_abandoned_jobs(manager) -> str:
     return f"marked {len(flagged)} abandoned job(s)" if flagged else "no abandoned jobs"
 
 
-def _mark_abandoned() -> str:
-    from services.webui.jobs import get_job_manager
-
-    return mark_abandoned_jobs(get_job_manager())
-
-
 def _replay_job() -> str:
     """Re-enqueue one stored job when SUPERVISOR_REPLAY_JOB=<job_id> is set.
     Runs inside this app process so the worker thread and cancel path work;

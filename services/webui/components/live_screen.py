@@ -41,7 +41,6 @@ class LiveJobScreen:
         self.is_evolution = is_evolution
         self.running_message = running_message
         self.max_tokens = int(app_state.get("max_tokens") or 150000)
-        self._last_state = ""
         self._read_failures = 0
 
     # ------------------------------------------------------------------ #
@@ -211,18 +210,9 @@ class LiveJobScreen:
             occam = status.get("config", {}).get("enable_occam_razor", False)
             ui.label(f"Occam Razor: {'on' if occam else 'off'}").classes("text-xs")
 
-        report = status.get("report")
-        if report:
-            title = "Evolution Report" if self.is_evolution else "Report"
-            with ui.expansion(title).classes("w-full"):
-                ui.markdown(report)
-                ui.button(
-                    "Download",
-                    on_click=lambda: ui.download(
-                        report.encode("utf-8"),
-                        f"{self.job_type}_report_{self.job_id}.md",
-                    ),
-                )
+        # No report block here on purpose: _render_report is the single
+        # report surface - this column used to render the SAME report a
+        # second time on every finished-job page.
 
     def _render_report(self, status: dict) -> None:
         report = status.get("report")
