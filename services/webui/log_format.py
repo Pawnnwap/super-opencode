@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 import time
+from dataclasses import dataclass
 
 from supervisor.utils.text_utils import sanitize_event_message
 
@@ -23,14 +24,12 @@ VERBOSE_ONLY_LEVELS = (
     "supervisor_suggestions",
 )
 
-# Phase pipeline shown as a breadcrumb above the live log.
-PHASE_SEQUENCE = [
-    ("plan", "planning"),
-    ("code", "coding"),
-    ("test", "testing"),
-    ("review", "review"),
-    ("done", "completing"),
-]
+# Phase pipeline shown as a breadcrumb above the live log. Plan happens once
+# (the plan-mode stage, or the agent's first look around); then the agent's
+# code -> test turn and the judge's review repeat as rounds until the verdict
+# says DONE.
+LOOP_PHASES = ("code", "test", "review")
+PHASE_ORDER = ("plan", *LOOP_PHASES, "done")
 
 
 def safe_logs(status: dict) -> list[dict]:
@@ -134,25 +133,232 @@ def regex_token_current(logs: list) -> tuple[int, float] | None:
     return (latest_current, latest_fraction) if found else None
 
 
-def phase_breadcrumb(current_phase: str, completed_phases: list | None) -> str:
-    """Breadcrumb 'plan -> code -> test -> review' as inline HTML.
+@dataclass(frozen=True)
+class PhaseState:
+    """Where a run is in plan -> [code -> test -> review] x N -> done."""
 
-    The only consumer renders it via ui.html, so phases are marked up with
-    real tags (<strong> current, <s> completed) instead of markdown — a
-    plain-text label would show the asterisks/tildes literally.
-    Labels come from the constant PHASE_SEQUENCE, so no escaping is needed.
+    phase: str = ""  # "" (nothing yet) | plan | code | test | review | done
+    round: int = 0  # code/test/review rounds opened so far
+    exact: bool = True  # False: the event window lost the run start, round is a floor
+    visited: frozenset = frozenset()  # loop phases seen in the current round
+    end: str = ""  # "" while live; success | blocked | failed once the job ended
+
+
+_PROMPT_HEADLINE = re.compile(r"^→\s*(\w+) prompt\b")
+_TOOL_MARKER = re.compile(r"^\[(\w+)\]\s*(.*)", re.S)
+# File-mutating tools by name (opencode/pi edit|write|patch, codex file_change -> edit).
+_WRITE_TOOLS = frozenset(
+    {"edit", "write", "patch", "multiedit", "apply_patch", "create", "file_change"},
+)
+_SHELL_TOOLS = frozenset(
+    {"shell", "bash", "sh", "exec", "command", "run", "powershell", "cmd", "terminal"},
+)
+_TEST_COMMAND = re.compile(
+    r"\b(?:pytest|unittest|nose2?|tox|jest|vitest|mocha|cargo test|go test"
+    r"|npm (?:run )?test|yarn test|pnpm test|mvn test|gradle test|phpunit|rspec"
+    r"|ctest|make (?:test|check)|ruff|flake8|pylint|mypy|pyright|eslint|tsc)\b"
+    r"|\btest_\w+\.py\b",
+    re.IGNORECASE,
+)
+# Shell-side file writes: PowerShell cmdlets, patch tools, in-place sed, and
+# redirects into source/config files (not logs: `pytest > out.txt` is a test).
+_WRITE_COMMAND = re.compile(
+    r"\b(?:Set-Content|Out-File|Add-Content|apply_patch|git apply|sed -i)\b"
+    r"|(?:^|[|;&]\s*)cat\s*>>?\s*\S"
+    r"|>>?\s*['\"]?[\w./\\-]+\.(?:py|pyi|ts|tsx|js|jsx|mjs|rs|go|java|kt|c|h|cpp|hpp"
+    r"|cs|rb|php|sh|ps1|toml|ya?ml|cfg|ini)\b",
+    re.IGNORECASE,
+)
+_JOB_END = {"SUCCESS": "success", "BLOCKED": "blocked", "FAILED": "failed", "CANCELLED": "failed"}
+
+
+def tool_phase(msg: str) -> str:
+    """'code' / 'test' for a `[tool] detail` marker, '' when it says neither.
+
+    Reads, searches and plain script runs are neutral: they never move the
+    breadcrumb, so an agent reading around between edits stays in `code`.
     """
-    current = (current_phase or "").lower()
-    done = {str(p).lower() for p in (completed_phases or [])}
-    parts: list[str] = []
-    for label, name in PHASE_SEQUENCE:
-        if name == current:
-            parts.append(f"<strong>{label}</strong>")
-        elif name in done:
-            parts.append(f"<s>{label}</s>")
+    match = _TOOL_MARKER.match(msg or "")
+    if not match:
+        return ""
+    tool, detail = match.group(1).lower(), match.group(2)
+    if tool in _WRITE_TOOLS:
+        return "code"
+    if tool in _SHELL_TOOLS:
+        if _WRITE_COMMAND.search(detail):
+            return "code"
+        if _TEST_COMMAND.search(detail):
+            return "test"
+    return ""
+
+
+def _prompt_kind(event: dict) -> str:
+    # Headline mode folds prompt_kind into the message ("→ turn prompt …");
+    # full mode keeps the field.
+    kind = event.get("prompt_kind")
+    if isinstance(kind, str) and kind:
+        return kind
+    match = _PROMPT_HEADLINE.match(event.get("msg") or "")
+    return match.group(1) if match else "prompt"
+
+
+def _verdict_is_done(event: dict) -> bool:
+    text = event.get("digest") or event.get("msg") or ""
+    return str(text).lstrip().startswith("⚖ DONE")
+
+
+def phase_state(events: list, state: str = "") -> PhaseState:
+    """Rebuild the pipeline position from the job's structural events.
+
+    The regex step detector's `step_progress` is ignored on purpose: it keys
+    on prose, every agent turn ends in a summary, so it read "review" almost
+    permanently and its completed list was an unordered history. The loop's
+    own events are exact: a plan-mode stage (`log-plan_phase` / plan prompts),
+    then per round an initial/turn/restart prompt, live `tool` markers
+    (write -> code, test runner -> test), the turn's `opencode_output`
+    (review begins) and the judge's `supervisor_response` (CONTINUE closes
+    the round, DONE finishes).
+
+    Context compaction interrupts a round without judging it: the judge's
+    deletion-permission answer is logged as a `supervisor_response` too, so a
+    response is only a verdict when the next prompt is not a `compaction`
+    one, and everything from that compaction prompt to the `restart` prompt
+    is housekeeping, not a new round.
+    """
+    events = [event for event in events if isinstance(event, dict)]
+    next_prompt = [""] * len(events)
+    upcoming = ""
+    for index in range(len(events) - 1, -1, -1):
+        next_prompt[index] = upcoming
+        if events[index].get("level") == "opencode_prompt":
+            upcoming = _prompt_kind(events[index])
+
+    phase = ""
+    stage = "idle"  # idle | plan | main
+    rounds = 0
+    saw_initial = False
+    open_round = True  # the next main-loop prompt starts a new round
+    compacting = False
+    visited: set[str] = set()
+
+    def enter_main() -> None:
+        # Agent/judge activity with no prompt seen first: the window starts
+        # mid-run, so we are inside some round already.
+        nonlocal stage, rounds, open_round
+        if stage != "main":
+            stage = "main"
+            if open_round:
+                rounds += 1
+                open_round = False
+
+    for index, event in enumerate(events):
+        level = event.get("level") or ""
+        if level == "log-plan_phase":
+            if stage != "main":
+                stage, phase = "plan", "plan"
+        elif level == "opencode_prompt":
+            kind = _prompt_kind(event)
+            if kind == "plan":
+                if stage != "main":
+                    stage, phase = "plan", "plan"
+                continue
+            planned = stage == "plan"
+            if kind == "initial":
+                saw_initial = True
+            stage = "main"
+            if kind == "compaction":
+                compacting = True
+                phase = "code"
+                continue
+            compacting = False
+            if open_round:
+                rounds += 1
+                open_round = False
+                visited = set()
+                # First turn without a plan stage: the agent looks around
+                # before its first edit, and that is its planning.
+                phase = "plan" if kind == "initial" and not planned else "code"
+            else:
+                phase = "code"
+        elif stage == "plan" or compacting:
+            continue
+        elif level == "tool":
+            enter_main()
+            cls = tool_phase(event.get("msg") or "")
+            if cls:
+                phase = cls
+                visited.add(cls)
+            elif phase not in ("plan", "code", "test"):
+                phase = "code"
+        elif level == "opencode_output":
+            enter_main()
+            phase = "review"
+            visited.add("review")
+        elif level == "supervisor_response":
+            if next_prompt[index] == "compaction":
+                continue
+            enter_main()
+            open_round = True
+            visited.add("review")
+            phase = "done" if _verdict_is_done(event) else "review"
+
+    end = _JOB_END.get(state or "", "")
+    if end == "success":
+        phase = "done"
+    return PhaseState(
+        phase=phase,
+        round=rounds,
+        exact=saw_initial or stage != "main",
+        visited=frozenset(visited),
+        end=end,
+    )
+
+
+def phase_breadcrumb(ps: PhaseState) -> str:
+    """Breadcrumb `plan → [code → test → review] ×N → done` as inline HTML.
+
+    The only consumer renders it via ui.html, so phases are real spans
+    instead of markdown — a plain-text label would show the asterisks
+    literally. Each phase is classed phase-current / phase-done /
+    phase-skipped / phase-todo, arrows phase-arrow-lit / -dim up to the
+    current phase, the loop phases sit in a phase-loop bracket followed by a
+    phase-round badge (×N, or ×N+ when the event window lost the run start),
+    and a finished job tints the chip via phase-end-success / -blocked /
+    -failed. Labels are constants, so no escaping is needed.
+    """
+    current = PHASE_ORDER.index(ps.phase) if ps.phase in PHASE_ORDER else -1
+    finished = ps.phase == "done"
+
+    def span(name: str) -> str:
+        index = PHASE_ORDER.index(name)
+        if index == current:
+            cls = "phase-current" + (f" phase-end-{ps.end}" if ps.end else "")
+        elif index < current:
+            # An earlier loop phase is only done if this round actually hit
+            # it; a turn that never ran tests shows test as skipped.
+            skipped = name in LOOP_PHASES and not finished and name not in ps.visited
+            cls = "phase-skipped" if skipped else "phase-done"
         else:
-            parts.append(label)
-    return " → ".join(parts)
+            cls = "phase-todo"
+        return f'<span class="{cls}">{name}</span>'
+
+    def arrow(into: str) -> str:
+        lit = "phase-arrow-lit" if PHASE_ORDER.index(into) <= current else "phase-arrow-dim"
+        return f'<span class="phase-arrow {lit}">→</span>'
+
+    loop = (
+        '<span class="phase-loop">'
+        + span("code") + arrow("test") + span("test") + arrow("review") + span("review")
+        + "</span>"
+    )
+    badge = ""
+    if ps.round and ps.phase != "plan":
+        badge = f'<span class="phase-round">×{ps.round}{"" if ps.exact else "+"}</span>'
+    return (
+        '<span class="phase-crumb">'
+        + span("plan") + arrow("code") + loop + badge + arrow("done") + span("done")
+        + "</span>"
+    )
 
 
 # Inline markers whose unbalanced leftovers would show literally once a

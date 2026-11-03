@@ -80,8 +80,10 @@ class TailStrip:
         self.container.clear()
         with self.container:
             for line in lines:
+                # w-full: the column aligns children flex-start, so without
+                # it the label sizes to its text and the ellipsis never cuts.
                 ui.label(line).classes(
-                    "mono text-xs whitespace-nowrap overflow-hidden text-ellipsis",
+                    "mono text-xs w-full whitespace-nowrap overflow-hidden text-ellipsis",
                 )
 
 

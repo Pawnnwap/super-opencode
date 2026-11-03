@@ -35,6 +35,56 @@ h3 { font-family: 'Syne', sans-serif; font-weight: 600; color: #9ecbff; }
 .pill-failure { background:#da363333; color:#f85149; border: 1px solid #da363355; }
 .pill-blocked { background:#e3b34133; color:#e3b341; border: 1px solid #e3b34155; }
 .log-blocked { color: #e3b341; font-weight: 600; }
+/* No horizontal scrolling on any page: flex children may shrink below their
+   content, long tokens (paths, hashes) break anywhere, and the boxes NiceGUI
+   ships with `white-space: pre` (ui.log, ui.code, markdown code) wrap instead
+   of scrolling sideways. One-line strips keep nowrap + ellipsis. */
+body { overflow-wrap: anywhere; }
+.nicegui-row > *, .nicegui-column > * { min-width: 0; max-width: 100%; }
+.nicegui-log .q-scrollarea__content { white-space: pre-wrap !important; overflow-wrap: anywhere; }
+.nicegui-markdown pre, .nicegui-markdown code, .nicegui-code pre, .nicegui-code code {
+    white-space: pre-wrap !important; overflow-wrap: anywhere;
+}
+/* Phase breadcrumb (log_format.phase_breadcrumb): plan → [code → test → review] ×N → done.
+   Reached phases strike out and fade, the active one sits in a softly breathing chip
+   with a sweeping underline; the loop phases wear a bracket plus a round counter. */
+.phase-crumb { font-family: 'JetBrains Mono', monospace; letter-spacing: 0.5px; white-space: nowrap; }
+.phase-done { color: #6e7681; text-decoration: line-through; text-decoration-color: #484f58; }
+.phase-skipped { color: #484f58; text-decoration: line-through dotted #484f58; }
+.phase-todo { color: #484f58; }
+.phase-arrow { margin: 0 6px; }
+.phase-arrow-lit { color: #58a6ff; opacity: 0.55; }
+.phase-arrow-dim { color: #3d444d; }
+.phase-loop::before, .phase-loop::after { color: #3d444d; }
+.phase-loop::before { content: "["; margin-right: 5px; }
+.phase-loop::after { content: "]"; margin-left: 5px; }
+.phase-round { color: #8b949e; font-size: 0.7rem; margin-left: 5px; vertical-align: 1px; }
+.phase-current {
+    display: inline-block; color: #58a6ff; font-weight: 600; line-height: 1.3;
+    padding: 1px 8px 2px; border-radius: 5px;
+    background: rgba(31,111,235,0.13); border: 1px solid rgba(88,166,255,0.3);
+    animation: phase-enter 0.3s ease both, phase-breathe 2.6s ease-in-out 0.3s infinite;
+}
+/* Sweep: a narrow bright band crossing a faint track, so the motion reads
+   even on a 40px chip (a band as wide as the bar only shimmered). */
+.phase-current::after {
+    content: ""; display: block; height: 2px; margin-top: 1px; border-radius: 1px;
+    background: linear-gradient(90deg, transparent, #58a6ff 50%, transparent) -100% 0 / 45% 100% no-repeat,
+                rgba(88,166,255,0.18);
+    animation: phase-sheen 1.8s ease-in-out infinite;
+}
+/* Finished jobs: the chip goes still and takes the outcome colour. */
+.phase-current[class*="phase-end-"] { animation: none; }
+.phase-current[class*="phase-end-"]::after { animation: none; background: currentColor; opacity: 0.45; }
+.phase-end-success { color: #3fb950; background: rgba(35,134,54,0.18); border-color: rgba(63,185,80,0.4); }
+.phase-end-blocked { color: #e3b341; background: rgba(227,179,65,0.12); border-color: rgba(227,179,65,0.4); }
+.phase-end-failed { color: #f85149; background: rgba(218,54,51,0.12); border-color: rgba(248,81,73,0.4); }
+@keyframes phase-enter { from { opacity: 0; transform: translateY(2px); } }
+@keyframes phase-breathe {
+    0%, 100% { box-shadow: 0 0 2px rgba(88,166,255,0.12); }
+    50% { box-shadow: 0 0 9px rgba(88,166,255,0.35); }
+}
+@keyframes phase-sheen { from { background-position: -100% 0; } to { background-position: 200% 0; } }
 """
 
 PILL_MAP = {

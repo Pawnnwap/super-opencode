@@ -7,6 +7,7 @@ from nicegui import ui
 from services.webui.log_format import (
     latest_token_current,
     phase_breadcrumb,
+    phase_state,
     regex_token_current,
 )
 
@@ -16,9 +17,10 @@ class ProgressWidgets:
 
     def __init__(self, max_tokens: int):
         self.max_tokens = max_tokens
-        # ui.html (not ui.label): the breadcrumb carries <strong>/<s> markup
-        # that a plain-text label would show literally.
+        # ui.html (not ui.label): the breadcrumb carries .phase-* markup that
+        # a plain-text label would show literally.
         self.breadcrumb_label = ui.html("").classes("text-xs text-[#8b949e]")
+        self._breadcrumb_html = ""
         self.status_label = ui.label("").classes("text-sm")
         with ui.row().classes("w-full items-center gap-2"):
             self.token_bar = ui.linear_progress(value=0, show_value=False).classes(
@@ -28,19 +30,12 @@ class ProgressWidgets:
 
     def update(self, logs: list[dict], state: str, is_evolution: bool = False) -> None:
         logs = logs or []
-        progress_events = [
-            e for e in logs if isinstance(e, dict) and e.get("level") == "step_progress"
-        ]
-        if progress_events:
-            last = progress_events[-1]
-            self.breadcrumb_label.set_content(
-                phase_breadcrumb(
-                    last.get("phase", ""),
-                    last.get("completed_phases"),
-                ),
-            )
-        else:
-            self.breadcrumb_label.set_content("")
+        # The 2s poll rebuilds the DOM on every set_content, which restarts
+        # the chip's CSS animations — push only genuine phase changes.
+        html = phase_breadcrumb(phase_state(logs, state)) if logs else ""
+        if html != self._breadcrumb_html:
+            self.breadcrumb_label.set_content(html)
+            self._breadcrumb_html = html
 
         if state == "RUNNING":
             heartbeat_count = sum(
