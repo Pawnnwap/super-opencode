@@ -291,6 +291,16 @@ class BaseRunner:
             return "", False
         return strip_thinking_blocks(self._last_result.output), self._last_result.timed_out
 
+    def read_prose(self) -> str:
+        """Model prose of the most recent run (text events only).
+
+        Unlike :meth:`read_output` this excludes tool markers, stderr and
+        exit-code notes — the reply text itself, e.g. a finished report.
+        """
+        if self._last_result is None:
+            return ""
+        return self._last_result.prose
+
     @property
     def last_looped(self) -> tuple[bool, str]:
         """(looped, reason) from the most recent run; (False, "") if none."""
