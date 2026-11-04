@@ -58,11 +58,15 @@ def test_connectivity_section_comes_right_after_llm_configuration():
 
 
 def test_run_page_lock_yields_to_queued_jobs():
+    # PENDING counts as live: a queued batch must be viewable unlocked. The
+    # rule now lives in one shared helper instead of a per-page tuple.
     src = _read("services", "webui", "pages", "run.py")
-    # PENDING counts as live: a queued batch must be viewable unlocked.
-    assert '"RUNNING", "PENDING"' in src.split("def _has_running_job")[1].split(
+    assert "active_jobs(get_job_manager())" in src.split("def _has_running_job")[1].split(
         "\n\ndef ", 1,
     )[0]
+    states = _read("services", "jobs", "job_states.py")
+    assert "ACTIVE_JOB_STATES" in states
+    assert '"PENDING"' in states and '"RUNNING"' in states
 
 
 def _job(jid: str, state: str, jtype: str = "run") -> dict:

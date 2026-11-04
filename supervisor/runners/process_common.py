@@ -199,6 +199,13 @@ def run_prompt_common(
                 if captured_id and captured_id != runner._session_id:
                     runner._session_id = captured_id
                     logger.info("Captured %s session id: %s", engine, captured_id)
+                    # Record-keeper feed: the job log is where the hownow
+                    # sweep reads each live session's id back (opencode's
+                    # out-of-band capture already yields the same message).
+                    yield {
+                        "level": "info",
+                        "msg": f"Session ID captured: {captured_id}",
+                    }
 
             if outcome.looped:
                 runner._last_result = RunResult(

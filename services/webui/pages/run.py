@@ -2,32 +2,32 @@
 
 from __future__ import annotations
 
-import threading
 import time
 from pathlib import Path
 
 from nicegui import ui, run as nicegui_run
 
-from services.config.supervisor_config_builder import build_supervisor_config
 from services.webui.components.board import JobBoard
-from services.webui.components.busy import busy_buttons
-from services.webui.components.live_screen import LiveJobScreen
+from services.webui.components.busy import CancellableCall, busy_buttons
+from services.webui.components.hownow import HowNowPanel
 from services.webui.jobs import get_job_manager, sync_max_parallel_jobs
+from services.webui.launch import (
+    launch_job,
+    render_live_screen,
+    require_workspace,
+    save_and_apply_settings,
+)
+from services.webui.layout import active_jobs
 from services.webui.state import app_state
 from supervisor.utils.llm_stream import GenerationCancelled
 
-# Stop event of the feasibility draft currently in flight, if any, so the
+# Stop handle for the feasibility draft currently in flight, if any, so the
 # Cancel button can abort it.
-_cancel_holder: dict = {}
+_draft_call = CancellableCall()
 
 
 def _cancel_draft(status_label) -> None:
-    event = _cancel_holder.get("event")
-    if event is None:
-        ui.notify("No draft is running.")
-        return
-    event.set()
-    status_label.set_text("Cancelling draft…")
+    _draft_call.cancel(status_label, message="Cancelling draft…")
 
 
 def _save_draft(workspace: Path, text: str) -> None:
@@ -78,21 +78,15 @@ def _render_readiness(workspace: Path) -> bool:
 def _launch_run(
     workspace: Path, plan_rounds: int, scanner: bool, occam: bool, skills: bool,
 ) -> str:
-    app_state.save()
-    app_state.apply_api_config()
-    sync_max_parallel_jobs()
-    config = build_supervisor_config(
-        app_state.as_mapping(),
-        protocol_path=workspace / "protocol.md",
-        workspace=workspace,
+    return launch_job(
+        "run",
+        workspace,
+        protocol_name="protocol.md",
         plan_mode_rounds=plan_rounds,
         enable_python_scanner=scanner,
         enable_occam_razor=occam,
         enable_supervisor_skills=skills,
     )
-    job_id = get_job_manager().enqueue_job("run", config)
-    ui.notify(f"Task launched: {job_id}")
-    return job_id
 
 
 def _render_launch_form(workspace: Path) -> None:
@@ -146,8 +140,7 @@ def _render_launch_form(workspace: Path) -> None:
                 if count > 1:
                     from services.webui.batch_launch import launch_study_batch
 
-                    app_state.save()
-                    app_state.apply_api_config()
+                    save_and_apply_settings()
                     sync_max_parallel_jobs()
                     try:
                         _batch_id, job_ids, _cfgs = launch_study_batch(
@@ -184,6 +177,7 @@ def _save_feasibility(
     workspace: Path, rows: list[dict], notes: str, pending: list[dict],
 ) -> None:
     from supervisor.protocols.feasibility_gate import (
+        default_facts_path,
         gates_to_facts,
         write_feasibility_facts,
     )
@@ -191,7 +185,9 @@ def _save_feasibility(
     facts = gates_to_facts(rows, notes)
     if facts and pending:
         facts["pending_blocked"] = pending
-    write_feasibility_facts(facts, workspace / "logs" / "feasibility_facts.json")
+    # Same location the loop reads: the workspace root, which survives the
+    # archive-and-relaunch cycle (logs/ is archived away each cycle).
+    write_feasibility_facts(facts, default_facts_path(workspace))
     if facts is None:
         ui.notify("Cleared feasibility facts (no gates)")
     else:
@@ -236,6 +232,7 @@ def _render_feasibility_form(workspace: Path) -> None:
 
     from supervisor.protocols.feasibility_gate import (
         check_feasibility,
+        default_facts_path,
         gates_to_facts,
         parse_gates,
     )
@@ -245,7 +242,7 @@ def _render_feasibility_form(workspace: Path) -> None:
         workspace_sources,
     )
 
-    path = workspace / "logs" / "feasibility_facts.json"
+    path = default_facts_path(workspace)
     current: dict = {}
     if path.exists():
         try:
@@ -359,7 +356,8 @@ def _render_feasibility_form(workspace: Path) -> None:
                 "Any blocked gate makes the done condition unreachable; the "
                 "supervisor says so up front instead of letting the agent "
                 "rediscover it over many attempts.",
-                "Saved to logs/feasibility_facts.json in this workspace; "
+                "Saved to feasibility_facts.json in the workspace root (not "
+                "logs/, which the archiver sweeps away each cycle); "
                 "removing every row clears it. Sources for statuses are "
                 "recorded automatically when prior-attempt artifacts exist.",
             ):
@@ -468,8 +466,6 @@ def _render_feasibility_form(workspace: Path) -> None:
                 return
             app_state.save()
             app_state.apply_api_config()
-            stop_event = threading.Event()
-            _cancel_holder["event"] = stop_event
             started = time.monotonic()
 
             def _on_progress(content_chars: int, reasoning_chars: int, _chunks: int) -> None:
@@ -485,6 +481,7 @@ def _render_feasibility_form(workspace: Path) -> None:
                     )
 
             gen_status.set_text("Generating gate draft (LLM)…")
+            stop_event = _draft_call.begin()
             cancel_button.set_visibility(True)
             try:
                 async with busy_buttons(gen_button):
@@ -502,7 +499,7 @@ def _render_feasibility_form(workspace: Path) -> None:
                         gen_status.set_text(f"Draft failed: {str(exc)[:200]}")
                         return
             finally:
-                _cancel_holder["event"] = None
+                _draft_call.end()
                 cancel_button.set_visibility(False)
             drafted = facts_to_gate_rows(facts)
             if not drafted:
@@ -535,22 +532,13 @@ def _render_feasibility_form(workspace: Path) -> None:
 
 def _has_running_job() -> bool:
     """Any live work in the store: running or queued for a slot."""
-    manager = get_job_manager()
-    return any(
-        (manager.store.get_job_state(j) or {}).get("state") in ("RUNNING", "PENDING")
-        for j in manager.store.list_jobs()
-    )
+    return bool(active_jobs(get_job_manager()))
 
 
 def render(job_id: str = "") -> None:
-    workspace_raw = app_state.get("workspace") or ""
-    if not workspace_raw or not Path(workspace_raw).exists():
-        ui.label("Set a valid workspace path in the Protocol Wizard first.").classes(
-            "text-[#f85149]",
-        )
-        ui.button("Open Wizard", on_click=lambda: ui.navigate.to("/")).props("dense")
+    workspace = require_workspace()
+    if workspace is None:
         return
-    workspace = Path(workspace_raw)
 
     manager = get_job_manager()
     if job_id:
@@ -558,21 +546,15 @@ def render(job_id: str = "") -> None:
         # WHOLE log file just to read type/state - a multi-MB parse on the
         # event loop per detail-page navigation. LiveJobScreen re-fetches the
         # capped tail it actually renders.
-        status = manager.get_job_summary(job_id)
-        if not status or status.get("type") != "run":
-            ui.label(f"Run job {job_id} not found.").classes("text-[#f85149]")
-            ui.button(
-                "Back to board", on_click=lambda: ui.navigate.to("/run"),
-            ).props("dense")
-            return
-        LiveJobScreen(
+        render_live_screen(
             manager,
+            job_id,
             job_type="run",
-            job_id=job_id,
             base_path="/run",
             is_evolution=False,
             running_message="Task is running in the background.",
-        ).render()
+            not_found_label=f"Run job {job_id} not found.",
+        )
         return
 
     if not app_state.tests_ok() and not _has_running_job():
@@ -584,6 +566,9 @@ def render(job_id: str = "") -> None:
         return
 
     ui.label("Live Run").classes("text-2xl font-bold")
+    # How-now sweep: one pure button — click wakes a fresh agent session to
+    # report on all live sessions (runs and batch sub-runs).
+    HowNowPanel()
     _render_readiness(workspace)
     _render_launch_form(workspace)
     _render_feasibility_form(workspace)

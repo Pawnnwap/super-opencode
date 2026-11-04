@@ -6,11 +6,14 @@ from pathlib import Path
 
 from nicegui import ui, run as nicegui_run
 
-from services.config.supervisor_config_builder import build_supervisor_config
 from services.webui.components.board import JobBoard
 from services.webui.components.busy import busy_buttons
-from services.webui.components.live_screen import LiveJobScreen
 from services.webui.jobs import get_job_manager
+from services.webui.launch import (
+    launch_job,
+    render_live_screen,
+    require_workspace,
+)
 from services.webui.log_format import markdown_preview
 from services.webui.state import app_state
 
@@ -36,50 +39,35 @@ def _write_meta(content: str, workspace: Path) -> Path:
 def _launch_evolve(
     workspace: Path, scanner: bool, occam: bool, skills: bool,
 ) -> None:
-    app_state.save()
-    app_state.apply_api_config()
-    config = build_supervisor_config(
-        app_state.as_mapping(),
-        protocol_path=workspace / "meta_protocol.md",
-        workspace=workspace,
+    job_id = launch_job(
+        "evolve",
+        workspace,
+        protocol_name="meta_protocol.md",
         enable_python_scanner=scanner,
         enable_occam_razor=occam,
         enable_supervisor_skills=skills,
     )
-    job_id = get_job_manager().enqueue_job("evolve", config)
-    ui.notify(f"Evolution launched: {job_id}")
     ui.navigate.to(f"/evolve/{job_id}")
 
 
 def render(job_id: str = "") -> None:
-    workspace_raw = app_state.get("workspace") or ""
-    if not workspace_raw or not Path(workspace_raw).exists():
-        ui.label("Set a valid workspace path in the Protocol Wizard first.").classes(
-            "text-[#f85149]",
-        )
-        ui.button("Open Wizard", on_click=lambda: ui.navigate.to("/")).props("dense")
+    workspace = require_workspace()
+    if workspace is None:
         return
-    workspace = Path(workspace_raw)
 
     manager = get_job_manager()
     if job_id:
         # Summary only - get_job_status here parsed the whole log file on the
         # event loop per navigation (see pages/run.py).
-        status = manager.get_job_summary(job_id)
-        if not status or status.get("type") != "evolve":
-            ui.label(f"Evolution job {job_id} not found.").classes("text-[#f85149]")
-            ui.button(
-                "Back to board", on_click=lambda: ui.navigate.to("/evolve"),
-            ).props("dense")
-            return
-        LiveJobScreen(
+        render_live_screen(
             manager,
+            job_id,
             job_type="evolve",
-            job_id=job_id,
             base_path="/evolve",
             is_evolution=True,
             running_message="Evolution is running in the background.",
-        ).render()
+            not_found_label=f"Evolution job {job_id} not found.",
+        )
         return
 
     ui.label("Self-Evolution").classes("text-2xl font-bold")
