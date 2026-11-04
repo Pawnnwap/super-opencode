@@ -166,7 +166,7 @@ class LogPanel:
             ui.notify(f"No sidecar record for event #{ref}", type="negative")
             return
         body = sanitize_event_message(detail.get("body") or "")
-        ts = time_str(detail.get("ts"))
+        ts = fmt_ts(detail)
         with ui.dialog() as dialog, ui.card().classes("w-[900px] h-[70vh]"):
             ui.label(
                 f"Event #{ref} · {detail.get('level', '?')} · {len(body):,} chars · {ts}",
@@ -215,11 +215,3 @@ class LogPanel:
         for event in new_events:
             self.log.push(self._format_line(event, start))
         self._pushed = len(filtered)
-
-
-def time_str(ts) -> str:
-    if not isinstance(ts, (int, float)) or ts <= 0:
-        return ""
-    import time
-
-    return time.strftime("%H:%M:%S", time.localtime(ts))

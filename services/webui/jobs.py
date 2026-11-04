@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 
+from services.jobs.job_states import JOB_STORE_DIR
 from services.webui.state import app_state
 
 _manager = None
@@ -18,7 +19,7 @@ _manager = None
 def get_job_manager():
     global _manager
     if _manager is None:
-        store_dir = ".job_store"
+        store_dir = JOB_STORE_DIR
         max_parallel = int(app_state.get("max_parallel_jobs") or 4)
         max_stored = int(app_state.get("max_stored_jobs") or 50)
         if os.environ.get("SOP_JOB_WORKER") == "1":

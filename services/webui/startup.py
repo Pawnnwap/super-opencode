@@ -19,6 +19,7 @@ from services.runtime.app_bootstrap import (
     auto_upgrade_opencode,
     auto_upgrade_pi,
 )
+from services.jobs.job_states import ACTIVE_JOB_STATES
 from services.runtime.workspace_cleanup import clean_workspace_artifacts
 
 _statuses: list[dict] = []
@@ -115,7 +116,7 @@ def mark_abandoned_jobs(manager) -> str:
     flagged: list[str] = []
     for job_id in manager.store.list_jobs():
         state = manager.store.get_job_state(job_id) or {}
-        if state.get("state") in ("PENDING", "RUNNING"):
+        if state.get("state") in ACTIVE_JOB_STATES:
             state["state"] = "ABANDONED"
             manager.store.save_job_state(job_id, state)
             manager.store.append_log(job_id, {

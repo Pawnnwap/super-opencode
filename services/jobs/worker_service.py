@@ -26,11 +26,15 @@ import time
 from pathlib import Path
 
 from services.jobs.job_manager import JobManager
+from services.jobs.job_states import (
+    ACTIVE_JOB_STATES,
+    JOB_STORE_DIR,
+    WORKER_SETTINGS_FILE,
+)
 from services.runtime import death_capture
 
 logger = logging.getLogger(__name__)
 
-_SETTINGS_FILE = "worker_settings.json"
 _LOCK_FILE = "worker.lock"
 _POLL_SECONDS = 1.0
 _STALE_SECONDS = 15.0
@@ -38,7 +42,7 @@ _STALE_SECONDS = 15.0
 
 def _read_settings(store_dir: Path) -> dict:
     try:
-        data = json.loads((store_dir / _SETTINGS_FILE).read_text(encoding="utf-8"))
+        data = json.loads((store_dir / WORKER_SETTINGS_FILE).read_text(encoding="utf-8"))
         return data if isinstance(data, dict) else {}
     except (OSError, ValueError):
         return {}
@@ -75,7 +79,7 @@ def _mark_orphans(manager: JobManager) -> list[str]:
     flagged: list[str] = []
     for job_id in manager.store.list_jobs():
         state = manager.store.get_job_state(job_id) or {}
-        if state.get("state") in ("PENDING", "RUNNING"):
+        if state.get("state") in ACTIVE_JOB_STATES:
             state["state"] = "ABANDONED"
             manager.store.save_job_state(job_id, state)
             manager.store.append_log(job_id, {
@@ -98,7 +102,7 @@ def main() -> int:
     # Silent-death forensics (2026-11-03: the daemon vanished with its three
     # RUNNING jobs mid-stream and left no trace) - same capture as app.py.
     death_capture.install("job_worker.fatal.log")
-    store_dir = Path(".job_store")
+    store_dir = Path(JOB_STORE_DIR)
     store_dir.mkdir(parents=True, exist_ok=True)
 
     settings = _read_settings(store_dir)

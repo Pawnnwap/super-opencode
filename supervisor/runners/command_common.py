@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 from collections.abc import Sequence
 from pathlib import Path
@@ -8,6 +9,19 @@ from pathlib import Path
 from supervisor.utils.text_utils import coerce_str
 
 logger = logging.getLogger(__name__)
+
+# Export flag announcing that several runs are in flight at once. Set by the
+# job manager and read by every command builder whose resume fallback
+# (`resume --last`, `--continue`) could otherwise adopt another replica's
+# session. It is an environment contract across the UI/daemon/child boundary,
+# so both sides must spell it identically.
+PARALLEL_RUNS_ENV = "SOP_PARALLEL_RUNS"
+
+
+def parallel_runs_active() -> bool:
+    """True when more than one supervised run shares the session store."""
+    return os.environ.get(PARALLEL_RUNS_ENV) == "1"
+
 
 # Provider-unreachable signatures on agent engine output lines. Matched only
 # against raw/error stream lines while the turn has produced nothing yet, so
@@ -122,8 +136,14 @@ _SHELL_WRAPPER_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Cap how much of a tool's intent we keep in its ``[tool] …`` marker. The
+# marker is a breadcrumb of *what the agent did*, not a transcript, so a short
+# slice is plenty and keeps history lean. Defined here so both engine stream
+# parsers share one number.
+TOOL_DETAIL_LIMIT = 200
 
-def compact_tool_detail(detail: str, limit: int = 200) -> str:
+
+def compact_tool_detail(detail: str, limit: int = TOOL_DETAIL_LIMIT) -> str:
     """Compact a tool-call detail string for the ``[tool] …`` breadcrumb.
 
     Collapses whitespace, replaces absolute paths to well-known shells and

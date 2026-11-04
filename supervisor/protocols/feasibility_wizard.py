@@ -15,13 +15,14 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+from supervisor.core.task_state import TASK_STATE_FILENAME
 from supervisor.protocols.feasibility_gate import (
     GATE_STATUSES,
     parse_llm_facts,
 )
 from supervisor.utils.llm_stream import (
     GenerationCancelled,
-    make_stream_client,
+    StreamedLLMHelper,
     stream_chat_text,
 )
 
@@ -37,7 +38,7 @@ _EVIDENCE_FILES = (
     "status.json",
     "summary.md",
     "REPORT.md",
-    "TASK_STATE.md",
+    TASK_STATE_FILENAME,
     "DESIGN.md",
 )
 
@@ -88,17 +89,8 @@ Hard rules:
 """
 
 
-class FeasibilityWizard:
+class FeasibilityWizard(StreamedLLMHelper):
     """One-shot drafter for feasibility facts; the operator saves or edits."""
-
-    def __init__(
-        self,
-        model: str = "gpt-4o",
-        api_key: str | None = None,
-        base_url: str | None = None,
-    ):
-        self._client = make_stream_client(api_key=api_key, base_url=base_url)
-        self._model = model
 
     def draft(
         self,

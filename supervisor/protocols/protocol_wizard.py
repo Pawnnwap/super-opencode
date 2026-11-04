@@ -16,7 +16,7 @@ from supervisor.protocols.protocol_analyzer import ProtocolAnalysis, ProtocolAna
 from supervisor.protocols.target_audit import audit_target
 from supervisor.utils.llm_stream import (
     GenerationCancelled,
-    make_stream_client,
+    StreamedLLMHelper,
     stream_chat_text,
 )
 
@@ -122,21 +122,9 @@ def _fix_prompt(protocol_md: str, issues: tuple[str, ...]) -> str:
     )
 
 
-class ProtocolWizard:
+class ProtocolWizard(StreamedLLMHelper):
     """Drives a guided conversation to produce a refined protocol.md.
     """
-
-    def __init__(
-        self,
-        model: str = "gpt-4o",
-        api_key: str | None = None,
-        base_url: str | None = None,
-    ):
-        # Streamed + bounded: a long refine used to blow past the SDK's 600s
-        # read timeout and then retry twice more, freezing the UI for half
-        # an hour. See supervisor.utils.llm_stream.
-        self._client = make_stream_client(api_key=api_key, base_url=base_url)
-        self._model = model
 
     # ------------------------------------------------------------------ #
     # One-shot refinement (used by the wizard form)                    #

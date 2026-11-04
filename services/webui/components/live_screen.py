@@ -7,13 +7,12 @@ from pathlib import Path
 
 from nicegui import ui, run as nicegui_run
 
+from services.jobs.job_states import ACTIVE_JOB_STATES
 from services.webui.components.log_panel import LogPanel, TailStrip
 from services.webui.components.progress_widgets import ProgressWidgets
 from services.webui.layout import format_status_pill
-from services.webui.log_format import safe_logs
+from services.webui.log_format import safe_logs, workspace_name
 from services.webui.state import app_state
-
-ACTIVE_JOB_STATES = {"PENDING", "RUNNING"}
 
 # Consecutive unreadable status reads before the poller gives up (each tick
 # is 2 s, so 5 ≈ 10 s of store unreachability). The stop is announced; a
@@ -166,8 +165,7 @@ class LiveJobScreen:
 
         def fmt(job_id: str) -> str:
             s = siblings.get(job_id) or {}
-            workspace = s.get("config", {}).get("workspace", "")
-            name = Path(workspace).name if workspace else ""
+            name = workspace_name(s)
             # Batch replicas swap the random job suffix for r1/r2/… so the
             # switcher reads as "the same study, instance 2 of 3".
             replica = (

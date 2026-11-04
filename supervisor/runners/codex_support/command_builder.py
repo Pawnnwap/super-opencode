@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import logging
-import os
 from pathlib import Path
 
 from supervisor.runners.command_common import (
+    parallel_runs_active,
     resolve_model_arg,
 )
 from supervisor.utils.text_utils import coerce_str
@@ -192,7 +192,7 @@ def build_cmd(
             # Prefer an explicit session id (captured from prior output) so
             # concurrent codex runs never cross sessions.
             cmd += ["resume", session_id]
-        elif os.environ.get("SOP_PARALLEL_RUNS") == "1":
+        elif parallel_runs_active():
             # No captured id while several runs share one CODEX_HOME:
             # `resume --last` could pick another replica's rollout, so
             # degrade to a fresh session instead of risking cross-talk.

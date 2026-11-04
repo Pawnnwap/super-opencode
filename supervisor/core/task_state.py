@@ -26,7 +26,10 @@ from supervisor.utils.text_utils import head_tail_excerpt
 
 logger = logging.getLogger(__name__)
 
-_FILENAME = "TASK_STATE.md"
+# The journal's filename. The guard excludes it from change evidence and the
+# batch launcher refuses to seed a replica with it, so both import this name
+# instead of re-typing the string.
+TASK_STATE_FILENAME = "TASK_STATE.md"
 _HEADER = "# Task State — progress journal (newest at bottom)\n\n"
 _ENTRY_RE = re.compile(r"(?m)^## Turn ")
 _DEFAULT_HEADLINE_CHARS = 240
@@ -35,7 +38,7 @@ _DEFAULT_TAIL_ENTRIES = 8
 
 
 def task_state_path(workspace) -> Path:
-    return Path(workspace) / _FILENAME
+    return Path(workspace) / TASK_STATE_FILENAME
 
 
 def _headline(feedback: str, max_chars: int) -> str:
@@ -94,7 +97,7 @@ def append_task_state(
                 handle.write(entry)
         return True
     except OSError as exc:
-        logger.warning("Failed to append %s: %s", _FILENAME, exc)
+        logger.warning("Failed to append %s: %s", TASK_STATE_FILENAME, exc)
         return False
 
 

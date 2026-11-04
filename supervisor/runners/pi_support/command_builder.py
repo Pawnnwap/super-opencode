@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import logging
-import os
 from pathlib import Path
 
-from supervisor.runners.command_common import resolve_model_arg
+from supervisor.runners.command_common import (
+    parallel_runs_active,
+    resolve_model_arg,
+)
 from supervisor.utils.text_utils import coerce_str
 
 logger = logging.getLogger(__name__)
@@ -110,7 +112,7 @@ def build_cmd(
             # Pin the exact session (captured from a prior turn's `session`
             # event) so concurrent pi runs never cross sessions.
             cmd += ["--session", session_id]
-        elif os.environ.get("SOP_PARALLEL_RUNS") == "1":
+        elif parallel_runs_active():
             # No captured id while several runs share one workspace/session
             # dir: `--continue` could pick another replica's session, so
             # degrade to a fresh session instead of risking cross-talk.

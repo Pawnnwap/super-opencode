@@ -271,6 +271,62 @@ def _distinct_backup(primary: str | None, backup: str | None) -> str | None:
     return backup
 
 
+def _probe_body(
+    runner,
+    engine: str,
+    note: str,
+    capture_lock=None,
+) -> tuple[bool, str]:
+    """Send one probe prompt and judge it by whether any model text came back.
+
+    Connectivity criterion: the model returned text. Exit-code oddities
+    (non-zero exits, cleanup running past the stream timeout, provider stream
+    errors arriving after the answer) do not mean the endpoint is unreachable,
+    so model text wins over them. ``.prose`` excludes stderr, tool I/O and
+    error events.
+    """
+    runner._alive = True
+    if capture_lock is None:
+        for _ in runner._run_prompt("hi"):
+            pass
+    else:
+        with capture_lock:
+            for _ in runner._run_prompt("hi"):
+                pass
+    prose = (runner._last_result.prose or "") if runner._last_result else ""
+    if prose.strip():
+        return True, f"{engine} responded{note}."
+    _output, timed_out = runner.read_output(timeout=25)
+    if timed_out:
+        return False, f"{engine} timed out without model text."
+    diag = runner.last_diagnostic() if runner._last_result else "(no result)"
+    return False, f"{engine} returned an error without model text.\n{diag}"
+
+
+def _execute_probe(
+    runner,
+    engine: str,
+    seconds: int,
+    note: str = "",
+    capture_lock=None,
+) -> tuple[bool, str]:
+    """Run ``_probe_body`` under the probe timeout, always stopping the runner."""
+    try:
+        return run_with_timeout(
+            lambda: _probe_body(runner, engine, note, capture_lock),
+            seconds=seconds,
+        )
+    except TimeoutError:
+        return False, f"{engine} test timed out."
+    except Exception as exc:  # noqa: BLE001
+        return False, f"{engine} test failed: {exc}"
+    finally:
+        try:
+            runner.stop()
+        except Exception:  # noqa: BLE001
+            pass
+
+
 def test_opencode_connectivity(
     opencode_executable: str,
     opencode_model: str | None,
@@ -296,45 +352,19 @@ def test_opencode_connectivity(
             timeout=seconds,
         )
         runner.opencode_variant = attempt_variant
-
-        def _inner():
-            runner._alive = True
-            # Hold the session-capture lock while the probe runs. The probe
-            # creates a throwaway opencode session in a temp workspace, and
-            # concurrently a real task's start() uses a before/after
+        return _execute_probe(
+            runner,
+            "opencode",
+            seconds,
+            note=f" (variant: {attempt_variant})" if attempt_variant else "",
+            # The probe creates a throwaway opencode session in a temp
+            # workspace while a real task's start() uses a before/after
             # session-list diff to isolate *its* session ID. Letting the probe
             # fire inside that diff window would make the diff ambiguous and
-            # force the task into a --continue fallback. Holding the lock
-            # serialises the two paths.
-            with _SESSION_CAPTURE_LOCK:
-                for _ in runner._run_prompt("hi"):
-                    pass
-            # Connectivity criterion: the model returned text. Exit-code
-            # oddities (non-zero exits, cleanup running past the stream
-            # timeout, provider stream errors arriving after the answer) do
-            # not mean the endpoint is unreachable, so model text wins over
-            # them. `.prose` excludes stderr, tool I/O and error events.
-            prose = (runner._last_result.prose or "") if runner._last_result else ""
-            if prose.strip():
-                note = f" (variant: {attempt_variant})" if attempt_variant else ""
-                return True, f"opencode responded{note}."
-            _output, timed_out = runner.read_output(timeout=25)
-            if timed_out:
-                return False, "opencode timed out without model text."
-            diag = runner.last_diagnostic() if runner._last_result else "(no result)"
-            return False, f"opencode returned an error without model text.\n{diag}"
-
-        try:
-            return run_with_timeout(_inner, seconds=seconds)
-        except TimeoutError:
-            return False, "opencode test timed out."
-        except Exception as exc:  # noqa: BLE001
-            return False, f"opencode test failed: {exc}"
-        finally:
-            try:
-                runner.stop()
-            except Exception:  # noqa: BLE001
-                pass
+            # force the task into a --continue fallback. The lock serialises
+            # the two paths.
+            capture_lock=_SESSION_CAPTURE_LOCK,
+        )
 
     deadline = time.monotonic() + timeout
     result = _probe(variant, max(10, int(deadline - time.monotonic())))
@@ -402,40 +432,15 @@ def test_codex_connectivity(
         # probe burns its whole budget before the model is even asked. Probes
         # don't need plugins — disable the feature for probe runs only.
         runner.codex_extra_config_flags = ["-c", "features.plugins=false"]
-
-        def _inner():
-            runner._alive = True
-            # codex needs no session-list capture lock (it uses resume/--last),
-            # so the probe is a single self-contained `codex exec` call (the
-            # prompt travels over stdin like every supervised run).
-            for _ in runner._run_prompt("hi"):
-                pass
-            # Connectivity criterion: the model returned text. Exit-code
-            # oddities (non-zero exits, cleanup running past the stream
-            # timeout, provider stream errors arriving after the answer) do
-            # not mean the endpoint is unreachable, so model text wins over
-            # them. `.prose` excludes stderr, tool I/O and error events.
-            prose = (runner._last_result.prose or "") if runner._last_result else ""
-            if prose.strip():
-                note = f" (reasoning effort: {effort})" if effort else ""
-                return True, f"codex responded{note}."
-            _output, timed_out = runner.read_output(timeout=25)
-            if timed_out:
-                return False, "codex timed out without model text."
-            diag = runner.last_diagnostic() if runner._last_result else "(no result)"
-            return False, f"codex returned an error without model text.\n{diag}"
-
-        try:
-            return run_with_timeout(_inner, seconds=seconds)
-        except TimeoutError:
-            return False, "codex test timed out."
-        except Exception as exc:  # noqa: BLE001
-            return False, f"codex test failed: {exc}"
-        finally:
-            try:
-                runner.stop()
-            except Exception:  # noqa: BLE001
-                pass
+        # codex needs no session-list capture lock (it uses resume/--last), so
+        # the probe is a single self-contained `codex exec` call (the prompt
+        # travels over stdin like every supervised run).
+        return _execute_probe(
+            runner,
+            "codex",
+            seconds,
+            note=f" (reasoning effort: {effort})" if effort else "",
+        )
 
     deadline = time.monotonic() + timeout
     result = (False, "codex test did not run.")
@@ -483,41 +488,15 @@ def test_pi_connectivity(
             timeout=seconds,
         )
         runner.opencode_variant = thinking
-
-        def _inner():
-            runner._alive = True
-            # pi needs no session-capture lock (the session id arrives on the
-            # stream's `session` event), so the probe is a single
-            # self-contained `pi -p` call (the prompt travels over stdin like
-            # every supervised run).
-            for _ in runner._run_prompt("hi"):
-                pass
-            # Connectivity criterion: the model returned text. Exit-code
-            # oddities (non-zero exits, cleanup running past the stream
-            # timeout, provider stream errors arriving after the answer) do
-            # not mean the endpoint is unreachable, so model text wins over
-            # them. `.prose` excludes stderr, tool I/O and error events.
-            prose = (runner._last_result.prose or "") if runner._last_result else ""
-            if prose.strip():
-                note = f" (thinking: {thinking})" if thinking else ""
-                return True, f"pi responded{note}."
-            _output, timed_out = runner.read_output(timeout=25)
-            if timed_out:
-                return False, "pi timed out without model text."
-            diag = runner.last_diagnostic() if runner._last_result else "(no result)"
-            return False, f"pi returned an error without model text.\n{diag}"
-
-        try:
-            return run_with_timeout(_inner, seconds=seconds)
-        except TimeoutError:
-            return False, "pi test timed out."
-        except Exception as exc:  # noqa: BLE001
-            return False, f"pi test failed: {exc}"
-        finally:
-            try:
-                runner.stop()
-            except Exception:  # noqa: BLE001
-                pass
+        # pi needs no session-capture lock (the session id arrives on the
+        # stream's `session` event), so the probe is a single self-contained
+        # `pi -p` call (the prompt travels over stdin like every supervised run).
+        return _execute_probe(
+            runner,
+            "pi",
+            seconds,
+            note=f" (thinking: {thinking})" if thinking else "",
+        )
 
     deadline = time.monotonic() + timeout
     # pi accepts its lowest thinking level ("off") directly — no effort

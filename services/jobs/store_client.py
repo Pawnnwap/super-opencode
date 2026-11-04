@@ -24,10 +24,12 @@ from pathlib import Path
 from typing import Any
 
 from services.jobs.job_manager import JobManager
+from services.jobs.job_states import (
+    ACTIVE_JOB_STATES,
+    JOB_STORE_DIR,
+    WORKER_SETTINGS_FILE,
+)
 from services.jobs.state_store import JobStateStore
-
-_SETTINGS_FILE = "worker_settings.json"
-_ACTIVE_STATES = {"PENDING", "RUNNING"}
 
 
 class StoreJobClient:
@@ -37,7 +39,7 @@ class StoreJobClient:
 
     def __init__(
         self,
-        store_dir: str = ".job_store",
+        store_dir: str = JOB_STORE_DIR,
         max_parallel_jobs: int = 4,
         max_stored_jobs: int = 50,
     ):
@@ -55,7 +57,7 @@ class StoreJobClient:
             "max_stored_jobs": self._max_stored,
         }
         self.store.store_dir.mkdir(parents=True, exist_ok=True)
-        (self.store.store_dir / _SETTINGS_FILE).write_text(
+        (self.store.store_dir / WORKER_SETTINGS_FILE).write_text(
             json.dumps(payload), encoding="utf-8",
         )
 
@@ -88,7 +90,7 @@ class StoreJobClient:
         with self._lock:
             for jid in self.store.list_jobs():
                 state = self.store.get_job_state(jid)
-                if state and state.get("state") in _ACTIVE_STATES:
+                if state and state.get("state") in ACTIVE_JOB_STATES:
                     existing = Path(
                         state.get("config", {}).get("workspace", ""),
                     ).resolve()
@@ -116,7 +118,7 @@ class StoreJobClient:
         untouched - rewriting a finished job's state would corrupt history.
         """
         state = self.store.get_job_state(job_id) or {}
-        if state.get("state") not in _ACTIVE_STATES:
+        if state.get("state") not in ACTIVE_JOB_STATES:
             return
         sentinel = self.store.store_dir / f"{job_id}.cancel"
         try:
@@ -133,7 +135,7 @@ class StoreJobClient:
         cancelled: list[str] = []
         for jid in self.store.list_jobs():
             state = self.store.get_job_state(jid) or {}
-            if state.get("batch_id") == batch_id and state.get("state") in _ACTIVE_STATES:
+            if state.get("batch_id") == batch_id and state.get("state") in ACTIVE_JOB_STATES:
                 self.cancel_job(jid)
                 cancelled.append(jid)
         return cancelled
@@ -143,15 +145,7 @@ class StoreJobClient:
     def get_job_status(
         self, job_id: str, max_logs: int | None = None,
     ) -> dict[str, Any] | None:
-        state = self.store.get_job_state(job_id)
-        if not state:
-            return None
-        state["logs"] = (
-            self.store.get_logs(job_id)
-            if max_logs is None
-            else self.store.tail_logs(job_id, max_logs)
-        )
-        return state
+        return self.store.read_job_status(job_id, max_logs)
 
     def get_job_summary(self, job_id: str) -> dict[str, Any] | None:
         return self.store.get_job_state(job_id)
@@ -160,10 +154,4 @@ class StoreJobClient:
         return self.store.read_full(job_id, ref)
 
     def list_batch_jobs(self, batch_id: str) -> list[dict[str, Any]]:
-        out = []
-        for jid in self.store.list_jobs():
-            state = self.store.get_job_state(jid) or {}
-            if state.get("batch_id") == batch_id:
-                out.append(state)
-        out.sort(key=lambda s: int(s.get("replica_index") or 0))
-        return out
+        return self.store.list_batch_jobs(batch_id)

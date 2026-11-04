@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -10,7 +9,7 @@ from pathlib import Path
 from nicegui import run as nicegui_run
 from nicegui import ui
 
-from services.webui.components.busy import busy_buttons
+from services.webui.components.busy import CancellableCall, busy_buttons
 from services.webui.state import app_state
 from supervisor.utils.llm_stream import GenerationCancelled
 
@@ -20,18 +19,13 @@ _MAX_LISTED_FILES = 2000
 _DROPLIST_FILES = 500
 _IGNORE_SUGGEST_FILES = 1000
 
-# Holds the stop event of the refine call currently in flight, if any, so the
-# Cancel button can abort it.
-_cancel_holder: dict = {}
+# Holds the refine call currently in flight, if any, so the Cancel button can
+# abort it.
+_refine_call = CancellableCall()
 
 
 def _cancel_refine(status) -> None:
-    event = _cancel_holder.get("event")
-    if event is None:
-        ui.notify("No refine is running.")
-        return
-    event.set()
-    status.set_text("Cancelling refine…")
+    _refine_call.cancel(status, message="Cancelling refine…")
 
 
 def _save() -> None:
@@ -703,8 +697,7 @@ async def _refine(status, refine_button, cancel_button) -> None:
         ui.notify("Fill INPUT, TARGET and RESTRICTIONS first.")
         return
     status.set_text("Refining protocol with AI… (the model reasons at length before answering)")
-    stop_event = threading.Event()
-    _cancel_holder["event"] = stop_event
+    stop_event = _refine_call.begin()
     cancel_button.set_visibility(True)
     async with busy_buttons(refine_button):
         from supervisor.protocols.protocol_wizard import (
@@ -722,7 +715,9 @@ async def _refine(status, refine_button, cancel_button) -> None:
             )
             started = time.monotonic()
 
-            def _on_progress(content_chars: int, reasoning_chars: int, _chunks: int) -> None:
+            def _on_progress(
+                content_chars: int, reasoning_chars: int, _chunks: int,
+            ) -> None:
                 # Called from the io_bound worker thread; NiceGUI queues the
                 # update onto the client's event loop.
                 phase = "reasoning" if not content_chars else "writing answer"
@@ -763,7 +758,7 @@ async def _refine(status, refine_button, cancel_button) -> None:
             status.set_text(f"Refine failed: {exc}")
             return
         finally:
-            _cancel_holder["event"] = None
+            _refine_call.end()
             cancel_button.set_visibility(False)
     app_state["protocol_md"] = markdown
     app_state.save()

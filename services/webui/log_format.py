@@ -9,6 +9,7 @@ from __future__ import annotations
 import re
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 from supervisor.utils.text_utils import sanitize_event_message
 
@@ -34,6 +35,49 @@ PHASE_ORDER = ("plan", *LOOP_PHASES, "done")
 
 def safe_logs(status: dict) -> list[dict]:
     return status.get("logs") or []
+
+
+def last_event_line(status_or_job: dict, limit: int = 120) -> str:
+    """First line of the newest non-heartbeat event, '' when there is none.
+
+    Shared by the board card, the board snapshot and the live screen — each
+    had its own copy of this loop, and they had already drifted apart on
+    which levels count as noise.
+    """
+    status = status_or_job.get("status", status_or_job)
+    for event in reversed(safe_logs(status)):
+        if not isinstance(event, dict) or event.get("level") in DEFAULT_HIDDEN_LEVELS:
+            continue
+        msg = (event.get("msg") or "").strip()
+        if msg:
+            return msg.splitlines()[0][:limit]
+    return ""
+
+
+def attention_count(status: dict) -> int:
+    """Number of ``error`` events in a job's log tail.
+
+    Rendered as the ❌ badge on a board card; the same count was open-coded in
+    two places.
+    """
+    return sum(
+        1
+        for event in safe_logs(status)
+        if isinstance(event, dict) and event.get("level") == "error"
+    )
+
+
+def workspace_name(status_or_job: dict) -> str:
+    """Basename of a job's workspace, '' when the record has none."""
+    status = status_or_job.get("status", status_or_job)
+    workspace = status.get("config", {}).get("workspace", "")
+    return Path(workspace).name if workspace else ""
+
+
+def workspace_path(status_or_job: dict) -> str:
+    """Full workspace path recorded in a job, '' when absent."""
+    status = status_or_job.get("status", status_or_job)
+    return status.get("config", {}).get("workspace", "")
 
 
 def fmt_ts(event: dict) -> str:

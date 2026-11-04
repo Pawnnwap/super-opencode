@@ -16,7 +16,7 @@ from pathlib import Path
 
 from supervisor.analyzers.codebase_analyzer import CodebaseSnapshot
 from supervisor.protocols.protocol_wizard import _append_required_target
-from supervisor.utils.llm_stream import make_stream_client, stream_chat_text
+from supervisor.utils.llm_stream import StreamedLLMHelper, stream_chat_text
 
 _BUILDER_SYSTEM = """\
 Write protocol.md for coding agent to modify the codebase it lives in.
@@ -40,18 +40,7 @@ Rules for a good self-evolution protocol:
 """
 
 
-class MetaProtocolBuilder:
-    def __init__(
-        self,
-        model: str = "gpt-4o",
-        api_key: str | None = None,
-        base_url: str | None = None,
-    ):
-        # Same streaming + bounded-client fix as the wizard; the evolve
-        # page's meta-protocol call had the identical hang.
-        self._client = make_stream_client(api_key=api_key, base_url=base_url)
-        self._model = model
-
+class MetaProtocolBuilder(StreamedLLMHelper):
     def build(
         self,
         evolution_goal: str,

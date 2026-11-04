@@ -86,6 +86,28 @@ def make_stream_client(
     return OpenAI(**kwargs)
 
 
+class StreamedLLMHelper:
+    """Mixin for one-shot streamed text generators.
+
+    The protocol wizards, the feasibility wizard and the meta-protocol builder
+    all take the same ``(model, api_key, base_url)`` triple and hold the same
+    streamed client. Without this they each re-declared the constructor; a
+    timeout or retry change had to be applied in every copy.
+    """
+
+    def __init__(
+        self,
+        model: str = "gpt-4o",
+        api_key: str | None = None,
+        base_url: str | None = None,
+    ):
+        # Streamed + bounded: a long refine used to blow past the SDK's 600s
+        # read timeout and then retry twice more, freezing the UI for half an
+        # hour. See supervisor.utils.llm_stream.
+        self._client = make_stream_client(api_key=api_key, base_url=base_url)
+        self._model = model
+
+
 def _delta_fields(delta: Any) -> tuple[str, str]:
     """Return ``(content, reasoning)`` text from a stream delta.
 

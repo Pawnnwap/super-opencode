@@ -6,6 +6,8 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from services.jobs.job_states import JOB_STORE_DIR
+
 logger = logging.getLogger(__name__)
 
 # Full-body sidecar rotation bound (single .full.1 backup kept).
@@ -15,7 +17,7 @@ _MAX_FULL_BYTES = 16 * 1024 * 1024
 class JobStateStore:
     """Handles persistence of job states and logs to disk."""
 
-    def __init__(self, store_dir: str = ".job_store"):
+    def __init__(self, store_dir: str = JOB_STORE_DIR):
         self.store_dir = Path(store_dir)
         self.store_dir.mkdir(parents=True, exist_ok=True)
         # Per-job next sidecar ref, seeded lazily from existing files.
@@ -312,3 +314,35 @@ class JobStateStore:
     def list_jobs(self) -> list[str]:
         """List all tracked job IDs."""
         return [f.stem for f in self.store_dir.glob("*.json")]
+
+    # ------------------------------------------------ shared read shapes -- #
+    # Both job classes (the daemon's JobManager and the UI's StoreJobClient)
+    # expose these two reads verbatim; they live here so the two surfaces
+    # cannot drift apart.
+
+    def read_job_status(
+        self, job_id: str, max_logs: int | None = None,
+    ) -> dict[str, Any] | None:
+        """State plus logs. ``max_logs`` caps to the newest N events.
+
+        ``None`` keeps the historical read-the-whole-file behaviour used by
+        the detail screen; the board passes a cap because job logs grow to
+        tens of megabytes.
+        """
+        state = self.get_job_state(job_id)
+        if not state:
+            return None
+        state["logs"] = (
+            self.get_logs(job_id) if max_logs is None else self.tail_logs(job_id, max_logs)
+        )
+        return state
+
+    def list_batch_jobs(self, batch_id: str) -> list[dict[str, Any]]:
+        """Summaries (no logs) of every job belonging to a study batch."""
+        out = []
+        for job_id in self.list_jobs():
+            state = self.get_job_state(job_id) or {}
+            if state.get("batch_id") == batch_id:
+                out.append(state)
+        out.sort(key=lambda s: int(s.get("replica_index") or 0))
+        return out

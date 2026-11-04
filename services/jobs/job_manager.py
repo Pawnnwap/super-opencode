@@ -7,9 +7,15 @@ from pathlib import Path
 from typing import Any
 
 from services.jobs.event_recorder import EventRecorder
+from services.jobs.job_states import (
+    ACTIVE_JOB_STATES,
+    JOB_STORE_DIR,
+    TERMINAL_JOB_STATES,
+)
 from services.jobs.state_store import JobStateStore
 from supervisor.core.loop import SupervisorLoop
 from supervisor.core.self_evolution_loop import SelfEvolutionLoop
+from supervisor.runners.command_common import PARALLEL_RUNS_ENV
 from supervisor.utils.config import SupervisorConfig
 from supervisor.utils.text_utils import sanitize_event_message
 
@@ -38,11 +44,11 @@ def final_state_from_logs(logs: list[dict[str, Any]]) -> str:
 class JobManager:
     """Manages long-running supervisor and self-evolution jobs."""
 
-    TERMINAL_STATES = {"SUCCESS", "FAILED", "CANCELLED", "BLOCKED"}
+    TERMINAL_STATES = TERMINAL_JOB_STATES
 
     def __init__(
         self,
-        store_dir: str = ".job_store",
+        store_dir: str = JOB_STORE_DIR,
         max_parallel_jobs: int = 4,
         max_stored_jobs: int = 50,
     ):
@@ -111,15 +117,15 @@ class JobManager:
     def _sync_parallel_flag(self) -> None:
         """Announce multi-run concurrency to child-facing code.
 
-        The codex command builder reads SOP_PARALLEL_RUNS to disable its
-        `resume --last` fallback: with several runs sharing one CODEX_HOME,
-        a run without a captured session id must not adopt the globally
-        latest rollout — it could be another replica's.
+        The command builders read :data:`PARALLEL_RUNS_ENV` to disable their
+        resume fallback: with several runs sharing one session store, a run
+        without a captured session id must not adopt the globally latest
+        rollout — it could be another replica's.
         """
         if self._running_count > 1:
-            os.environ["SOP_PARALLEL_RUNS"] = "1"
+            os.environ[PARALLEL_RUNS_ENV] = "1"
         else:
-            os.environ.pop("SOP_PARALLEL_RUNS", None)
+            os.environ.pop(PARALLEL_RUNS_ENV, None)
 
     def enqueue_job(
         self,
@@ -137,7 +143,6 @@ class JobManager:
         # Block on any non-terminal state, not just RUNNING. A PENDING peer
         # would otherwise be allowed to share the workspace and race us for
         # `.opencode/sessions`, defeating per-task session isolation.
-        active_states = {"PENDING", "RUNNING"}
         job_id = f"{job_type}_{uuid.uuid4().hex[:8]}"
         stop_event = threading.Event()
         meta = dict(meta or {})
@@ -149,7 +154,7 @@ class JobManager:
         with self._lock:
             for jid in self.store.list_jobs():
                 state = self.store.get_job_state(jid)
-                if state and state.get("state") in active_states:
+                if state and state.get("state") in ACTIVE_JOB_STATES:
                     existing_workspace = Path(state.get("config", {}).get("workspace", "")).resolve()
                     if existing_workspace == new_workspace:
                         raise ValueError(f"Another task is already active in this workspace: {new_workspace}")
@@ -188,23 +193,8 @@ class JobManager:
         return job_id
 
     def get_job_status(self, job_id: str, max_logs: int | None = None) -> dict[str, Any] | None:
-        """Retrieve current status and logs for a job.
-
-        ``max_logs`` caps the log payload to the newest N events (see
-        ``JobStateStore.tail_logs``); ``None`` keeps the historical
-        read-the-whole-file behaviour used by the detail screen.
-        """
-        state = self.store.get_job_state(job_id)
-        if not state:
-            return None
-
-        # Add logs to the state payload
-        state["logs"] = (
-            self.store.get_logs(job_id)
-            if max_logs is None
-            else self.store.tail_logs(job_id, max_logs)
-        )
-        return state
+        """Retrieve current status and logs for a job (see ``read_job_status``)."""
+        return self.store.read_job_status(job_id, max_logs)
 
     def get_job_summary(self, job_id: str) -> dict[str, Any] | None:
         """State WITHOUT logs - for board/switcher scans.
@@ -329,13 +319,7 @@ class JobManager:
 
     def list_batch_jobs(self, batch_id: str) -> list[dict[str, Any]]:
         """Summaries (no logs) of every job belonging to a study batch."""
-        out = []
-        for jid in self.store.list_jobs():
-            state = self.store.get_job_state(jid) or {}
-            if state.get("batch_id") == batch_id:
-                out.append(state)
-        out.sort(key=lambda s: int(s.get("replica_index") or 0))
-        return out
+        return self.store.list_batch_jobs(batch_id)
 
     def cancel_batch(self, batch_id: str) -> list[str]:
         """Cancel every still-active job of a batch. Returns cancelled ids."""
@@ -344,7 +328,7 @@ class JobManager:
             state = self.store.get_job_state(jid) or {}
             if state.get("batch_id") != batch_id:
                 continue
-            if state.get("state") in {"PENDING", "RUNNING"}:
+            if state.get("state") in ACTIVE_JOB_STATES:
                 self.cancel_job(jid)
                 cancelled.append(jid)
         return cancelled

@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from services.config.supervisor_config_builder import build_supervisor_config
+from supervisor.core.task_state import TASK_STATE_FILENAME
 from supervisor.utils.config import SupervisorConfig
 
 # Run artifacts that must NOT seed a fresh replica: snapshots and journals
@@ -40,7 +41,7 @@ REPLICA_SKIP_DIRS = {
     "node_modules",
 }
 REPLICA_SKIP_FILES = {
-    "TASK_STATE.md",
+    TASK_STATE_FILENAME,
     "summary.md",
     "failure_report.md",
     "evolution_report.md",

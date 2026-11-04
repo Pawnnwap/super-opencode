@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from nicegui import ui
 
+from services.jobs.job_states import ACTIVE_JOB_STATES
 from services.webui.state import app_state
 
 CUSTOM_CSS = """
@@ -189,15 +190,30 @@ def _queue_stats_line(job_manager, job_type: str) -> str:
     return f"{running} running · {pending} queued"
 
 
-def _has_active_jobs(job_manager) -> bool:
-    """Any run/evolve job queued or running right now (store read)."""
+def active_jobs(job_manager, job_type: str = "") -> list[dict]:
+    """Store records of queued/running jobs (optionally one job type).
+
+    One helper for the three call sites that each re-walked the store with
+    their own copy of the active-state tuple: the nav-shell lock, the run
+    page's lock and the board's queue.
+    """
+    out: list[dict] = []
     for job_id in job_manager.store.list_jobs():
         state = job_manager.store.get_job_state(job_id) or {}
-        if state.get("state") in ("RUNNING", "PENDING") and state.get(
-            "type",
-        ) in ("run", "evolve"):
-            return True
-    return False
+        if state.get("state") not in ACTIVE_JOB_STATES:
+            continue
+        if job_type and state.get("type") != job_type:
+            continue
+        out.append(state)
+    return out
+
+
+def _has_active_jobs(job_manager) -> bool:
+    """Any run/evolve job queued or running right now (store read)."""
+    return any(
+        state.get("type") in ("run", "evolve")
+        for state in active_jobs(job_manager)
+    )
 
 
 def render_shell(active: str, job_manager) -> None:

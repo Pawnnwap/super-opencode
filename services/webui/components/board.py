@@ -7,12 +7,25 @@ from pathlib import Path
 
 from nicegui import ui, run as nicegui_run
 
+from services.jobs.job_states import (
+    ACTIVE_JOB_STATES,
+    ATTENTION_JOB_STATES,
+    TERMINAL_JOB_STATES,
+)
 from services.webui.components.progress_widgets import ProgressWidgets
 from services.webui.layout import format_status_pill
-from services.webui.log_format import fmt_ts, markdown_preview, safe_logs
+from services.webui.log_format import (
+    DEFAULT_HIDDEN_LEVELS,
+    attention_count,
+    fmt_ts,
+    last_event_line,
+    markdown_preview,
+    safe_logs,
+    workspace_name,
+    workspace_path,
+)
 from services.webui.state import app_state
-
-ACTIVE_JOB_STATES = {"PENDING", "RUNNING"}
+from supervisor.utils.text_utils import sanitize_event_message
 
 
 def may_pause_autorefresh(
@@ -29,18 +42,7 @@ def may_pause_autorefresh(
 
 
 def _workspace_name(job: dict) -> str:
-    workspace = job.get("status", {}).get("config", {}).get("workspace", "")
-    return Path(workspace).name if workspace else ""
-
-
-def _last_event_line(job: dict, limit: int = 120) -> str:
-    for event in reversed(safe_logs(job.get("status", {}))):
-        if not isinstance(event, dict) or event.get("level") == "heartbeat":
-            continue
-        msg = (event.get("msg") or "").strip()
-        if msg:
-            return msg.splitlines()[0][:limit]
-    return ""
+    return workspace_name(job)
 
 
 class JobBoard:
@@ -150,23 +152,25 @@ class JobBoard:
             self.workspace_filter.options = ["All workspaces"] + workspaces
             self.workspace_filter.update()
 
-        # Keys must match the STORE's state vocabulary (RUNNING/SUCCESS/...)
-        # exactly - the lowercase keys here once made every count stay 0 and
-        # the metrics line read "0 active / 0 success" forever.
-        counts = {
-            "RUNNING": 0, "PENDING": 0, "SUCCESS": 0, "FAILED": 0,
-            "CANCELLED": 0, "BLOCKED": 0,
-        }
+        # Keys must match the STORE's state vocabulary exactly - lowercase
+        # keys here once made every count stay 0 and the metrics line read
+        # "0 active / 0 success" forever. The vocabulary is imported, not
+        # re-typed, so a new state cannot be counted in one place and missed
+        # in another.
+        counts = dict.fromkeys(
+            ACTIVE_JOB_STATES | TERMINAL_JOB_STATES, 0,
+        )
         for job in jobs:
             state = str(job["status"].get("state", "")).upper()
             if state in counts:
                 counts[state] += 1
         active = counts["RUNNING"] + counts["PENDING"]
+        attention = sum(counts[s] for s in ATTENTION_JOB_STATES)
         self.metrics_label.set_text(
             f"{len(jobs)} task(s) · {active} active "
             f"({counts['RUNNING']} running / {counts['PENDING']} queued) · "
             f"{counts['SUCCESS']} success · {counts['BLOCKED']} blocked · "
-            f"{counts['FAILED'] + counts['CANCELLED']} need attention",
+            f"{attention} need attention",
         )
 
         filtered = self._apply_filters(jobs)
@@ -191,7 +195,7 @@ class JobBoard:
                 job["id"],
                 job["status"].get("state", ""),
                 len(safe_logs(job["status"])),
-                _last_event_line(job, 40),
+                last_event_line(job, 40),
             )
             for job in filtered
         )
@@ -296,7 +300,7 @@ class JobBoard:
                         ui.button(
                             icon="stop", on_click=lambda j=job_id: self._stop(j),
                         ).props("flat dense color=red")
-                    elif state in ("SUCCESS", "FAILED", "CANCELLED", "BLOCKED"):
+                    elif state in TERMINAL_JOB_STATES:
                         ui.button(
                             icon="delete",
                             on_click=lambda j=job_id: self._delete(j),
@@ -308,22 +312,19 @@ class JobBoard:
                         ),
                     ).props("flat dense")
             meta = []
-            workspace = status.get("config", {}).get("workspace", "")
-            if workspace:
-                meta.append(f"📁 {Path(workspace).name}")
+            name = workspace_name(job)
+            if name:
+                meta.append(f"📁 {name}")
             updated = float(status.get("updated_at") or 0)
             if updated and state == "RUNNING":
                 mins, secs = divmod(max(0, int(time.time() - updated)), 60)
                 meta.append(f"⏱ {mins}m {secs:02d}s")
-            errors = sum(
-                1 for e in safe_logs(status)
-                if isinstance(e, dict) and e.get("level") == "error"
-            )
+            errors = attention_count(status)
             if errors:
                 meta.append(f"❌ {errors}")
             if meta:
                 ui.label(" · ".join(meta)).classes("text-xs text-[#8b949e]")
-            last = _last_event_line(job)
+            last = last_event_line(job)
             if last:
                 ui.label(f"› {last}").classes("text-xs text-[#8b949e]")
 
@@ -344,9 +345,9 @@ class JobBoard:
             f"<span class='mono text-xs'>{selected_id}</span>"
             f"{format_status_pill(selected['status'].get('state', 'UNKNOWN'))}",
         )
-        workspace = selected["status"].get("config", {}).get("workspace", "")
+        workspace = workspace_path(selected)
         if workspace:
-            ui.label(f"Workspace: {Path(workspace).name}").classes(
+            ui.label(f"Workspace: {workspace_name(selected)}").classes(
                 "text-xs text-[#8b949e]",
             )
         updated = float(selected["status"].get("updated_at") or 0)
@@ -355,7 +356,7 @@ class JobBoard:
                 "Updated: "
                 + time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(updated)),
             ).classes("text-xs text-[#8b949e]")
-        last = _last_event_line(selected, 180)
+        last = last_event_line(selected, 180)
         if last:
             ui.label(f"Last: {last}").classes("text-xs text-[#8b949e]")
         logs = safe_logs(selected["status"])
@@ -366,20 +367,18 @@ class JobBoard:
         )
         with ui.expansion("Recent log").classes("w-full"):
             mini = ui.log(max_lines=60).classes("log-box w-full h-56")
-            for event in logs[-40:]:
-                level = event.get("level") or "info"
-                if level in ("heartbeat", "step_progress", "tokens"):
-                    continue
+            # One shared noise filter: the local tuple here had drifted from
+            # log_format.DEFAULT_HIDDEN_LEVELS.
+            visible = [
+                e for e in logs[-40:]
+                if isinstance(e, dict)
+                and (e.get("level") or "info") not in DEFAULT_HIDDEN_LEVELS
+            ]
+            for event in visible:
                 ts = fmt_ts(event)
-                text = sanitize_short(event.get("msg") or "")
+                text = sanitize_event_message(event.get("msg") or "")
                 mini.push(f"[{ts}] {text}" if ts else text)
         report = selected["status"].get("report")
         if report:
             with ui.expansion("Report preview").classes("w-full"):
                 ui.markdown(markdown_preview(report, 2000))
-
-
-def sanitize_short(msg: str) -> str:
-    from supervisor.utils.text_utils import sanitize_event_message
-
-    return sanitize_event_message(msg)
