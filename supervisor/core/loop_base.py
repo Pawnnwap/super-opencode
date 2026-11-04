@@ -4,6 +4,7 @@ import logging
 import os
 import time
 from collections.abc import Generator
+from dataclasses import dataclass
 from enum import Enum, auto
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -44,6 +45,15 @@ class LoopState(Enum):
     ENDED_FAILURE = auto()
     # Target demonstrably unreachable: terminal, but not an execution failure.
     ENDED_BLOCKED = auto()
+
+
+@dataclass
+class _ClosureNote:
+    """Outcome of the BLOCKED→closed cross-check (see _closure_state_note)."""
+
+    was_closed: bool
+    markdown: str
+    event_suffix: str
 
 
 def _ev(level: str, msg: object, **kwargs) -> Event:
@@ -615,6 +625,10 @@ class BaseLoop:
         """
         if not getattr(self.config, "enable_blocked_exit", True):
             return ""
+        # Which trigger fired — the agent's own closure assertion is the
+        # weakest trust source, so _on_blocked cross-checks it before writing
+        # the irreversible "closed" status.
+        self._blocked_agent_asserted = False
         if verdict.all_targets_met:
             self._progress.reset()
             self._unmet_streak, self._unmet_streak_sig = 0, ""
@@ -647,6 +661,7 @@ class BaseLoop:
             )
         closure = self._agent_closure_reason()
         if closure:
+            self._blocked_agent_asserted = True
             return closure
         reason = self._feasibility_block_reason()
         if not reason:
@@ -674,15 +689,23 @@ class BaseLoop:
         """Write the blocked report + memory record; the operator decides next."""
         from supervisor.core.target_state import mark_target_closed
 
+        agent_asserted = bool(getattr(self, "_blocked_agent_asserted", False))
+        state_note = self._closure_state_note(agent_asserted)
         report = self.supervisor.report_final_status(
             reason=f"Target unreachable, run closed as BLOCKED: {reason}",
             opencode_output="",
         )
-        self._write(report, "blocked_report.md")
+        self._write(report + state_note.markdown, "blocked_report.md")
         # Durable terminal status: without this the state file still read
         # "running" after the run closed, so a relaunch resumed it as if
-        # nothing had happened.
-        mark_target_closed(self.config.workspace, reason)
+        # nothing had happened. An agent-asserted closure is NOT taken at
+        # face value for this irreversible write: when recorded feasibility
+        # facts still say the target is reachable, the closure is the
+        # supervised agent's word against the evidence base — leave the
+        # target resumable (this run still ends BLOCKED, so no more turns
+        # are bought; a relaunch is the operator's explicit choice).
+        if state_note.was_closed:
+            mark_target_closed(self.config.workspace, reason)
         update_experience(self.config.workspace, failed=[f"blocked: {reason}"])
         self._record_structured_failure(
             reason,
@@ -692,7 +715,75 @@ class BaseLoop:
         yield _ev(
             "warn",
             f"Blocked exit: {reason}\n\nWrote blocked_report.md. The run is closing "
-            "as BLOCKED so the operator, not the loop, chooses the next move.",
+            "as BLOCKED so the operator, not the loop, chooses the next move."
+            + state_note.event_suffix,
+        )
+
+    def _closure_state_note(self, agent_asserted: bool) -> _ClosureNote:
+        """Decide whether BLOCKED also writes the irreversible closed status.
+
+        Returns a small record: the markdown block appended to
+        ``blocked_report.md`` (always present — reopening must be a
+        documented procedure, not archaeology), whether ``closed`` was
+        written, and a suffix for the terminal event.
+        """
+        from supervisor.protocols.feasibility_gate import (
+            check_feasibility,
+            default_facts_path,
+            load_feasibility_facts,
+        )
+
+        reopen_block = (
+            "\n\n--- HOW TO REOPEN ---\n"
+            "This run ended BLOCKED. The target's durable state lives in "
+            "`.opencode/target_state.json` in the workspace.\n"
+        )
+        facts = load_feasibility_facts(default_facts_path(self.config.workspace))
+        contradicted = False
+        if agent_asserted and facts:
+            assessment = check_feasibility(facts, facts_source="closure cross-check")
+            contradicted = bool(assessment.reachable)
+
+        if agent_asserted and contradicted:
+            return _ClosureNote(
+                was_closed=False,
+                markdown=(
+                    reopen_block
+                    + "The closure was the AGENT'S OWN assertion, and the recorded "
+                    "feasibility facts still say the target is REACHABLE — so the "
+                    "state was deliberately left open (not `closed`). A relaunch "
+                    "will resume this target; it is your explicit decision.\n"
+                ),
+                event_suffix=(
+                    " Target state left OPEN: agent-asserted closure contradicts "
+                    "recorded feasibility facts."
+                ),
+            )
+        if agent_asserted:
+            return _ClosureNote(
+                was_closed=True,
+                markdown=(
+                    reopen_block
+                    + "The closure was the AGENT'S OWN assertion; no recorded "
+                    "feasibility facts contradict it, so the target was marked "
+                    "`closed`.\n"
+                    "To pursue this goal again: edit `.opencode/target_state.json` "
+                    "and change `\"status\": \"closed\"` to `\"running\"`, or start "
+                    "a fresh cycle with a revised protocol.md.\n"
+                ),
+                event_suffix="",
+            )
+        return _ClosureNote(
+            was_closed=True,
+            markdown=(
+                reopen_block
+                + "The target was marked `closed` on the harness's own evidence "
+                "(stagnation or recorded unreachable facts).\n"
+                "To pursue this goal again: edit `.opencode/target_state.json` and "
+                "change `\"status\": \"closed\"` to `\"running\"`, or start a fresh "
+                "cycle with a revised protocol.md.\n"
+            ),
+            event_suffix="",
         )
 
     def _memory_goal(self) -> str:
@@ -870,6 +961,21 @@ class BaseLoop:
         self._record_task_state(verdict, progress)
 
         blocked_reason = self._blocked_assessment(verdict)
+        if not (getattr(verdict, "criteria_results", None) or []) and not getattr(
+            self, "_unstructured_warned", False
+        ):
+            # P3-2: an unstructured judge verdict silently downgrades the
+            # blocked-exit assessment to the legacy identical-unmet-set rule.
+            # 8.2.12 requires an explicit no-record signal, not a silent
+            # fallback to the loosest branch. Warn once so the operator sees
+            # it in the job log.
+            self._unstructured_warned = True
+            yield _ev(
+                "warn",
+                "Judge emitted no structured criteria — blocked-exit "
+                "assessment falls back to the unstructured streak rule "
+                "(no-record-per-rule).",
+            )
         if blocked_reason:
             self._blocked_reason = blocked_reason
             self._state = LoopState.ENDED_BLOCKED

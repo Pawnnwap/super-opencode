@@ -36,7 +36,6 @@ _TERMINAL_EVENTS = frozenset(
     }
 )
 _TERMINAL_EVENT_MARKERS = ("_closed", "terminal")
-_MAX_AUDIT_SCAN_BYTES = 2_000_000
 _STAGED_FILE = "staged_improvements.jsonl"
 _MAX_DIRECTIONS = 12
 _MAX_LESSONS = 8
@@ -223,46 +222,58 @@ def read_terminal_assertion(workspace: Path) -> str:
     recent terminal event (``goal_terminal``, ``terminal_gap``, any
     ``*_closed_*``). These events were previously inert: the loop ignored them
     and relaunched, resetting ``target_state.json`` to ``running`` each time.
+
+    The WHOLE file is scanned, line by line, with a cheap substring prefilter
+    before any JSON parsing. The earlier 2 MB tail window silently dropped
+    terminal events once a long study's audit grew past it — exactly the runs
+    where an infinite-relaunch bug is most expensive. A per-line substring
+    scan of even a tens-of-MB JSONL costs milliseconds (same pattern as the
+    job-log session-id scan), so no bound is worth the miss risk here.
     """
     path = Path(workspace) / _STATE_DIR / AUDIT_FILENAME
     try:
         if not path.is_file():
             return ""
-        size = path.stat().st_size
-        with path.open("rb") as handle:
-            if size > _MAX_AUDIT_SCAN_BYTES:
-                handle.seek(size - _MAX_AUDIT_SCAN_BYTES)
-            raw = handle.read()
     except OSError:
         return ""
     latest = ""
-    for line in raw.decode("utf-8", errors="replace").splitlines():
-        line = line.strip()
-        if not line or "terminal" not in line and "_closed" not in line:
-            continue
-        try:
-            record = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(record, dict):
-            continue
-        event = str(record.get("event", "")).strip().lower()
-        if not event:
-            continue
-        if event not in _TERMINAL_EVENTS and not any(
-            marker in event for marker in _TERMINAL_EVENT_MARKERS
-        ):
-            continue
-        reason = " ".join(
-            " ".join(
-                str(record.get(key, "") or "").split()
-                if not isinstance(record.get(key), (list, tuple))
-                else " ".join(str(v) for v in record.get(key) or ())
-            )
-            for key in ("reason", "new_status", "study")
-        ).strip()
-        latest = f"{event}" + (f": {reason[:200]}" if reason else "")
+    try:
+        with path.open(encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                if "terminal" not in line and "_closed" not in line:
+                    continue
+                latest = _parse_terminal_line(line) or latest
+    except OSError:
+        return latest
     return latest
+
+
+def _parse_terminal_line(line: str) -> str:
+    line = line.strip()
+    if not line:
+        return ""
+    try:
+        record = json.loads(line)
+    except json.JSONDecodeError:
+        return ""
+    if not isinstance(record, dict):
+        return ""
+    event = str(record.get("event", "")).strip().lower()
+    if not event:
+        return ""
+    if event not in _TERMINAL_EVENTS and not any(
+        marker in event for marker in _TERMINAL_EVENT_MARKERS
+    ):
+        return ""
+    reason = " ".join(
+        " ".join(
+            str(record.get(key, "") or "").split()
+            if not isinstance(record.get(key), (list, tuple))
+            else " ".join(str(v) for v in record.get(key) or ())
+        )
+        for key in ("reason", "new_status", "study")
+    ).strip()
+    return f"{event}" + (f": {reason[:200]}" if reason else "")
 
 
 def mark_target_closed(workspace: Path, reason: str) -> TargetState | None:
