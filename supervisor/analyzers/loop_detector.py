@@ -2,8 +2,8 @@
 
 Fed the live tool markers from the stream driver, this spots the agent
 thrashing — calling the same tool over and over, cycling between a small set of
-tool calls, or firing many tools without ever producing prose — so the
-supervisor can kill the run and restart it with a fixed context instead of
+tool calls, or firing many low-novelty tools without ever producing prose — so
+the supervisor can kill the run and restart it with a fixed context instead of
 burning the whole turn (and tokens) on a loop.
 
 Pure and structural (no LLM): one detector per streamed turn. Tight matching
@@ -65,11 +65,13 @@ class LoopDetector:
         self._last: str | None = None
         self._consecutive = 0
         self._tools_since_text = 0
+        self._streak_keys: set[str] = set()
         self._fired = False
 
     def record_text(self) -> None:
         """A prose (text) event means the agent is making progress."""
         self._tools_since_text = 0
+        self._streak_keys.clear()
 
     def record_tool(self, marker: str) -> LoopSignal | None:
         """Record a tool marker; return a signal if a loop is detected (once)."""
@@ -78,6 +80,7 @@ class LoopDetector:
 
         key = (marker or "").strip().lower()
         self._tools_since_text += 1
+        self._streak_keys.add(key)
 
         if key == self._last:
             self._consecutive += 1
@@ -96,7 +99,14 @@ class LoopDetector:
         if cycle is not None:
             return self._fire("cycled between the same tool calls", cycle)
 
-        if self._tools_since_text >= self.max_tools_without_text:
+        # A silent tool streak is only a loop when it is ALSO low-novelty:
+        # batch exploration legitimately runs 25+ DISTINCT read-only calls
+        # without narrating (a measured run was killed mid-survey by an earlier
+        # count-only rule), while a thrash over a small set repeats each call
+        # 2+ times on average.
+        if self._tools_since_text >= self.max_tools_without_text and (
+            2 * len(self._streak_keys) < self._tools_since_text
+        ):
             return self._fire("ran many tools without producing any output", marker)
 
         return None

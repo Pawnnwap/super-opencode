@@ -32,12 +32,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 
-from supervisor.runners.command_common import compact_tool_detail
-
-# Cap how much of a tool's intent we keep in its compact marker. The marker is
-# a breadcrumb of *what the agent did*, not a transcript — so a short slice is
-# plenty and keeps history lean.
-_MAX_TOOL_DETAIL = 200
+from supervisor.runners.command_common import TOOL_DETAIL_LIMIT, compact_tool_detail
 
 # Tool-input fields, most human-readable first, used to describe a tool call.
 _TOOL_DETAIL_KEYS = (
@@ -67,6 +62,10 @@ class LineEvent:
     tokens_total: int = 0  # populated for kind == "tokens"
     raw: str = ""  # populated for kind == "raw" (non-JSON fallback)
     session_id: str = ""  # populated for kind == "session"
+    # False for engine bookkeeping surfaced as a tool marker (e.g. codex
+    # session-level error items): logged live but never fed to the loop
+    # detector — the agent did not make a tool call.
+    count_for_loop: bool = True
 
 
 def tool_marker_from(tool, inp) -> str:
@@ -89,7 +88,7 @@ def tool_marker_from(tool, inp) -> str:
                 break
 
     if detail:
-        detail = compact_tool_detail(detail, _MAX_TOOL_DETAIL)
+        detail = compact_tool_detail(detail, TOOL_DETAIL_LIMIT)
         return f"[{tool}] {detail}"
     return f"[{tool}]"
 

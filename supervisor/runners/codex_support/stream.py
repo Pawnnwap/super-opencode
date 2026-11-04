@@ -42,7 +42,7 @@ from __future__ import annotations
 
 import json
 
-from supervisor.runners.command_common import compact_tool_detail
+from supervisor.runners.command_common import TOOL_DETAIL_LIMIT, compact_tool_detail
 from supervisor.runners.opencode_support.stream import LineEvent, build_output
 
 __all__ = [
@@ -51,9 +51,6 @@ __all__ = [
     "classify_line",
     "context_estimate_from_turn_usage",
 ]
-
-# Cap the intent detail kept in a tool marker (a breadcrumb, not a transcript).
-_MAX_TOOL_DETAIL = 200
 
 # item.type -> (friendly label, ordered candidate detail fields).
 _ITEM_TOOL_LABELS: dict[str, tuple[str, tuple[str, ...]]] = {
@@ -143,7 +140,7 @@ def _tool_marker(item: dict) -> str:
                 break
 
     if detail:
-        detail = compact_tool_detail(detail, _MAX_TOOL_DETAIL)
+        detail = compact_tool_detail(detail, TOOL_DETAIL_LIMIT)
         return f"[{label}] {detail}"
     return f"[{label}]"
 
@@ -233,7 +230,14 @@ def classify_line(line: str | None) -> LineEvent | None:
             return LineEvent(kind="other")
         # command_execution / file_change / mcp_tool_call / web_search and any
         # unknown tool item -> compact marker (verbose I/O dropped).
-        return LineEvent(kind="tool", marker=_tool_marker(item))
+        return LineEvent(
+            kind="tool",
+            marker=_tool_marker(item),
+            # `error` items are session-level bookkeeping (stale model
+            # metadata, MCP init failures), not agent tool calls — they must
+            # not inflate the loop detector's tool counters.
+            count_for_loop=itype != "error",
+        )
 
     # turn.started, item.started, item.updated, etc. — not turn output.
     return LineEvent(kind="other")

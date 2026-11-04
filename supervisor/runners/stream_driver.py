@@ -211,7 +211,7 @@ def consume_process_stream(
             # Own "tool" level so the log UI can style it; msg stays ASCII
             # (it is also logged to cp1252 stderr on Windows).
             yield {"level": "tool", "msg": marker}
-            if loop_detector is not None:
+            if loop_detector is not None and event.count_for_loop:
                 signal = loop_detector.record_tool(marker)
                 if signal is not None:
                     looped = True
