@@ -57,7 +57,9 @@ class SupervisorConfig:
     history_budget_fraction: float = 0.35
     # Pre-execution feasibility gate (structural design item 5): optional path to
     # a JSON recording known gate ceilings / blocked gates (empty = fall back to
-    # <workspace>/logs/feasibility_facts.json when present). Rendered as a tiny
+    # <workspace>/feasibility_facts.json when present). It sits outside logs/
+    # because that directory is archived at every fresh cycle, which used to
+    # leave each relaunch with an empty evidence base. Rendered as a tiny
     # bounded block for both the coding agent and the judge, so an empirically
     # unreachable done-condition is surfaced up front instead of being
     # rediscovered over 15-20 pre-registered attempts.

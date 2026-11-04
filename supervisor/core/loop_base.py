@@ -8,6 +8,7 @@ from enum import Enum, auto
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from supervisor.core.goal_progress import GoalProgressTracker
 from supervisor.core.llm_support.models import StepContext
 from supervisor.utils.experience_tracker import (
     EvolutionSummary,
@@ -93,14 +94,20 @@ class BaseLoop:
         self._loop_restarts: int = 0
         self._max_loop_restarts: int = 2
         self._loop_breaker: str = ""
-        # BLOCKED exit accounting (config.enable_blocked_exit): the judge's
-        # unmet-criteria signature repeated across turns, the feasibility-facts
-        # streak, and the passing-gate high-water mark that proves a streak is
-        # "no progress" rather than "slow progress".
+        # BLOCKED exit accounting (config.enable_blocked_exit): attainment
+        # high-water marks (obligations ever MET, best passing-gate count) and
+        # the feasibility-facts streak. Keyed on attainment, never on file
+        # churn - an agent that rewrites summary.md every turn makes a diff
+        # forever, which is exactly the loop this trigger must survive.
+        self._progress = GoalProgressTracker()
+        # Legacy identical-unmet-set rule, used only when the judge emits no
+        # per-criterion verdict (see _unstructured_streak).
         self._unmet_streak: int = 0
         self._unmet_streak_sig: str = ""
         self._unreachable_streak: int = 0
         self._last_passing_gates: int | None = None
+        # Why the run is closing as BLOCKED; also set by the agent-asserted
+        # terminal-closure trigger.
         self._blocked_reason: str = ""
         # Why the run is aborting, when it is NOT the normal max-retries path
         # (e.g. loop-persists abort). Drives the final failure report wording;
@@ -117,6 +124,9 @@ class BaseLoop:
         self._last_snapshot_signature: str = ""
         self._last_changed_files: list[str] = []
         self._run_changed_files: set[str] = set()
+        # Per-file change markers for the current turn (path -> "+new" etc.),
+        # consumed by the judge's file-selection listing.
+        self._turn_deltas: dict[str, str] = {}
         self._python_scanner_ran: bool = False
         self._vuln_autofixed: bool = False
         # Supervisor skill bank (set up by _setup_skill_bank after the
@@ -322,6 +332,7 @@ class BaseLoop:
         self._last_changed_files = changed
         self._run_changed_files.update(changed)
         self._last_snapshot_signature = new_snapshot.signature()
+        self._record_turn_deltas(self._cached_snapshot, new_snapshot)
         if changed:
             logger.info(
                 "Codebase evolved: %d changed file(s): %s",
@@ -331,6 +342,26 @@ class BaseLoop:
             self._cached_snapshot = new_snapshot
             return True
         return False
+
+    def _record_turn_deltas(self, before, after) -> None:
+        """Store this turn's per-file change markers for the judge's file picker.
+
+        The picker used to see only `path (size bytes)` in alphabetical order,
+        so a deliverable rewritten this turn looked identical to a stale
+        artifact. The delta is what makes picking files for verification
+        meaningful; it is a no-op on backends without snapshot support.
+        """
+        self._turn_deltas = {}
+        if before is None or after is None:
+            return
+        try:
+            deltas = before.deltas(after)
+        except Exception:
+            logger.warning("Could not compute per-turn deltas", exc_info=True)
+            return
+        self._turn_deltas = {
+            path: delta.render() for path, delta in deltas.items()
+        }
 
     def _check_and_update_snapshot(self) -> Generator[Event]:
         """Check if codebase changed and update supervisor if so."""
@@ -474,14 +505,50 @@ class BaseLoop:
         )
         yield from []
 
-    def _unmet_signature(self, verdict) -> str:
-        """Stable signature of the judge's unmet set ('' when unmeasurable)."""
+    def _unstructured_streak(self, verdict) -> int:
+        """Consecutive turns reporting the identical unmet set (legacy rule).
+
+        Only used when the judge emits no per-criterion verdict, so there is
+        no attainment to measure. The old implementation also required "no
+        workspace change", which made the trigger unreachable for any agent
+        that touched a file each turn - that condition is gone.
+        """
         items = [
-            str(criterion).strip()[:160]
-            for criterion in (getattr(verdict, "unmet_criteria", None) or [])
-            if str(criterion).strip()
+            str(getattr(c, "criterion", c)).strip()[:160]
+            for c in (getattr(verdict, "unmet_criteria", None) or [])
+            if str(getattr(c, "criterion", c)).strip()
         ]
-        return "\n".join(sorted(items))
+        signature = "\n".join(sorted(items))
+        if signature and signature == self._unmet_streak_sig:
+            self._unmet_streak += 1
+        else:
+            self._unmet_streak = 1 if signature else 0
+        self._unmet_streak_sig = signature
+        return self._unmet_streak
+
+    def _agent_closure_reason(self) -> str:
+        """Non-empty when the agent itself declared the run terminally closed.
+
+        Studies that hit a certified ceiling write their own closure into the
+        audit trail (``.opencode/goal_audit.jsonl``: ``goal_terminal``,
+        ``terminal_gap``, ``*_closed_*``). The harness used to ignore those
+        lines, overwrite ``target_state.json`` back to ``running`` on every
+        relaunch, and keep buying turns from an agent that had already
+        declared the work finished - 271 judged turns in one case.
+
+        Any such event at or after ``min_turns_before_blocked`` is taken at
+        face value: the agent's own terminal assertion is the strongest
+        evidence available that no further turn can change the outcome.
+        """
+        from supervisor.core.target_state import read_terminal_assertion
+
+        assertion = read_terminal_assertion(self.config.workspace)
+        if not assertion:
+            return ""
+        return (
+            "the agent declared this run terminally closed in its own audit "
+            f"trail ({assertion}); further turns cannot change the outcome"
+        )
 
     def _feasibility_block_reason(self) -> str:
         """Deterministic 'target unreachable' reason from recorded facts, '' if reachable."""
@@ -512,7 +579,9 @@ class BaseLoop:
         """PASS count from the last gate harvest; None when there is none."""
         import json
 
-        path = self.config.workspace / "logs" / "gate_results_last.json"
+        from supervisor.protocols.feasibility_gate import default_gate_results_path
+
+        path = default_gate_results_path(self.config.workspace)
         try:
             data = json.loads(path.read_text(encoding="utf-8-sig"))
         except (OSError, ValueError):
@@ -529,44 +598,60 @@ class BaseLoop:
     def _blocked_assessment(self, verdict) -> str:
         """Non-empty reason when this run must close as BLOCKED instead of looping.
 
-        Two triggers, both evidence-bound, both gated by the turn floor:
-        (a) the judge repeats an identical unmet-criteria set for N consecutive
-        turns with zero workspace change - the ceiling case, where the judge
-        refuses DONE:yes forever and max_blocked_stops can never fire (that cap
-        applies to blocked DONE *proposals*, which requires all_targets_met);
-        (b) the feasibility facts already declare the target unreachable and the
-        passing-gate count has stopped improving.
+        Three triggers, all evidence-bound and gated by the turn floor:
+
+        (a) attainment stagnation - N consecutive judged turns that satisfied
+        no previously-unmet obligation and won no new gate. Deliberately keyed
+        on *attainment*, not on workspace change: an agent that rewrites
+        summary.md or deletes __pycache__ every turn produces a diff forever,
+        so a change-based streak can never fire on the loop it must catch
+        (measured: 0 Blocked exits across 549 judged turns of two studies).
+        (b) the agent asserts a terminal closure in its own audit trail
+        (goal_terminal / *_closed_*) and then keeps producing turns: the run
+        is over by the agent's own account, so the harness must not pay for
+        more.
+        (c) the feasibility facts already declare the target unreachable and
+        the passing-gate count has stopped improving.
         """
         if not getattr(self.config, "enable_blocked_exit", True):
             return ""
         if verdict.all_targets_met:
+            self._progress.reset()
             self._unmet_streak, self._unmet_streak_sig = 0, ""
             return ""
-        signature = self._unmet_signature(verdict)
-        if (
-            signature
-            and signature == self._unmet_streak_sig
-            and not self._last_changed_files
-        ):
-            self._unmet_streak += 1
+        passing = self._passing_gate_count()
+        criteria = list(getattr(verdict, "criteria_results", None) or [])
+        if criteria:
+            signal = self._progress.record(criteria, passing_gates=passing)
+            streak = signal.streak
         else:
-            self._unmet_streak = 1 if signature else 0
-        self._unmet_streak_sig = signature
+            # Unstructured judge: no per-criterion MET/UNMET to track, so fall
+            # back to the old identical-unmet-set rule. Attainment is
+            # unmeasurable here, and treating that as stagnation would close
+            # healthy runs whose judge simply omits the criteria block.
+            streak = self._unstructured_streak(verdict)
         floor = int(getattr(self.config, "min_turns_before_blocked", 12))
         if self._task_turn < floor:
             return ""
         needed = max(2, int(getattr(self.config, "blocked_after_stagnant_verdicts", 6)))
-        if self._unmet_streak >= needed:
-            unmet = "; ".join(signature.splitlines()[:4])
-            return (
-                f"{self._unmet_streak} consecutive judged turns reported the same "
-                f"unmet criteria with no workspace change: {unmet}"
+        if streak >= needed:
+            unmet = "; ".join(
+                str(getattr(c, "criterion", c)).strip()[:160]
+                for c in (getattr(verdict, "unmet_criteria", None) or [])[:4]
             )
+            return (
+                f"{streak} consecutive judged turns attained nothing new "
+                f"(no obligation went UNMET -> MET and no gate newly passed; "
+                f"{self._progress.satisfied} obligation(s) satisfied so far): "
+                f"{unmet}"
+            )
+        closure = self._agent_closure_reason()
+        if closure:
+            return closure
         reason = self._feasibility_block_reason()
         if not reason:
             self._unreachable_streak = 0
             return ""
-        passing = self._passing_gate_count()
         if (
             passing is None
             or self._last_passing_gates is None
@@ -587,11 +672,17 @@ class BaseLoop:
 
     def _on_blocked(self, verdict, reason: str) -> Generator[Event]:
         """Write the blocked report + memory record; the operator decides next."""
+        from supervisor.core.target_state import mark_target_closed
+
         report = self.supervisor.report_final_status(
             reason=f"Target unreachable, run closed as BLOCKED: {reason}",
             opencode_output="",
         )
         self._write(report, "blocked_report.md")
+        # Durable terminal status: without this the state file still read
+        # "running" after the run closed, so a relaunch resumed it as if
+        # nothing had happened.
+        mark_target_closed(self.config.workspace, reason)
         update_experience(self.config.workspace, failed=[f"blocked: {reason}"])
         self._record_structured_failure(
             reason,
@@ -1226,8 +1317,16 @@ class BaseLoop:
         )
 
     def _codebase_preamble(self) -> str:
-        """Return a digest of the current codebase for the system prompt."""
-        return "\n\n## Live codebase\n" + self._cached_snapshot.digest_for_prompt(
+        """Structural digest of the workspace for the judge's system prompt.
+
+        Signatures, not bodies. The system message is re-sent on EVERY judge
+        call, so its size is a recurring cost, and full file bodies were 91%
+        of it (measured: 47,562 of 52,061 chars on one run, re-sent 294
+        times = 14.2 MB of duplicate payload for one run). The judge already
+        has ``NEED_EVIDENCE: read_file <path>`` for the bodies it actually
+        needs, so the always-on block only needs to say what exists.
+        """
+        return "\n\n## Live codebase\n" + self._cached_snapshot.skimmed_digest_for_prompt(
             max_files=15,
         )
 

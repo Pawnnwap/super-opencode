@@ -13,6 +13,7 @@ from supervisor.utils.filesystem.file_permissions import (
     remove_file_readonly,
     set_file_readonly,
 )
+from supervisor.workspace.workspace_archiver import ARCHIVE_COUNTER_NAME
 
 if TYPE_CHECKING:
     from supervisor.workspace.ignore_patterns import IgnoreMatcher
@@ -348,13 +349,13 @@ class WorkspaceGuard:
                                 continue
                         try:
                             if item.is_file():
-                                if item.name != ".archive_counter":
+                                if item.name != ARCHIVE_COUNTER_NAME:
                                     self._set_file_readonly(str(item))
                         except (OSError, PermissionError):
                             pass
                     protected.append(path_str)
                 else:
-                    if path.name != ".archive_counter":
+                    if path.name != ARCHIVE_COUNTER_NAME:
                         self._set_file_readonly(path_str)
                     protected.append(path_str)
             except (OSError, PermissionError, ValueError):

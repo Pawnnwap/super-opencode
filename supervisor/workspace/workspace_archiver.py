@@ -48,10 +48,17 @@ def create_archiver(
 
 
 _ARCHIVE_DIR = ".archive"
+# Both archiver backends and the read-only guard must agree on this filename:
+# a mismatch silently restarts snapshot numbering (or locks the counter file).
+ARCHIVE_COUNTER_NAME = ".archive_counter"
 _ARCHIVE_EXTRA_IGNORE_DIRS = {
     "_deps",
     ". Dune",
 }
+# Run state, not workspace content: logs/ holds the feasibility facts and the
+# last gate harvest. Archiving it swept the evidence base into the snapshot
+# right before each fresh cycle, so every relaunch started blind.
+_ARCHIVE_SKIP_DIR_NAMES = {"logs"}
 _ARCHIVE_SUBDIRS = {
     "code": {".py", ".md", ".toml", ".cfg", ".ini", ".yaml", ".yml", ".txt", ".rst"},
     "results": {".json", ".html", ".csv", ".xml"},
@@ -67,31 +74,45 @@ class ArchiveResult:
     message: str
 
 
+def load_archive_counter(archive_root: Path) -> int:
+    """Read ``.archive_counter`` — shared so both backends stay monotonic.
+
+    Switching backends must not restart snapshot numbering, so the counter
+    file lives at ``<workspace>/.archive/`` and both archivers read/write it
+    through these two helpers.
+    """
+    counter_file = archive_root / ARCHIVE_COUNTER_NAME
+    if counter_file.exists():
+        try:
+            return int(counter_file.read_text(encoding="utf-8").strip())
+        except (ValueError, OSError):
+            pass
+    return 0
+
+
+def save_archive_counter(archive_root: Path, value: int) -> None:
+    archive_root.mkdir(parents=True, exist_ok=True)
+    counter_file = archive_root / ARCHIVE_COUNTER_NAME
+    if counter_file.exists():
+        try:
+            remove_file_readonly(str(counter_file))
+        except Exception as exc:
+            logger.warning("Could not remove read-only on counter file %s: %s", counter_file, exc)
+    counter_file.write_text(str(value), encoding="utf-8")
+
+
 class WorkspaceArchiver:
     def __init__(self, workspace: Path, keep_last: int = 5):
         self.workspace = workspace.resolve()
         self.archive_root = self.workspace / _ARCHIVE_DIR
         self.keep_last = keep_last
-        self._archive_counter = self._load_counter()
+        self._archive_counter = load_archive_counter(self.archive_root)
 
     def _load_counter(self) -> int:
-        counter_file = self.archive_root / ".archive_counter"
-        if counter_file.exists():
-            try:
-                return int(counter_file.read_text(encoding="utf-8").strip())
-            except (ValueError, OSError):
-                pass
-        return 0
+        return load_archive_counter(self.archive_root)
 
     def _save_counter(self) -> None:
-        self.archive_root.mkdir(parents=True, exist_ok=True)
-        counter_file = self.archive_root / ".archive_counter"
-        if counter_file.exists():
-            try:
-                remove_file_readonly(str(counter_file))
-            except Exception as exc:
-                logger.warning("Could not remove read-only on counter file %s: %s", counter_file, exc)
-        counter_file.write_text(str(self._archive_counter), encoding="utf-8")
+        save_archive_counter(self.archive_root, self._archive_counter)
 
     def _get_archive_subdir(self, filename: str) -> str:
         ext = Path(filename).suffix.lower()
@@ -109,6 +130,14 @@ class WorkspaceArchiver:
         if not path.is_file():
             return False
         if should_skip_path(path, extra_dirs=_ARCHIVE_EXTRA_IGNORE_DIRS):
+            return False
+        try:
+            rel = path.relative_to(self.workspace)
+        except ValueError:
+            rel = None
+        if rel is not None and any(
+            part in _ARCHIVE_SKIP_DIR_NAMES for part in rel.parts[:-1]
+        ):
             return False
         if ignore_matcher and ignore_matcher.matches(path):
             return False

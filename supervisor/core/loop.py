@@ -42,6 +42,13 @@ class SupervisorLoop(BaseLoop):
         )
         self._last_plan: str = ""
         self._last_supervisor_feedback: str = ""
+        # Per-turn change evidence for the file-selection listing: the
+        # previous judged turn's snapshot, so the judge can see what moved.
+        self._turn_deltas: dict[str, str] = {}
+        self.supervisor.set_change_providers(
+            deltas=self._selection_deltas,
+            mtimes=self._selection_mtimes,
+        )
 
         # Goal guard: the judge's DONE is a proposal validated against
         # deterministic workspace evidence before the run may end.
@@ -373,7 +380,28 @@ class SupervisorLoop(BaseLoop):
             )
             # No load chains: requests seen in the re-judge wait for next turn.
             self._queue_deferred_skill_requests(verdict)
+        # Per-turn harvest: the harvest IS the evidence base the blocked
+        # triggers read (passing-gate high-water mark, gate statuses), and the
+        # files it writes now sit outside the archived tree, so they survive
+        # the archive-and-relaunch cycle. Harvesting only at run end left every
+        # fresh cycle with an empty evidence base, pinning the unreachable
+        # streak at zero forever.
+        self._harvest_gates()
         return verdict
+
+    def _selection_deltas(self) -> dict[str, str]:
+        """Changed-file markers from the last refresh (path -> "+new" / "~+a/-d").
+
+        Refreshed together with the snapshot diff, so the file-selection
+        listing and the change detector never disagree.
+        """
+        return dict(self._turn_deltas)
+
+    def _selection_mtimes(self) -> dict[str, float]:
+        """Per-file mtime from the current snapshot, for recency ordering."""
+        if self._cached_snapshot is None:
+            return {}
+        return {f.rel_path: f.mtime for f in self._cached_snapshot.files}
 
     def _workspace_tree_block(self) -> str:
         snapshot = self._cached_snapshot
@@ -563,7 +591,9 @@ class SupervisorLoop(BaseLoop):
     def _last_gate_harvest(self) -> dict | None:
         import json
 
-        path = self.config.workspace / "logs" / "gate_results_last.json"
+        from supervisor.protocols.feasibility_gate import default_gate_results_path
+
+        path = default_gate_results_path(self.config.workspace)
         try:
             if path.is_file():
                 data = json.loads(path.read_text(encoding="utf-8-sig"))
@@ -573,16 +603,22 @@ class SupervisorLoop(BaseLoop):
         return None
 
     def _harvest_gates(self) -> None:
-        """Run end: PROV record of gate outcomes + guarded status transitions.
+        """PROV record of gate outcomes + guarded status transitions.
 
         Machine gates are re-evaluated once (bounded); manual results come
         from the final judge verdict. PASS flips gates to passing with
         provenance; FAIL streaks only *propose* blocked for the operator.
+
+        Called every judged turn, not only at run end: the harvest is the
+        evidence base the unreachable-target trigger reads, and archiving used
+        to wipe it right before each fresh cycle, so the streak was pinned at
+        zero forever. Both files now live outside the archived tree.
         """
         import json
 
         from supervisor.protocols.feasibility_gate import (
             default_facts_path,
+            default_gate_results_path,
             load_feasibility_facts,
             parse_gates,
             write_feasibility_facts,
@@ -618,9 +654,9 @@ class SupervisorLoop(BaseLoop):
                 run_id=time.strftime("%Y%m%d-%H%M%S"),
                 protocol_text=safe_read_text(self.config.protocol_path),
             )
-            logs_dir = self.config.workspace / "logs"
-            logs_dir.mkdir(parents=True, exist_ok=True)
-            (logs_dir / "gate_results_last.json").write_text(
+            results_path = default_gate_results_path(self.config.workspace)
+            results_path.parent.mkdir(parents=True, exist_ok=True)
+            results_path.write_text(
                 json.dumps(harvest, indent=2, ensure_ascii=False) + "\n",
                 encoding="utf-8",
             )

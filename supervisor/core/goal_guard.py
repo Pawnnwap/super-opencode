@@ -33,6 +33,7 @@ from supervisor.analyzers.stagnation_detector import (
 )
 from supervisor.core.llm_support.models import SupervisorVerdict
 from supervisor.core.target_state import (
+    AUDIT_FILENAME,
     initialise_target_state,
     load_target_state,
     record_lesson,
@@ -44,7 +45,6 @@ from supervisor.utils.text_utils import head_tail_excerpt
 
 logger = logging.getLogger(__name__)
 
-_AUDIT_FILE = "goal_audit.jsonl"
 _MAX_AUDIT_FILES_LISTED = 8
 _MAX_LESSON_LEN = 240
 
@@ -192,16 +192,23 @@ class GoalGuard:
 
         evidence_files = self._evidence_files(changed_files)
         if getattr(self._config, "goal_require_changes", True) and not evidence_files:
-            decision = self._block(
-                verdict,
-                changed_files,
-                unmet=[],
-                reason=(
-                    "no observable workspace change since run start — "
-                    "completion without evidence is not accepted"
-                ),
-            )
-            return decision
+            # A run that legitimately produced everything it needed earlier
+            # (deliverable sealed, artifacts published) has no new file to
+            # show on the DONE turn. Demanding one rewards churn: the measured
+            # failure mode was an agent deleting __pycache__ and rewriting
+            # summary.md to manufacture a diff. Attainment evidence recorded in
+            # the gate facts is equally observable, so it satisfies the rule.
+            if not self._attainment_recorded():
+                decision = self._block(
+                    verdict,
+                    changed_files,
+                    unmet=[],
+                    reason=(
+                        "no observable workspace change since run start — "
+                        "completion without evidence is not accepted"
+                    ),
+                )
+                return decision
 
         if getattr(self._config, "goal_verify_tests", False):
             ok, detail = self._run_test_gate()
@@ -415,8 +422,9 @@ class GoalGuard:
     def _evidence_files(self, changed_files: list[str]) -> list[str]:
         """Changed files minus supervisor-generated markdown."""
         from supervisor.core.llm_support.models import _OPENCODE_GENERATED_MD
+        from supervisor.core.task_state import TASK_STATE_FILENAME
 
-        generated = set(_OPENCODE_GENERATED_MD) | {"TASK_STATE.md"}
+        generated = set(_OPENCODE_GENERATED_MD) | {TASK_STATE_FILENAME}
         return [f for f in changed_files if Path(f).name not in generated]
 
     # ------------------------------------------------------------------ #
@@ -460,6 +468,22 @@ class GoalGuard:
                 )
         return problems
 
+    def _attainment_recorded(self) -> bool:
+        """True when the gate facts already record a PASS for this workspace.
+
+        The no-change DONE rule exists to stop unevidenced completion claims.
+        A recorded gate PASS is exactly that evidence, in durable form, so it
+        counts even when the sealing turn itself wrote no file.
+        """
+        from supervisor.protocols.feasibility_gate import (
+            default_facts_path,
+            load_feasibility_facts,
+            parse_gates,
+        )
+
+        facts = load_feasibility_facts(default_facts_path(self._workspace))
+        return any(gate.status == "passing" for gate in parse_gates(facts or {}))
+
     def _run_test_gate(self) -> tuple[bool, str]:
         from supervisor.runners.test_runner import OcTestRunner
 
@@ -477,7 +501,7 @@ class GoalGuard:
             "event": event,
         }
         record.update(fields)
-        path = self._workspace / ".opencode" / _AUDIT_FILE
+        path = self._workspace / ".opencode" / AUDIT_FILENAME
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             line = json.dumps(record, ensure_ascii=False, sort_keys=True)

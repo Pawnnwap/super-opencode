@@ -23,6 +23,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from supervisor.core.target_state import AUDIT_FILENAME
 from supervisor.utils.filesystem.file_ops import safe_read_text
 
 logger = logging.getLogger(__name__)
@@ -191,7 +192,7 @@ def _read_file_block(workspace: Path, arg: str) -> str:
 
 
 def audit_tail_block(workspace: Path) -> str:
-    audit = Path(workspace) / ".opencode" / "goal_audit.jsonl"
+    audit = Path(workspace) / ".opencode" / AUDIT_FILENAME
     try:
         lines = audit.read_text(encoding="utf-8").strip().splitlines()
     except OSError:

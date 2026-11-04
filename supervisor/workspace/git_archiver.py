@@ -54,13 +54,14 @@ import threading
 import time
 from pathlib import Path
 
-from supervisor.utils.filesystem.file_permissions import remove_file_readonly
 from supervisor.utils.filesystem.path_filters import DEFAULT_IGNORE_DIRS
 from supervisor.workspace.ignore_patterns import IgnoreMatcher
 from supervisor.workspace.workspace_archiver import (
     _ARCHIVE_EXTRA_IGNORE_DIRS,
     ArchiveResult,
     WorkspaceArchiver,
+    load_archive_counter,
+    save_archive_counter,
 )
 
 logger = logging.getLogger(__name__)
@@ -72,7 +73,12 @@ TAG_PREFIX = "snap/"
 
 # *.log deviates from the copy backend deliberately: a rotated log is a new
 # blob every snapshot, which re-introduces full-copy growth in object form.
-_EXTRA_EXCLUDE_LINES = ["*.log"]
+# logs/ is excluded because it is the run's *evidence base*
+# (feasibility_facts.json, gate_results_last.json): archiving it swept the
+# facts into .archive/run_*_before_new_run right before each fresh cycle, so
+# every relaunch started with an empty evidence base and the blocked triggers
+# could never accumulate a streak. It is run state, not workspace content.
+_EXTRA_EXCLUDE_LINES = ["*.log", "logs/"]
 
 # Metadata caps: commit messages are not the place for a 10k-file listing.
 _MAX_META_FILES = 500
@@ -190,23 +196,10 @@ class GitWorkspaceArchiver:
         )
 
     def _load_counter(self) -> int:
-        counter_file = self.archive_root / ".archive_counter"
-        if counter_file.exists():
-            try:
-                return int(counter_file.read_text(encoding="utf-8").strip())
-            except (ValueError, OSError):
-                pass
-        return 0
+        return load_archive_counter(self.archive_root)
 
     def _save_counter(self) -> None:
-        self.archive_root.mkdir(parents=True, exist_ok=True)
-        counter_file = self.archive_root / ".archive_counter"
-        if counter_file.exists():
-            try:
-                remove_file_readonly(str(counter_file))
-            except Exception as exc:
-                logger.warning("Could not clear read-only on counter file: %s", exc)
-        counter_file.write_text(str(self._archive_counter), encoding="utf-8")
+        save_archive_counter(self.archive_root, self._archive_counter)
 
     # ------------------------------------------------------------- public
 

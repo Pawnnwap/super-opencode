@@ -20,6 +20,23 @@ from supervisor.utils.text_utils import head_tail_excerpt
 
 _STATE_DIR = ".opencode"
 _STATE_FILE = "target_state.json"
+# The goal audit journal. Written by three modules (the guard appends, the
+# judge harness reads its tail, this module scans it for terminal assertions),
+# so the name lives here as the single definition they all import.
+AUDIT_FILENAME = "goal_audit.jsonl"
+# The agent's own terminal assertions. Studies write these into the audit
+# trail when they hit a certified ceiling; they used to be inert side-notes
+# that the harness ignored while it kept buying turns.
+_TERMINAL_EVENTS = frozenset(
+    {
+        "goal_terminal",
+        "terminal_gap",
+        "run_closed_by_agent_on_director_directive",
+        "run_closed_by_agent",
+    }
+)
+_TERMINAL_EVENT_MARKERS = ("_closed", "terminal")
+_MAX_AUDIT_SCAN_BYTES = 2_000_000
 _STAGED_FILE = "staged_improvements.jsonl"
 _MAX_DIRECTIONS = 12
 _MAX_LESSONS = 8
@@ -64,14 +81,22 @@ def initialise_target_state(
     success_criteria: list[str] | None = None,
     failure_conditions: list[str] | None = None,
 ) -> TargetState:
-    """Create fresh state for a run. Never deletes previous staged records."""
+    """Create fresh state for a run. Never deletes previous staged records.
+
+    A state file already marked ``closed`` is left alone: the previous run
+    reached a terminal outcome and a fresh cycle must not silently re-open it.
+    """
+    workspace = Path(workspace)
+    existing = load_target_state(workspace)
+    if existing is not None and existing.status == "closed":
+        return existing
     state = TargetState(
         target=target.strip(),
         success_criteria=list(success_criteria or _criteria_from_target(target)),
         failure_conditions=list(failure_conditions or _failure_conditions_from_target(target)),
         updated_at=_now(),
     )
-    _write_state(Path(workspace), state)
+    _write_state(workspace, state)
     return state
 
 
@@ -190,9 +215,77 @@ def similar_rejected_direction(state: TargetState, direction: str) -> str | None
     return None
 
 
+def read_terminal_assertion(workspace: Path) -> str:
+    """The agent's own latest terminal assertion, '' when it made none.
+
+    Reads ``<workspace>/.opencode/goal_audit.jsonl`` — the journal the study
+    agents write themselves — and returns a one-line description of the most
+    recent terminal event (``goal_terminal``, ``terminal_gap``, any
+    ``*_closed_*``). These events were previously inert: the loop ignored them
+    and relaunched, resetting ``target_state.json`` to ``running`` each time.
+    """
+    path = Path(workspace) / _STATE_DIR / AUDIT_FILENAME
+    try:
+        if not path.is_file():
+            return ""
+        size = path.stat().st_size
+        with path.open("rb") as handle:
+            if size > _MAX_AUDIT_SCAN_BYTES:
+                handle.seek(size - _MAX_AUDIT_SCAN_BYTES)
+            raw = handle.read()
+    except OSError:
+        return ""
+    latest = ""
+    for line in raw.decode("utf-8", errors="replace").splitlines():
+        line = line.strip()
+        if not line or "terminal" not in line and "_closed" not in line:
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(record, dict):
+            continue
+        event = str(record.get("event", "")).strip().lower()
+        if not event:
+            continue
+        if event not in _TERMINAL_EVENTS and not any(
+            marker in event for marker in _TERMINAL_EVENT_MARKERS
+        ):
+            continue
+        reason = " ".join(
+            " ".join(
+                str(record.get(key, "") or "").split()
+                if not isinstance(record.get(key), (list, tuple))
+                else " ".join(str(v) for v in record.get(key) or ())
+            )
+            for key in ("reason", "new_status", "study")
+        ).strip()
+        latest = f"{event}" + (f": {reason[:200]}" if reason else "")
+    return latest
+
+
+def mark_target_closed(workspace: Path, reason: str) -> TargetState | None:
+    """Write the terminal ``closed`` status the harness could never express.
+
+    ``record_target_iteration`` only ever wrote ``running`` /
+    ``retry_with_new_direction`` / ``replan_required``, so an agent asking the
+    harness for ``status="closed"`` got ``running`` back on the next relaunch.
+    The BLOCKED exit calls this so the durable state agrees with the run's
+    terminal outcome.
+    """
+    fd_state = load_target_state(workspace)
+    if fd_state is None:
+        return None
+    fd_state.status = "closed"
+    fd_state.last_reason = " ".join((reason or "").split())[:400]
+    fd_state.updated_at = _now()
+    _write_state(Path(workspace), fd_state)
+    return fd_state
+
+
 def record_lesson(workspace: Path, lesson: str) -> TargetState | None:
     """Append a bounded Reflexion-style lesson for injection into later prompts."""
-    lesson = " ".join((lesson or "").split())
     if not lesson:
         return load_target_state(workspace)
     state = load_target_state(workspace)

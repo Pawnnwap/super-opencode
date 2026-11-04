@@ -8,8 +8,9 @@ never met"), the run surfaces that ceiling up front instead of rediscovering
 it over another 15-20 pre-registered attempts.
 
 This module is self-contained and deterministic: no LLM calls, no shared state.
-It reads an optional JSON facts file (default: <workspace>/logs/feasibility_facts.json)
-and renders a bounded block.
+It reads an optional JSON facts file (default: <workspace>/feasibility_facts.json,
+outside the archived tree so it survives relaunch cycles) and renders a bounded
+block.
 
 JSON schema — gate list (preferred)::
 
@@ -51,6 +52,7 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 DEFAULT_FACTS_NAME = "feasibility_facts.json"
+GATE_RESULTS_NAME = "gate_results_last.json"
 MAX_BLOCK_CHARS = 2200
 
 # Per-gate status vocabulary. "blocked" marks a gate that failed in every
@@ -360,8 +362,26 @@ def render_feasibility_block(
 
 
 def default_facts_path(workspace: Path) -> Path:
-    """Conventional location next to the run's other state files."""
-    return Path(workspace) / "logs" / DEFAULT_FACTS_NAME
+    """Conventional location outside the archived tree.
+
+    ``logs/`` is archived and then swept into ``.archive/run_*_before_new_run``
+    at every fresh cycle, so facts stored there vanished exactly when the next
+    cycle needed them — every relaunch started with an empty evidence base and
+    the unreachable-target trigger could never accumulate a streak. The
+    workspace root survives archiving, so the facts live there.
+    """
+    workspace = Path(workspace)
+    stable = workspace / DEFAULT_FACTS_NAME
+    legacy = workspace / "logs" / DEFAULT_FACTS_NAME
+    if not stable.exists() and legacy.is_file():
+        # Keep old workspaces readable: their facts were written under logs/.
+        return legacy
+    return stable
+
+
+def default_gate_results_path(workspace: Path) -> Path:
+    """Last gate harvest, next to the facts file (outside the archived tree)."""
+    return Path(default_facts_path(workspace)).with_name(GATE_RESULTS_NAME)
 
 
 def protocol_fingerprint(text: str) -> str:
@@ -443,6 +463,8 @@ __all__ = [
     "FeasibilityAssessment",
     "check_feasibility",
     "default_facts_path",
+    "default_gate_results_path",
+    "GATE_RESULTS_NAME",
     "load_feasibility_facts",
     "parse_llm_facts",
     "protocol_fingerprint",
