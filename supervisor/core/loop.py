@@ -152,7 +152,24 @@ class SupervisorLoop(BaseLoop):
             if self.config.enable_occam_razor:
                 yield from self._run_occam_razor()
             self._harvest_gates()
-            yield _ev("success", "All targets met — run finished successfully.")
+            decision = getattr(self._goal_guard, "last_done_decision", None)
+            if decision is not None and decision.unverified:
+                # The guard's blocked-stops relief valve accepted a DONE the
+                # evidence did not fully back. The run is over (autonomous
+                # watchdog), but the label must survive to every surface.
+                yield _ev(
+                    "warn",
+                    "PENDING REVIEW / 待处理: run accepted as DONE after repeated "
+                    "blocked proposals WITHOUT complete evidence "
+                    f"(remaining unmet: {len(decision.unmet_criteria)}). "
+                    "Verify the deliverables manually before trusting this run.",
+                )
+                yield _ev(
+                    "success",
+                    "All targets met (UNVERIFIED — pending review) — run finished.",
+                )
+            else:
+                yield _ev("success", "All targets met — run finished successfully.")
         elif self._state == LoopState.ENDED_BLOCKED:
             # Terminal and evidence-backed: the done condition cannot be met
             # under the recorded constraints. Distinct from FAILED so the event

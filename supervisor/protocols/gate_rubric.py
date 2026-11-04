@@ -296,12 +296,16 @@ def verdict_violations(
     criteria_results: list,
     gates: tuple[Gate, ...],
     evaluations: dict[str, GateEvaluation],
+    workspace: Path | None = None,
 ) -> list[str]:
     """Entity / assertion checks on a judge verdict against the rubric.
 
     ``criteria_results`` items expose ``.criterion`` (text) and ``.met``.
     Consistency (DONE requires all PASS) is enforced by the goal guard; these
-    checks catch fabrication and unevidenced claims.
+    checks catch fabrication and unevidenced claims. When *workspace* is
+    given, free-text evidence for criteria claimed MET is scanned for
+    path-like tokens and any token that does not resolve to a file is reported
+    (a judge citing a deliverable that does not exist is an entity error).
     """
     if not gates:
         return []
@@ -326,6 +330,24 @@ def verdict_violations(
         violations.append(
             "fabricated gate(s) outside the rubric: " + "; ".join(unknown[:3]),
         )
+    # Entity: evidence for a MET claim citing a file that does not exist.
+    if workspace is not None:
+        import re
+
+        path_like = re.compile(
+            r"(?:^|[\s('\"(\[\`])([A-Za-z0-9_./\\-]+\.[A-Za-z][A-Za-z0-9]+)(?=$|[\s)'\"\],;])"
+        )
+        for result in criteria_results or []:
+            if not bool(getattr(result, "met", False)):
+                continue
+            evidence = str(getattr(result, "evidence", "") or "")
+            for token in path_like.findall(evidence):
+                if _path_exists(token, Path(workspace)):
+                    continue
+                violations.append(
+                    f"evidence cites a missing file: {token!r}",
+                )
+                break  # one missing reference per criterion is enough
     # Assertion: PASS claimed for a machine gate the system measured otherwise.
     for name, evaluation in evaluations.items():
         if name in claimed and claimed[name] and evaluation.outcome != "PASS":
@@ -342,6 +364,20 @@ def verdict_violations(
             "machine-determined gate(s) not adjudicated: " + ", ".join(missing),
         )
     return violations
+
+
+def _path_exists(token: str, workspace: Path) -> bool:
+    """A path-like token resolves under the workspace (or exists absolute)."""
+    from pathlib import PurePath
+
+    parts = PurePath(token).parts
+    if len(parts) <= 1:
+        return True  # bare filename — too weak to adjudicate
+    candidate = (workspace / token).resolve()
+    try:
+        return candidate.exists()
+    except OSError:
+        return False
 
 
 # --------------------------------------------------------------------------- #

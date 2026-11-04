@@ -91,6 +91,9 @@ class GoalGuard:
         self._blocked_stops = 0
         self._turn = 0
         self._baseline_files: set[str] = set()
+        # The most recent evaluate_done outcome, for the loop to label the
+        # run's terminal state honestly (unverified accepts stay visible).
+        self.last_done_decision: DoneDecision | None = None
 
     # ------------------------------------------------------------------ #
     # Lifecycle                                                           #
@@ -145,29 +148,49 @@ class GoalGuard:
         max_blocked = max(0, int(getattr(self._config, "max_blocked_stops", 2)))
         if self._blocked_stops >= max_blocked:
             # Cap reached — accept rather than loop forever; flag as unverified.
+            # This is the autonomous-watchdog relief valve BY DESIGN: the run
+            # ends, but every surface (audit, report, job log) must carry the
+            # UNVERIFIED / pending-review label so nobody mistakes it for an
+            # evidence-backed acceptance.
             self._blocked_stops += 1
             decision = DoneDecision(
                 accepted=True,
                 reason=(
                     f"accepted after {self._blocked_stops - 1} blocked DONE "
-                    "proposals — judge insistence outweighs remaining doubt"
+                    "proposals — judge insistence outweighs remaining doubt "
+                    "(PENDING REVIEW / 待处理: evidence incomplete)"
                 ),
                 unverified=True,
                 unmet_criteria=unmet,
             )
+            self.last_done_decision = decision
             logger.warning(
                 "Goal guard accepting UNVERIFIED completion after %d blocked "
                 "proposal(s): %s",
                 self._blocked_stops - 1,
                 decision.reason,
             )
+            evidence_files = self._evidence_files(changed_files)
+            record_target_iteration(
+                self._workspace,
+                iteration=self._turn,
+                direction=verdict.feedback or "done (unverified)",
+                evidence="; ".join(evidence_files[:_MAX_AUDIT_FILES_LISTED]),
+                accepted=True,
+                reason=decision.reason,
+            )
             self._audit(
                 "done_accepted_unverified",
                 decision="accepted",
+                unverified=True,
+                pending_review=True,
                 reason=decision.reason,
-                all_targets_met=True,
+                # Honest record: the verdict's own claim, not the forced accept.
+                all_targets_met=bool(verdict.all_targets_met),
                 unmet_criteria=unmet,
-                changed_files=self._evidence_files(changed_files),
+                changed_files=evidence_files,
+                proposal=self._proposal_record(verdict),
+                evidence_snapshot=self._evidence_snapshot(evidence_files),
             )
             return decision
 
@@ -240,6 +263,7 @@ class GoalGuard:
             reason=reason,
             unmet_criteria=unmet,
         )
+        self.last_done_decision = decision
         record_target_iteration(
             self._workspace,
             iteration=self._turn,
@@ -255,6 +279,8 @@ class GoalGuard:
             all_targets_met=True,
             unmet_criteria=unmet,
             changed_files=evidence_files,
+            proposal=self._proposal_record(verdict),
+            evidence_snapshot=self._evidence_snapshot(evidence_files),
             test_file_edits=red_flags,
         )
         return decision
@@ -273,13 +299,17 @@ class GoalGuard:
             reason=reason,
             unmet_criteria=unmet,
         )
+        self.last_done_decision = decision
+        evidence_files = self._evidence_files(changed_files)
         self._audit(
             "done_blocked",
             decision="blocked",
             reason=reason,
             all_targets_met=verdict.all_targets_met,
             unmet_criteria=unmet,
-            changed_files=self._evidence_files(changed_files),
+            changed_files=evidence_files,
+            proposal=self._proposal_record(verdict),
+            evidence_snapshot=self._evidence_snapshot(evidence_files),
             blocked_stops=self._blocked_stops,
             next_action=verdict.next_action,
         )
@@ -428,6 +458,61 @@ class GoalGuard:
         return [f for f in changed_files if Path(f).name not in generated]
 
     # ------------------------------------------------------------------ #
+    # Audit completeness (8.5.4: full proposal + evidence snapshot)       #
+    # ------------------------------------------------------------------ #
+
+    _PROPOSAL_EXCERPT_CHARS = 400
+
+    def _proposal_record(self, verdict) -> dict:
+        """The judge's full structured proposal, verbatim enough to replay.
+
+        The audit's job is to let someone reconstruct "what did the judge
+        actually claim" months later — a summary is not a proposal. Criteria
+        are kept whole (the checklist is capped at 8); prose fields are
+        head+tail excerpted so one pathological reply cannot bloat the log.
+        """
+        criteria = []
+        for result in getattr(verdict, "criteria_results", None) or []:
+            criteria.append(
+                {
+                    "criterion": str(getattr(result, "criterion", "") or ""),
+                    "met": bool(getattr(result, "met", False)),
+                    "evidence": str(getattr(result, "evidence", "") or "")[:200],
+                },
+            )
+        return {
+            "all_targets_met": bool(getattr(verdict, "all_targets_met", False)),
+            "criteria": criteria,
+            "next_action": head_tail_excerpt(
+                str(getattr(verdict, "next_action", "") or ""),
+                self._PROPOSAL_EXCERPT_CHARS,
+            ),
+            "feedback": head_tail_excerpt(
+                str(getattr(verdict, "feedback", "") or ""),
+                self._PROPOSAL_EXCERPT_CHARS,
+            ),
+        }
+
+    def _evidence_snapshot(self, evidence_files: list[str]) -> dict[str, str]:
+        """Content hashes of the evidence at decision time.
+
+        The workspace keeps changing after the run ends; without a hash per
+        file, an audit record cannot prove what the evidence LOOKED like when
+        the decision was made. Bounded to the audited file list.
+        """
+        import hashlib
+
+        snapshot: dict[str, str] = {}
+        for rel in evidence_files[:_MAX_AUDIT_FILES_LISTED]:
+            path = self._workspace / rel
+            try:
+                digest = hashlib.sha256(path.read_bytes()).hexdigest()[:16]
+            except OSError:
+                digest = "(unreadable)"
+            snapshot[rel] = digest
+        return snapshot
+
+    # ------------------------------------------------------------------ #
     # Gate rubric exit checks (layer 3: entity / assertion / consistency) #
     # ------------------------------------------------------------------ #
 
@@ -459,7 +544,9 @@ class GoalGuard:
                     name: evaluation.outcome for name, evaluation in evaluations.items()
                 },
             )
-        problems = verdict_violations(verdict.criteria_results, gates, evaluations)
+        problems = verdict_violations(
+            verdict.criteria_results, gates, evaluations, self._workspace,
+        )
         for name, evaluation in evaluations.items():
             if evaluation.outcome != "PASS":
                 problems.append(
@@ -490,8 +577,12 @@ class GoalGuard:
         try:
             result = OcTestRunner(self._workspace).run()
         except Exception as exc:  # noqa: BLE001 — a broken gate must not crash the loop
+            # Fail-closed: a crashed gate leaves no record, and "no record ≠
+            # pass" is exactly the rule the rubric exit checks enforce. The
+            # blocked-stops cap remains the designed relief valve for a
+            # workspace whose gate can never run.
             logger.warning("goal test gate crashed: %s", exc)
-            return True, f"gate error ignored: {exc}"
+            return False, f"test gate crashed — no record, not a pass: {exc}"
         return bool(result.ok), result.summary()
 
     def _audit(self, event: str, **fields: object) -> None:
