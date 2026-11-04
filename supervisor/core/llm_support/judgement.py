@@ -231,26 +231,30 @@ def generate_suggestions(
     )
 
     context_blocks = build_context_blocks("", "", protected_context)
+    # ``step_context_block`` already carries its own "--- Step Context ---"
+    # header (build_step_context). Prefixing it again produced the doubled
+    # marker seen in every suggestion prompt.
     msg = (
         f"{preamble}"
-        f"--- Step Context ---\n{step_context_block}"
+        f"{step_context_block}"
         f"{context_blocks}"
         f"--- opencode output ---\n"
         f"{opencode_output}\n--- end ---{summary_context}\n\n"
         f"{postscript}"
     )
 
-    history_step_context = (
-        build_step_context(0, 0, "unknown", "none") if step_context else ""
-    )
     history_msg = (
         f"{preamble}"
-        f"--- Step Context ---\n{history_step_context}"
         f"--- opencode output ---\n"
         f"{opencode_output}\n--- end ---{summary_context}\n\n"
     )
 
-    return supervisor._chat(msg, history_content=history_msg).raw, chosen_paths
+    return supervisor._chat(
+        msg,
+        history_content=history_msg,
+        is_intermediate=True,
+        omit_history=True,
+    ).raw, chosen_paths
 
 
 def analyze_protocol(

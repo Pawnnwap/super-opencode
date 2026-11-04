@@ -13,6 +13,7 @@ exactly what it is judging before it asks opencode to modify code.
 from __future__ import annotations
 
 import ast
+import difflib
 import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -26,6 +27,9 @@ if TYPE_CHECKING:
 
 _IGNORE_EXTS = {".pyc", ".pyo", ".egg-info", ".DS_Store", ".bak", ".isorted"}
 _MAX_FILE_CHARS = 6_000
+# Line diffing is bounded: beyond this many lines the SequenceMatcher cost
+# dwarfs the value of an exact count, so the delta is reported as approximate.
+_MAX_DIFF_LINES = 4_000
 
 # Digest guards: workspaces accumulate generated artifacts over a long run
 # (literature/, logs/, ab/, output/, ...). An unbounded tree listing once
@@ -150,6 +154,28 @@ class FileSnapshot:
     truncated: bool
     sha256: str          # full-content hash
     skeleton: CodeSkeleton | None = None  # None for non-Python or unparseable files
+    mtime: float = 0.0   # last write time, for recency ordering
+
+
+@dataclass
+class FileDelta:
+    """What changed in one file between two snapshots."""
+
+    rel_path: str
+    status: str          # "added" | "modified" | "removed"
+    added: int = 0
+    removed: int = 0
+    approx: bool = False  # diff exceeded the line budget
+
+    def render(self) -> str:
+        """Compact one-line marker for a file-selection listing."""
+        sign = {"added": "+", "modified": "~", "removed": "-"}.get(self.status, "?")
+        if self.status == "added":
+            return f"{sign}new"
+        if self.status == "removed":
+            return f"{sign}deleted"
+        body = f"+{self.added}/-{self.removed}"
+        return f"{sign}{body}{'~' if self.approx else ''}"
 
 
 @dataclass
@@ -246,6 +272,44 @@ class CodebaseSnapshot:
                 changed.append(path)
         return sorted(changed)
 
+    def deltas(self, newer: CodebaseSnapshot) -> dict[str, FileDelta]:
+        """Per-file line delta against an earlier snapshot, keyed by path.
+
+        This is what lets the judge's file-selection step see *what moved*
+        since the previous turn, instead of a flat alphabetical list where a
+        freshly rewritten deliverable is indistinguishable from a stale
+        artifact. Removed files are reported for the record; the caller
+        decides whether they belong in a candidate listing.
+        """
+        before = {f.rel_path: f for f in self.files}
+        after = {f.rel_path: f for f in newer.files}
+        out: dict[str, FileDelta] = {}
+        for path in sorted(set(before) | set(after)):
+            old = before.get(path)
+            new = after.get(path)
+            if old is None and new is not None:
+                out[path] = FileDelta(
+                    path, "added", added=_line_count(new.content),
+                )
+                continue
+            if new is None and old is not None:
+                out[path] = FileDelta(
+                    path, "removed", removed=_line_count(old.content),
+                )
+                continue
+            if old is None or new is None or old.sha256 == new.sha256:
+                continue
+            added, removed, approx = _line_delta(old.content, new.content)
+            out[path] = FileDelta(path, "modified", added, removed, approx)
+        return out
+
+    def recency_order(self) -> list[FileSnapshot]:
+        """Files newest-first — the order an investigator wants by default."""
+        return sorted(
+            self.files,
+            key=lambda f: (-(f.mtime or 0.0), f.rel_path),
+        )
+
     # ------------------------------------------------------------------ #
     # Skimmed views (new methods)                                          #
     # ------------------------------------------------------------------ #
@@ -325,6 +389,35 @@ class CodebaseSnapshot:
 # Public factory                                                       #
 # ------------------------------------------------------------------ #
 
+def _line_count(text: str) -> int:
+    return text.count("\n") + (0 if not text or text.endswith("\n") else 1)
+
+
+def _line_delta(old: str, new: str) -> tuple[int, int, bool]:
+    """(added, removed, approximate) line counts between two texts.
+
+    Bounded: a 500-line deliverable versus its predecessor is cheap, while an
+    unbounded matcher over a generated 200k-line JSON would stall the turn.
+    Over the budget the size difference is reported as approximate.
+    """
+    old_lines = old.splitlines()
+    new_lines = new.splitlines()
+    if max(len(old_lines), len(new_lines)) > _MAX_DIFF_LINES:
+        growth = len(new_lines) - len(old_lines)
+        return (max(0, growth), max(0, -growth), True)
+    matcher = difflib.SequenceMatcher(None, old_lines, new_lines, autojunk=False)
+    added = removed = 0
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "replace":
+            removed += i2 - i1
+            added += j2 - j1
+        elif tag == "delete":
+            removed += i2 - i1
+        elif tag == "insert":
+            added += j2 - j1
+    return added, removed, False
+
+
 def snapshot_codebase(root: Path, ignore_matcher: IgnoreMatcher | None = None) -> CodebaseSnapshot:
     """Walk *root* and build a CodebaseSnapshot."""
     snap = CodebaseSnapshot(root=root)
@@ -345,6 +438,10 @@ def _add_file(snap: CodebaseSnapshot, path: Path, root: Path) -> None:
     try:
         raw = path.read_bytes()
         sha = hashlib.sha256(raw).hexdigest()[:12]
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            mtime = 0.0
         try:
             text = raw.decode("utf-8")
         except UnicodeDecodeError:
@@ -370,6 +467,7 @@ def _add_file(snap: CodebaseSnapshot, path: Path, root: Path) -> None:
             truncated=truncated,
             sha256=sha,
             skeleton=skeleton,
+            mtime=mtime,
         ))
     except OSError:
         pass  # skip unreadable files

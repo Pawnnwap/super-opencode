@@ -142,8 +142,17 @@ Select the {top_k} most relevant source files to read before generating code-imp
 ## Protocol target
 {protocol_target}
 
-## Candidate files ({total_candidates} total)
+## Candidate files ({total_candidates} total, changed-this-turn first, then newest first)
+Each row is `path (size bytes)  <delta>  <age>`.
+  <delta> is empty when the file did not change since the previous turn, otherwise
+  `+new` (created), `~+12/-3` (lines added/removed), `-deleted`, or `~...` when the
+  diff exceeded its size budget.
+  <age> is how long ago the file was written.
 {listing}
+
+Prefer files that changed this turn, and files whose change is largest relative to
+their size — those are where new work and possible regressions live. Stale files
+(no delta, old age) are worth reading only when they are central to the target.
 
 Return ONLY a JSON array of up to {top_k} file paths from the list above, ordered by relevance (most relevant first). Example: ["src/main.py", "tests/test_core.py"]
 Do not include any explanation or markdown — just the JSON array."""

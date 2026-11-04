@@ -39,7 +39,16 @@ def chat(
     user_content: str,
     is_intermediate: bool = False,
     history_content: str | None = None,
+    omit_history: bool = False,
 ) -> SupervisorVerdict:
+    """One judge-model call.
+
+    ``omit_history`` sends the system prompt plus this request only. Side
+    calls whose answer never feeds a run decision (advisory suggestions,
+    protocol analysis) use it: replaying the judge's whole conversation into
+    them was 62% of each suggestion call's payload — measured 78.8 KB median
+    of history against 49.3 KB of actual content.
+    """
     should_record_user = (
         not is_intermediate
         or not supervisor._compact_intermediate_steps
@@ -110,14 +119,15 @@ def chat(
         supervisor._token_warnings.append(trunc_warning)
 
     messages = [{"role": "system", "content": supervisor._system}]
-    messages.extend(
-        build_context_messages(
-            supervisor._history,
-            max_tokens=supervisor._max_tokens,
-            verbatim_turns=supervisor._history_verbatim_turns,
-            budget_fraction=supervisor._history_budget_fraction,
-        ),
-    )
+    if not omit_history:
+        messages.extend(
+            build_context_messages(
+                supervisor._history,
+                max_tokens=supervisor._max_tokens,
+                verbatim_turns=supervisor._history_verbatim_turns,
+                budget_fraction=supervisor._history_budget_fraction,
+            ),
+        )
     messages.append({"role": "user", "content": user_content})
 
     supervisor._log_prompt("Supervisor Chat", messages)

@@ -4,14 +4,50 @@ import json as _json
 import logging
 import os
 import re
+import time
+from collections.abc import Callable
 from pathlib import Path
 
 from supervisor.monitoring.session_tracker import estimate_tokens, truncate_prompt
 from supervisor.utils.filesystem.file_ops import safe_read_text
 from supervisor.utils.filesystem.path_filters import is_candidate_file
-from supervisor.utils.text_utils import normalize_model_response
+from supervisor.utils.text_utils import head_tail_excerpt, normalize_model_response
 
 logger = logging.getLogger(__name__)
+
+# Protected-file injection bounds. ``read_protected_files`` walks
+# ``.opencode/`` and ``read_protected_files_for_suggestions`` reads up to N
+# workspace files WHOLE — both were injected verbatim into every judge and
+# suggestion prompt with no cap. Measured on one study: a single suggestion
+# call carried a 503 KB user message (median 147 KB over 216 calls, 86% of
+# that run's 52.7 MB of prompts) because one selected markdown file had grown
+# to hundreds of KB. A prompt that costs more than the decision it informs is
+# waste; these caps keep the head and tail of each file.
+_MAX_PROTECTED_FILE_CHARS = 8_000
+_MAX_PROTECTED_TOTAL_CHARS = 24_000
+_MAX_SUGGESTION_FILE_CHARS = 4_000
+_MAX_SUGGESTION_TOTAL_CHARS = 12_000
+
+
+def _age_label(mtime: float, now: float | None = None) -> str:
+    """Human-scaled age of a file ("just edited", "42m ago", ...); '' if unknown.
+
+    A raw epoch or an age in seconds is noise to a model; what it needs is
+    "this moved in the turn I am judging" versus "this has been untouched for
+    hours".
+    """
+    if not mtime:
+        return ""
+    seconds = max(0.0, (now if now is not None else time.time()) - mtime)
+    if seconds < 90:
+        return "just edited"
+    minutes = seconds / 60
+    if minutes < 60:
+        return f"{minutes:.0f}m ago"
+    hours = minutes / 60
+    if hours < 24:
+        return f"{hours:.0f}h ago"
+    return f"{hours / 24:.0f}d ago"
 
 
 class SupervisorContextManager:
@@ -44,16 +80,46 @@ class SupervisorContextManager:
         self._generated_markdown_files = generated_markdown_files
         # Thinking-effort extra_body shared with the judge chat path.
         self._reasoning_body = reasoning_body
+        # Optional providers (wired by set_change_providers) that tell the
+        # file-selection listing what changed since the previous turn.
+        self._delta_provider: Callable[[], dict[str, str]] = dict
+        self._mtime_provider: Callable[[], dict[str, float]] = dict
+
+    def delta_provider(self) -> dict[str, str]:
+        try:
+            return self._delta_provider() or {}
+        except Exception:
+            logger.warning("delta provider failed", exc_info=True)
+            return {}
+
+    def mtime_provider(self) -> dict[str, float]:
+        try:
+            return self._mtime_provider() or {}
+        except Exception:
+            logger.warning("mtime provider failed", exc_info=True)
+            return {}
 
     def read_protected_files(self) -> dict[str, str]:
         protected_contents: dict[str, str] = {}
         workspace = self._workspace.resolve()
 
+        def _add(rel: str, path) -> None:
+            if sum(len(v) for v in protected_contents.values()) >= (
+                _MAX_PROTECTED_TOTAL_CHARS
+            ):
+                return
+            text = safe_read_text(path)
+            if len(text) > _MAX_PROTECTED_FILE_CHARS:
+                text = head_tail_excerpt(
+                    text, _MAX_PROTECTED_FILE_CHARS, end_ratio=0.3,
+                )
+            protected_contents[rel] = text
+
         opencoderc = workspace / ".opencoderc"
         if opencoderc.is_file():
             try:
                 rel = opencoderc.relative_to(workspace)
-                protected_contents[str(rel)] = safe_read_text(opencoderc)
+                _add(str(rel), opencoderc)
             except (OSError, UnicodeDecodeError):
                 pass
 
@@ -61,7 +127,7 @@ class SupervisorContextManager:
         if opencode_file.is_file():
             try:
                 rel = opencode_file.relative_to(workspace)
-                protected_contents[str(rel)] = safe_read_text(opencode_file)
+                _add(str(rel), opencode_file)
             except (OSError, UnicodeDecodeError):
                 pass
 
@@ -75,12 +141,15 @@ class SupervisorContextManager:
                     and not any(d.startswith(prefix) for prefix in self._skip_dir_prefixes)
                 ]
                 for fname in filenames:
-                    if fname.endswith(".log"):
+                    # ``.log`` alone missed the rotated ``.log.1`` backup: it
+                    # was re-read and injected on every single judge turn
+                    # (up to 64 MB per rotation on the long studies).
+                    if fname.endswith(".log") or ".log." in fname:
                         continue
                     fpath = Path(dirpath) / fname
                     try:
                         rel = fpath.relative_to(workspace)
-                        protected_contents[str(rel)] = safe_read_text(fpath)
+                        _add(str(rel), fpath)
                     except (OSError, UnicodeDecodeError):
                         pass
 
@@ -92,7 +161,26 @@ class SupervisorContextManager:
             return False
         return self._ignore_matcher.matches(path)
 
-    def llm_select_files(self, file_meta: dict[str, int], top_k: int) -> list[str]:
+    def llm_select_files(
+        self,
+        file_meta: dict[str, int],
+        top_k: int,
+        *,
+        mtimes: dict[str, float] | None = None,
+    ) -> list[str]:
+        """Pick which files the advisory pass should read.
+
+        The listing leads with what changed since the previous turn and with
+        recency, because that is what makes verification meaningful: a file
+        rewritten this turn is where the evidence is, and a static
+        alphabetical listing cannot express that. Each row is
+        ``<path> (<size>) <delta> <age>``; ``delta`` is ``+new``,
+        ``~+12/-3``, ``-deleted`` or blank when unchanged.
+
+        ``mtimes`` lets the caller supply timestamps it already stat'ed;
+        anything missing is stat'ed here so recency ordering still works when
+        no provider is wired.
+        """
         if not file_meta:
             return []
 
@@ -106,9 +194,22 @@ class SupervisorContextManager:
 
         response_budget = max(256, top_k * 50)
         available_tokens = max(1000, self._max_tokens - response_budget - 200)
-        listing = "\n".join(
-            f"{path} ({size} bytes)" for path, size in sorted(filtered_meta.items())
-        )
+        deltas = self.delta_provider()
+        known_mtimes = dict(self.mtime_provider())
+        known_mtimes.update(mtimes or {})
+        entries = [
+            self._listing_entry(
+                path,
+                size,
+                deltas.get(path, ""),
+                known_mtimes.get(path) or self._stat_mtime(path),
+            )
+            for path, size in filtered_meta.items()
+        ]
+        # Changed files first (recency-decided inside each group), then the
+        # rest newest-first: the judge reads the top of this list.
+        entries.sort(key=lambda e: (0 if e[0] else 1, -e[1], e[2]))
+        listing = "\n".join(entry[3] for entry in entries)
         if estimate_tokens(listing) > available_tokens:
             listing = truncate_prompt(
                 listing,
@@ -201,11 +302,56 @@ class SupervisorContextManager:
                 exc,
                 top_k,
             )
-            return sorted(filtered_meta)[:top_k]
+            # Fallback keeps the same priority as the rendered listing:
+            # changed files first, then newest — never a blind alphabetical cut.
+            ranked = sorted(
+                entries,
+                key=lambda e: (0 if e[0] else 1, -e[1], e[2]),
+            )
+            return [entry[2] for entry in ranked[:top_k]]
+
+    def set_change_providers(
+        self,
+        *,
+        deltas: Callable[[], dict[str, str]] | None = None,
+        mtimes: Callable[[], dict[str, float]] | None = None,
+    ) -> None:
+        """Wire the loop's per-turn change knowledge into file selection.
+
+        The loop already diffs its cached snapshot against the fresh one every
+        judged turn; these providers let the selection listing reuse that
+        knowledge instead of re-deriving it. Both are optional so the manager
+        still works standalone (tests, tooling) with an empty listing.
+        """
+        self._delta_provider = deltas
+        self._mtime_provider = mtimes
+
+    def _stat_mtime(self, rel_path: str) -> float:
+        try:
+            return (self._workspace / rel_path).stat().st_mtime
+        except OSError:
+            return 0.0
+
+    def _listing_entry(
+        self,
+        path: str,
+        size: int,
+        delta: str,
+        mtime: float,
+    ) -> tuple[bool, float, str, str]:
+        """(changed, mtime, path, rendered row) for one candidate file."""
+        age = _age_label(mtime)
+        parts = [f"{path} ({size} bytes)"]
+        if delta:
+            parts.append(delta)
+        if age:
+            parts.append(age)
+        return (bool(delta), mtime, path, "  ".join(parts))
 
     def read_protected_files_for_suggestions(self) -> tuple[dict[str, str], list[str]]:
         workspace = self._workspace.resolve()
         file_meta: dict[str, int] = {}
+        mtimes: dict[str, float] = {}
         try:
             for path in workspace.rglob("*"):
                 if path.name in self._generated_markdown_files:
@@ -218,7 +364,10 @@ class SupervisorContextManager:
                 if not is_candidate_file(path):
                     continue
                 try:
-                    file_meta[str(path.relative_to(workspace))] = path.stat().st_size
+                    rel = str(path.relative_to(workspace))
+                    stat = path.stat()
+                    file_meta[rel] = stat.st_size
+                    mtimes[rel] = stat.st_mtime
                 except OSError:
                     pass
         except OSError as exc:
@@ -230,14 +379,25 @@ class SupervisorContextManager:
         chosen_paths = self.llm_select_files(
             file_meta,
             self._max_protected_files_for_suggestions,
+            mtimes=mtimes,
         )
 
         result: dict[str, str] = {}
+        total = 0
         for rel_str in chosen_paths:
+            if total >= _MAX_SUGGESTION_TOTAL_CHARS:
+                break
             try:
-                result[rel_str] = safe_read_text(workspace / rel_str)
+                text = safe_read_text(workspace / rel_str)
             except (OSError, UnicodeDecodeError) as exc:
                 logger.warning("Could not read selected file %s: %s", rel_str, exc)
+                continue
+            if len(text) > _MAX_SUGGESTION_FILE_CHARS:
+                text = head_tail_excerpt(
+                    text, _MAX_SUGGESTION_FILE_CHARS, end_ratio=0.3,
+                )
+            result[rel_str] = text
+            total += len(text)
         return result, chosen_paths
 
     def find_feedback_file(self) -> Path | None:

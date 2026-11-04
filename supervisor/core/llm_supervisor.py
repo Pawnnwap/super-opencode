@@ -202,6 +202,15 @@ class LLMSupervisor:
     def _llm_select_files(self, file_meta: dict[str, int], top_k: int) -> list[str]:
         return self._context.llm_select_files(file_meta, top_k)
 
+    def set_change_providers(
+        self,
+        *,
+        deltas: Callable[[], dict[str, str]] | None = None,
+        mtimes: Callable[[], dict[str, float]] | None = None,
+    ) -> None:
+        """Let the loop feed per-turn change knowledge into file selection."""
+        self._context.set_change_providers(deltas=deltas, mtimes=mtimes)
+
     def _read_protected_files_for_suggestions(self) -> tuple[dict[str, str], list[str]]:
         return self._context.read_protected_files_for_suggestions()
 
@@ -349,8 +358,11 @@ class LLMSupervisor:
         user_content: str,
         is_intermediate: bool = False,
         history_content: str | None = None,
+        omit_history: bool = False,
     ) -> SupervisorVerdict:
-        return _chat_impl(self, user_content, is_intermediate, history_content)
+        return _chat_impl(
+            self, user_content, is_intermediate, history_content, omit_history,
+        )
 
     def _chat_with_retry(
         self,
