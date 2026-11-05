@@ -171,6 +171,12 @@ running, and a proxy whose live upstream differs from `-Upstream` is
 restarted so the parameter always wins. Equivalent manual start:
 `python app.py` (then the app serves `http://127.0.0.1:8501`).
 
+The job worker watches its own source tree (`supervisor/`, `services/`). When
+the tree changes, it stops claiming new jobs, lets live jobs finish on the
+code they started with, then re-execs to load the new code — so a deployed
+fix applies without a manual worker restart, and a stale daemon can never
+silently run a future job.
+
 ---
 
 ## What the Supervisor Does
@@ -262,18 +268,33 @@ say) had no exit at all: the loop re-judged the identical unmet criteria
 forever. Those runs now close as **BLOCKED** — terminal, exit code 2, amber
 on the board — instead of FAILED, because the run is not broken, the target
 is unreachable under recorded constraints (`enable_blocked_exit`, default
-on). Two evidence-bound triggers, both behind a turn floor
+on). Four evidence-bound triggers, all behind a turn floor
 (`min_turns_before_blocked`, default 12):
 
-- the judge repeats an identical unmet-criteria set for
-  `blocked_after_stagnant_verdicts` (6) consecutive turns with zero workspace
-  change — the ceiling case;
-- the recorded feasibility facts already declare the target unreachable and
-  the passing-gate count has stopped improving for
-  `blocked_after_unreachable_turns` (4) turns — the deterministic path.
+- **attainment stagnation** — `blocked_after_stagnant_verdicts` (6)
+  consecutive judged turns with no obligation newly MET and no gate newly
+  passed. Keyed on attainment, never on workspace change: an agent that
+  deletes a backup or rewrites `summary.md` every turn makes a diff forever;
+- **stand-down directive** — the judge's `NEXT_ACTION` says "None / stand
+  down / await the supervisor" for the same 6 turns while targets stay
+  UNMET. The loop is waiting on an external decision and cannot produce one;
+- **agent-declared closure** — a terminal event in
+  `.opencode/goal_audit.jsonl` (`goal_terminal`, `*_closed_*`), or an
+  explicit ruling line in `.opencode/closure.md` / `ESCALATION.md`
+  (`TERMINAL RULING ... CLOSED`, written during this run). The ruling is
+  cross-checked against recorded feasibility facts before a *permanent*
+  `closed` is written;
+- **recorded unreachable facts** — the feasibility facts declare the target
+  unreachable and the passing-gate count has stopped improving for
+  `blocked_after_unreachable_turns` (4) turns.
 
 A blocked run writes `blocked_report.md` with the reason and lands as a
 BLOCKED job on the board; the operator, not the loop, chooses the next move.
+The durable state is written too: `closed` when the closure is supported (or
+harness-measured), `blocked` when the agent asserted it but the facts hold
+measured evidence of reachability (a passing gate or a ceiling that meets the
+bar) — never left at `running`. An all-open facts file is neutral, not
+evidence, and does not override a terminal ruling.
 
 ---
 

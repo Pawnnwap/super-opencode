@@ -502,6 +502,7 @@ class SupervisorLoop(BaseLoop):
             worktree_sig=self._last_snapshot_signature,
             worktree_changed=bool(self._last_changed_files),
             output=output,
+            attainment_progressed=self._last_attainment_progressed,
         )
         return decision.guidance
 
@@ -696,6 +697,14 @@ class SupervisorLoop(BaseLoop):
             return ""
         lines = ["## GOAL CHECKLIST (the run ends only when ALL of these hold)"]
         lines.extend(f"{i}. {c}" for i, c in enumerate(criteria, start=1))
+        lines.append("")
+        lines.append(
+            "If you conclude the target is unreachable, record it machine-readably: "
+            'append {"event": "goal_terminal", "reason": "<why no further turn can '
+            'help>"} to .opencode/goal_audit.jsonl, or a line containing both '
+            "TERMINAL RULING and CLOSED to .opencode/closure.md. Never use this "
+            "for ordinary completion.",
+        )
         lines.append("")
         return "\n".join(lines)
 

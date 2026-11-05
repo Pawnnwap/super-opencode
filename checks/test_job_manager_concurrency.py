@@ -179,3 +179,19 @@ def test_manager_headline_mode_applies_to_job_logs(tmp_path):
         assert detail["body"].endswith("x" * 20_000)
     finally:
         jm.SupervisorLoop = StubLoop
+
+
+def test_cancel_if_live_is_idempotent_while_the_job_drains(tmp_path):
+    """The poll must not re-cancel a job that is already stopping.
+
+    Observed on run_152ccb68: "Job cancelled by user." was appended every
+    poll for the ~60 s the codex turn took to die, because the worker kept
+    calling cancel_if_live on a job whose stop flag was already set.
+    """
+    manager = JobManager(str(tmp_path / ".job_store"), max_parallel_jobs=1)
+    stop = threading.Event()
+    manager._active_jobs["job_x"] = {"stop_event": stop, "loop": None}
+    assert manager.cancel_if_live("job_x") is True
+    assert stop.is_set()
+    assert manager.cancel_if_live("job_x") is False
+    assert manager.cancel_if_live("job_missing") is False

@@ -25,19 +25,25 @@ import sys
 import time
 from pathlib import Path
 
+from services.jobs.code_freshness import code_fingerprint, freshness_action
 from services.jobs.job_manager import JobManager
-from services.jobs.job_states import (
-    ACTIVE_JOB_STATES,
-    JOB_STORE_DIR,
-    WORKER_SETTINGS_FILE,
-)
+from services.jobs.job_states import JOB_STORE_DIR, WORKER_SETTINGS_FILE
 from services.runtime import death_capture
 
 logger = logging.getLogger(__name__)
 
+# Captured at import time, not in main(): the daemon executes the modules
+# loaded here, so a file edited between import and main() must read as a
+# change to reload, not be baked in as "loaded".
+_LOADED_CODE_FINGERPRINT = code_fingerprint()
+
 _LOCK_FILE = "worker.lock"
 _POLL_SECONDS = 1.0
 _STALE_SECONDS = 15.0
+# How often the daemon compares its imported code with the tree on disk.
+# Content hashing ~1.3 MB is milliseconds; a deployment must not wait for a
+# natural worker restart (one stayed stale for 20 hours).
+_CODE_CHECK_SECONDS = 10.0
 
 
 def _read_settings(store_dir: Path) -> dict:
@@ -74,12 +80,33 @@ def _touch_lock(store_dir: Path) -> None:
         lock_path.write_text(json.dumps({"pid": os.getpid()}), encoding="utf-8")
 
 
+def _reexec_worker() -> None:
+    """Replace this process image so a fresh interpreter imports the new code.
+
+    Only called when no job is live. The PID's lock is retained (the lock is
+    an mtime-touched file, not an OS handle) and the next boot skips the
+    acquire step via SOP_JOB_WORKER_REEXEC.
+    """
+    os.environ["SOP_JOB_WORKER_REEXEC"] = "1"
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os.execv(
+        sys.executable,
+        [sys.executable, "-u", "-m", "services.jobs.worker_service"],
+    )
+
+
 def _mark_orphans(manager: JobManager) -> list[str]:
-    """Flag PENDING/RUNNING records as abandoned at daemon start."""
+    """Flag RUNNING records as abandoned at daemon start.
+
+    PENDING records are queued work, not orphans: a job enqueued while the
+    daemon was down (or held during an in-place re-exec) must be claimed by
+    the new daemon, not thrown away.
+    """
     flagged: list[str] = []
     for job_id in manager.store.list_jobs():
         state = manager.store.get_job_state(job_id) or {}
-        if state.get("state") in ACTIVE_JOB_STATES:
+        if state.get("state") == "RUNNING":
             state["state"] = "ABANDONED"
             manager.store.save_job_state(job_id, state)
             manager.store.append_log(job_id, {
@@ -111,22 +138,69 @@ def main() -> int:
         max_parallel_jobs=int(settings.get("max_parallel_jobs") or 4),
         max_stored_jobs=int(settings.get("max_stored_jobs") or 50),
     )
-    if not _acquire_lock(store_dir):
+    reexec = os.environ.pop("SOP_JOB_WORKER_REEXEC", "") == "1"
+    if reexec:
+        # This PID already held the lock before os.execv; re-acquiring would
+        # see its own fresh lock and refuse to start.
+        _touch_lock(store_dir)
+    elif not _acquire_lock(store_dir):
         logger.info("another worker daemon holds the lock - exiting")
         return 0
 
+    # Only RUNNING records are orphans; PENDING jobs are queued work and are
+    # claimed by this daemon, including after an in-place re-exec.
     orphaned = _mark_orphans(manager)
+    startup_fingerprint = _LOADED_CODE_FINGERPRINT
     logger.info(
-        "worker daemon started (pid %d, %d orphaned job(s) marked ABANDONED)",
-        os.getpid(), len(orphaned),
+        "worker daemon started (pid %d, code %s, %d orphaned job(s) marked ABANDONED)",
+        os.getpid(), startup_fingerprint[:12], len(orphaned),
     )
 
     claimed: set[str] = set()
     applied_settings: dict = dict(settings)
+    allow_claims = True
+    stale_logged = False
+    last_code_check = time.time()
+
+    def check_freshness() -> str:
+        """Compare loaded code with disk; re-exec when idle if it changed."""
+        nonlocal last_code_check, allow_claims, stale_logged
+        last_code_check = time.time()
+        current = code_fingerprint()
+        action = freshness_action(
+            startup_fingerprint, current, manager.active_job_count(),
+        )
+        allow_claims = action == "ok"
+        if action == "ok":
+            stale_logged = False
+        elif not stale_logged:
+            stale_logged = True
+            logger.warning(
+                "supervisor code changed on disk (loaded %s, disk %s); %s",
+                startup_fingerprint[:12],
+                current[:12],
+                "restarting the worker now (idle)"
+                if action == "restart"
+                else "holding new jobs until active jobs finish",
+            )
+        if action == "restart":
+            logger.info(
+                "restarting the worker to load the new code (pid %d)",
+                os.getpid(),
+            )
+            _reexec_worker()
+        return action
+
     while True:
         time.sleep(_POLL_SECONDS)
         try:
             _touch_lock(store_dir)
+
+            # Freshness gate: this process runs the modules it imported at
+            # boot. If the tree changed underneath it, never start another
+            # job on that stale code; wait for live jobs, then re-exec.
+            if time.time() - last_code_check >= _CODE_CHECK_SECONDS:
+                check_freshness()
 
             # Settings handoff: the UI writes worker_settings.json on change.
             settings = _read_settings(store_dir)
@@ -142,6 +216,7 @@ def main() -> int:
                 applied_settings = dict(settings)
                 logger.info("applied settings: %s", applied_settings)
 
+            checked_this_poll = False
             for job_id in manager.store.list_jobs():
                 if job_id in claimed:
                     # Claimed jobs are never re-claimed, but a cross-process
@@ -157,7 +232,14 @@ def main() -> int:
                 state = manager.store.get_job_state(job_id) or {}
                 st = state.get("state")
                 if st == "PENDING":
-                    if manager.run_stored_job(job_id):
+                    # One claim-time freshness check per poll: a deployment
+                    # that landed after the periodic check must not slip a job
+                    # through, while per-job hashing would rescan the tree for
+                    # every queued job on every second.
+                    if not checked_this_poll:
+                        check_freshness()
+                        checked_this_poll = True
+                    if allow_claims and manager.run_stored_job(job_id):
                         claimed.add(job_id)
                         logger.info("claimed PENDING job %s", job_id)
                 elif st == "CANCELLED":

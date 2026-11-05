@@ -36,6 +36,15 @@ _TERMINAL_EVENTS = frozenset(
     }
 )
 _TERMINAL_EVENT_MARKERS = ("_closed", "terminal")
+# Closure documents the study agents actually write. The audit journal is the
+# machine-readable channel, but agents close a study in prose far more often
+# (ESCALATION.md carried "TERMINAL RULING ... CLOSED ... NO REOPENING" while
+# the harness kept paying for 100+ turns). Only a line that states both
+# "terminal ruling" and "closed" counts, so ordinary discussion of a closure
+# does not stop a live run.
+_CLOSURE_DOCS = (".opencode/closure.md", "ESCALATION.md")
+_TERMINAL_RULING_RE = re.compile(r"terminal\s+ruling", re.IGNORECASE)
+_CLOSED_WORD_RE = re.compile(r"\bclosed\b", re.IGNORECASE)
 _STAGED_FILE = "staged_improvements.jsonl"
 _MAX_DIRECTIONS = 12
 _MAX_LESSONS = 8
@@ -117,10 +126,16 @@ def record_target_iteration(
     iteration: int,
     direction: str,
     evidence: str,
-    accepted: bool,
+    accepted: bool | None,
     reason: str,
 ) -> TargetState:
-    """Record evaluator result and expose repeated rejected work as stagnation."""
+    """Record evaluator result and expose repeated rejected work as stagnation.
+
+    ``accepted=None`` means the turn's attainment could not be measured (the
+    judge emitted no structured criteria): the turn is journaled, but it must
+    not reset the stagnation counter on file churn nor inflate it on a
+    measurement that was never made.
+    """
     state = load_target_state(workspace)
     if state is None:
         state = initialise_target_state(workspace, target="Unnamed TARGET")
@@ -132,7 +147,9 @@ def record_target_iteration(
     if evidence:
         state.evidence.append(evidence.strip())
         state.evidence = state.evidence[-12:]
-    if accepted:
+    if accepted is None:
+        pass
+    elif accepted:
         state.stagnation_count = 0
         state.status = "running"
     else:
@@ -214,7 +231,27 @@ def similar_rejected_direction(state: TargetState, direction: str) -> str | None
     return None
 
 
-def read_terminal_assertion(workspace: Path) -> str:
+def audit_journal_size(workspace: Path) -> int:
+    """Byte size of the goal audit journal, 0 when absent.
+
+    A loop captures this at start; terminal events written before the offset
+    belong to earlier cycles. Unlike the timestamp filter this also scopes
+    agent-written events that carry no ``ts`` field at all.
+    """
+    path = Path(workspace) / _STATE_DIR / AUDIT_FILENAME
+    try:
+        return path.stat().st_size
+    except OSError:
+        return 0
+
+
+def read_terminal_assertion(
+    workspace: Path,
+    *,
+    since_ts: float | None = None,
+    baseline: frozenset[str] | None = None,
+    offset: int | None = None,
+) -> str:
     """The agent's own latest terminal assertion, '' when it made none.
 
     Reads ``<workspace>/.opencode/goal_audit.jsonl`` — the journal the study
@@ -223,32 +260,99 @@ def read_terminal_assertion(workspace: Path) -> str:
     ``*_closed_*``). These events were previously inert: the loop ignored them
     and relaunched, resetting ``target_state.json`` to ``running`` each time.
 
-    The WHOLE file is scanned, line by line, with a cheap substring prefilter
-    before any JSON parsing. The earlier 2 MB tail window silently dropped
-    terminal events once a long study's audit grew past it — exactly the runs
-    where an infinite-relaunch bug is most expensive. A per-line substring
-    scan of even a tens-of-MB JSONL costs milliseconds (same pattern as the
-    job-log session-id scan), so no bound is worth the miss risk here.
+    When the journal carries no terminal event, the workspace closure
+    documents (``.opencode/closure.md``, ``ESCALATION.md``) are scanned for an
+    explicit ruling line — ``terminal ruling`` and ``closed`` on one line.
+    ``since_ts`` restricts that scan to documents written during this run, and
+    ``baseline`` (see :func:`closure_ruling_lines`) drops ruling lines that
+    already existed when the run started. The baseline is what makes the
+    gate robust: appending an unrelated note to ``ESCALATION.md`` refreshes
+    its mtime, and without it an old ruling would become "current" again.
+    ``offset`` (see :func:`audit_journal_size`) skips journal bytes written
+    before this run, so a timeless old event cannot re-close a relaunch.
+
+    The WHOLE journal (from ``offset`` to EOF) is scanned, line by line, with
+    a cheap substring prefilter before any JSON parsing. The earlier 2 MB
+    tail window silently dropped terminal events once a long study's audit
+    grew past it — exactly the runs where an infinite-relaunch bug is most
+    expensive. A per-line substring scan of even a tens-of-MB JSONL costs
+    milliseconds (same pattern as the job-log session-id scan), so no bound
+    is worth the miss risk here.
     """
     path = Path(workspace) / _STATE_DIR / AUDIT_FILENAME
-    try:
-        if not path.is_file():
-            return ""
-    except OSError:
-        return ""
     latest = ""
     try:
-        with path.open(encoding="utf-8", errors="replace") as handle:
-            for line in handle:
-                if "terminal" not in line and "_closed" not in line:
-                    continue
-                latest = _parse_terminal_line(line) or latest
+        if path.is_file():
+            size = path.stat().st_size
+            start = offset if offset is not None and 0 <= offset <= size else 0
+            with path.open("rb") as handle:
+                if start:
+                    handle.seek(start)
+                for raw in handle:
+                    line = raw.decode("utf-8", "replace")
+                    if "terminal" not in line and "_closed" not in line:
+                        continue
+                    latest = _parse_terminal_line(line, since_ts) or latest
     except OSError:
+        latest = ""
+    if latest:
         return latest
-    return latest
+    return _read_closure_document(workspace, since_ts, baseline)
 
 
-def _parse_terminal_line(line: str) -> str:
+def closure_ruling_lines(workspace: Path) -> frozenset[str]:
+    """Terminal-ruling lines present in the closure documents right now.
+
+    A run captures this set at start; any line in it belongs to an earlier
+    cycle and cannot close the new run, even if a later unrelated edit
+    refreshes the file's mtime.
+    """
+    lines: set[str] = set()
+    for rel, text in _closure_documents(workspace, None):
+        for line in text.splitlines():
+            key = _closure_line_key(rel, line)
+            if key:
+                lines.add(key)
+    return frozenset(lines)
+
+
+def _read_closure_document(
+    workspace: Path,
+    since_ts: float | None,
+    baseline: frozenset[str] | None,
+) -> str:
+    """One-line terminal ruling from a closure document, '' when absent."""
+    for rel, text in _closure_documents(workspace, since_ts):
+        for line in text.splitlines():
+            key = _closure_line_key(rel, line)
+            if key and (not baseline or key not in baseline):
+                return key
+    return ""
+
+
+def _closure_documents(workspace: Path, since_ts: float | None):
+    """Yield ``(relative_path, text)`` for readable closure documents."""
+    for rel in _CLOSURE_DOCS:
+        path = Path(workspace) / rel
+        try:
+            stat = path.stat()
+            if since_ts is not None and stat.st_mtime + 1.0 < since_ts:
+                continue
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        yield rel, text
+
+
+def _closure_line_key(rel: str, line: str) -> str:
+    """Normalized ruling-line key, '' when the line is not a ruling."""
+    compact = " ".join(line.split())
+    if _TERMINAL_RULING_RE.search(compact) and _CLOSED_WORD_RE.search(compact):
+        return f"{rel}: {compact[:200]}"
+    return ""
+
+
+def _parse_terminal_line(line: str, since_ts: float | None = None) -> str:
     line = line.strip()
     if not line:
         return ""
@@ -258,6 +362,17 @@ def _parse_terminal_line(line: str) -> str:
         return ""
     if not isinstance(record, dict):
         return ""
+    if since_ts is not None:
+        # A terminal event recorded before this run began belongs to a
+        # previous cycle; an explicit relaunch must not be re-closed by it.
+        raw_ts = record.get("ts")
+        if raw_ts:
+            try:
+                moment = datetime.fromisoformat(str(raw_ts))
+            except ValueError:
+                moment = None
+            if moment is not None and moment.timestamp() + 1.0 < since_ts:
+                return ""
     event = str(record.get("event", "")).strip().lower()
     if not event:
         return ""
@@ -276,19 +391,25 @@ def _parse_terminal_line(line: str) -> str:
     return f"{event}" + (f": {reason[:200]}" if reason else "")
 
 
-def mark_target_closed(workspace: Path, reason: str) -> TargetState | None:
-    """Write the terminal ``closed`` status the harness could never express.
+def mark_target_closed(
+    workspace: Path,
+    reason: str,
+    *,
+    status: str = "closed",
+) -> TargetState | None:
+    """Write the durable terminal status the harness could never express.
 
     ``record_target_iteration`` only ever wrote ``running`` /
     ``retry_with_new_direction`` / ``replan_required``, so an agent asking the
     harness for ``status="closed"`` got ``running`` back on the next relaunch.
     The BLOCKED exit calls this so the durable state agrees with the run's
-    terminal outcome.
+    terminal outcome. ``status="blocked"`` is the reopenable variant: the run
+    is over, but the evidence base contradicted a permanent closure.
     """
     fd_state = load_target_state(workspace)
     if fd_state is None:
         return None
-    fd_state.status = "closed"
+    fd_state.status = status
     fd_state.last_reason = " ".join((reason or "").split())[:400]
     fd_state.updated_at = _now()
     _write_state(Path(workspace), fd_state)
@@ -330,6 +451,11 @@ def target_state_context(workspace: Path) -> str:
         )
     if state.staged_improvements:
         lines.append(f"Preserved temporary candidates: {state.staged_improvements}")
+    lines.append(
+        "To end the run when the target is unreachable, append "
+        '{"event": "goal_terminal", "reason": "<why>"} to '
+        ".opencode/goal_audit.jsonl (machine-readable, honored by the harness).",
+    )
     return "\n".join(lines)
 
 

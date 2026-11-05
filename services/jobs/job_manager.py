@@ -262,10 +262,24 @@ class JobManager:
         thread.start()
         return True
 
-    def cancel_if_live(self, job_id: str) -> bool:
-        """Cancel only when this process actually owns the live job."""
+    def active_job_count(self) -> int:
+        """Live entries owned by this process (parked PENDING included)."""
         with self._lock:
-            if job_id not in self._active_jobs:
+            return len(self._active_jobs)
+
+    def cancel_if_live(self, job_id: str) -> bool:
+        """Cancel only when this process owns a live job not already stopping.
+
+        The worker's poll visits a claimed job every second until its thread
+        exits. Re-cancelling an already-signalled job spammed "Job cancelled
+        by user." every poll for the whole drain (observed for ~60 s on a
+        stuck codex turn), so the stop flag is the idempotence marker.
+        """
+        with self._lock:
+            entry = self._active_jobs.get(job_id)
+            if entry is None:
+                return False
+            if entry["stop_event"].is_set():
                 return False
         self.cancel_job(job_id)
         return True

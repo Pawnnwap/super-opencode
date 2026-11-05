@@ -273,13 +273,15 @@ def test_agent_declared_closure_closes_the_run(tmp_path):
     loop = _loop(tmp_path, min_turns_before_blocked=0)
     loop._task_turn = 40
     loop._feasibility_block_reason = lambda: ""
+    from datetime import UTC, datetime
+
     audit = tmp_path / ".opencode" / "goal_audit.jsonl"
     audit.parent.mkdir(parents=True, exist_ok=True)
     audit.write_text(
         json.dumps({
             "event": "goal_terminal",
             "reason": "Tier UNMET; replanning routed to successor",
-            "ts": "2026-11-03T23:54:07+00:00",
+            "ts": datetime.now(UTC).isoformat(),
         }) + "\n",
         encoding="utf-8",
     )
@@ -288,6 +290,27 @@ def test_agent_declared_closure_closes_the_run(tmp_path):
     reason = loop._blocked_assessment(verdict)
     assert "declared this run terminally closed" in reason
     assert "goal_terminal" in reason
+
+
+def test_audit_closure_from_a_previous_cycle_is_ignored(tmp_path):
+    """An explicit relaunch must not be re-closed by an old audit event."""
+    import time
+
+    from supervisor.core.target_state import read_terminal_assertion
+
+    audit = tmp_path / ".opencode" / "goal_audit.jsonl"
+    audit.parent.mkdir(parents=True, exist_ok=True)
+    audit.write_text(
+        json.dumps({
+            "event": "goal_terminal",
+            "reason": "previous cycle closed",
+            "ts": "2020-01-01T00:00:00+00:00",
+        }) + "\n",
+        encoding="utf-8",
+    )
+    assert read_terminal_assertion(tmp_path, since_ts=time.time()) == ""
+    # Without the run-scope (direct audit consumers), the event is still read.
+    assert "goal_terminal" in read_terminal_assertion(tmp_path)
 
 
 def test_blocked_exit_writes_the_closed_target_state(tmp_path):
@@ -358,3 +381,411 @@ def test_archiver_skips_the_run_state_directory(tmp_path):
     result = archiver.archive_workspace(label="t")
     assert "deliverable.py" in result.archived_files
     assert not any(path.startswith("logs/") for path in result.archived_files)
+
+
+# --------------------------------------------------------------------------- #
+# Stand-down directives (2026-11-05 run_152ccb68)                             #
+# --------------------------------------------------------------------------- #
+
+def _standdown(action, *unmet):
+    """Verdict with an explicit NEXT_ACTION and no structured criteria."""
+    return SimpleNamespace(
+        all_targets_met=False,
+        unmet_criteria=list(unmet),
+        next_action=action,
+    )
+
+
+def test_standdown_next_action_closes_the_run(tmp_path):
+    """A judge that keeps saying "await termination" is a closed loop.
+
+    run_152ccb68 carried "None in this workspace. Await supervisor
+    control-channel termination" for dozens of turns while targets stayed
+    UNMET; the attainment rule only saw identical criteria, so no trigger
+    bound to the directive itself.
+    """
+    loop = _loop(
+        tmp_path,
+        blocked_after_stagnant_verdicts=3,
+        min_turns_before_blocked=0,
+    )
+    loop._task_turn = 20
+    directive = (
+        "None in this workspace. Await supervisor control-channel termination, "
+        "then seed the Lane-A successor."
+    )
+    assert loop._blocked_assessment(_standdown(directive)) == ""
+    assert loop._blocked_assessment(_standdown(directive)) == ""
+    reason = loop._blocked_assessment(_standdown(directive))
+    assert "stand down" in reason
+    assert "await supervisor control-channel termination" in reason.lower()
+
+
+def test_standdown_recognition_is_narrow():
+    from supervisor.core.loop_base import _is_standdown_action
+
+    assert _is_standdown_action("**None in this workspace.**")
+    assert _is_standdown_action(
+        "None authorized. Study is closed by terminal ruling.",
+    )
+    assert _is_standdown_action("Remain in standdown; initiate no code")
+    assert _is_standdown_action("Take zero in-workspace action")
+    assert _is_standdown_action("Terminate this lane from the control channel")
+    assert _is_standdown_action("Stop taking in-workspace actions")
+    assert _is_standdown_action("Close this thread cleanly")
+    # Diagnostics and real plans must not count as stand-downs.
+    assert not _is_standdown_action("None of the gates pass; implement X")
+    assert not _is_standdown_action("Design and implement a NEW indicator")
+    assert not _is_standdown_action(
+        "Stop the current approach and implement the missing signal",
+    )
+    assert not _is_standdown_action("Execute the single-file deletion above")
+
+
+def test_a_new_gate_pass_resets_the_standdown_streak(tmp_path):
+    loop = _loop(
+        tmp_path,
+        blocked_after_stagnant_verdicts=3,
+        min_turns_before_blocked=0,
+    )
+    loop._task_turn = 20
+    _harvest(tmp_path, passing=6)
+    directive = "Take zero in-workspace action; supervisor must terminate."
+    assert loop._blocked_assessment(_standdown(directive)) == ""
+    assert loop._blocked_assessment(_standdown(directive)) == ""
+    assert loop._standdown_streak == 2
+    _harvest(tmp_path, passing=7)
+    assert loop._blocked_assessment(_standdown(directive)) == ""
+    assert loop._standdown_streak == 0
+
+
+# --------------------------------------------------------------------------- #
+# Closure documents (ESCALATION.md terminal ruling)                            #
+# --------------------------------------------------------------------------- #
+
+_RULING = (
+    "## TERMINAL RULING 2026-11-04 23:28 - CLOSED, TARGET NOT MET, NO REOPENING\n"
+    "No further design iteration will be entertained.\n"
+)
+
+
+def test_closure_document_ruling_is_read(tmp_path):
+    from supervisor.core.target_state import read_terminal_assertion
+
+    (tmp_path / "ESCALATION.md").write_text(_RULING, encoding="utf-8")
+    assertion = read_terminal_assertion(tmp_path)
+    assert "ESCALATION.md" in assertion
+    assert "TERMINAL RULING" in assertion.upper()
+
+
+def test_closure_document_ruling_closes_the_run(tmp_path):
+    loop = _loop(tmp_path, min_turns_before_blocked=0)
+    loop._task_turn = 20
+    (tmp_path / "ESCALATION.md").write_text(_RULING, encoding="utf-8")
+    reason = loop._blocked_assessment(_verdict("T2 AB >= 9/10 gates"))
+    assert "declared this run terminally closed" in reason
+    assert loop._blocked_agent_asserted is True
+
+
+def test_closure_document_from_a_previous_cycle_is_ignored(tmp_path):
+    import os
+
+    from supervisor.core.target_state import read_terminal_assertion
+
+    loop = _loop(tmp_path, min_turns_before_blocked=0)
+    loop._task_turn = 20
+    path = tmp_path / "ESCALATION.md"
+    path.write_text(_RULING, encoding="utf-8")
+    old = loop._run_started_at - 3600
+    os.utime(path, (old, old))
+    assert read_terminal_assertion(
+        tmp_path, since_ts=loop._run_started_at,
+    ) == ""
+    assert "declared this run terminally closed" not in loop._blocked_assessment(
+        _verdict("T2 AB >= 9/10 gates"),
+    )
+
+
+def test_a_closed_heading_without_a_terminal_ruling_does_not_close(tmp_path):
+    from supervisor.core.target_state import read_terminal_assertion
+
+    (tmp_path / "ESCALATION.md").write_text(
+        "# ESCALATION - CLOSED 22:57 (ruling 'go v10' executed)\n", encoding="utf-8",
+    )
+    assert read_terminal_assertion(tmp_path) == ""
+
+
+def _write_gate_facts(tmp_path, status):
+    (tmp_path / "feasibility_facts.json").write_text(
+        json.dumps({
+            "gates": [
+                {
+                    "name": "g1",
+                    "definition": "all gates pass",
+                    "status": status,
+                    "evidence": "",
+                    "ref": 1,
+                },
+            ],
+        }),
+        encoding="utf-8",
+    )
+
+
+def _block_with_agent_closure(tmp_path, **loop_overrides):
+    from supervisor.core.target_state import (
+        initialise_target_state,
+        load_target_state,
+    )
+
+    initialise_target_state(tmp_path, target="Reach 9 gates.")
+    loop = _loop(tmp_path, **loop_overrides)
+    loop.supervisor = SimpleNamespace(
+        report_final_status=lambda **_: "report",
+    )
+    loop._write = lambda *a, **k: None
+    loop._record_structured_failure = lambda *a, **k: None
+    loop._memory_goal = lambda: ""
+    loop._blocked_agent_asserted = True
+    list(loop._on_blocked(_verdict("T2 AB >= 9/10 gates"), "agent declared closure"))
+    return load_target_state(tmp_path)
+
+
+def test_agent_asserted_closure_with_positive_facts_records_blocked(tmp_path):
+    """A measured passing gate outweighs the agent's closure for `closed`.
+
+    The run is still over; the reopenable `blocked` is the honest state, and
+    it must never be left at `running`.
+    """
+    _write_gate_facts(tmp_path, "passing")
+    assert _block_with_agent_closure(tmp_path).status == "blocked"
+
+
+def test_neutral_facts_do_not_contradict_an_agent_closure(tmp_path):
+    """"No gate is known-blocked" is not evidence of reachability.
+
+    run_152ccb68's facts were all `open`; treating that as a contradiction
+    turned an explicit terminal ruling into a reopenable `blocked` status.
+    """
+    _write_gate_facts(tmp_path, "open")
+    assert _block_with_agent_closure(tmp_path).status == "closed"
+
+
+def test_known_ceiling_meeting_the_requirement_is_positive_evidence(tmp_path):
+    """Facts without a gate list still contradict a closure when measured."""
+    from supervisor.core.target_state import (
+        initialise_target_state,
+        load_target_state,
+    )
+
+    initialise_target_state(tmp_path, target="Reach 5 gates.")
+    (tmp_path / "feasibility_facts.json").write_text(
+        json.dumps({
+            "required_gates": 5,
+            "known_ceiling": {"count": 5, "of": 5},
+        }),
+        encoding="utf-8",
+    )
+    loop = _loop(tmp_path)
+    loop.supervisor = SimpleNamespace(report_final_status=lambda **_: "report")
+    loop._write = lambda *a, **k: None
+    loop._record_structured_failure = lambda *a, **k: None
+    loop._memory_goal = lambda: ""
+    loop._blocked_agent_asserted = True
+    list(loop._on_blocked(_verdict("T2"), "agent declared closure"))
+    assert load_target_state(tmp_path).status == "blocked"
+
+
+def test_a_ruling_that_predates_the_run_is_not_reactivated(tmp_path):
+    """Appending a note refreshes mtime; the old ruling must stay inert."""
+    from supervisor.core.target_state import (
+        closure_ruling_lines,
+        read_terminal_assertion,
+    )
+
+    (tmp_path / "ESCALATION.md").write_text(_RULING, encoding="utf-8")
+    loop = _loop(tmp_path, min_turns_before_blocked=0)
+    loop._task_turn = 20
+    baseline = closure_ruling_lines(tmp_path)
+    assert read_terminal_assertion(
+        tmp_path,
+        since_ts=loop._run_started_at,
+        baseline=baseline,
+    ) == ""
+
+    with (tmp_path / "ESCALATION.md").open("a", encoding="utf-8") as handle:
+        handle.write("\n## Notes\nunrelated edit\n")
+    assert "declared this run terminally closed" not in loop._blocked_assessment(
+        _verdict("T2 AB >= 9/10 gates"),
+    )
+
+    with (tmp_path / "ESCALATION.md").open("a", encoding="utf-8") as handle:
+        handle.write(
+            "\n## TERMINAL RULING 2026-11-05 11:30 - CLOSED, NO REOPENING\n",
+        )
+    assert "declared this run terminally closed" in loop._blocked_assessment(
+        _verdict("T2 AB >= 9/10 gates"),
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Durable target state keys acceptance on attainment, not churn                #
+# --------------------------------------------------------------------------- #
+
+def test_churn_is_not_attainment_in_the_durable_state(tmp_path):
+    """Hygiene churn must not keep target_state at running/stagnation 0.
+
+    run_152ccb68 read `running`, iteration 123, stagnation 0 after a terminal
+    ruling because every turn's evidence was a file diff.
+    """
+    from supervisor.core.goal_guard import GoalGuard
+    from supervisor.core.target_state import (
+        initialise_target_state,
+        load_target_state,
+    )
+    from supervisor.protocols.protocol import Protocol
+
+    protocol = Protocol(
+        raw="",
+        input_section="",
+        target_section="Reach 9 AB gates.",
+        restrictions_section="",
+    )
+    config = SupervisorConfig(
+        workspace=tmp_path,
+        protocol_path=tmp_path / "protocol.md",
+    )
+    initialise_target_state(tmp_path, target="Reach 9 AB gates.")
+    guard = GoalGuard(config, protocol)
+    verdict = SimpleNamespace(
+        feedback="cleaned up a backup file",
+        next_action="keep working",
+        all_targets_met=False,
+        criteria_results=[],
+    )
+    for _ in range(2):
+        guard.evaluate_turn(
+            verdict,
+            worktree_sig="sig",
+            worktree_changed=True,
+            output="deleted a .bak and rewrote summary.md",
+            attainment_progressed=False,
+        )
+    state = load_target_state(tmp_path)
+    assert state.status == "replan_required"
+    assert state.stagnation_count == 2
+    assert "attainment_progressed=False" in state.evidence[-1]
+
+
+def test_unstructured_verdicts_record_an_unmeasured_turn(tmp_path):
+    """No criteria means no attainment measurement: churn is not acceptance.
+
+    The durable state must neither reset a real stagnation streak because a
+    file changed nor claim stagnation that was never measured.
+    """
+    from supervisor.core.goal_guard import GoalGuard
+    from supervisor.core.target_state import (
+        initialise_target_state,
+        load_target_state,
+        record_target_iteration,
+    )
+    from supervisor.protocols.protocol import Protocol
+
+    protocol = Protocol(
+        raw="",
+        input_section="",
+        target_section="Reach 9 AB gates.",
+        restrictions_section="",
+    )
+    config = SupervisorConfig(
+        workspace=tmp_path,
+        protocol_path=tmp_path / "protocol.md",
+    )
+    initialise_target_state(tmp_path, target="Reach 9 AB gates.")
+    for _ in range(2):
+        record_target_iteration(
+            tmp_path,
+            iteration=1,
+            direction="attempt",
+            evidence="e",
+            accepted=False,
+            reason="r",
+        )
+    assert load_target_state(tmp_path).status == "replan_required"
+
+    guard = GoalGuard(config, protocol)
+    verdict = SimpleNamespace(
+        feedback="work in progress",
+        next_action="keep working",
+        all_targets_met=False,
+        criteria_results=[],
+    )
+    guard.evaluate_turn(
+        verdict,
+        worktree_sig="sig",
+        worktree_changed=True,
+        output="wrote a file",
+        attainment_progressed=None,
+    )
+    state = load_target_state(tmp_path)
+    assert state.status == "replan_required"
+    assert state.stagnation_count == 2
+    assert "attainment=unmeasured" in state.evidence[-1]
+
+
+def test_attainment_is_recorded_when_blocked_exit_is_disabled(tmp_path):
+    """Disabling the BLOCKED exit must not blind the durable target state."""
+    loop = _loop(
+        tmp_path,
+        blocked_after_stagnant_verdicts=2,
+        min_turns_before_blocked=0,
+        enable_blocked_exit=False,
+    )
+    loop._task_turn = 20
+    verdict = _structured(("T4 tier", False))
+    assert loop._blocked_assessment(verdict) == ""  # cold start: baseline
+    assert loop._blocked_assessment(verdict) == ""  # stagnation, but exit off
+    assert loop._last_attainment_progressed is False
+
+
+def test_audit_closure_written_before_the_run_is_ignored_without_ts(tmp_path):
+    """A timeless old audit event must not re-close a relaunch."""
+    from supervisor.core.target_state import (
+        audit_journal_size,
+        read_terminal_assertion,
+    )
+
+    audit = tmp_path / ".opencode" / "goal_audit.jsonl"
+    audit.parent.mkdir(parents=True, exist_ok=True)
+    audit.write_text(
+        json.dumps({"event": "goal_terminal", "reason": "previous cycle"}) + "\n",
+        encoding="utf-8",
+    )
+    offset = audit_journal_size(tmp_path)
+    assert read_terminal_assertion(tmp_path, offset=offset) == ""
+    with audit.open("a", encoding="utf-8") as handle:
+        handle.write(
+            json.dumps({"event": "goal_terminal", "reason": "this run"}) + "\n",
+        )
+    assert "this run" in read_terminal_assertion(tmp_path, offset=offset)
+
+
+def test_loop_ignores_audit_closure_from_before_the_run(tmp_path):
+    audit = tmp_path / ".opencode" / "goal_audit.jsonl"
+    audit.parent.mkdir(parents=True, exist_ok=True)
+    audit.write_text(
+        json.dumps({"event": "goal_terminal", "reason": "previous cycle"}) + "\n",
+        encoding="utf-8",
+    )
+    loop = _loop(tmp_path, min_turns_before_blocked=0)
+    loop._task_turn = 20
+    assert "declared this run terminally closed" not in loop._blocked_assessment(
+        _verdict("T2 AB >= 9/10 gates"),
+    )
+    with audit.open("a", encoding="utf-8") as handle:
+        handle.write(
+            json.dumps({"event": "goal_terminal", "reason": "this run"}) + "\n",
+        )
+    assert "declared this run terminally closed" in loop._blocked_assessment(
+        _verdict("T2 AB >= 9/10 gates"),
+    )

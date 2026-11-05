@@ -351,12 +351,20 @@ class GoalGuard:
         worktree_sig: str,
         worktree_changed: bool,
         output: str,
+        attainment_progressed: bool | None = None,
     ) -> TurnDecision:
         """Record one judged continue-turn; return nudge guidance when stagnant.
 
         ``worktree_sig`` must be a fingerprint of workspace content (equal
         fingerprints mean an unchanged workspace); ``worktree_changed`` is the
         loop's own snapshot-diff verdict used for direction tracking.
+
+        Acceptance in the durable state is keyed on *attainment*, not file
+        churn: hygiene scripts, deleted backups and rewritten summaries keep
+        ``worktree_changed`` true forever while the run makes no progress.
+        When the verdict carries no per-criterion structure the attainment
+        signal is unmeasurable — the turn is recorded as unmeasured rather
+        than counted as progress (churn) or stagnation (a guess).
         """
         self._turn += 1
         stagnation = self._stagnation.record(
@@ -364,12 +372,18 @@ class GoalGuard:
             output_sig=output,
         )
 
+        accepted = attainment_progressed
+        evidence = f"worktree_changed={worktree_changed}"
+        if attainment_progressed is None:
+            evidence += "; attainment=unmeasured"
+        else:
+            evidence += f"; attainment_progressed={attainment_progressed}"
         record_target_iteration(
             self._workspace,
             iteration=self._turn,
             direction=verdict.feedback or head_tail_excerpt(output, 200),
-            evidence=f"worktree_changed={worktree_changed}",
-            accepted=worktree_changed,
+            evidence=evidence,
+            accepted=accepted,
             reason=head_tail_excerpt(
                 verdict.next_action or verdict.feedback or "", 240,
             ),

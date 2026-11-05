@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import time
 from collections.abc import Generator
 from dataclasses import dataclass
@@ -54,12 +55,63 @@ class _ClosureNote:
     was_closed: bool
     markdown: str
     event_suffix: str
+    # Durable status written for the target: "closed" (terminal) or
+    # "blocked" (this run is over, but a relaunch may resume the target).
+    status: str = "closed"
 
 
 def _ev(level: str, msg: object, **kwargs) -> Event:
     event = {"level": level, "msg": sanitize_event_message(msg)}
     event.update(kwargs)
     return event
+
+
+# A NEXT_ACTION that instructs the agent to stand down is a closed loop, not
+# a plan. Kept deliberately narrow: leading "None"/"no action"/stand-down
+# phrasing, or stop/terminate aimed at the run itself. "None of the gates
+# pass; improve X" is a diagnosis, not a stand-down, and must not match.
+_STANDDOWN_ACTION_RE = re.compile(
+    r"^(?:"
+    r"none(?:\s+(?:in|actionable|authori[sz]ed|admissible|executable)\b|\s*[.;:!]|$)"
+    r"|nothing\b"
+    r"|no\s+(?:further|action|admissible|in-workspace|executable|authori[sz]ed|more)\b"
+    r"|(?:stand|remain|stay|hold)\b[^;]{0,40}\b"
+    r"(?:stand\s*-?\s*down|down|standby|frozen|terminal)\b"
+    r"|take\s+(?:no|zero)\b"
+    r"|zero\b[^;]{0,30}\baction\b"
+    r"|(?:stop|terminate|cease|halt)\b[^;]{0,60}\b"
+    r"(?:workspace|lane|thread|run|loop|agent|activity|actions?|turns?)\b"
+    r"|close\s+(?:this|the)\b[^;]{0,30}\b(?:thread|lane|study|run|workspace)\b"
+    r"|await\b[^;]{0,80}\b"
+    r"(?:supervisor|control[-\s]?channel|termination|ruling|operator|director|human)\b"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _is_standdown_action(action: str) -> bool:
+    """True when the judge's NEXT_ACTION tells the agent to do nothing."""
+    normalized = " ".join((action or "").split())
+    normalized = normalized.lstrip("*_`#>~- ").strip()
+    return bool(_STANDDOWN_ACTION_RE.match(normalized))
+
+
+def _has_positive_reachability_evidence(assessment) -> bool:
+    """True when recorded facts contain measured evidence of attainability.
+
+    "No gate is known-blocked" is not evidence: an all-open facts file is
+    neutral (everything untested). Treating that as proof of reachability made
+    an explicit terminal ruling write the reopenable `blocked` status instead
+    of `closed` - the closure was contradicted by an absence of tests. A gate
+    that actually passed, or a measured ceiling meeting the required count, is
+    positive evidence.
+    """
+    gates = list(getattr(assessment, "gates", ()) or ())
+    if gates:
+        return any(gate.status == "passing" for gate in gates)
+    ceiling = getattr(assessment, "known_ceiling", None)
+    required = getattr(assessment, "required_gates", None)
+    return ceiling is not None and required is not None and ceiling >= required
 
 
 def loop_breaker_section(reason: str) -> str:
@@ -94,6 +146,21 @@ class BaseLoop:
         self.guard = None
 
         self._last_step_time: float = 0.0
+        # Wall clock at loop construction. A closure document older than this
+        # belongs to a previous cycle and must not close the new run.
+        self._run_started_at: float = time.time()
+        # Ruling lines already on disk at start belong to earlier cycles; any
+        # later edit to the document must not make them "current" again.
+        self._closure_baseline: frozenset[str] = frozenset()
+        self._audit_baseline_offset: int = 0
+        if config is not None:
+            from supervisor.core.target_state import (
+                audit_journal_size,
+                closure_ruling_lines,
+            )
+
+            self._closure_baseline = closure_ruling_lines(config.workspace)
+            self._audit_baseline_offset = audit_journal_size(config.workspace)
         self._active_progress_steps: int = 0
         self._timeout_extension_count: int = 0
         self._max_timeout_extensions: int = 3
@@ -116,6 +183,19 @@ class BaseLoop:
         self._unmet_streak_sig: str = ""
         self._unreachable_streak: int = 0
         self._last_passing_gates: int | None = None
+        # Highest passing-gate count ever seen, updated every judged turn.
+        # Separate from _last_passing_gates, which the feasibility streak
+        # needs as the *previous* turn's value.
+        self._gate_high_water: int | None = None
+        # Consecutive judged turns whose NEXT_ACTION is an explicit stand-down
+        # ("None ... await supervisor termination"). This trigger is
+        # independent of the criteria block, so a judge that emits no
+        # structure cannot keep the loop alive by refusing to describe its
+        # unmet set.
+        self._standdown_streak: int = 0
+        # Attainment verdict for the current judged turn, handed to the goal
+        # guard so durable target state stops treating file churn as progress.
+        self._last_attainment_progressed: bool | None = None
         # Why the run is closing as BLOCKED; also set by the agent-asserted
         # terminal-closure trigger.
         self._blocked_reason: str = ""
@@ -552,12 +632,17 @@ class BaseLoop:
         """
         from supervisor.core.target_state import read_terminal_assertion
 
-        assertion = read_terminal_assertion(self.config.workspace)
+        assertion = read_terminal_assertion(
+            self.config.workspace,
+            since_ts=self._run_started_at,
+            baseline=self._closure_baseline,
+            offset=self._audit_baseline_offset,
+        )
         if not assertion:
             return ""
         return (
-            "the agent declared this run terminally closed in its own audit "
-            f"trail ({assertion}); further turns cannot change the outcome"
+            "the agent declared this run terminally closed "
+            f"({assertion}); further turns cannot change the outcome"
         )
 
     def _feasibility_block_reason(self) -> str:
@@ -608,7 +693,7 @@ class BaseLoop:
     def _blocked_assessment(self, verdict) -> str:
         """Non-empty reason when this run must close as BLOCKED instead of looping.
 
-        Three triggers, all evidence-bound and gated by the turn floor:
+        Four triggers, all evidence-bound and gated by the turn floor:
 
         (a) attainment stagnation - N consecutive judged turns that satisfied
         no previously-unmet obligation and won no new gate. Deliberately keyed
@@ -617,33 +702,56 @@ class BaseLoop:
         so a change-based streak can never fire on the loop it must catch
         (measured: 0 Blocked exits across 549 judged turns of two studies).
         (b) the agent asserts a terminal closure in its own audit trail
-        (goal_terminal / *_closed_*) and then keeps producing turns: the run
-        is over by the agent's own account, so the harness must not pay for
-        more.
+        (goal_terminal / *_closed_*), or a run-scoped ruling appears in a
+        closure document (`.opencode/closure.md`, `ESCALATION.md`), and the
+        run keeps producing turns: it is over by that account, so the harness
+        must not pay for more.
         (c) the feasibility facts already declare the target unreachable and
         the passing-gate count has stopped improving.
+        (d) the judge has told the agent to stand down for N consecutive
+        turns while the targets stay unmet — the loop is waiting on an
+        external decision, and more turns cannot produce one.
         """
-        if not getattr(self.config, "enable_blocked_exit", True):
-            return ""
         # Which trigger fired — the agent's own closure assertion is the
         # weakest trust source, so _on_blocked cross-checks it before writing
         # the irreversible "closed" status.
         self._blocked_agent_asserted = False
+        self._last_attainment_progressed = None
         if verdict.all_targets_met:
             self._progress.reset()
             self._unmet_streak, self._unmet_streak_sig = 0, ""
+            self._standdown_streak = 0
             return ""
         passing = self._passing_gate_count()
+        gate_gain = False
+        if passing is not None:
+            if self._gate_high_water is not None and passing > self._gate_high_water:
+                gate_gain = True
+            self._gate_high_water = max(self._gate_high_water or 0, passing)
         criteria = list(getattr(verdict, "criteria_results", None) or [])
         if criteria:
             signal = self._progress.record(criteria, passing_gates=passing)
             streak = signal.streak
+            self._last_attainment_progressed = signal.progressed
+            gate_gain = gate_gain or signal.progressed
         else:
             # Unstructured judge: no per-criterion MET/UNMET to track, so fall
             # back to the old identical-unmet-set rule. Attainment is
             # unmeasurable here, and treating that as stagnation would close
             # healthy runs whose judge simply omits the criteria block.
             streak = self._unstructured_streak(verdict)
+        if gate_gain:
+            # Real progress, even if the judge still sounds like it is
+            # standing down; do not let a stall streak build over it.
+            self._standdown_streak = 0
+        elif _is_standdown_action(getattr(verdict, "next_action", "") or ""):
+            self._standdown_streak += 1
+        else:
+            self._standdown_streak = 0
+        # Attainment above is recorded even when the BLOCKED exit is disabled:
+        # the goal guard's durable state still needs the measurement.
+        if not getattr(self.config, "enable_blocked_exit", True):
+            return ""
         floor = int(getattr(self.config, "min_turns_before_blocked", 12))
         if self._task_turn < floor:
             return ""
@@ -658,6 +766,16 @@ class BaseLoop:
                 f"(no obligation went UNMET -> MET and no gate newly passed; "
                 f"{self._progress.satisfied} obligation(s) satisfied so far): "
                 f"{unmet}"
+            )
+        if self._standdown_streak >= needed:
+            directive = head_tail_excerpt(
+                str(getattr(verdict, "next_action", "") or ""), 160,
+            )
+            return (
+                f"{self._standdown_streak} consecutive judged turns told the "
+                f"agent to stand down while targets remain UNMET (last "
+                f"directive: {directive}); the loop cannot advance without an "
+                "operator decision"
             )
         closure = self._agent_closure_reason()
         if closure:
@@ -700,12 +818,15 @@ class BaseLoop:
         # "running" after the run closed, so a relaunch resumed it as if
         # nothing had happened. An agent-asserted closure is NOT taken at
         # face value for this irreversible write: when recorded feasibility
-        # facts still say the target is reachable, the closure is the
-        # supervised agent's word against the evidence base — leave the
-        # target resumable (this run still ends BLOCKED, so no more turns
-        # are bought; a relaunch is the operator's explicit choice).
-        if state_note.was_closed:
-            mark_target_closed(self.config.workspace, reason)
+        # facts hold measured evidence that the target is reachable, the
+        # closure is the supervised agent's word against the evidence base —
+        # record it as "blocked", not "closed" (this run still ends BLOCKED, so no more
+        # turns are bought; a relaunch is the operator's explicit choice).
+        mark_target_closed(
+            self.config.workspace,
+            reason,
+            status="closed" if state_note.was_closed else state_note.status,
+        )
         update_experience(self.config.workspace, failed=[f"blocked: {reason}"])
         self._record_structured_failure(
             reason,
@@ -742,7 +863,10 @@ class BaseLoop:
         contradicted = False
         if agent_asserted and facts:
             assessment = check_feasibility(facts, facts_source="closure cross-check")
-            contradicted = bool(assessment.reachable)
+            contradicted = bool(
+                assessment.reachable
+                and _has_positive_reachability_evidence(assessment)
+            )
 
         if agent_asserted and contradicted:
             return _ClosureNote(
@@ -751,13 +875,15 @@ class BaseLoop:
                     reopen_block
                     + "The closure was the AGENT'S OWN assertion, and the recorded "
                     "feasibility facts still say the target is REACHABLE — so the "
-                    "state was deliberately left open (not `closed`). A relaunch "
-                    "will resume this target; it is your explicit decision.\n"
+                    "state was written as `blocked` (reopenable), not `closed`. "
+                    "This run bought no more turns; a relaunch will resume the "
+                    "target, and that is your explicit decision.\n"
                 ),
                 event_suffix=(
-                    " Target state left OPEN: agent-asserted closure contradicts "
-                    "recorded feasibility facts."
+                    " Target state recorded as blocked: agent-asserted closure "
+                    "contradicts recorded feasibility facts."
                 ),
+                status="blocked",
             )
         if agent_asserted:
             return _ClosureNote(
