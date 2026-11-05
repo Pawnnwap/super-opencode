@@ -80,6 +80,26 @@ def _bind_number(key: str, label: str, *, min: int, max: int, format: str = "%.0
     ).classes(classes)
 
 
+def _bind_float(
+    key: str,
+    label: str,
+    *,
+    min: float,
+    max: float,
+    format: str = "%.2f",
+    classes: str = "w-44",
+):
+    def _change(e) -> None:
+        if e.value is not None:
+            app_state[key] = float(e.value)
+            _save()
+
+    return ui.number(
+        label, value=float(app_state.get(key) or 0), min=min, max=max,
+        step=0.01, format=format, on_change=_change,
+    ).classes(classes)
+
+
 def _workspace() -> Path | None:
     raw = app_state.get("workspace") or ""
     path = Path(raw) if raw else None
@@ -155,6 +175,39 @@ def _config_section() -> None:
                 "supervisor_reasoning",
                 "Supervisor thinking effort",
                 choices=REASONING_EFFORT_CHOICES,
+            )
+        # Structured decision service (jev): opt-in final arbiter for the
+        # textual judgment calls (closing, contradictions, stagnation,
+        # protocol flags, DONE proposals). Deterministic gates stay hard.
+        with ui.row().classes("w-full gap-4 flex-wrap items-end"):
+            _bind_switch(
+                "enable_jev_decisions",
+                "Jev decision arbiter",
+            ).tooltip(
+                "Ask the structured-decision service to arbitrate textual "
+                "judgment calls: terminal / stand-down wording, MET-claim "
+                "contradictions, stagnation, protocol flags, DONE proposals. "
+                "Falls back to the text heuristics when the service is "
+                "unavailable.",
+            )
+            _bind_input(
+                "jev_decision_url",
+                "Jev decision URL",
+                classes="flex-grow mono",
+            ).tooltip(
+                "POST target of the noul/choice decision API, e.g. "
+                "http://192.168.18.65/systemone/api/v1/systemone.",
+            )
+            _bind_input(
+                "jev_decision_api_key",
+                "Jev API key (optional)",
+                password=True,
+            )
+            _bind_number("jev_decision_timeout", "Jev timeout (s)", min=1, max=300)
+            _bind_float(
+                "jev_decision_threshold",
+                "Jev confidence threshold",
+                min=0.50, max=0.99,
             )
         if (app_state.get("engine") or "opencode") == "codex":
             with ui.row().classes("w-full gap-4 flex-wrap"):

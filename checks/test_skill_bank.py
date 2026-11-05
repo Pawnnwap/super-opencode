@@ -438,6 +438,7 @@ def test_supervisor_loop_get_verdict_loads_once_and_queues_chains(tmp_path):
     loop._judge_harness = None
     loop._skill_bank = bank
     loop._skill_events = []
+    loop._jev = None
     loop.supervisor = supervisor
 
     verdict = loop._get_verdict("agent output", _STEP_PROGRESS)
@@ -476,6 +477,7 @@ def test_supervisor_loop_get_verdict_combines_skills_and_evidence(tmp_path):
     loop._judge_harness = _Harness()
     loop._skill_bank = bank
     loop._skill_events = []
+    loop._jev = None
     loop.supervisor = supervisor
 
     loop._get_verdict("agent output", _STEP_PROGRESS)
@@ -500,6 +502,7 @@ def test_evolution_loop_get_verdict_loads_and_queues_chains(tmp_path):
     loop = object.__new__(SelfEvolutionLoop)
     loop._skill_bank = bank
     loop._skill_events = []
+    loop._jev = None
     loop.supervisor = supervisor
 
     loop._get_verdict("agent output", _STEP_PROGRESS)

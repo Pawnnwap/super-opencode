@@ -789,3 +789,75 @@ def test_loop_ignores_audit_closure_from_before_the_run(tmp_path):
     assert "declared this run terminally closed" in loop._blocked_assessment(
         _verdict("T2 AB >= 9/10 gates"),
     )
+
+
+# --------------------------------------------------------------------------- #
+# Judge-directed closure (run_c1b12a13, 2026-11-05)                           #
+# --------------------------------------------------------------------------- #
+
+def test_judge_closure_order_bypasses_the_turn_floor(tmp_path):
+    """A judge that orders the protocol failure condition must close now.
+
+    run_c1b12a13 did three design iterations and six submissions inside one
+    judged turn; its judge invoked the failure condition and ordered a
+    closeout, but the 12-turn floor kept re-triggering the agent.
+    """
+    loop = _loop(tmp_path, min_turns_before_blocked=12)
+    loop._task_turn = 1
+    directive = (
+        "Invoke the protocol failure condition. The structural analysis proves "
+        "the gate bar is unreachable. Close the study: write a one-page handoff "
+        "in design_notes.md. Do NOT burn additional slots on the variant."
+    )
+    reason = loop._blocked_assessment(_standdown(directive, "ab_pass_gate_score"))
+    assert "directed the run to close the study" in reason
+    assert "protocol failure condition" in reason
+    assert loop._blocked_agent_asserted is False
+
+
+def test_closure_directive_recognition():
+    from supervisor.core.loop_base import _is_closure_directive
+
+    assert _is_closure_directive("Invoke the protocol failure condition.")
+    assert _is_closure_directive("Close the study: write a handoff.")
+    assert _is_closure_directive("The study is closed; no further action.")
+    assert _is_closure_directive(
+        "The study is terminally closed. No further agent action is authorized.",
+    )
+    assert _is_closure_directive("The study has been closed by directive.")
+    assert _is_closure_directive("Do not burn additional slots.")
+    # Pre-registered conditionals are plans, not current orders.
+    assert not _is_closure_directive(
+        "If all arms fail, invoke the protocol failure condition.",
+    )
+    assert not _is_closure_directive("Write the indicator and submit it.")
+
+
+def test_a_conditional_failure_condition_is_not_a_closure_order(tmp_path):
+    loop = _loop(tmp_path, min_turns_before_blocked=12)
+    loop._task_turn = 1
+    verdict = _standdown(
+        "If all three arms fail, invoke the protocol failure condition.",
+        "ab_pass_gate_score",
+    )
+    assert loop._blocked_assessment(verdict) == ""
+
+
+def test_agent_closure_bypasses_the_turn_floor(tmp_path):
+    loop = _loop(tmp_path, min_turns_before_blocked=12)
+    loop._task_turn = 1
+    (tmp_path / "ESCALATION.md").write_text(_RULING, encoding="utf-8")
+    reason = loop._blocked_assessment(_verdict("T2 AB >= 9/10 gates"))
+    assert "declared this run terminally closed" in reason
+
+
+def test_a_judge_closure_order_respects_disabled_blocked_exit(tmp_path):
+    loop = _loop(
+        tmp_path,
+        min_turns_before_blocked=0,
+        enable_blocked_exit=False,
+    )
+    loop._task_turn = 1
+    assert loop._blocked_assessment(
+        _standdown("Invoke the protocol failure condition."),
+    ) == ""

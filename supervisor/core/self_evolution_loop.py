@@ -291,6 +291,7 @@ class SelfEvolutionLoop(BaseLoop):
             )
             verdict = self.supervisor.judge(augmented)
             self._queue_deferred_skill_requests(verdict)
+        self._apply_jev_contradictions(verdict)
         return verdict
 
     def _rollback(self) -> Generator[Event]:

@@ -96,6 +96,43 @@ def _is_standdown_action(action: str) -> bool:
     return bool(_STANDDOWN_ACTION_RE.match(normalized))
 
 
+# A judge ordering the run to close is a terminal directive, not a hint. The
+# failure-condition phrasing is the study protocol's own stop rule; "close the
+# study" at a sentence start and "the study is closed/terminal" are the other
+# unambiguous forms. Conditional plans ("if all arms fail, invoke ...") are
+# excluded in _is_closure_directive so a pre-registration is not mistaken for
+# an order.
+_CLOSURE_DIRECTIVE_RE = re.compile(
+    r"(?:"
+    r"\b(?:invoke|trigger|execute|apply)\s+(?:the\s+)?protocol(?:'s)?\s+"
+    r"failure\s+condition\b"
+    r"|\bprotocol\s+failure\s+condition\s+(?:is\s+|has\s+been\s+)?"
+    r"(?:invoked|triggered|met)\b"
+    r"|\b(?:the\s+)?study\s+(?:is|has\s+been)\s+"
+    r"(?:(?:terminally|finally|effectively)\s+)?(?:closed|terminal)\b"
+    r"|(?:^|[.;!?]\s*)close\s+(?:out\s+)?(?:the\s+)?study\b"
+    r"|\bdo\s+not\s+(?:burn|spend|use)\s+(?:additional|further|more)\s+"
+    r"(?:slots|arms|submissions)\b"
+    r")",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def _is_closure_directive(action: str) -> bool:
+    """True when the judge's NEXT_ACTION orders the study closed.
+
+    A match preceded by an ``if`` clause within the same sentence is a
+    pre-registered conditional, not a current order.
+    """
+    text = " ".join((action or "").split())
+    for match in _CLOSURE_DIRECTIVE_RE.finditer(text):
+        prefix = text[max(0, match.start() - 48):match.start()].lower()
+        if re.search(r"\bif\b[^.;]{0,40}$", prefix):
+            continue
+        return True
+    return False
+
+
 def _has_positive_reachability_evidence(assessment) -> bool:
     """True when recorded facts contain measured evidence of attainability.
 
@@ -161,6 +198,28 @@ class BaseLoop:
 
             self._closure_baseline = closure_ruling_lines(config.workspace)
             self._audit_baseline_offset = audit_journal_size(config.workspace)
+        # Structured decision service (jev), opt-in. It arbitrates textual
+        # closure candidates only; hard evidence stays deterministic.
+        self._jev = None
+        self._jev_closeout_pending = False
+        self._jev_notes: list[str] = []
+        if config is not None and getattr(config, "enable_jev_decisions", False):
+            jev_url = str(getattr(config, "jev_decision_url", "") or "").strip()
+            if jev_url:
+                from supervisor.core.decision_service import JevDecisionClient
+
+                self._jev = JevDecisionClient(
+                    jev_url,
+                    timeout=float(
+                        getattr(config, "jev_decision_timeout", 20.0) or 20.0,
+                    ),
+                    threshold=float(
+                        getattr(config, "jev_decision_threshold", 0.80) or 0.80,
+                    ),
+                    api_key=str(
+                        getattr(config, "jev_decision_api_key", "") or "",
+                    ),
+                )
         self._active_progress_steps: int = 0
         self._timeout_extension_count: int = 0
         self._max_timeout_extensions: int = 3
@@ -626,9 +685,10 @@ class BaseLoop:
         relaunch, and keep buying turns from an agent that had already
         declared the work finished - 271 judged turns in one case.
 
-        Any such event at or after ``min_turns_before_blocked`` is taken at
-        face value: the agent's own terminal assertion is the strongest
-        evidence available that no further turn can change the outcome.
+        An explicit terminal declaration is taken at face value regardless of
+        the turn floor: it is the strongest evidence available that no further
+        turn can change the outcome, and a long turn can contain many design
+        iterations (the floor would otherwise force extra work after closure).
         """
         from supervisor.core.target_state import read_terminal_assertion
 
@@ -690,10 +750,178 @@ class BaseLoop:
             and str(row.get("conclusion", "")).upper() == "PASS"
         )
 
-    def _blocked_assessment(self, verdict) -> str:
+    def _arbitrate_close(
+        self,
+        verdict,
+        passing_gates: int | None,
+        output: str,
+    ) -> tuple[str, bool]:
+        """Ask the structured decision service about a textual closure candidate.
+
+        Returns ``(block_reason, suppress_text_triggers)``. ``block_reason`` is
+        non-empty only for a confident close. On service failure the caller
+        falls back to the deterministic text heuristics.
+        """
+        client = self._jev
+        if client is None:
+            return "", False
+        from supervisor.core.decision_service import build_close_evidence
+        from supervisor.core.target_state import load_target_state
+
+        state = load_target_state(self.config.workspace)
+        protocol = getattr(self, "protocol", None)
+        evidence = build_close_evidence(
+            mandate=getattr(protocol, "target_section", ""),
+            status=state.status if state else "unknown",
+            iteration=self._task_turn,
+            stagnation=state.stagnation_count if state else 0,
+            passing_gates=passing_gates,
+            verdict=verdict,
+            output=output,
+        )
+        try:
+            decision = client.decide_close(evidence)
+        except Exception:
+            logger.warning("jev closing decision crashed", exc_info=True)
+            return "", False
+        if decision is None:
+            return "", False
+        self._record_jev_note(f"Jev closing decision: {decision.summary}")
+        if decision.verdict == "close":
+            return (
+                "the structured closing decision is terminal "
+                f"({decision.summary}); the target remains unmet"
+            ), False
+        if decision.verdict == "grace":
+            if self._jev_closeout_pending:
+                return (
+                    "the structured closing decision is terminal and the "
+                    f"closeout grace turn is spent ({decision.summary})"
+                ), False
+            self._jev_closeout_pending = True
+            return "", True
+        self._jev_closeout_pending = False
+        if decision.verdict == "escalate":
+            self._record_jev_note(
+                "Jev closing decision requested escalation; keeping the run alive",
+            )
+        return "", True
+
+    def _arbitrate_protocol(self, alignment, output: str) -> tuple[bool, str]:
+        """Return ``(suppress_warning, note)`` for a deterministic protocol flag.
+
+        The regex scanner is intentionally broad; jev is the final yes/no on
+        the flagged cases. On outage the warning stands (fail-safe).
+        """
+        if self._jev is None:
+            return False, ""
+        from supervisor.core.decision_service import CHOICE_MIN_CONFIDENCE
+
+        protocol = getattr(self, "protocol", None)
+        try:
+            decision = self._jev.decide_protocol_violation(
+                violations=[
+                    getattr(v, "description", str(v))
+                    for v in (getattr(alignment, "violations", None) or [])
+                ],
+                output=output,
+                restrictions=getattr(protocol, "restrictions_section", ""),
+            )
+        except Exception:
+            logger.warning("jev protocol review crashed", exc_info=True)
+            return False, ""
+        if decision is None:
+            return False, ""
+        note = f"Jev protocol review: {decision.summary}"
+        suppress = (
+            decision.action == "no_violation"
+            and decision.probability >= CHOICE_MIN_CONFIDENCE
+        )
+        return suppress, note
+
+    def _record_jev_note(self, note: str) -> None:
+        if note:
+            self._jev_notes.append(note)
+            self._jev_notes = self._jev_notes[-8:]
+
+    def _drain_jev_notes(self) -> Generator[Event]:
+        notes, self._jev_notes = self._jev_notes[:], []
+        for note in notes:
+            yield _ev("info", note)
+
+    def _apply_jev_contradictions(self, verdict) -> None:
+        """Second-pass check: does a MET criterion's evidence contradict it?
+
+        The deterministic regex in ``flag_contradicted_criteria`` has already
+        downgraded obvious contradictions. This arbitrates the remaining
+        ambiguous MET evidence; a confident contradiction downgrades the
+        criterion and clears ``all_targets_met``.
+        """
+        if self._jev is None:
+            return
+        from supervisor.core.llm_support.models import CriterionResult
+
+        criteria = getattr(verdict, "criteria_results", None) or []
+        met_indices = [
+            index
+            for index, item in enumerate(criteria)
+            if getattr(item, "met", False)
+            and str(getattr(item, "evidence", "") or "").strip()
+        ]
+        if not met_indices:
+            return
+        protocol = getattr(self, "protocol", None)
+        context = (
+            "JUDGE VERDICT CONTRADICTION CHECK\n"
+            f"- Mandate: {head_tail_excerpt(getattr(protocol, 'target_section', ''), 700)}\n"
+            f"- Judge feedback: {head_tail_excerpt(getattr(verdict, 'feedback', ''), 700)}\n"
+            f"- Judge NEXT_ACTION: {head_tail_excerpt(getattr(verdict, 'next_action', ''), 500)}"
+        )
+        pairs = [
+            (
+                str(getattr(criteria[index], "criterion", "")),
+                str(getattr(criteria[index], "evidence", "")),
+            )
+            for index in met_indices
+        ]
+        try:
+            flags = self._jev.decide_contradictions(pairs, context=context)
+        except Exception:
+            logger.warning("jev contradiction check crashed", exc_info=True)
+            return
+        if not flags:
+            return
+        downgraded: list[str] = []
+        for pair_index, contradicted in enumerate(flags):
+            if not contradicted or pair_index >= len(met_indices):
+                continue
+            index = met_indices[pair_index]
+            item = criteria[index]
+            criteria[index] = CriterionResult(
+                criterion=item.criterion,
+                met=False,
+                evidence=item.evidence,
+            )
+            downgraded.append(item.criterion)
+        if not downgraded:
+            return
+        verdict.all_targets_met = False
+        notes = list(getattr(verdict, "validation_notes", None) or [])
+        notes.extend(
+            f"jev: evidence contradicts MET for '{name[:100]}'"
+            for name in downgraded
+        )
+        verdict.validation_notes = notes
+        self._record_jev_note(
+            "Jev contradiction check downgraded "
+            f"{len(downgraded)} MET claim(s): "
+            + "; ".join(name[:80] for name in downgraded[:3]),
+        )
+
+    def _blocked_assessment(self, verdict, output: str = "") -> str:
         """Non-empty reason when this run must close as BLOCKED instead of looping.
 
-        Four triggers, all evidence-bound and gated by the turn floor:
+        Five triggers:
 
         (a) attainment stagnation - N consecutive judged turns that satisfied
         no previously-unmet obligation and won no new gate. Deliberately keyed
@@ -701,16 +929,24 @@ class BaseLoop:
         summary.md or deletes __pycache__ every turn produces a diff forever,
         so a change-based streak can never fire on the loop it must catch
         (measured: 0 Blocked exits across 549 judged turns of two studies).
-        (b) the agent asserts a terminal closure in its own audit trail
+        (b) the judge orders the study closed: it invokes the protocol's
+        failure condition, says the study is closed/terminal, or tells the
+        agent not to spend more slots. This is a terminal directive, so it is
+        honored immediately - a study can finish several design iterations
+        inside one long judged turn, and waiting for the turn floor is how a
+        correctly-closed run kept re-triggering (run_c1b12a13).
+        (c) the agent asserts a terminal closure in its own audit trail
         (goal_terminal / *_closed_*), or a run-scoped ruling appears in a
-        closure document (`.opencode/closure.md`, `ESCALATION.md`), and the
-        run keeps producing turns: it is over by that account, so the harness
-        must not pay for more.
-        (c) the feasibility facts already declare the target unreachable and
+        closure document (`.opencode/closure.md`, `ESCALATION.md`). Explicit
+        declarations are honored immediately, like the judge's.
+        (d) the feasibility facts already declare the target unreachable and
         the passing-gate count has stopped improving.
-        (d) the judge has told the agent to stand down for N consecutive
+        (e) the judge has told the agent to stand down for N consecutive
         turns while the targets stay unmet — the loop is waiting on an
         external decision, and more turns cannot produce one.
+
+        Only the heuristic triggers (a), (d), (e) are gated by the turn floor;
+        an explicit closure declaration (b), (c) is evidence in its own right.
         """
         # Which trigger fired — the agent's own closure assertion is the
         # weakest trust source, so _on_blocked cross-checks it before writing
@@ -752,6 +988,30 @@ class BaseLoop:
         # the goal guard's durable state still needs the measurement.
         if not getattr(self.config, "enable_blocked_exit", True):
             return ""
+        # Agent-declared closures are explicit terminal evidence: honored
+        # before the floor and never delegated to the decision service.
+        closure = self._agent_closure_reason()
+        if closure:
+            self._blocked_agent_asserted = True
+            return closure
+        directive = str(getattr(verdict, "next_action", "") or "")
+        text_closure = _is_closure_directive(directive)
+        text_standdown = _is_standdown_action(directive)
+        suppress_text = False
+        if text_closure or text_standdown:
+            jev_reason, suppress_text = self._arbitrate_close(
+                verdict, passing, output,
+            )
+            if jev_reason:
+                return jev_reason
+        # Explicit closures are terminal evidence, not heuristics: honor them
+        # before the turn floor. One judged turn can contain several design
+        # iterations and dozens of submissions.
+        if text_closure and not suppress_text:
+            return (
+                "the judge directed the run to close the study while the "
+                f"target remains unmet: {head_tail_excerpt(directive, 200)}"
+            )
         floor = int(getattr(self.config, "min_turns_before_blocked", 12))
         if self._task_turn < floor:
             return ""
@@ -767,7 +1027,7 @@ class BaseLoop:
                 f"{self._progress.satisfied} obligation(s) satisfied so far): "
                 f"{unmet}"
             )
-        if self._standdown_streak >= needed:
+        if self._standdown_streak >= needed and not suppress_text:
             directive = head_tail_excerpt(
                 str(getattr(verdict, "next_action", "") or ""), 160,
             )
@@ -777,10 +1037,6 @@ class BaseLoop:
                 f"directive: {directive}); the loop cannot advance without an "
                 "operator decision"
             )
-        closure = self._agent_closure_reason()
-        if closure:
-            self._blocked_agent_asserted = True
-            return closure
         reason = self._feasibility_block_reason()
         if not reason:
             self._unreachable_streak = 0
@@ -1086,7 +1342,8 @@ class BaseLoop:
         self._task_turn += 1
         self._record_task_state(verdict, progress)
 
-        blocked_reason = self._blocked_assessment(verdict)
+        blocked_reason = self._blocked_assessment(verdict, actual_output)
+        yield from self._drain_jev_notes()
         if not (getattr(verdict, "criteria_results", None) or []) and not getattr(
             self, "_unstructured_warned", False
         ):
@@ -1126,6 +1383,7 @@ class BaseLoop:
                     goal=self._memory_goal(),
                     solutions=[lesson],
                 )
+                yield from self._drain_jev_notes()
                 return
             feedback_override = blocked
             yield _ev(
@@ -1140,6 +1398,7 @@ class BaseLoop:
             guidance = self._turn_guidance(verdict, actual_output)
             if guidance:
                 feedback_text = guidance + "\n\n" + feedback_text
+        yield from self._drain_jev_notes()
 
         vuln_scan = self.scan_for_vulnerabilities()
         feedback_text = feedback_text + (vuln_scan or "")

@@ -296,6 +296,81 @@ measured evidence of reachability (a passing gate or a ceiling that meets the
 bar) — never left at `running`. An all-open facts file is neutral, not
 evidence, and does not override a terminal ruling.
 
+### Structured decision service (jev)
+
+Text regexes cannot see every way a judge can say "this is over", nor every
+shape a MET claim, a stagnant turn, a protocol flag or a DONE proposal can
+take. Five of those bounded decisions can instead be arbitrated by a
+structured-decision endpoint, opt-in in **Configuration → Jev decision
+arbiter** (URL, optional API key, timeout, close threshold; disabled by
+default).
+
+When enabled and the judge's `NEXT_ACTION` is a closure/stand-down candidate,
+the loop sends a compact evidence block (mandate, durable state, judge
+criteria/next action/feedback, agent's last output) and asks for calibrated
+probabilities over:
+
+- `close_now` / `terminal` (noul), and
+- `action`: `close_run`, `finish_closeout_then_close`, `continue_design_work`,
+  `escalate_to_operator` (choice).
+
+Policy: close at `P(close) ≥ threshold` with `close_run`; give
+`finish_closeout_then_close` one grace turn, then close; a `continue` or
+`escalate` verdict suppresses the text triggers while the deterministic
+attainment/unreachable checks still apply. Any timeout or malformed response
+falls back to the existing text heuristics — the decision service being down
+never keeps a run alive or blocks a closure. Agent-declared closure
+(`goal_terminal`, closure documents) and all measured evidence are never
+delegated.
+
+The same client arbitrates four more textual judgment calls, each with the
+same outage rule (any failure falls back to the deterministic path):
+
+- **Verdict contradiction** — after the regex pass, every MET criterion whose
+  evidence is non-empty is paired up and asked "does this evidence contradict
+  the MET claim?". A confident contradiction downgrades the criterion and
+  clears `all_targets_met`, with a note in the job log.
+- **Stagnation action** — when the workspace-stagnation detector fires, the
+  arbiter picks `continue` (suppress the nudge), `nudge`, `strategy_change`
+  (escalated guidance), or `restart` (the loop restarts the agent session).
+- **Protocol alignment** — the deterministic scanner is intentionally broad;
+  the arbiter is the final yes/no on flagged output. A confident
+  `no_violation` suppresses the reinforcement warning; anything else keeps it.
+- **DONE proposal** — after every deterministic veto passes, a confident
+  `reject`/`need_evidence` blocks the proposal; `accept` passes with a note.
+  Choice decisions act at `P ≥ 0.5`; binary ones use the configured threshold.
+
+**Bounded-decision audit.** Same client (`noul`/`choice`/`score`) can arbitrate.
+Ranked by **sureness × frequency**, where sureness (1–5) is how completely the
+occasion can be reduced to a well-posed question with text-ready evidence and
+a clear answer space, and frequency (1–5) is how often it arises (5 = every
+judged turn, 1 = rare). The ranking is not implementation difficulty.
+
+| Rank | Decision point | Sureness | Frequency | Score | Status |
+|---|---|---|---|---|---|
+| 1 | Verdict MET-vs-negative evidence | 4 | 5 | 20 | **implemented** — second-pass contradiction check |
+| 2 | Stagnation action | 4 | 4 | 16 | **implemented** — nudge / strategy change / restart |
+| 3 | Protocol alignment | 3 | 5 | 15 | **implemented** — final yes/no on scanner flags |
+| 4 | Run closure / BLOCKED exit | 5 | 2 | 10 | **implemented** — closure/stand-down arbitration |
+| 5 | DONE proposal accept/reject | 4 | 2 | 8 | **implemented** — post-veto ambiguity only |
+| 6 | Direction novelty | 4 | 2 | 8 | not implemented — near-threshold similarity cases (evolve runs) |
+| 7 | Plan-mode approval | 3 | 2 | 6 | not implemented — accept plan vs another round |
+| 8 | Occam accept/rollback | 4 | 1 | 4 | not implemented — final accept/rollback |
+| 9 | Loop restart after repeated tools | 3 | 1 | 3 | not implemented — ambiguous repetition cases |
+
+The closing decision ranks fourth by frequency-weighted score but **first on
+sureness** (and it is the one whose failure costs hours), which is why it was
+implemented first; ranks 1–3 and 5 followed because each audits a judgment the
+deterministic code could only approximate with patterns. Verdict contradiction
+is frequent and sure, but it audits the judge itself; it only downgrades what
+a confident arbiter reads as contradiction. Protocol alignment is as frequent
+as a verdict but needs the full restriction set in the evidence, so it stays a
+second opinion rather than the sole decider.
+
+Never delegated to jev: gate counts, test results, file existence, context
+thresholds, worker code freshness, retry counts, protected paths, and cleanup
+deletion safety. These are measurements or safety rules, not judgments.
+
 ---
 
 ## Occam's Razor Pass

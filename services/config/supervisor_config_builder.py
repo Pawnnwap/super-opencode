@@ -55,6 +55,21 @@ def build_supervisor_config(
         # captured copy instead of whatever the live UI last wrote to env.
         openai_api_key=str(session_state.get("openai_key", "") or ""),
         openai_base_url=str(session_state.get("base_url", "") or "").strip(),
+        enable_jev_decisions=bool(
+            session_state.get("enable_jev_decisions", False),
+        ),
+        jev_decision_url=str(
+            session_state.get("jev_decision_url", "") or "",
+        ).strip(),
+        jev_decision_api_key=str(
+            session_state.get("jev_decision_api_key", "") or "",
+        ),
+        jev_decision_timeout=float(
+            session_state.get("jev_decision_timeout", 20) or 20,
+        ),
+        jev_decision_threshold=float(
+            session_state.get("jev_decision_threshold", 0.80) or 0.80,
+        ),
     )
     defaults.update(overrides)
     return SupervisorConfig(**defaults)

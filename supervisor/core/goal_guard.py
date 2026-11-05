@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -70,6 +70,8 @@ class DoneDecision:
     reason: str
     unverified: bool = False  # accepted after blocked-stop cap, evidence incomplete
     unmet_criteria: list[str] = field(default_factory=list)
+    # jev review note for the job log ('' when no arbiter ran).
+    jev_note: str = ""
 
 
 @dataclass
@@ -78,14 +80,24 @@ class TurnDecision:
 
     guidance: str = ""  # prepended to the agent feedback
     stagnation: StagnationSignal | None = None
+    # jev chose a session restart for a stuck approach.
+    restart: bool = False
+    # jev decision note for the job log ('' when no arbiter ran).
+    jev_note: str = ""
 
 
 class GoalGuard:
     """Owns goal criteria, the DONE verification gate, and the audit trail."""
 
-    def __init__(self, config: SupervisorConfig, protocol: Protocol):
+    def __init__(
+        self,
+        config: SupervisorConfig,
+        protocol: Protocol,
+        jev=None,
+    ):
         self._config = config
         self._protocol = protocol
+        self._jev = jev
         self._workspace = Path(config.workspace)
         self._stagnation = WorkspaceStagnationDetector()
         self._blocked_stops = 0
@@ -140,6 +152,7 @@ class GoalGuard:
         self,
         verdict: SupervisorVerdict,
         changed_files: list[str],
+        output: str = "",
     ) -> DoneDecision:
         """Validate a DONE proposal. Returns accept or a blocking reason."""
         self._turn += 1
@@ -244,6 +257,44 @@ class GoalGuard:
                 )
                 return decision
 
+        jev_note = ""
+        if self._jev is not None:
+            try:
+                jev_decision = self._jev.decide_done(
+                    mandate=self._protocol.target_section,
+                    criteria=[
+                        (item.criterion, item.met, item.evidence)
+                        for item in (
+                            getattr(verdict, "criteria_results", None) or []
+                        )
+                    ],
+                    changed_files=evidence_files,
+                    output=output,
+                )
+            except Exception:
+                logger.warning("jev DONE review crashed", exc_info=True)
+                jev_decision = None
+            if jev_decision is not None:
+                jev_note = f"Jev DONE review: {jev_decision.summary}"
+                if (
+                    jev_decision.probability >= 0.5
+                    and jev_decision.action in ("reject", "need_evidence")
+                ):
+                    blocked = self._block(
+                        verdict,
+                        changed_files,
+                        unmet=unmet,
+                        reason=(
+                            "jev rejected the DONE proposal: "
+                            f"{jev_decision.summary}"
+                            if jev_decision.action == "reject"
+                            else "jev requires more evidence before accepting: "
+                            f"{jev_decision.summary}"
+                        ),
+                    )
+                    blocked.jev_note = jev_note
+                    return blocked
+
         self._stagnation.reset()
         evidence_files = self._evidence_files(changed_files)
         red_flags = [f for f in evidence_files if _looks_like_test_file(f)]
@@ -262,6 +313,7 @@ class GoalGuard:
             accepted=True,
             reason=reason,
             unmet_criteria=unmet,
+            jev_note=jev_note,
         )
         self.last_done_decision = decision
         record_target_iteration(
@@ -395,8 +447,55 @@ class GoalGuard:
             )
 
         guidance = ""
+        restart = False
+        jev_note = ""
+        if stagnation is not None and self._jev is not None:
+            state = load_target_state(self._workspace)
+            try:
+                decision = self._jev.decide_stagnation(
+                    stage=stagnation.stage,
+                    stagnant_turns=stagnation.stagnant_turns,
+                    reason=stagnation.reason,
+                    output=output,
+                    state=(
+                        f"status={state.status}; "
+                        f"stagnation={state.stagnation_count}"
+                        if state
+                        else "unknown"
+                    ),
+                )
+            except Exception:
+                logger.warning("jev stagnation decision crashed", exc_info=True)
+                decision = None
+            if decision is not None:
+                jev_note = f"Jev stagnation decision: {decision.summary}"
+                self._audit(
+                    "jev_stagnation",
+                    decision=decision.action,
+                    probability=round(decision.probability, 4),
+                    reason=stagnation.reason,
+                    all_targets_met=False,
+                    changed_files=[],
+                )
+                if decision.probability >= 0.5:
+                    if decision.action == "continue":
+                        stagnation = None
+                    elif decision.action == "nudge":
+                        guidance = self._stagnation_guidance(
+                            replace(stagnation, stage=1),
+                        )
+                    elif decision.action == "strategy_change":
+                        guidance = self._stagnation_guidance(
+                            replace(stagnation, stage=2),
+                        )
+                    elif decision.action == "restart":
+                        guidance = self._stagnation_guidance(
+                            replace(stagnation, stage=3),
+                        )
+                        restart = True
         if stagnation is not None:
-            guidance = self._stagnation_guidance(stagnation)
+            if not guidance:
+                guidance = self._stagnation_guidance(stagnation)
             self._audit(
                 "stagnation",
                 decision=f"stage-{stagnation.stage}",
@@ -412,7 +511,12 @@ class GoalGuard:
                 "without progress. Re-diagnose the problem and pick a different "
                 "implementation direction before editing."
             )
-        return TurnDecision(guidance=guidance, stagnation=stagnation)
+        return TurnDecision(
+            guidance=guidance,
+            stagnation=stagnation,
+            restart=restart,
+            jev_note=jev_note,
+        )
 
     @staticmethod
     def _stagnation_guidance(signal: StagnationSignal) -> str:

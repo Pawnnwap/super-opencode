@@ -48,6 +48,11 @@ _PERSIST_KEYS = [
     "enable_supervisor_skills",
     "supervisor_skills_dir",
     "npm_registry",
+    "enable_jev_decisions",
+    "jev_decision_url",
+    "jev_decision_api_key",
+    "jev_decision_timeout",
+    "jev_decision_threshold",
 ]
 
 # Default values for every setting the UI binds to (persisted keys above plus
@@ -91,6 +96,14 @@ DEFAULTS: dict = {
     "enable_supervisor_skills": True,
     "supervisor_skills_dir": "",
     "npm_registry": "https://registry.npmmirror.com",
+    # Structured decision service (jev): opt-in arbiter for the closing
+    # decision. Disabled by default; the URL is pre-filled with the local
+    # deployment used by this machine.
+    "enable_jev_decisions": False,
+    "jev_decision_url": "http://192.168.18.65/systemone/api/v1/systemone",
+    "jev_decision_api_key": "",
+    "jev_decision_timeout": 20,
+    "jev_decision_threshold": 0.80,
 }
 
 

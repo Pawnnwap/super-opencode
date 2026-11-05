@@ -56,7 +56,7 @@ class SupervisorLoop(BaseLoop):
         if getattr(config, "enable_goal_guard", True):
             from supervisor.core.goal_guard import GoalGuard
 
-            self._goal_guard = GoalGuard(config, self.protocol)
+            self._goal_guard = GoalGuard(config, self.protocol, jev=self._jev)
             self._goal_guard.start()
             self.supervisor.set_goal_context_provider(
                 self._goal_guard.judge_context,
@@ -397,6 +397,10 @@ class SupervisorLoop(BaseLoop):
             )
             # No load chains: requests seen in the re-judge wait for next turn.
             self._queue_deferred_skill_requests(verdict)
+        self._apply_jev_contradictions(verdict)
+        # Keep the post-re-judge verdict: the evidence/skill round may have
+        # changed the criteria, and the run-end harvest must see the final one.
+        self._last_verdict = verdict
         # Per-turn harvest: the harvest IS the evidence base the blocked
         # triggers read (passing-gate high-water mark, gate statuses), and the
         # files it writes now sit outside the archived tree, so they survive
@@ -438,6 +442,11 @@ class SupervisorLoop(BaseLoop):
     ) -> Generator[Event, None, str]:
         alignment = self.supervisor.verify_protocol_alignment(output, self.protocol)
         if not alignment.aligned:
+            suppress, jev_note = self._arbitrate_protocol(alignment, output)
+            if jev_note:
+                yield _ev("info", jev_note)
+            if suppress:
+                return safe_msg
             logger.warning(
                 "Protocol violations detected: %s",
                 [v.description for v in alignment.violations],
@@ -489,7 +498,10 @@ class SupervisorLoop(BaseLoop):
         decision = self._goal_guard.evaluate_done(
             verdict,
             sorted(self._run_changed_files),
+            output,
         )
+        if decision.jev_note:
+            self._record_jev_note(decision.jev_note)
         if decision.accepted:
             return None
         return self._goal_guard.blocked_feedback(decision, verdict)
@@ -504,6 +516,13 @@ class SupervisorLoop(BaseLoop):
             output=output,
             attainment_progressed=self._last_attainment_progressed,
         )
+        if decision.jev_note:
+            self._record_jev_note(decision.jev_note)
+        if decision.restart:
+            self._pending_cross_loop = (
+                "stagnation restart requested by jev: "
+                + (decision.guidance or "")[:220]
+            )
         return decision.guidance
 
     def _guard_restart_section(self) -> str:

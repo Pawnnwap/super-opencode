@@ -134,6 +134,18 @@ class SupervisorConfig:
     codex_base_url: str = ""
     codex_api_key: str = ""
 
+    # Structured decision service (jev), opt-in. It arbitrates bounded
+    # supervisor choices whose only evidence is textual and ambiguous - the
+    # closing decision first. Deterministic evidence (gate counts, file
+    # existence, tests, protected paths, freshness) stays hard and is never
+    # delegated. Empty URL or enable=False keeps the legacy heuristics.
+    enable_jev_decisions: bool = False
+    jev_decision_url: str = ""
+    jev_decision_api_key: str = ""
+    jev_decision_timeout: float = 20.0
+    # P(close) at or above this is required before the arbiter may close.
+    jev_decision_threshold: float = 0.80
+
     def to_state_dict(self) -> dict[str, object]:
         data = asdict(self)
         data["protocol_path"] = str(self.protocol_path)
