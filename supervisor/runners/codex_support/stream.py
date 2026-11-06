@@ -22,6 +22,8 @@ This module mirrors ``opencode_support.stream`` and reuses its ``LineEvent`` +
 ``build_output`` so the process layer can:
 
   * keep ``agent_message`` prose as the real turn output,
+  * surface ``reasoning`` items as live ``thought`` events (the model's own
+    reasoning summary, never fed to the supervisor's context),
   * reduce each tool-ish item (command_execution / file_change / mcp_tool_call
     / web_search / unknown) to a compact ``[tool] <intent>`` marker — the
     verbose ``aggregated_output`` and other I/O is dropped, and the marker is
@@ -29,7 +31,7 @@ This module mirrors ``opencode_support.stream`` and reuses its ``LineEvent`` +
     ``build_output``),
   * read REAL context tokens off ``turn.completed`` (input + output),
   * capture ``thread_id`` as the resumable session id,
-  * drop ``reasoning`` / ``plan_update`` (model bookkeeping, not output).
+  * drop ``plan_update`` / ``todo_list`` (model bookkeeping, not output).
 
 IMPORTANT: the item.* / usage shapes come from the published schema, not a
 captured live turn (the local probe could not complete a codex turn against
@@ -44,6 +46,7 @@ import json
 
 from supervisor.runners.command_common import TOOL_DETAIL_LIMIT, compact_tool_detail
 from supervisor.runners.opencode_support.stream import LineEvent, build_output
+from supervisor.utils.text_utils import head_tail_excerpt
 
 __all__ = [
     "LineEvent",
@@ -77,7 +80,10 @@ _MCP_CONTENT_KEYS = (
 )
 
 # item.type values that are model bookkeeping, not turn output — dropped.
-_DROP_ITEM_TYPES = frozenset({"reasoning", "plan_update", "todo_list"})
+_DROP_ITEM_TYPES = frozenset({"plan_update", "todo_list"})
+# Reasoning summaries are useful live-log context but can be long; keep the
+# event bounded (both ends, like other truncation paths).
+_THOUGHT_MAX_CHARS = 4000
 
 
 def _stringify_detail(val) -> str:
@@ -114,6 +120,38 @@ def _mcp_content(item: dict) -> str:
                             return cand.strip()
         elif isinstance(payload, str) and payload.strip():
             return payload.strip()
+    return ""
+
+
+def _reasoning_text(item: dict) -> str:
+    """Readable text from a codex ``reasoning`` item.
+
+    Verified live (codex 0.166.0, 2026-11-06): the item is
+    ``{"type":"reasoning","text":"..."}``. Published schema variants also
+    carry ``summary_text`` / ``content`` / ``raw_content`` or a list of
+    summary parts, so every shape is accepted defensively. Raw content is
+    the last fallback: it can be long or opaque, while the curated text is
+    what a human wants in the live log.
+    """
+    for key in ("text", "summary_text", "content", "summary", "raw_content"):
+        value = _reasoning_value(item.get(key))
+        if value:
+            return head_tail_excerpt(value, _THOUGHT_MAX_CHARS, end_ratio=0.3)
+    return ""
+
+
+def _reasoning_value(value) -> str:
+    """Flatten a string / list / nested summary payload to plain text."""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, list):
+        parts = [_reasoning_value(item) for item in value]
+        return "\n".join(part for part in parts if part).strip()
+    if isinstance(value, dict):
+        for key in ("text", "summary_text", "content", "value"):
+            text = _reasoning_value(value.get(key))
+            if text:
+                return text
     return ""
 
 
@@ -226,6 +264,11 @@ def classify_line(line: str | None) -> LineEvent | None:
         if itype == "agent_message":
             txt = item.get("text", "")
             return LineEvent(kind="text", text=txt if isinstance(txt, str) else "")
+        if itype == "reasoning":
+            thought = _reasoning_text(item)
+            if thought:
+                return LineEvent(kind="thought", text=thought)
+            return LineEvent(kind="other")
         if itype in _DROP_ITEM_TYPES:
             return LineEvent(kind="other")
         # command_execution / file_change / mcp_tool_call / web_search and any

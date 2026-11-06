@@ -188,3 +188,16 @@ def test_preview_handles_all_pair_markers():
     assert "open" not in out
     for mark in ("`", "~~", "__"):
         assert out.count(mark) % 2 == 0
+
+
+def test_agent_thought_renders_under_the_agent_speech_toggle():
+    from pathlib import Path
+
+    repo = Path(__file__).resolve().parents[1]
+    source = (
+        repo / "services" / "webui" / "components" / "log_panel.py"
+    ).read_text(encoding="utf-8")
+
+    assert '"agent_thought"' in source
+    assert 'hidden.add("agent_thought")' in source
+    assert "💭" in source

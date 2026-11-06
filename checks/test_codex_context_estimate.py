@@ -32,30 +32,41 @@ def test_estimate_handles_zero_and_negative():
     assert context_estimate_from_turn_usage(-1, 5) == 0
 
 
+class _Proc:
+    def __init__(self, lines):
+        self.stdout = iter(lines)
+        self.stderr = None
+        self.returncode = 0
+
+    def kill(self):
+        pass
+
+    terminate = kill
+
+    def wait(self, timeout=None):
+        return 0
+
+    def poll(self):
+        return 0
+
+
 def _consume(lines):
-    class _Proc:
-        def __init__(self):
-            self.stdout = iter(lines)
-            self.stderr = None
-            self.returncode = 0
-
-        def kill(self):
-            pass
-
-        terminate = kill
-
-        def wait(self, timeout=None):
-            return 0
-
-        def poll(self):
-            return 0
-
-    gen = consume_process_stream(_Proc(), classify_line=classify_line, timeout=5)
+    gen = consume_process_stream(_Proc(lines), classify_line=classify_line, timeout=5)
     try:
         while True:
             next(gen)
     except StopIteration as stop:
         return stop.value
+
+
+def _consume_events(lines):
+    gen = consume_process_stream(_Proc(lines), classify_line=classify_line, timeout=5)
+    events = []
+    while True:
+        try:
+            events.append(next(gen))
+        except StopIteration as stop:
+            return events, stop.value
 
 
 def test_stream_outcome_counts_tools_and_keeps_aggregated_usage():
@@ -81,3 +92,22 @@ def test_stream_outcome_counts_tools_and_keeps_aggregated_usage():
     assert context_estimate_from_turn_usage(
         outcome.tokens_total, outcome.tool_count,
     ) == (44696 + 174) // 3
+
+
+def test_reasoning_is_logged_as_agent_thought_but_not_judge_output():
+    turn = [
+        json.dumps({"type": "item.completed", "item": {
+            "type": "reasoning", "text": "I should check the gate table first."}}),
+        json.dumps({"type": "item.completed", "item": {
+            "type": "agent_message", "text": "GATE OK"}}),
+    ]
+
+    events, outcome = _consume_events([line + "\n" for line in turn])
+
+    assert [event for event in events if event.get("level") == "agent_thought"] == [
+        {"level": "agent_thought", "msg": "I should check the gate table first."},
+    ]
+    # The judge-facing output must contain only the agent message.
+    assert outcome.stdout == "GATE OK"
+    assert outcome.prose == "GATE OK"
+    assert outcome.tool_count == 0

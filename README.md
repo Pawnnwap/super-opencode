@@ -476,6 +476,9 @@ Features:
 - Compact rolling **Latest** strip (newest events) plus the full log panel
   behind an expansion — headline events link to their full bodies via
   *event #* + **查看全文**
+- Codex reasoning items stream into the log as `💭 AGENT THOUGHT` events and
+  share the **Agent speech** toggle with actual prose; they are live-log
+  context only and never enter the supervisor's judged output
 - Log search, noise filter, and download
 - Stop a running job at any time
 - Final report with download button (available after the run completes)

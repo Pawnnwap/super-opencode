@@ -56,8 +56,8 @@ class LineEvent:
     ``thread.started`` event and uses the ``"session"`` / ``"error"`` kinds.
     """
 
-    kind: str  # "text" | "tool" | "tokens" | "session" | "error" | "other" | "raw"
-    text: str = ""  # populated for kind in ("text", "error")
+    kind: str  # "text" | "thought" | "tool" | "tokens" | "session" | "error" | "other" | "raw"
+    text: str = ""  # populated for kind in ("text", "thought", "error")
     marker: str = ""  # populated for kind == "tool"
     tokens_total: int = 0  # populated for kind == "tokens"
     raw: str = ""  # populated for kind == "raw" (non-JSON fallback)

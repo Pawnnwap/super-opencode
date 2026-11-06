@@ -15,7 +15,8 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from nicegui import ui, run as nicegui_run
+from nicegui import run as nicegui_run
+from nicegui import ui
 
 from services.webui.log_format import (
     DEFAULT_HIDDEN_LEVELS,
@@ -30,11 +31,13 @@ from supervisor.utils.text_utils import sanitize_event_message
 _BLOCK_LABELS = {
     "opencode_prompt": "▶ PROMPT → agent",
     "opencode_output": "◀ OUTPUT ← agent",
+    "agent_thought": "💭 AGENT THOUGHT",
     "supervisor_response": "🧠 SUPERVISOR",
     "supervisor_read_files": "📂 SUPERVISOR READ FILES",
 }
 
 _ICONS = {
+    "agent_thought": "💭 ",
     "tool": "🔧 ",
     "warn": "⚠️ ",
     "error": "❌ ",
@@ -112,8 +115,9 @@ class LogPanel:
             self.speech_switch = ui.switch(
                 "Agent speech", value=True, on_change=self._reset,
             ).tooltip(
-                "The agent's plain-text prose. The runner already drops "
-                "thinking and commands; tool markers have their own toggle.",
+                "The agent's plain-text prose and reasoning summaries "
+                "(💭 thoughts). Tool I/O stays out; tool markers have their "
+                "own toggle.",
             )
             self.tool_switch = ui.switch(
                 "Tool use", value=True, on_change=self._reset,
@@ -200,6 +204,7 @@ class LogPanel:
             hidden.add("tool")
         if not self.speech_switch.value:
             hidden.add("opencode_output")
+            hidden.add("agent_thought")
         search = (self.search_input.value or "").strip()
         filtered = filter_events(logs, search, hidden)
         start = start_ts(logs)

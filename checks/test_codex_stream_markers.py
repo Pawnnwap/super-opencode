@@ -110,3 +110,31 @@ def test_engine_error_items_do_not_feed_the_loop_detector():
         "item": {"type": "command_execution", "command": "ls"},
     }))
     assert ok.count_for_loop is True
+
+
+def test_reasoning_item_is_a_thought_not_a_tool():
+    # Live shape (codex 0.166.0, 2026-11-06): {"type":"reasoning","text":"..."}.
+    result = classify_line(json.dumps({
+        "type": "item.completed",
+        "item": {"type": "reasoning", "text": "Check the gate table first."},
+    }))
+    assert result.kind == "thought"
+    assert result.text == "Check the gate table first."
+
+
+def test_reasoning_summary_parts_are_flattened_and_plan_update_still_drops():
+    result = classify_line(json.dumps({
+        "type": "item.completed",
+        "item": {
+            "type": "reasoning",
+            "summary_text": ["Check the PIT alignment.", "Then compute."],
+        },
+    }))
+    assert result.kind == "thought"
+    assert "PIT alignment" in result.text
+
+    dropped = classify_line(json.dumps({
+        "type": "item.completed",
+        "item": {"type": "plan_update", "text": "bookkeeping"},
+    }))
+    assert dropped.kind == "other"

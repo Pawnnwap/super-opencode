@@ -61,7 +61,7 @@ def _drain_stderr(proc, sink: list[str]) -> None:
         if stream is None:
             return
         data = stream.read()
-    except Exception:
+    except Exception:  # noqa: BLE001 - a broken pipe must not kill the turn
         return
     if isinstance(data, bytes):
         data = data.decode("utf-8", errors="replace")
@@ -69,13 +69,13 @@ def _drain_stderr(proc, sink: list[str]) -> None:
         sink.append(data)
 
 
-def _read_stdout(stream, out_q: "queue.Queue") -> None:
+def _read_stdout(stream, out_q: queue.Queue) -> None:
     """Push every stdout line onto *out_q*, then a sentinel (daemon thread)."""
     try:
         if stream is not None:
             for line in stream:
                 out_q.put(line)
-    except Exception:
+    except Exception:  # noqa: BLE001, S110 - EOF is the only signal we need
         pass
     finally:
         out_q.put(_STDOUT_DONE)
@@ -99,8 +99,10 @@ def consume_process_stream(
     Text events accumulate as the real output; tool events are emitted live as
     ``{"level":"tool","msg":"[tool] …"}`` events (own log level so the UI can
     style them distinctly) AND collapsed to markers (verbose I/O dropped);
-    tokens/session/error events update the outcome. Returns a
-    :class:`StreamOutcome`; never blocks past *timeout*.
+    codex reasoning items are emitted live as ``{"level":"agent_thought", ...}``
+    events but never enter the turn output the judge reads; tokens/session/
+    error events update the outcome. Returns a :class:`StreamOutcome`; never
+    blocks past *timeout*.
 
     ``abort_on(line) -> reason`` kills the process tree as soon as a raw or
     error line matches a provider-down signature — but only while the turn
@@ -136,6 +138,11 @@ def consume_process_stream(
             markers.append(event.marker)
             saw_json = True
             return event.marker
+        elif kind == "thought":
+            # Live-log context only: reasoning must not enter text_parts or
+            # prose_parts, or the judge would receive the model's private
+            # chain-of-thought as agent output.
+            saw_json = True
         elif kind == "tokens":
             saw_json = True
             if event.tokens_total:
@@ -204,6 +211,12 @@ def consume_process_stream(
             (event.kind == "text" and event.text) or event.kind == "tool"
         ):
             succeeded = True
+        if event is not None and event.kind == "thought" and event.text:
+            # Reasoning proves the model is already producing output; it must
+            # count as activity for the provider-unreachable fast-abort guard,
+            # and it is surfaced live without entering the judge's output.
+            succeeded = True
+            yield {"level": "agent_thought", "msg": event.text}
         if loop_detector is not None and event is not None and event.kind == "text" and event.text:
             loop_detector.record_text()
         marker = _accumulate(event)
@@ -236,7 +249,7 @@ def consume_process_stream(
 
     try:
         proc.wait(timeout=10)
-    except Exception:
+    except Exception:  # noqa: BLE001, S110 - best-effort reap; kill already ran
         pass
     stderr_thread.join(timeout=5)
 
