@@ -209,6 +209,16 @@ def _config_section() -> None:
                 "Jev confidence threshold",
                 min=0.50, max=0.99,
             )
+            _bind_switch(
+                "enable_blocked_rescue",
+                "Unblock rescue plan",
+            ).tooltip(
+                "On the first BLOCKED verdict, force the judge to research the "
+                "blocker on the web and write a recovery plan; jev rules "
+                "whether it is feasible. A feasible plan cancels BLOCKED and "
+                "is sent to the executor. Any failure closes as before. "
+                "Only active when the jev arbiter is enabled."
+            )
         if (app_state.get("engine") or "opencode") == "codex":
             with ui.row().classes("w-full gap-4 flex-wrap"):
                 _bind_input("codex_base_url", "Codex base URL (responses API)")

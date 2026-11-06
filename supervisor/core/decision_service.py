@@ -13,14 +13,17 @@ candidates for the same client (see README "Bounded-decision audit"):
 2. stagnation action (4×4);
 3. protocol alignment (3×5);
 4. run closure / BLOCKED exit (5×2);
-5. DONE-proposal ambiguity (4×2; deterministic gates remain hard vetoes).
+5. DONE-proposal ambiguity (4×2; deterministic gates remain hard vetoes);
+6. the first blocked verdict's recovery-plan feasibility (4×2; the plan is
+   produced by the judge from fresh web research, and a feasible ruling
+   cancels the BLOCKED exit).
 
 Remaining audited candidates, ranked by sureness × frequency:
 
-6. direction novelty at the similarity threshold (4×2);
-7. plan-mode approval (3×2);
-8. Occam pass accept/rollback (4×1);
-9. loop restart after repeated tools (3×1).
+7. direction novelty at the similarity threshold (4×2);
+8. plan-mode approval (3×2);
+9. Occam pass accept/rollback (4×1);
+10. loop restart after repeated tools (3×1).
 
 Never delegated: gate counts, test results, file existence, context thresholds,
 worker code freshness, retry counts, protected paths, cleanup deletion safety.
@@ -50,6 +53,38 @@ _SYSTEM_PROMPT = (
     "automated research run be closed? Decide from the evidence provided and "
     "return calibrated probabilities. Do not assume facts that are not stated."
 )
+
+_UNBLOCK_SYSTEM_PROMPT = (
+    "You are the final arbiter for a bounded supervisor decision: should this "
+    "recovery plan cancel a BLOCKED exit and keep the run alive? Approve only "
+    "when the plan audits the executor's record, identifies the real blocker, "
+    "and proposes a genuinely different, executable path. Return calibrated "
+    "probabilities. Do not assume facts that are not stated."
+)
+
+_UNBLOCK_QUESTIONS = {
+    "verdict": {
+        "type": "choice",
+        "instructions": (
+            "Should this recovery plan cancel the BLOCKED exit and be sent "
+            "to the executor?"
+        ),
+        "criteria": {
+            "feasible": (
+                "The plan explicitly addresses the executor record's factual "
+                "errors, arbitrary decisions, or premature give-up (or "
+                "explains why none apply), uses a genuinely different "
+                "approach, and has concrete steps that can make the unmet "
+                "target attainable."
+            ),
+            "not_feasible": (
+                "The plan repeats the executor's claims, ignores audit "
+                "findings, repeats failed approaches, lacks concrete "
+                "executable steps, or cannot make the unmet target attainable."
+            ),
+        },
+    },
+}
 
 _CLOSE_QUESTIONS = {
     "close_now": {
@@ -123,6 +158,14 @@ def _clip(text: Any, limit: int) -> str:
     return " ".join(str(text or "").split())[:limit]
 
 
+def _bounded(text: Any, limit: int) -> str:
+    """Truncate while preserving line breaks (plans are structured text)."""
+    value = str(text or "").strip()
+    if len(value) <= limit:
+        return value
+    return value[:limit].rstrip() + "\n... (truncated)"
+
+
 class JevDecisionClient:
     """Minimal stdlib client for the structured decision API.
 
@@ -151,11 +194,13 @@ class JevDecisionClient:
         self,
         state: str,
         questions: dict[str, Any],
+        *,
+        system_prompt: str = _SYSTEM_PROMPT,
     ) -> dict[str, Any] | None:
         """POST one structured-decision request; None on any failure."""
         payload = {
             "state": [
-                {"role": "system", "content": _SYSTEM_PROMPT},
+                {"role": "system", "content": system_prompt},
                 {"role": "user", "content": state},
             ],
             "questions": questions,
@@ -364,6 +409,30 @@ class JevDecisionClient:
             },
         }
         data = self.ask(context, questions)
+        if data is None:
+            return None
+        return self._choice(data, "verdict")
+
+    def decide_unblock_plan(
+        self,
+        *,
+        plan: str,
+        evidence: str,
+    ) -> ChoiceDecision | None:
+        """Is the judge's web-researched recovery plan feasible?
+
+        A ``feasible`` ruling cancels the BLOCKED exit; anything else (or an
+        outage, handled by the caller) closes the run.
+        """
+        context = (
+            "BLOCKED RUN UNBLOCK PLAN REVIEW\n"
+            f"{_bounded(evidence, 4500)}\n"
+            "- Proposed plan:\n"
+            f"{_bounded(plan, 4500)}"
+        )
+        data = self.ask(
+            context, _UNBLOCK_QUESTIONS, system_prompt=_UNBLOCK_SYSTEM_PROMPT,
+        )
         if data is None:
             return None
         return self._choice(data, "verdict")

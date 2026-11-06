@@ -94,6 +94,14 @@ class SupervisorConfig:
     # many consecutive judged turns with no passing-gate improvement is enough
     # on its own (deterministic path, no judge involvement).
     blocked_after_unreachable_turns: int = 4
+    # First-blocked rescue: when jev is enabled, the first blocked verdict is
+    # not final. The judge must research the blocker on the web and write a
+    # concrete recovery plan; jev rules whether it is feasible. A feasible plan
+    # cancels the blocked exit and becomes the executor's next prompt. Any
+    # failure (judge call, web search, jev outage) falls through to BLOCKED.
+    # max_blocked_rescues=0 disables the second chance.
+    enable_blocked_rescue: bool = True
+    max_blocked_rescues: int = 1
     # Require observable workspace file changes before accepting completion
     # (disable for pure-analysis goals that legitimately change no files).
     goal_require_changes: bool = True

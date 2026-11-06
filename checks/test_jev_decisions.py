@@ -5,7 +5,9 @@ from types import SimpleNamespace
 
 import pytest
 
+from supervisor.core import unblock_rescue
 from supervisor.core.decision_service import (
+    CHOICE_MIN_CONFIDENCE,
     CLOSE_ACTIONS,
     ChoiceDecision,
     CloseDecision,
@@ -13,7 +15,7 @@ from supervisor.core.decision_service import (
     build_close_evidence,
 )
 from supervisor.core.llm_support.models import CriterionResult, SupervisorVerdict
-from supervisor.core.loop_base import BaseLoop
+from supervisor.core.loop_base import BaseLoop, LoopState
 from supervisor.utils.config import SupervisorConfig
 
 _REPO = Path(__file__).resolve().parents[1]
@@ -569,11 +571,14 @@ def test_jev_settings_reach_the_supervisor_config(tmp_path):
         "jev_decision_api_key": "k",
         "jev_decision_timeout": 15,
         "jev_decision_threshold": 0.91,
+        "enable_blocked_rescue": False,
     })
     cfg = build_supervisor_config(
         state, protocol_path=tmp_path / "protocol.md", workspace=tmp_path,
     )
     assert cfg.enable_jev_decisions is True
+    assert cfg.enable_blocked_rescue is False
+    assert cfg.max_blocked_rescues == 1
     assert cfg.jev_decision_url.endswith("/systemone/api/v1/systemone")
     assert cfg.jev_decision_api_key == "k"
     assert cfg.jev_decision_timeout == 15
@@ -590,6 +595,7 @@ def test_wizard_exposes_the_jev_controls():
         "jev_decision_api_key",
         "jev_decision_timeout",
         "jev_decision_threshold",
+        "enable_blocked_rescue",
     ):
         assert f'"{key}"' in source
     settings = (_REPO / "services" / "config" / "settings.py").read_text(
@@ -601,5 +607,399 @@ def test_wizard_exposes_the_jev_controls():
         "jev_decision_api_key",
         "jev_decision_timeout",
         "jev_decision_threshold",
+        "enable_blocked_rescue",
     ):
         assert f'"{key}"' in settings
+
+
+# --------------------------------------------------------------------------- #
+# First-blocked rescue: web-researched plan + jev feasibility ruling            #
+# --------------------------------------------------------------------------- #
+
+
+def test_decide_unblock_plan_parses_the_feasibility_choice():
+    client = _client(_choice_answer("verdict", feasible=0.85, not_feasible=0.15))
+    decision = client.decide_unblock_plan(plan="1. do x", evidence="e")
+    assert decision is not None
+    assert decision.action == "feasible"
+    assert decision.probability == pytest.approx(0.85)
+
+
+def test_decide_unblock_plan_malformed_response_returns_none():
+    assert _client({"answers": {"verdict": {}}}).decide_unblock_plan(
+        plan="p", evidence="e",
+    ) is None
+
+
+def test_unblock_review_requires_an_executor_audit():
+    seen: list[dict] = []
+
+    def _transport(payload):
+        seen.append(payload)
+        return _choice_answer("verdict", feasible=0.9, not_feasible=0.1)
+
+    client = JevDecisionClient(
+        "http://decision.test/systemone", transport=_transport,
+    )
+    client.decide_unblock_plan(plan="p", evidence="e")
+
+    system = seen[0]["state"][0]["content"]
+    criteria = seen[0]["questions"]["verdict"]["criteria"]
+    assert "audits the executor's record" in system
+    assert "factual errors" in criteria["feasible"]
+    assert "ignores audit findings" in criteria["not_feasible"]
+
+
+def test_parse_search_queries_reads_json_and_dedupes():
+    raw = (
+        'SEARCH_QUERIES: ["order flow imbalance", "order flow imbalance", '
+        '"gate calibration"]'
+    )
+    assert unblock_rescue.parse_search_queries(raw) == [
+        "order flow imbalance",
+        "gate calibration",
+    ]
+
+
+def test_parse_search_queries_falls_back_to_quoted_text():
+    raw = 'Try "subsecond order flow method" and "gate ceiling calibration".'
+    assert unblock_rescue.parse_search_queries(raw) == [
+        "subsecond order flow method",
+        "gate ceiling calibration",
+    ]
+
+
+def test_plan_is_usable_rejects_empty_and_refusal_shaped_replies():
+    assert not unblock_rescue.plan_is_usable("")
+    assert not unblock_rescue.plan_is_usable("I cannot produce a recovery plan.")
+    assert unblock_rescue.plan_is_usable(
+        "1. Diagnose the failed gate mechanism in tools/gates.py.\n"
+        "2. Use a different calibration method with a rolling window.\n"
+    )
+
+
+def test_gather_web_evidence_formats_results_and_caps_queries():
+    calls: list[str] = []
+
+    def _search(query: str):
+        calls.append(query)
+        return [{
+            "title": "Method paper",
+            "url": "https://example.test/paper",
+            "snippet": "A calibration method.",
+        }]
+
+    evidence, executed = unblock_rescue.gather_web_evidence(
+        ["q1", "q2", "q3"], search=_search,
+    )
+
+    assert executed == ["q1", "q2"]
+    assert calls == ["q1", "q2"]
+    assert "QUERY: q1" in evidence
+    assert "https://example.test/paper" in evidence
+
+
+def test_fallback_queries_cleans_the_target():
+    assert unblock_rescue.fallback_queries("Reach 9 AB gates: T4!!", "") == [
+        "Reach 9 AB gates T4",
+    ]
+
+
+def _audit_verdict() -> SimpleNamespace:
+    return SimpleNamespace(
+        feedback="stuck",
+        next_action="None",
+        criteria_results=[],
+        unmet_criteria=[],
+    )
+
+
+def test_rescue_query_prompt_targets_the_failure_mechanism():
+    prompt = unblock_rescue.build_query_prompt(
+        target="Reach 9 AB gates.",
+        restrictions="none",
+        reason="3 stagnant turns",
+        verdict=_audit_verdict(),
+        report="LAST OUTPUT:\nstanding down",
+    )
+
+    assert "EXECUTOR RECORD" in prompt
+    assert "At least one query must test the suspected failure mechanism" in prompt
+    assert "may misreport results" in prompt
+
+
+def test_rescue_plan_prompt_demands_an_executor_audit():
+    prompt = unblock_rescue.build_plan_prompt(
+        target="Reach 9 AB gates.",
+        restrictions="none",
+        reason="3 stagnant turns",
+        verdict=_audit_verdict(),
+        report="LAST OUTPUT:\nstanding down",
+        experience="",
+        web_evidence="QUERY: x\n  (no results)",
+    )
+
+    assert "EXECUTOR RECORD" in prompt
+    for phrase in (
+        "Factual errors",
+        "Arbitrary decisions",
+        "Laziness / premature give-up",
+        "SEARCH QUALITY CAVEAT",
+        "Do not lower the target",
+        "Failure audit",
+        "Search caveat",
+    ):
+        assert phrase in prompt
+
+
+def test_executor_record_includes_summary_and_journal():
+    record = unblock_rescue.build_executor_record(
+        output="last output", summary="summary text", journal="journal text",
+    )
+
+    assert "LAST OUTPUT" in record
+    assert "SUMMARY.MD" in record
+    assert "RECENT JUDGE JOURNAL" in record
+
+
+def test_executor_prompt_blocks_arbitrary_scope_change():
+    prompt = unblock_rescue.build_executor_prompt(
+        reason="3 stagnant turns",
+        plan="1. audit then retry with a different method",
+        plan_path=".opencode/unblock_plan.md",
+    )
+
+    assert "verify the plan's failure audit" in prompt
+    assert "Do not lower the target" in prompt
+    assert "do not assert it" in prompt
+
+
+def test_max_blocked_rescues_is_backend_only():
+    builder = (
+        _REPO / "services" / "config" / "supervisor_config_builder.py"
+    ).read_text(encoding="utf-8")
+    settings = (_REPO / "services" / "config" / "settings.py").read_text(
+        encoding="utf-8",
+    )
+    wizard = (_REPO / "services" / "webui" / "pages" / "wizard.py").read_text(
+        encoding="utf-8",
+    )
+
+    assert 'session_state.get("max_blocked_rescues"' not in builder
+    assert "max_blocked_rescues=int(" not in builder
+    assert "max_blocked_rescues" not in settings
+    assert "max_blocked_rescues" not in wizard
+
+
+_PLAN = (
+    "1. Diagnosis: the previous approach only re-tuned the same gate threshold.\n"
+    "2. New approach: use a rolling-window rank gate instead "
+    "(https://example.test/method).\n"
+    "3. Steps: rewrite tools/gates.py and run tools/gate_check.py --window 20.\n"
+    "4. Acceptance evidence: 9/9 gates pass and the gate report exits 0.\n"
+    "5. Stop conditions: two runs below 8/9 gates mean the method is unsuitable.\n"
+)
+
+
+class _RescueSupervisor:
+    def __init__(self, plan: str = _PLAN):
+        self.plan = plan
+        self.prompts: list[str] = []
+
+    def _chat(self, prompt, **_kwargs):
+        self.prompts.append(prompt)
+        if "WEB RESEARCH QUERY PLANNING" in prompt:
+            raw = 'SEARCH_QUERIES: ["factor gate calibration", "alpha gate ceiling"]'
+        elif "RECOVERY PLAN REQUIRED" in prompt:
+            raw = self.plan
+        else:
+            raw = "Final report."
+        return SimpleNamespace(raw=raw)
+
+    def _build_experience_context(self):
+        return ""
+
+    def report_final_status(self, reason, opencode_output):
+        return "Final report."
+
+
+class _RescueRunner:
+    def __init__(self):
+        self.sent: list[str] = []
+
+    def get_step_progress(self):
+        return SimpleNamespace(
+            current_step=1,
+            total_steps_estimate=5,
+            phase=SimpleNamespace(name="coding"),
+            completed_phases=[],
+        )
+
+    def send(self, message: str):
+        self.sent.append(message)
+        return iter(())
+
+    def is_session_pinned(self):
+        return True
+
+
+class _RescueJev:
+    def __init__(self, action: str, probability: float = 0.9):
+        self.action = action
+        self.probability = probability
+        self.calls: list[dict] = []
+
+    def decide_unblock_plan(self, *, plan, evidence):
+        self.calls.append({"plan": plan, "evidence": evidence})
+        return ChoiceDecision(action=self.action, probability=self.probability)
+
+
+def _blocked_verdict() -> SupervisorVerdict:
+    return SupervisorVerdict(
+        raw="CRITERIA:\n- [UNMET] T2 — gates 7/10\nNEXT_ACTION: None",
+        all_targets_met=False,
+        feedback="stuck",
+        criteria_results=[CriterionResult("T2 AB >= 9/10 gates", met=False)],
+        next_action="None",
+    )
+
+
+def _passthrough_feedback(feedback):
+    """Generator matching _sanitize_feedback's ``return safe_msg`` contract."""
+    yield from ()
+    return feedback
+
+
+def _rescue_loop(
+    tmp_path,
+    *,
+    action: str = "feasible",
+    probability: float = 0.9,
+    plan: str = _PLAN,
+    **overrides,
+):
+    protocol = tmp_path / "protocol.md"
+    protocol.write_text(
+        "# PROTOCOL\n\n## TARGET\n\nReach 9 AB gates.\n", encoding="utf-8",
+    )
+    config = SupervisorConfig(
+        workspace=tmp_path,
+        protocol_path=protocol,
+        enable_jev_decisions=True,
+        jev_decision_url="http://decision.test/systemone",
+        **overrides,
+    )
+    loop = BaseLoop(config)
+    loop.protocol = SimpleNamespace(
+        target_section="Reach 9 AB gates.",
+        restrictions_section="## RESTRICTIONS\nnone",
+    )
+    loop.runner = _RescueRunner()
+    loop.supervisor = _RescueSupervisor(plan)
+    loop._jev = _RescueJev(action, probability)
+    loop._sanitize_feedback = _passthrough_feedback
+    loop._blocked_assessment = lambda verdict, output="": (
+        "3 consecutive judged turns attained nothing new: "
+        "T2 AB >= 9/10 gates"
+    )
+    return loop
+
+
+def _run_rescue_judgement(loop, monkeypatch):
+    monkeypatch.setattr(
+        unblock_rescue,
+        "gather_web_evidence",
+        lambda queries: (f"QUERY: {queries[0]}\n  1. Result", list(queries)),
+    )
+    loop._get_verdict = lambda output, progress: _blocked_verdict()
+    return list(loop._do_judgement("agent output"))
+
+
+def test_first_blocked_rescue_sends_the_approved_plan(tmp_path, monkeypatch):
+    loop = _rescue_loop(tmp_path)
+
+    events = _run_rescue_judgement(loop, monkeypatch)
+
+    assert loop._state is LoopState.RUNNING
+    assert loop.runner.sent
+    assert "UNBLOCK DIRECTIVE" in loop.runner.sent[0]
+    assert loop._blocked_rescues_used == 1
+    assert loop._progress.streak == 0
+    assert (tmp_path / ".opencode" / "unblock_plan.md").exists()
+    assert not (tmp_path / "blocked_report.md").exists()
+    assert loop._jev.calls[0]["plan"] == _PLAN.strip()
+    assert "BLOCKED RUN UNBLOCK EVIDENCE" in loop._jev.calls[0]["evidence"]
+    assert any("Blocked exit cancelled" in event["msg"] for event in events)
+    assert any("Jev unblock review" in event["msg"] for event in events)
+
+
+def test_rejected_rescue_closes_as_blocked(tmp_path, monkeypatch):
+    loop = _rescue_loop(tmp_path, action="not_feasible")
+
+    events = _run_rescue_judgement(loop, monkeypatch)
+
+    assert loop._state is LoopState.ENDED_BLOCKED
+    assert not loop.runner.sent
+    assert (tmp_path / "blocked_report.md").exists()
+    assert any("Unblock plan rejected" in event["msg"] for event in events)
+
+
+def test_low_confidence_feasible_does_not_cancel_the_block(tmp_path, monkeypatch):
+    loop = _rescue_loop(
+        tmp_path, action="feasible", probability=CHOICE_MIN_CONFIDENCE - 0.1,
+    )
+
+    _run_rescue_judgement(loop, monkeypatch)
+
+    assert loop._state is LoopState.ENDED_BLOCKED
+    assert not loop.runner.sent
+
+
+def test_jev_outage_during_rescue_fails_safe_to_blocked(tmp_path, monkeypatch):
+    class _BoomJev:
+        def decide_unblock_plan(self, **_kwargs):
+            raise TimeoutError("decision service down")
+
+    loop = _rescue_loop(tmp_path)
+    loop._jev = _BoomJev()
+
+    events = _run_rescue_judgement(loop, monkeypatch)
+
+    assert loop._state is LoopState.ENDED_BLOCKED
+    assert not loop.runner.sent
+    assert any("unavailable" in event["msg"] for event in events)
+
+
+def test_rescue_budget_is_a_single_attempt(tmp_path, monkeypatch):
+    loop = _rescue_loop(tmp_path)
+    loop._blocked_rescues_used = 1
+
+    _run_rescue_judgement(loop, monkeypatch)
+
+    assert loop._state is LoopState.ENDED_BLOCKED
+    assert not loop.runner.sent
+    assert not any(
+        "RECOVERY PLAN REQUIRED" in prompt for prompt in loop.supervisor.prompts
+    )
+
+
+def test_rescue_without_jev_is_inert(tmp_path, monkeypatch):
+    loop = _rescue_loop(tmp_path)
+    loop._jev = None
+
+    _run_rescue_judgement(loop, monkeypatch)
+
+    assert loop._state is LoopState.ENDED_BLOCKED
+    assert not loop.runner.sent
+    assert not any(
+        "RECOVERY PLAN REQUIRED" in prompt for prompt in loop.supervisor.prompts
+    )
+
+
+def test_rescue_can_be_disabled_in_config(tmp_path, monkeypatch):
+    loop = _rescue_loop(tmp_path, enable_blocked_rescue=False)
+
+    _run_rescue_judgement(loop, monkeypatch)
+
+    assert loop._state is LoopState.ENDED_BLOCKED
+    assert not loop.runner.sent

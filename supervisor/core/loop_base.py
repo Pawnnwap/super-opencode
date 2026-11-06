@@ -258,6 +258,11 @@ class BaseLoop:
         # Why the run is closing as BLOCKED; also set by the agent-asserted
         # terminal-closure trigger.
         self._blocked_reason: str = ""
+        # First-blocked rescue attempts consumed (config.max_blocked_rescues).
+        # When jev is enabled the first blocked verdict is held while the judge
+        # researches a recovery plan; jev rules on it. Any later blocked verdict
+        # (or any failure in the rescue path) closes the run.
+        self._blocked_rescues_used: int = 0
         # Why the run is aborting, when it is NOT the normal max-retries path
         # (e.g. loop-persists abort). Drives the final failure report wording;
         # empty = retries exhausted.
@@ -1059,6 +1064,214 @@ class BaseLoop:
             )
         return ""
 
+    def _reset_blocked_accounting(self) -> None:
+        """Fresh attainment baseline after an approved unblock plan.
+
+        Clearing the streaks buys the executor a full stagnation window before
+        the next blocked verdict, instead of re-closing on the counters that
+        had already matured. The rescue itself is consumed, so a later blocked
+        verdict still closes the run.
+        """
+        self._progress.reset()
+        self._unmet_streak, self._unmet_streak_sig = 0, ""
+        self._standdown_streak = 0
+        self._unreachable_streak = 0
+        self._last_passing_gates = None
+        self._gate_high_water = None
+        self._jev_closeout_pending = False
+        self._blocked_agent_asserted = False
+
+    def _attempt_blocked_rescue(
+        self,
+        verdict,
+        reason: str,
+        output: str,
+    ) -> Generator[Event, None, bool]:
+        """One web-researched recovery plan before the first BLOCKED exit.
+
+        Returns True only when jev confidently rules the plan feasible and the
+        plan has been sent to the executor. Every other outcome - feature off,
+        no arbiter, budget spent, judge outage, no usable plan, jev rejection -
+        returns False so the caller closes the run exactly as before.
+        """
+        if not getattr(self.config, "enable_blocked_rescue", True):
+            return False
+        if self._jev is None or self.supervisor is None:
+            return False
+        limit = max(0, int(getattr(self.config, "max_blocked_rescues", 1) or 0))
+        if self._blocked_rescues_used >= limit:
+            return False
+        self._blocked_rescues_used += 1
+
+        from supervisor.core import unblock_rescue
+        from supervisor.core.decision_service import CHOICE_MIN_CONFIDENCE
+
+        protocol = getattr(self, "protocol", None)
+        target = str(getattr(protocol, "target_section", "") or "")
+        restrictions = str(getattr(protocol, "restrictions_section", "") or "")
+        # The executor's last output alone hides what it claimed earlier and
+        # what the judge already told it. The durable summary and the verdict
+        # journal are what expose misreports, weakened criteria, and
+        # premature give-up.
+        summary = safe_read_text(
+            self.config.workspace / "summary.md", default="",
+        )
+        journal = self._restart_task_state()
+        report = unblock_rescue.build_executor_record(
+            output=output, summary=summary, journal=journal,
+        )
+        yield _ev(
+            "warn",
+            "Blocked exit held: forcing a supervisor recovery plan before "
+            f"closing ({self._blocked_rescues_used}/{limit}).",
+        )
+
+        query_prompt = unblock_rescue.build_query_prompt(
+            target=target,
+            restrictions=restrictions,
+            reason=reason,
+            verdict=verdict,
+            report=report,
+        )
+        try:
+            raw_queries = self.supervisor._chat(
+                query_prompt, is_intermediate=True, omit_history=True,
+            ).raw
+        except Exception:
+            logger.warning("Unblock query planning crashed", exc_info=True)
+            raw_queries = ""
+        queries = unblock_rescue.parse_search_queries(raw_queries)
+        if not queries:
+            queries = unblock_rescue.fallback_queries(target, reason)
+        if queries:
+            yield _ev(
+                "info",
+                "Unblock research: searching the web for "
+                + "; ".join(queries[: unblock_rescue.MAX_QUERIES]),
+            )
+        web_evidence, executed = unblock_rescue.gather_web_evidence(queries)
+        yield _ev(
+            "info",
+            f"Unblock research: {len(executed)} web queries completed "
+            f"({len(web_evidence)} chars of evidence).",
+        )
+
+        experience = ""
+        try:
+            experience = str(self.supervisor._build_experience_context() or "")
+        except Exception:
+            logger.warning("Unblock experience context failed", exc_info=True)
+        plan_prompt = unblock_rescue.build_plan_prompt(
+            target=target,
+            restrictions=restrictions,
+            reason=reason,
+            verdict=verdict,
+            report=report,
+            experience=experience,
+            web_evidence=web_evidence,
+        )
+        try:
+            plan = str(
+                self.supervisor._chat(
+                    plan_prompt, is_intermediate=True, omit_history=True,
+                ).raw
+                or ""
+            ).strip()
+        except Exception:
+            logger.warning("Unblock plan generation crashed", exc_info=True)
+            plan = ""
+        if not unblock_rescue.plan_is_usable(plan):
+            yield _ev(
+                "warn",
+                "Supervisor produced no usable unblock plan; closing as BLOCKED.",
+            )
+            return False
+
+        plan_path = ".opencode/unblock_plan.md"
+        try:
+            (self.config.workspace / ".opencode").mkdir(
+                parents=True, exist_ok=True,
+            )
+        except OSError:
+            logger.warning("Could not prepare .opencode for the unblock plan")
+        self._write(
+            "# Supervisor unblock plan\n\n"
+            f"Blocked reason: {reason}\n\n"
+            f"{plan}\n",
+            plan_path,
+        )
+        yield _ev(
+            "info",
+            f"Unblock plan drafted (saved to {plan_path}):\n"
+            + head_tail_excerpt(plan, 1200),
+        )
+
+        evidence = unblock_rescue.build_plan_evidence(
+            reason=reason,
+            target=target,
+            verdict=verdict,
+            queries=executed,
+            web_evidence=web_evidence,
+            report=report,
+            plan=plan,
+        )
+        try:
+            decision = self._jev.decide_unblock_plan(
+                plan=plan, evidence=evidence,
+            )
+        except Exception:
+            logger.warning("Jev unblock review crashed", exc_info=True)
+            decision = None
+        if decision is None:
+            yield _ev(
+                "warn",
+                "Jev unblock review unavailable; closing as BLOCKED (fail-safe).",
+            )
+            return False
+        note = f"Jev unblock review: {decision.summary}"
+        self._record_jev_note(note)
+        yield from self._drain_jev_notes()
+        feasible = (
+            decision.action == "feasible"
+            and decision.probability >= CHOICE_MIN_CONFIDENCE
+        )
+        if not feasible:
+            yield _ev(
+                "warn",
+                f"Unblock plan rejected ({decision.summary}); closing as BLOCKED.",
+            )
+            return False
+
+        self._reset_blocked_accounting()
+        prompt = unblock_rescue.build_executor_prompt(
+            reason=reason,
+            plan=plan,
+            plan_path=plan_path,
+        )
+        if not self.runner.is_session_pinned():
+            # Same reason as the normal feedback path: a session-less turn has
+            # no conversation memory, so the plan alone would be an
+            # unanswerable fragment.
+            _, protocol_text = self._get_restart_context()
+            journal_tail = self._restart_task_state()
+            context_block = (
+                "TASK CONTEXT (fresh session — no prior conversation memory):\n"
+                f"PROTOCOL:\n{protocol_text}\n\n"
+            )
+            if journal_tail:
+                context_block += f"RECENT PROGRESS JOURNAL:\n{journal_tail}\n\n"
+            prompt = context_block + prompt
+        safe_prompt = yield from self._sanitize_feedback(prompt)
+        self._last_feedback = safe_prompt
+        yield _ev(
+            "warn",
+            "Blocked exit cancelled: jev approved the supervisor's recovery "
+            "plan; sending it to the executor.",
+        )
+        yield _ev("opencode_prompt", safe_prompt, prompt_kind="unblock")
+        yield from self.runner.send(safe_prompt)
+        return True
+
     def _on_blocked(self, verdict, reason: str) -> Generator[Event]:
         """Write the blocked report + memory record; the operator decides next."""
         from supervisor.core.target_state import mark_target_closed
@@ -1360,6 +1573,11 @@ class BaseLoop:
                 "(no-record-per-rule).",
             )
         if blocked_reason:
+            rescued = yield from self._attempt_blocked_rescue(
+                verdict, blocked_reason, actual_output,
+            )
+            if rescued:
+                return
             self._blocked_reason = blocked_reason
             self._state = LoopState.ENDED_BLOCKED
             yield from self._on_blocked(verdict, blocked_reason)

@@ -290,6 +290,8 @@ on). Four evidence-bound triggers, all behind a turn floor
 
 A blocked run writes `blocked_report.md` with the reason and lands as a
 BLOCKED job on the board; the operator, not the loop, chooses the next move.
+When jev is enabled the *first* blocked verdict is held for one supervised
+recovery attempt (see below); later blocked verdicts close immediately.
 The durable state is written too: `closed` when the closure is supported (or
 harness-measured), `blocked` when the agent asserted it but the facts hold
 measured evidence of reachability (a passing gate or a ceiling that meets the
@@ -300,7 +302,7 @@ evidence, and does not override a terminal ruling.
 
 Text regexes cannot see every way a judge can say "this is over", nor every
 shape a MET claim, a stagnant turn, a protocol flag or a DONE proposal can
-take. Five of those bounded decisions can instead be arbitrated by a
+take. Six of those bounded decisions can instead be arbitrated by a
 structured-decision endpoint, opt-in in **Configuration → Jev decision
 arbiter** (URL, optional API key, timeout, close threshold; disabled by
 default).
@@ -340,6 +342,31 @@ same outage rule (any failure falls back to the deterministic path):
   `reject`/`need_evidence` blocks the proposal; `accept` passes with a note.
   Choice decisions act at `P ≥ 0.5`; binary ones use the configured threshold.
 
+**First-blocked rescue.** Jev also arbitrates a sixth decision, but only after
+the deterministic blocked assessment has already fired. On the first blocked
+verdict (`enable_blocked_rescue`, default on; only active with jev), the loop
+holds the close and forces the judge to:
+
+1. translate the blocker into up to 2 English web queries;
+2. run those queries in-process (Bing + Marginalia, the same endpoint the
+   `web_tools` MCP server uses) and inject the snippets as untrusted,
+   explicitly-noisy evidence (never proof);
+3. audit the executor record — last output, `summary.md`, and the recent judge
+   journal — for factual errors, arbitrary scope/acceptance changes, and
+   laziness / premature give-up (unrun checks, placeholders, deleted
+   validation, unsupported "good enough" claims);
+4. write a concrete recovery plan (failure audit, root cause, a *different*
+   mechanism, executable steps, acceptance evidence, stop conditions, and a
+   statement of what the web evidence does and does not establish).
+
+Jev then rules `feasible` or `not_feasible` on that plan. A confident
+`feasible` cancels the blocked exit, resets the attainment/stagnation
+counters, saves the plan to `.opencode/unblock_plan.md`, and sends it to the
+executor as the next prompt. Any rejection, judge outage, empty plan, or jev
+outage closes the run exactly as before; `max_blocked_rescues` defaults to 1
+(backend-only — the UI neither binds nor persists it), so later blocked
+verdicts are final.
+
 **Bounded-decision audit.** Same client (`noul`/`choice`/`score`) can arbitrate.
 Ranked by **sureness × frequency**, where sureness (1–5) is how completely the
 occasion can be reduced to a well-posed question with text-ready evidence and
@@ -370,6 +397,10 @@ second opinion rather than the sole decider.
 Never delegated to jev: gate counts, test results, file existence, context
 thresholds, worker code freshness, retry counts, protected paths, and cleanup
 deletion safety. These are measurements or safety rules, not judgments.
+
+The first-blocked rescue above is the sixth implemented decision; it is
+derived from the blocked-exit judgment rather than a separate audited
+candidate, so it has no row in the original ranking table.
 
 ---
 
