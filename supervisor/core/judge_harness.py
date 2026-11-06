@@ -33,6 +33,7 @@ _FULFILL_BUDGET = 2000  # chars per fulfilled resource
 _MAX_REQUESTS_PER_TURN = 3
 _AUDIT_TAIL_LINES = 8
 _READ_FILE_BUDGET = 1500
+_READ_DIR_MAX_ENTRIES = 80
 
 
 @dataclass
@@ -162,7 +163,10 @@ def make_builtin_resources(
         JudgeResource(
             name="read_file",
             provider=lambda arg: _read_file_block(workspace, arg),
-            description="read_file <path> — bounded file content",
+            description=(
+                "read_file <path> — bounded file content; a directory path "
+                "(or no path) returns a bounded entry listing"
+            ),
             on_demand=True,
         ),
     ]
@@ -180,15 +184,82 @@ def _changed_files_block(changed: list[str]) -> str:
 
 
 def _read_file_block(workspace: Path, arg: str) -> str:
-    path = (workspace / arg).resolve() if arg else workspace
+    """Read a workspace file, or list a directory when the request names one.
+
+    A judge can ask for ``read_file`` with no argument (or a directory path)
+    when it wants to see what exists. That used to call ``safe_read_text`` on
+    the workspace ROOT, which is a directory: Windows raises PermissionError,
+    ``safe_read_text`` retried it four times, and the judge got
+    "empty or missing" instead of evidence. The same four-warning burst
+    recurred across ten workspaces (2026-11-02 .. 2026-11-06). Directories
+    now return a bounded, deterministic entry listing.
+    """
+    workspace_root = Path(workspace).resolve()
+    requested = str(arg or "").strip().strip("\"'")
+    path = (
+        (workspace_root / requested).resolve()
+        if requested
+        else workspace_root
+    )
     try:
-        path.relative_to(Path(workspace).resolve())
+        path.relative_to(workspace_root)
     except ValueError:
         return f"[read_file] path outside workspace: {arg}"
+    if path.is_dir():
+        return _read_directory_block(workspace_root, path, requested)
     content = safe_read_text(path, default="")
     if not content:
-        return f"[read_file] {arg or '(workspace root)'}: empty or missing"
-    return f"[read_file] {arg}:\n{content[:_READ_FILE_BUDGET]}"
+        return f"[read_file] {requested or '(workspace root)'}: empty or missing"
+    return f"[read_file] {requested}:\n{content[:_READ_FILE_BUDGET]}"
+
+
+def _read_directory_block(
+    workspace_root: Path,
+    path: Path,
+    requested: str,
+) -> str:
+    """Bounded directory listing for a ``read_file`` request that names a dir."""
+    label = requested or "(workspace root)"
+    try:
+        entries = sorted(
+            path.iterdir(),
+            key=lambda item: (not item.is_dir(), item.name.lower()),
+        )
+    except PermissionError:
+        return f"[read_file] {label}: permission denied listing directory"
+    except OSError as exc:
+        return f"[read_file] {label}: cannot list directory ({exc})"
+    if not entries:
+        return f"[read_file] {label}: empty directory"
+    lines: list[str] = [f"[read_file] {label} is a directory; entries:"]
+    used = len(lines[0])
+    shown = 0
+    for entry in entries:
+        if shown >= _READ_DIR_MAX_ENTRIES:
+            break
+        try:
+            rel = entry.relative_to(workspace_root)
+        except ValueError:
+            rel = entry
+        if entry.is_dir():
+            line = f"  {rel}/"
+        else:
+            try:
+                size = entry.stat().st_size
+            except OSError:
+                size = -1
+            line = f"  {rel} ({size} bytes)" if size >= 0 else f"  {rel}"
+        # Keep room for the truncation marker instead of cutting it off.
+        reserve = 40 if len(entries) - shown > 1 else 0
+        if used + 1 + len(line) + reserve > _READ_FILE_BUDGET:
+            break
+        lines.append(line)
+        used += 1 + len(line)
+        shown += 1
+    remaining = len(entries) - shown
+    if remaining > 0:
+        lines.append(f"  ... (+{remaining} more)")
+    return "\n".join(lines)[:_READ_FILE_BUDGET]
 
 
 def audit_tail_block(workspace: Path) -> str:

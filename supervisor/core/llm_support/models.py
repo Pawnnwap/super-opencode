@@ -208,7 +208,11 @@ def parse_verdict_structure(
     Returns ``(done, criteria, next_action, evidence_requests)`` where ``done``
     is ``None`` when the reply carries no structured DONE marker (caller falls
     back to done-phrase matching), otherwise True/False. ``evidence_requests``
-    are the judge's NEED_EVIDENCE resource asks (names, first token each).
+    are the judge's NEED_EVIDENCE asks, preserving the resource name *and* its
+    optional argument (``read_file path/to/file.py``). The harness needs the
+    argument: dropping it made every ``read_file`` request resolve to the
+    workspace root, which is a directory and produced repeated permission
+    warnings instead of evidence.
     """
     done: bool | None = None
     criteria: list[CriterionResult] = []
@@ -237,9 +241,9 @@ def parse_verdict_structure(
             continue
         request_match = _EVIDENCE_REQUEST_RE.match(line)
         if request_match:
-            name = request_match.group("request").strip().split()
-            if name:
-                evidence_requests.append(name[0])
+            request = request_match.group("request").strip()
+            if request:
+                evidence_requests.append(request)
             continue
         action_match = _NEXT_ACTION_RE.match(line)
         if action_match and not next_action:

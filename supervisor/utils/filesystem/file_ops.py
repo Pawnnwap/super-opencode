@@ -5,6 +5,8 @@ import shutil
 import time
 from pathlib import Path
 
+logger = logging.getLogger(__name__)
+
 
 def safe_read_text(
     path: Path,
@@ -37,6 +39,15 @@ def safe_read_text(
     if encodings is None:
         encodings = ["utf-8", "latin-1"]
 
+    # A directory is not a file: opening it as text raises PermissionError on
+    # Windows and the retry ladder logged the same warning four times per call.
+    # The judge harness used to hit this on every `read_file` request whose
+    # path argument was dropped (2026-11-02..06). Callers that genuinely need
+    # a listing must render it themselves; this helper stays file-only.
+    if path.is_dir():
+        logger.debug("Refusing to read a directory as text: %s", path)
+        return default
+
     for attempt in range(retries + 1):
         try:
             if not path.exists():
@@ -45,7 +56,7 @@ def safe_read_text(
             # Check file size to prevent memory issues
             stat = path.stat()
             if stat.st_size > max_size:
-                logging.warning(f"File {path} exceeds max_size ({max_size} bytes), returning default")
+                logger.warning(f"File {path} exceeds max_size ({max_size} bytes), returning default")
                 return default
 
             # Try each encoding in sequence
@@ -53,23 +64,23 @@ def safe_read_text(
                 try:
                     content = path.read_text(encoding=encoding)
                     if i > 0:
-                        logging.info(f"Used fallback encoding {encoding} for file {path}")
+                        logger.info(f"Used fallback encoding {encoding} for file {path}")
                     return content
                 except UnicodeDecodeError:
                     if i == len(encodings) - 1:
                         # Last encoding failed, log and return default
-                        logging.warning(f"All encodings failed for file {path}, returning default")
+                        logger.warning(f"All encodings failed for file {path}, returning default")
                         return default
                     # Continue to next encoding
                     continue
 
         except PermissionError as e:
-            logging.warning(f"Permission denied reading {path}: {e}")
+            logger.warning(f"Permission denied reading {path}: {e}")
             if attempt == retries:
                 return default
             time.sleep(0.1 * (attempt + 1))  # Exponential backoff
         except OSError as e:
-            logging.warning(f"OS error reading {path}: {e}")
+            logger.warning(f"OS error reading {path}: {e}")
             if attempt == retries:
                 return default
             time.sleep(0.1 * (attempt + 1))
