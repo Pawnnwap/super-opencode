@@ -25,6 +25,7 @@ import sys
 import time
 from pathlib import Path
 
+from services.config.settings import sanitize_proxy_env
 from services.jobs.code_freshness import code_fingerprint, freshness_action
 from services.jobs.job_manager import JobManager
 from services.jobs.job_states import JOB_STORE_DIR, WORKER_SETTINGS_FILE
@@ -120,6 +121,9 @@ def _mark_orphans(manager: JobManager) -> list[str]:
 
 
 def main() -> int:
+    # A bracketed IPv6 NO_PROXY entry crashes the openai/httpx2 client at
+    # construction; the worker builds one per job, so normalize before anything.
+    sanitize_proxy_env()
     logging.basicConfig(
         level=os.environ.get("JOB_WORKER_LOG_LEVEL", "INFO"),
         format="%(asctime)s [%(levelname)s] [%(threadName)s] %(name)s: %(message)s",

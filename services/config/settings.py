@@ -66,15 +66,15 @@ DEFAULTS: dict = {
     "openai_key": "",
     "base_url": "",
     "workspace": "",
-    "supervisor_model": "",
-    "supervisor_model_backup": "",
+    "supervisor_model": "swift-1.5",
+    "supervisor_model_backup": "swift-1.5",
     "supervisor_reasoning": "",
     "agent_reasoning": "",
     "engine": "opencode",
     "codex_base_url": "",
     "codex_api_key": "",
-    "opencode_model": "",
-    "opencode_model_backup": "",
+    "opencode_model": "swift-1.5",
+    "opencode_model_backup": "swift-1.5",
     "opencode_executable": "",
     "max_retries": 3,
     "context_threshold": 60,
@@ -138,3 +138,34 @@ def apply_api_config(values: dict) -> None:
         os.environ["OPENAI_BASE_URL"] = base_url
     elif "OPENAI_BASE_URL" in os.environ:
         del os.environ["OPENAI_BASE_URL"]
+
+
+def sanitize_proxy_env() -> None:
+    """Normalize bracketed IPv6 entries in NO_PROXY.
+
+    httpx2 2.13.0 (pulled in by openai) turns every NO_PROXY entry into a
+    URLPattern mount. A bracketed entry such as ``[::1]`` is not recognized as
+    an IPv6 host, so it takes the wildcard branch (``all://*[::1]``) and URL
+    parsing raises ``InvalidURL: Invalid port: ':1]'`` while the first client
+    is constructed - every job fails instantly at startup. Brackets are
+    optional in NO_PROXY; strip them once per process, before any client
+    exists, keeping subnets (``[::1]/128``) intact.
+    """
+    for key in ("NO_PROXY", "no_proxy"):
+        raw = os.environ.get(key)
+        if not raw:
+            continue
+        entries: list[str] = []
+        changed = False
+        for part in raw.split(","):
+            host = part.strip()
+            if not host:
+                continue
+            addr, sep, subnet = host.partition("/")
+            if addr.startswith("[") and addr.endswith("]"):
+                addr = addr[1:-1]
+                host = addr + sep + subnet
+                changed = True
+            entries.append(host)
+        if changed:
+            os.environ[key] = ",".join(entries)

@@ -64,6 +64,25 @@ def install(log_name: str) -> None:
     fh.flush()
 
 
+def dump_stacks(reason: str) -> None:
+    """Write every thread's stack into the fatal log (watchdog forensics).
+
+    A frozen event loop used to leave only "loop is frozen" in stderr - no
+    clue WHICH blocking call held it. This is called by the UI watchdog once
+    a freeze outlives a few probe cycles.
+    """
+    if not _handles:
+        return
+    fh = _handles[0]
+    try:
+        fh.write(f"\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] {reason}\n")
+        fh.flush()
+        faulthandler.dump_traceback(file=fh, all_threads=True)
+        fh.flush()
+    except Exception:  # noqa: BLE001 - forensics must never crash the watchdog
+        pass
+
+
 def _identity_line() -> str:
     """One JSON line: who we are and the chain of processes that spawned us."""
     parents = []

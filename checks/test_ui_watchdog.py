@@ -5,8 +5,11 @@ The 2026-11-01 incident: uvicorn's loop factory forced ProactorEventLoop
 (accepts/receives never completed) while the loop idled, worker threads ran
 on, and nothing reached the log. app.py now opts into the selector loop via
 `loop="none"` + WindowsSelectorEventLoopPolicy, and a watchdog thread probes
-loop responsiveness and HTTP serving every 10s so a recurrence is timed and
-attributed in the log.
+loop responsiveness every 10s so a freeze is timed and attributed in the
+log. Serving health and revival belong to the task-owned soprun_watchdog
+(watch_suprun.ps1): the old in-process HTTP probe was redundant with it,
+never repaired anything, and each probe built a full page that churned one
+"client deleted" line into ui.lifecycle a minute later.
 """
 import sys
 from pathlib import Path
@@ -33,12 +36,16 @@ def test_engineio_disconnect_stub_is_complete():
     assert '"asgi.receive": receive' in _APP_SRC
 
 
-def test_watchdog_probes_both_loop_and_serving():
+def test_watchdog_is_loop_probe_only_serving_is_task_owned():
     assert "call_soon_threadsafe" in _APP_SRC
-    assert "urllib.request.urlopen" in _APP_SRC
-    assert _APP_SRC.index("call_soon_threadsafe") < _APP_SRC.index("urllib.request.urlopen")
     assert "loop is frozen" in _APP_SRC
-    assert "HTTP serving probe failed" in _APP_SRC
+    # no in-process HTTP probing: redundant with the task-owned watchdog and
+    # the probe churned a UI client per call
+    assert "urllib" not in _APP_SRC
+    # ... and the task-owned watchdog probes a side-effect-free route
+    assert "/healthz" in _APP_SRC
+    watch = (_REPO / "watch_suprun.ps1").read_text(encoding="utf-8")
+    assert "healthz" in watch
 
 
 def test_selector_loop_is_the_platform_default_under_the_policy():

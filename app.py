@@ -11,14 +11,18 @@ import os
 import sys
 import threading
 import time
-import urllib.request
 from pathlib import Path
 
 from nicegui import app, core, ui
 
+from services.config.settings import sanitize_proxy_env
 from services.runtime import death_capture
 from services.webui import layout, startup
 from services.webui.jobs import get_job_manager
+
+# The UI also builds openai clients (wizard, protocol builder, connectivity
+# probes); a bracketed IPv6 NO_PROXY entry makes httpx2 raise on construction.
+sanitize_proxy_env()
 
 _UI_PORT = 8501
 
@@ -56,17 +60,21 @@ async def _translate_request_without_disconnect(scope, receive, send):
 core.sio.eio._async["translate_request"] = _translate_request_without_disconnect
 
 # Watchdog: a dead UI used to leave no trace in the log, so "loop frozen"
-# could not be told apart from "socket serving dead". A thread probes both
-# every 10s and logs the failing half with a timestamp.
+# could not be told apart from "socket serving dead". The thread now probes
+# loop responsiveness every 10s and keeps the ui.lock death clock; serving
+# health and revival belong to the task-owned soprun_watchdog. The old
+# in-process HTTP probe was redundant with it and never repaired anything -
+# and every probe rendered a full page, churning one "client deleted" line
+# into ui.lifecycle per probe (that churn WAS the noise floor of this log).
 _watchdog: dict = {}
 log = logging.getLogger("ui.watchdog")
 lifecycle_log = logging.getLogger("ui.lifecycle")
 
 # Liveness clock for the whole UI process: the watchdog thread touches it
-# every 10s, so after a silent death (2026-11-03: process gone, empty
-# stderr, no event log) its mtime is the exact time of death - the same
-# trick as .job_store/worker.lock for the worker daemon. Not a *.json file:
-# the job store globs those as jobs.
+# every 10s, so after a silent death its mtime is the exact time of death -
+# the same trick as .job_store/worker.lock for the worker daemon. It is the
+# only fine-grained clock for a kill that takes the cmd wrappers too (no
+# exitcode sentinel). Not a *.json file: the job store globs those as jobs.
 _UI_LOCK = Path(".job_store") / "ui.lock"
 
 
@@ -114,7 +122,8 @@ async def _start_ui_watchdog() -> None:
     # print, not logging: basicConfig only runs when the first job creates a
     # SupervisorLoop, so a lifespan-time INFO record would be dropped.
     print(
-        f"UI watchdog started (loop + serving probes every 10s, port {_UI_PORT})",
+        "UI watchdog started (loop probe + ui.lock death clock every 10s; "
+        "serving health owned by soprun_watchdog)",
         file=sys.stderr,
         flush=True,
     )
@@ -132,39 +141,45 @@ def _touch_ui_lock() -> None:
 
 
 def _ui_watchdog() -> None:
-    cycles = 0
+    frozen_cycles = 0
     while True:
         time.sleep(10)
-        cycles += 1
         _touch_ui_lock()
         loop = _watchdog.get("loop")
-        if loop is not None:
-            done = threading.Event()
-            started = time.perf_counter()
-            try:
-                loop.call_soon_threadsafe(done.set)
-            except RuntimeError:
-                log.error("event loop is closed")
-                _watchdog["loop"] = None
-                continue
-            responsive = done.wait(timeout=5)
-            delay = time.perf_counter() - started
-            if not responsive:
-                log.error("event loop did not process a callback within 5s - loop is frozen")
-            elif delay > 1.0:
-                log.warning("event loop scheduling delay %.2fs", delay)
-        if cycles <= 3:
-            # The listener may still be binding during the first seconds.
+        if loop is None:
             continue
+        done = threading.Event()
         started = time.perf_counter()
         try:
-            with urllib.request.urlopen(f"http://127.0.0.1:{_UI_PORT}/", timeout=5):
-                pass
-        except Exception as exc:
-            log.error(
-                "HTTP serving probe failed after %.1fs: %r",
-                time.perf_counter() - started, exc,
-            )
+            loop.call_soon_threadsafe(done.set)
+        except RuntimeError:
+            log.error("event loop is closed")
+            _watchdog["loop"] = None
+            continue
+        responsive = done.wait(timeout=5)
+        delay = time.perf_counter() - started
+        if not responsive:
+            frozen_cycles += 1
+            log.error("event loop did not process a callback within 5s - loop is frozen")
+            if frozen_cycles == 3:
+                # 30 s without a callback: capture the blocking stacks
+                # before the task-owned watchdog restarts us; stderr alone
+                # never said which call wedged the loop.
+                death_capture.dump_stacks(
+                    "event loop frozen for ~30s - dumping all thread stacks",
+                )
+        else:
+            frozen_cycles = 0
+            if delay > 1.0:
+                log.warning("event loop scheduling delay %.2fs", delay)
+
+
+# Side-effect-free liveness target for the task-owned watchdog. Probing "/"
+# builds a full page and registers a UI client that expires 60s later; this
+# plain route answers without ever creating one.
+@app.get('/healthz')
+def _healthz() -> dict:
+    return {'ok': True}
 
 
 @ui.page("/")

@@ -11,8 +11,9 @@ layer end to end:
 - the UI watchdog touches ``.job_store/ui.lock`` (death clock) and logs
   client connect/disconnect/delete;
 - the browser beacon forwards socket/tab events into the server log;
-- the self-heal watcher is actually ARMED (it was defined but never
-  called, so the 2026-11-03 death stayed dead).
+- self-heal lives in Task-Scheduler-owned scheduled tasks and session
+  invocations of the launcher delegate to them (a session-owned watcher
+  died in the same 2026-11-08 harvest that killed the stack).
 """
 
 from __future__ import annotations
@@ -67,12 +68,24 @@ def test_launcher_sentinels_use_exit_time_values():
         assert name in src
 
 
-def test_self_heal_watcher_is_armed():
+def test_self_heal_is_task_owned_not_session_owned():
+    # The self-heal watcher used to be a long-lived process started alongside
+    # the stack - so it shared the stack's fate: the 2026-11-08 19:18:45
+    # session harvest killed watcher and stack in one sweep and the UI stayed
+    # down for 15+ hours. Self-heal must live in scheduled tasks instead:
+    # soprun_detached_launch (on-demand start), soprun_watchdog (periodic
+    # probe+repair). A session invocation of start_suprun.ps1 must DELEGATE
+    # to the task-owned action and never spawn service processes itself.
     src = _read("start_suprun.ps1")
-    # The function existed since e111c14 but was never invoked - the
-    # 2026-11-03 UI death then stayed dead until manual restart.
-    assert "function Start-UiWatcher" in src
-    assert "Start-UiWatcher" in src.replace("function Start-UiWatcher", "")
+    assert "[switch]$Detached" in src
+    assert "if (-not $Detached)" in src
+    assert "schtasks /Run /TN soprun_detached_launch" in src
+    assert "soprun_watchdog" in src
+    # no long-lived session-owned watcher process may exist again
+    assert "function Start-UiWatcher" not in src
+    watch = _read("watch_suprun.ps1")
+    assert "while ($true)" not in watch  # one-shot; the task trigger is the loop
+    assert "start_suprun.ps1" in watch and "-Detached" in watch
 
 
 def test_ui_arms_death_capture_and_lifecycle_logs():
