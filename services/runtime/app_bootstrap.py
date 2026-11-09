@@ -36,6 +36,18 @@ def _npm_install_cmd(package: str, registry: str) -> str:
     return cmd
 
 
+def _installed_codex() -> str:
+    """Locate a working codex CLI exactly the way the runners do."""
+    try:
+        from supervisor.runners.codex_support.locator import find_codex
+
+        return find_codex()
+    except FileNotFoundError:
+        return ""
+    except Exception:
+        return ""
+
+
 def should_skip_upgrade(settings_file: Path = UPGRADE_SETTINGS_FILE) -> bool:
     if os.environ.get("OPENCODE_SKIP_UPGRADE") == "1":
         return True
@@ -228,6 +240,21 @@ def auto_upgrade_codex(
         )
         return
 
+    # Never reinstall a CLI that already resolves. Every UI restart used to
+    # run a global npm install; when the watcher tree-killed the app mid
+    # install (2026-11-06) npm left the package unpacked but WITHOUT bin
+    # shims, and every queued run then failed with "codex not found". The
+    # install is now a repair path: run it only when the runner locator
+    # cannot find codex at all.
+    installed = _installed_codex()
+    if installed:
+        print(
+            f"[codex-upgrade] codex already available at {installed}; "
+            "skipping auto-upgrade.",
+            file=sys.stderr,
+        )
+        return
+
     config_path = Path.home() / ".codex" / "config.toml"
     try:
         original_config = config_path.read_bytes()
@@ -281,7 +308,20 @@ def auto_upgrade_codex(
             if code == 0
             else f"with code {code}. Continuing startup."
         )
-        print(f"[codex-upgrade] Upgrade completed {code_msg}.", file=sys.stderr)
+        print(f"[codex-upgrade] Upgrade completed {code_msg}", file=sys.stderr)
+        # npm can report success (or be killed) with the package unpacked but
+        # the bin shims missing; only the runner locator can prove the CLI
+        # actually runs, so say so loudly when the repair did not take.
+        repaired = _installed_codex()
+        if repaired:
+            print(f"[codex-upgrade] codex resolves at {repaired}", file=sys.stderr)
+        else:
+            print(
+                "[codex-upgrade] ERROR: codex is still not resolvable after the "
+                "install - queued runs cannot start. Re-run: "
+                f"{base_cmd}",
+                file=sys.stderr,
+            )
     except subprocess.TimeoutExpired:
         print(
             "[codex-upgrade] Upgrade timed out after 180 seconds. Continuing startup.",

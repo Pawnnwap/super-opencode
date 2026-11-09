@@ -21,6 +21,30 @@ from supervisor.utils.text_utils import sanitize_event_message
 
 logger = logging.getLogger(__name__)
 
+# Missing-engine preflight. A PENDING record must stay queued when the CLI it
+# needs is not installed: on 2026-11-06 an interrupted npm upgrade removed
+# codex's bin shims, and the worker claimed seven queued replicas that all
+# died in under a second with "codex not found", burning them as FAILED.
+_CODEX_PROBE_TTL_SECONDS = 30.0
+_codex_probe: dict[str, Any] = {"at": 0.0, "path": "", "error": ""}
+_codex_blocked_logged: set[str] = set()
+
+
+def codex_engine_ready(explicit: str = "") -> tuple[bool, str]:
+    """Whether a codex job can start at all (probe cached for the poll loop)."""
+    now = time.time()
+    if not explicit and now - _codex_probe["at"] < _CODEX_PROBE_TTL_SECONDS:
+        return bool(_codex_probe["path"]), str(_codex_probe["error"])
+    try:
+        from supervisor.runners.codex_support.locator import find_codex
+
+        path, error = find_codex(explicit), ""
+    except FileNotFoundError as exc:
+        path, error = "", str(exc)
+    if not explicit:
+        _codex_probe.update(at=now, path=path, error=error)
+    return bool(path), error
+
 # Level -> terminal state. The newest one in the log wins: a run that emitted
 # success long ago and then aborted must not be recorded SUCCESS off that old
 # event (the previous `any(...)` scan did exactly that over 28h job logs).
@@ -244,6 +268,20 @@ class JobManager:
         config = self.config_from_state(job_id)
         if config is None:
             return False
+        if str(getattr(config, "engine", "") or "").lower() == "codex":
+            ready, why = codex_engine_ready(
+                str(getattr(config, "opencode_executable", "") or ""),
+            )
+            if not ready:
+                if job_id not in _codex_blocked_logged:
+                    _codex_blocked_logged.add(job_id)
+                    logger.error(
+                        "leaving PENDING job %s queued: %s",
+                        job_id,
+                        (why or "codex CLI not found").splitlines()[0],
+                    )
+                return False
+            _codex_blocked_logged.discard(job_id)
         job_type = str(state.get("type") or "run")
         meta = {
             k: state[k]
