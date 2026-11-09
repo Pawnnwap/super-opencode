@@ -215,7 +215,7 @@ def _draft_facts(workspace: Path, on_progress=None, stop_event=None) -> dict:
         else ""
     )
     wizard = FeasibilityWizard(
-        model=app_state.get("supervisor_model") or "gpt-4o",
+        model=app_state.get("supervisor_model") or "swift-1.5",
         api_key=app_state.get("openai_key"),
         base_url=app_state.get("base_url") or None,
     )

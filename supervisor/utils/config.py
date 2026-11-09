@@ -22,7 +22,7 @@ class SupervisorConfig:
     # isolated from global agent customization that could hijack the task;
     # leave off to keep the user's plugin environment.
     opencode_pure: bool = False
-    supervisor_model: str = "gpt-4o"
+    supervisor_model: str = "swift-1.5"
     supervisor_model_backup: str | None = None
     # Thinking/reasoning control for real runs ("" = model default).
     # supervisor_reasoning: passed to the supervisor's chat.completions calls

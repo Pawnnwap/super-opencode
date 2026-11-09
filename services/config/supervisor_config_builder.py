@@ -35,7 +35,7 @@ def build_supervisor_config(
         opencode_model=session_state["opencode_model"] or None,
         opencode_model_backup=session_state["opencode_model_backup"] or None,
         opencode_executable=session_state["opencode_executable"],
-        supervisor_model=session_state["supervisor_model"] or "gpt-4o",
+        supervisor_model=session_state["supervisor_model"] or "swift-1.5",
         supervisor_model_backup=session_state["supervisor_model_backup"] or None,
         supervisor_reasoning=str(session_state.get("supervisor_reasoning", "") or "").strip(),
         agent_reasoning=str(session_state.get("agent_reasoning", "") or "").strip(),

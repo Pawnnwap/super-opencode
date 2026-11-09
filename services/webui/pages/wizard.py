@@ -575,7 +575,7 @@ def _suggest_ignore_patterns(workspace: Path) -> str:
     )
     return stream_chat_text(
         client,
-        app_state.get("supervisor_model") or "gpt-4o",
+        app_state.get("supervisor_model") or "swift-1.5",
         [
             {
                 "role": "system",
@@ -636,7 +636,7 @@ def _connectivity_section() -> None:
                     ok, message = await nicegui_run.io_bound(
                         test_supervisor_connectivity,
                         app_state.get("openai_key"),
-                        app_state.get("supervisor_model") or "gpt-4o",
+                        app_state.get("supervisor_model") or "swift-1.5",
                         app_state.get("base_url") or None,
                     )
                     app_state.flags["supervisor_test_passed"] = ok
@@ -772,7 +772,7 @@ async def _refine(status, refine_button, cancel_button) -> None:
         app_state.apply_api_config()
         try:
             wizard = ProtocolWizard(
-                model=app_state.get("supervisor_model") or "gpt-4o",
+                model=app_state.get("supervisor_model") or "swift-1.5",
                 api_key=app_state.get("openai_key") or None,
                 base_url=app_state.get("base_url") or None,
             )

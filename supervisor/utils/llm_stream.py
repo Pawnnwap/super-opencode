@@ -97,7 +97,7 @@ class StreamedLLMHelper:
 
     def __init__(
         self,
-        model: str = "gpt-4o",
+        model: str = "swift-1.5",
         api_key: str | None = None,
         base_url: str | None = None,
     ):

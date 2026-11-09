@@ -23,7 +23,7 @@ def _build_meta_protocol(workspace: Path, goal: str, extra: str) -> str:
     from supervisor.protocols.meta_protocol_builder import MetaProtocolBuilder
 
     builder = MetaProtocolBuilder(
-        model=app_state.get("supervisor_model") or "gpt-4o",
+        model=app_state.get("supervisor_model") or "swift-1.5",
         api_key=app_state.get("openai_key") or None,
         base_url=app_state.get("base_url") or None,
     )
