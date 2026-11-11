@@ -12,6 +12,7 @@ class RunResult:
         looped: bool = False,
         loop_reason: str = "",
         prose: str = "",
+        cancelled: bool = False,
     ):
         self.stdout = stdout
         self.stderr = stderr
@@ -23,11 +24,16 @@ class RunResult:
         # Model text events only (no tool I/O, stderr, error events) — lets
         # callers apply "the model answered" as its own success criterion.
         self.prose = prose
+        # The turn was stopped by the operator; it must never trigger a
+        # backup-model retry or be treated as an ordinary turn failure.
+        self.cancelled = cancelled
 
     @property
     def output(self) -> str:
         """Combined output surfaced to supervisor loop."""
         parts = []
+        if self.cancelled:
+            parts.append("[CANCELLED]")
         if self.exception:
             parts.append(f"[EXCEPTION] {self.exception}")
         if self.timed_out:
@@ -45,7 +51,8 @@ class RunResult:
     @property
     def ok(self) -> bool:
         return (
-            not self.timed_out
+            not self.cancelled
+            and not self.timed_out
             and not self.exception
             and not self.looped
             and self.returncode == 0
@@ -54,6 +61,7 @@ class RunResult:
     def diagnostic(self) -> str:
         lines = [
             f"exit_code : {self.returncode}",
+            f"cancelled : {self.cancelled}",
             f"timed_out : {self.timed_out}",
             f"exception : {self.exception or '(none)'}",
             f"stdout    : {len(self.stdout)} chars",

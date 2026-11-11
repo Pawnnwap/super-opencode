@@ -71,6 +71,12 @@ class OpencodeRunner(BaseRunner):
         # opencode does not report its session id on the event stream, so the
         # first turn runs under the session-capture lock and the new session
         # is found by diffing `opencode session list` before/after.
+        if self.cancel_event.is_set():
+            yield {
+                "level": "warn",
+                "msg": f"{self._engine} start skipped: run cancelled.",
+            }
+            return
         validated = validate_message(
             initial_prompt, "initial_prompt (start)", engine=self._engine
         )
@@ -90,8 +96,14 @@ class OpencodeRunner(BaseRunner):
         # turn wastes a full model call and, with slow models, times out
         # before creating any session.
         with _SESSION_CAPTURE_LOCK:
+            if self.cancel_event.is_set():
+                return
             before = self._list_all_session_ids()
             yield from self._run_prompt(validated)
+            if self.cancel_event.is_set():
+                # The session-list diff can poll for seconds; a cancelled
+                # turn must not wait for it.
+                return
             self._session_id = self._capture_new_session_id(before)
 
         self._session_active = True
