@@ -136,6 +136,8 @@ def install_access_guard(
     # codex hook stay inert outside supervised runs.
     result.env["SOP_ACCESS_POLICY"] = str(snapshot_path)
     result.env["SOP_ACCESS_LOG"] = str(log_path)
+    # The JS gates shell out to this exact interpreter for command analysis.
+    result.env["SOP_GUARD_PYTHON"] = sys.executable
     # The codex hook runs in a fresh interpreter: make the supervisor package
     # importable even when the app was not installed editable.
     package_root = Path(__file__).resolve().parents[2]
@@ -577,15 +579,17 @@ def _strip_codex_hook(hooks_path: Path) -> None:
 _OPENCODE_PLUGIN_JS = r"""/**
  * supervisor_access_guard - installed by opencode-supervisor.
  *
- * Hard path gate for every opencode tool call. Runs before the tool executes
- * and throws to deny. The rule set comes from
- * <workspace>/.supervisor/access_policy.json, written at run start.
+ * Hard path gate for every opencode tool call. File paths are checked here;
+ * shell commands are delegated to the supervisor's Python analyzer
+ * (`shell_scan`) so all three engines share one parser and one rule set.
  *
- * V1 plugin shape on purpose: no imports, so it loads even when the project
- * has no node_modules and with `--pure`-style isolation.
+ * A missing policy, a failed analyzer or a timeout denies the call: the gate
+ * fails closed. V1 plugin shape on purpose (no project imports), so it loads
+ * without node_modules.
  */
 import fs from "node:fs";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
 
 const POLICY_CANDIDATES = [
   process.env.SOP_ACCESS_POLICY,
@@ -602,9 +606,6 @@ function loadPolicy(directory) {
       /* try the next candidate */
     }
   }
-  // Fail closed: the guard is installed only for supervised runs, so a
-  // missing snapshot means the policy could not be applied. Allowing every
-  // path here would silently disable the hard rule.
   return { enabled: true, roots: [], missing: true };
 }
 
@@ -661,191 +662,48 @@ function check(policy, rawPath, access, base) {
   for (const root of policy.roots || []) {
     if (!within(resolved, root.path)) continue;
     if (root.mode === "rw") return null;
-    if (access === "write") return "whitelist directories are read-only";
-    return null;
+    return access === "write" ? "whitelist directories are read-only" : null;
   }
   return "outside workspace and whitelist";
 }
 
-const WRITE_VERBS = new Set([
-  "rm", "rmdir", "del", "erase", "mv", "move", "cp", "copy", "xcopy", "robocopy",
-  "mkdir", "md", "touch", "tee", "chmod", "chown", "attrib", "icacls", "takeown",
-  "ln", "mklink", "truncate", "dd", "install", "unlink", "rename", "ren", "sed",
-  "perl", "remove-item", "move-item", "copy-item", "new-item", "set-content",
-  "add-content", "out-file", "clear-content", "rename-item",
-]);
-
-function looksLikePath(text) {
-  return (
-    text === "." ||
-    text === ".." ||
-    text.includes("/") ||
-    text.includes("\\") ||
-    /^[A-Za-z]:/.test(text) ||
-    /^(~|%|\$)/.test(text)
-  );
-}
-
-function quoteSpans(text) {
-  const spans = [];
-  for (const match of text.matchAll(/"([^"]*)"|'([^']*)'/g)) {
-    spans.push([match.index, match.index + match[0].length]);
+/**
+ * Delegate a shell command to the single authoritative parser. The analyzer
+ * rejects dynamic constructs (substitutions, unknown variables, encoded
+ * commands, wrappers it cannot unwrap), so an unparseable command is denied
+ * rather than guessed at.
+ */
+function scanCommand(command, base) {
+  if (!command) return null;
+  if (!process.env.SOP_ACCESS_POLICY) {
+    return "access policy snapshot missing (failing closed)";
   }
-  return spans;
-}
-
-function insideSpans(spans, index) {
-  return spans.some(([start, end]) => index >= start && index < end);
-}
-
-function collectPaths(text) {
-  const out = [];
-  const spans = quoteSpans(text);
-  const push = (value) => {
-    if (value) out.push(value.replace(/["'`,;:)\]}]+$/, ""));
-  };
-
-  // A quoted path is one unit even when it contains spaces
-  // (`C:////Program Files\\...`); the whitespace regexes below would truncate it
-  // into a bogus path and cause a false denial.
-  for (const match of text.matchAll(/"([^"]*)"|'([^']*)'/g)) {
-    const inner = (match[1] ?? match[2] ?? "").trim();
-    if (inner && looksLikePath(inner)) push(inner);
-  }
-
-  for (const match of text.matchAll(/(?<![\w])([A-Za-z]:[\\/][^\s"'|;&<>\n]*)/g)) {
-    if (insideSpans(spans, match.index)) continue;
-    push(match[1]);
-  }
-  for (const match of text.matchAll(/(\\\\[^\s"'|;&<>\n]+)/g)) {
-    if (insideSpans(spans, match.index)) continue;
-    push(match[1]);
-  }
-  for (const match of text.matchAll(/(?:~|%USERPROFILE%|\$HOME|\$\{HOME\})([\\/][^\s"'|;&<>\n]*)/g)) {
-    if (insideSpans(spans, match.index)) continue;
-    push(match[0]);
-  }
-  // Relative path arguments (`cat ../../secret`) escape the cwd without an
-  // absolute spelling, so every path-shaped token is checked against the base.
-  for (const match of text.matchAll(/[^\s"'|;&<>]+/g)) {
-    if (insideSpans(spans, match.index)) continue;
-    let token = match[0];
-    if (!token || /^[-/\\%$~]/.test(token) || token.includes("://")) continue;
-    const eq = token.indexOf("=");
-    if (eq !== -1) token = token.slice(eq + 1);
-    if (!token) continue;
-    if (looksLikePath(token)) push(token);
-  }
-  return out;
-}
-
-const COPY_VERBS = new Set([
-  "cp", "copy", "copy-item", "xcopy", "robocopy", "rsync", "scp", "install",
-]);
-const MOVE_VERBS = new Set(["mv", "move", "move-item", "rename", "ren"]);
-const NAMED_WRITE = new Set([
-  "-destination", "-target", "-outfile", "-outputfile", "-literalpath",
-]);
-const NAMED_READ = new Set(["-path", "-source", "-from", "-include"]);
-
-function segmentBounds(command, index) {
-  let start = 0;
-  const before = command.slice(0, index);
-  const separator = /[|;&\n]/g;
-  let match;
-  while ((match = separator.exec(before))) start = match.index + 1;
-  const tail = command.slice(index).search(/[|;&\n]/);
-  return [start, tail === -1 ? command.length : index + tail];
-}
-
-function isFlagToken(raw) {
-  const token = raw.replace(/^["']|["']$/g, "");
-  if (token.startsWith("--")) return true;
-  if (token.startsWith("-") && token.length <= 8) return true;
-  return (
-    token.startsWith("/") &&
-    (token.match(/\//g) || []).length === 1 &&
-    token.length <= 5 &&
-    /^[A-Za-z0-9]+$/.test(token.slice(1))
-  );
-}
-
-function commandName(raw) {
-  let token = raw.replace(/^["']|["']$/g, "").replace(/\\/g, "/");
-  token = token.split("/").pop().toLowerCase();
-  return token.endsWith(".exe") ? token.slice(0, -4) : token;
-}
-
-function writeIntent(command, index) {
-  const [start, end] = segmentBounds(command, index);
-  const segment = command.slice(start, end);
-  if (/>\s*$/.test(command.slice(start, index))) return true;
-  const tokens = [];
-  const tokenPattern = /"[^"]*"|'[^']*'|\S+/g;
-  let match;
-  while ((match = tokenPattern.exec(segment))) {
-    tokens.push({
-      start: start + match.index,
-      end: start + match.index + match[0].length,
-      raw: match[0],
-    });
-  }
-  if (
-    tokens.some(
-      (token) =>
-        token.start < index && (token.raw.endsWith(">") || token.raw.endsWith(">>")),
-    )
-  ) {
-    return true;
-  }
-  const tokenIndex = tokens.findIndex(
-    (token) => token.start <= index && index < token.end,
-  );
-  if (tokenIndex < 0) return false;
-  if (tokenIndex > 0) {
-    const previous = tokens[tokenIndex - 1].raw
-      .replace(/^["']|["']$/g, "")
-      .toLowerCase();
-    if (NAMED_WRITE.has(previous)) return true;
-    if (NAMED_READ.has(previous)) return false;
-  }
-  const verb = commandName(tokens[0].raw);
-  if (verb === "sed" || verb === "perl") {
-    return tokens.slice(1).some((token) => token.raw.startsWith("-i"));
-  }
-  if (verb === "git") {
-    return /\bgit\s+(clone|init|worktree|mv|rm|checkout|reset|clean|apply|am|pull|fetch)\b/i.test(
-      segment,
+  const python = process.env.SOP_GUARD_PYTHON || "python";
+  try {
+    const output = execFileSync(
+      python,
+      [
+        "-m",
+        "supervisor.security.guard_cli",
+        "--policy-env",
+        "SOP_ACCESS_POLICY",
+        "--log-env",
+        "SOP_ACCESS_LOG",
+        "--check-command",
+      ],
+      {
+        input: JSON.stringify({ command: String(command), cwd: base || process.cwd() }),
+        encoding: "utf8",
+        timeout: 8000,
+        env: process.env,
+        windowsHide: true,
+      },
     );
+    const result = JSON.parse(output);
+    return result.allow ? null : result.reason || "denied by the access policy";
+  } catch (err) {
+    return "shell analyzer unavailable (failing closed): " + String(err).slice(0, 160);
   }
-  if (COPY_VERBS.has(verb)) {
-    const paths = tokens
-      .map((token, i) => i)
-      .filter((i) => i > 0 && !isFlagToken(tokens[i].raw));
-    return paths.length > 0 && tokenIndex === paths[paths.length - 1];
-  }
-  return MOVE_VERBS.has(verb) || WRITE_VERBS.has(verb);
-}
-
-function scanCommand(policy, command, base) {
-  if (!policy) return "access policy not loaded";
-  if (policy.enabled === false || !command) return null;
-  if (policy.missing) return "access policy snapshot missing (failing closed)";
-  for (const candidate of collectPaths(command)) {
-    const expanded = candidate
-      .replace(/^~/, process.env.USERPROFILE || process.env.HOME || "~")
-      .replace(/%USERPROFILE%/gi, process.env.USERPROFILE || "")
-      .replace(/\$\{?HOME\}?/gi, process.env.HOME || process.env.USERPROFILE || "");
-    const index = command.indexOf(candidate);
-    const reason = check(
-      policy,
-      expanded,
-      writeIntent(command, index) ? "write" : "read",
-      base || process.cwd(),
-    );
-    if (reason) return candidate + ": " + reason;
-  }
-  return null;
 }
 
 function toolPaths(args) {
@@ -864,20 +722,19 @@ export const SupervisorAccessGuard = async ({ directory, worktree }) => {
     "tool.execute.before": async (input, output) => {
       const tool = String(input?.tool || "").toLowerCase();
       const args = output?.args || {};
+      const base = directory || worktree || process.cwd();
+
       if (tool === "bash" || tool === "shell" || tool === "execute") {
-        const command = String(args.command || args.cmd || "");
-        const violation = scanCommand(policy, command, directory || worktree);
-        if (violation) {
-          throw new Error(
-            "Blocked by supervisor access policy (shell write/read outside policy): " + violation,
-          );
+        const reason = scanCommand(String(args.command || args.cmd || ""), base);
+        if (reason) {
+          throw new Error("Blocked by supervisor access policy (shell): " + reason);
         }
         return;
       }
+
       const access = ["write", "edit", "patch", "multiedit", "multi_edit"].includes(tool)
         ? "write"
         : "read";
-      const base = directory || worktree || process.cwd();
       for (const candidate of toolPaths(args)) {
         const reason = check(policy, candidate, access, base);
         if (reason) {
@@ -906,23 +763,24 @@ export const SupervisorAccessGuard = async ({ directory, worktree }) => {
 _PI_EXTENSION_TS = r"""/**
  * supervisor-access-guard - installed by opencode-supervisor.
  *
- * pi loads this with an explicit `-e <path>` (project-local discovery would
- * require project trust). Every tool call is checked before execution against
- * <workspace>/.supervisor/access_policy.json; a violation returns
- * { block: true } so pi never runs the tool.
+ * pi loads this with an explicit `-e <path>`. File paths are checked in
+ * process; shell commands are delegated to the supervisor's Python analyzer so
+ * every engine shares one parser. Any analyzer failure denies the call.
  */
 import fs from "node:fs";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
 
 type Policy = {
   enabled?: boolean;
+  missing?: boolean;
   roots?: Array<{ path: string; mode: "rw" | "ro" }>;
 };
 
 let cached: Policy | null = null;
 let cachedPath = "";
 
-function loadPolicy(cwd: string): Policy | null {
+function loadPolicy(cwd: string): Policy {
   const candidates = [
     process.env.SOP_ACCESS_POLICY,
     path.join(cwd || process.cwd(), ".supervisor", "access_policy.json"),
@@ -937,9 +795,7 @@ function loadPolicy(cwd: string): Policy | null {
       /* next */
     }
   }
-  // Fail closed (see the opencode plugin): a missing snapshot must not turn
-  // the hard rule into an allow-all.
-  return { enabled: true, roots: [], missing: true } as Policy;
+  return { enabled: true, roots: [], missing: true };
 }
 
 function realResolve(target: string): string {
@@ -974,16 +830,13 @@ function within(child: string, root: string): boolean {
 }
 
 function check(
-  policy: Policy | null,
+  policy: Policy,
   rawPath: string,
   access: "read" | "write",
   base: string,
 ): string | null {
-  if (!policy) return "access policy not loaded";
   if (policy.enabled === false) return null;
-  if ((policy as Policy & { missing?: boolean }).missing) {
-    return "access policy snapshot missing (failing closed)";
-  }
+  if (policy.missing) return "access policy snapshot missing (failing closed)";
   let text = String(rawPath || "").trim();
   if (!text) return "empty path";
   if (text.startsWith("\\\\") || text.startsWith("\\\\.\\")) return "UNC or device paths are not allowed";
@@ -1007,186 +860,44 @@ function check(
   return "outside workspace and whitelist";
 }
 
-const WRITE_VERBS = new Set([
-  "rm", "rmdir", "del", "erase", "mv", "move", "cp", "copy", "xcopy", "robocopy",
-  "mkdir", "md", "touch", "tee", "chmod", "chown", "attrib", "icacls", "takeown",
-  "ln", "mklink", "truncate", "dd", "install", "unlink", "rename", "ren", "sed",
-  "perl", "remove-item", "move-item", "copy-item", "new-item", "set-content",
-  "add-content", "out-file", "clear-content", "rename-item",
-]);
-
-const COPY_VERBS = new Set([
-  "cp", "copy", "copy-item", "xcopy", "robocopy", "rsync", "scp", "install",
-]);
-const MOVE_VERBS = new Set(["mv", "move", "move-item", "rename", "ren"]);
-const NAMED_WRITE = new Set([
-  "-destination", "-target", "-outfile", "-outputfile", "-literalpath",
-]);
-const NAMED_READ = new Set(["-path", "-source", "-from", "-include"]);
-
-function segmentBounds(command: string, index: number): [number, number] {
-  let start = 0;
-  const before = command.slice(0, index);
-  const separator = /[|;&\n]/g;
-  let match: RegExpExecArray | null;
-  while ((match = separator.exec(before))) start = match.index + 1;
-  const tail = command.slice(index).search(/[|;&\n]/);
-  return [start, tail === -1 ? command.length : index + tail];
-}
-
-function isFlagToken(raw: string): boolean {
-  const token = raw.replace(/^["']|["']$/g, "");
-  if (token.startsWith("--")) return true;
-  if (token.startsWith("-") && token.length <= 8) return true;
-  return (
-    token.startsWith("/") &&
-    (token.match(/\//g) || []).length === 1 &&
-    token.length <= 5 &&
-    /^[A-Za-z0-9]+$/.test(token.slice(1))
-  );
-}
-
-function commandName(raw: string): string {
-  let token = raw.replace(/^["']|["']$/g, "").replace(/\\/g, "/");
-  token = token.split("/").pop()!.toLowerCase();
-  return token.endsWith(".exe") ? token.slice(0, -4) : token;
-}
-
-function writeIntent(command: string, index: number): boolean {
-  const [start, end] = segmentBounds(command, index);
-  const segment = command.slice(start, end);
-  if (/>\s*$/.test(command.slice(start, index))) return true;
-  const tokens: Array<{ start: number; end: number; raw: string }> = [];
-  const tokenPattern = /"[^"]*"|'[^']*'|\S+/g;
-  let match: RegExpExecArray | null;
-  while ((match = tokenPattern.exec(segment))) {
-    tokens.push({
-      start: start + match.index,
-      end: start + match.index + match[0].length,
-      raw: match[0],
-    });
-  }
-  if (
-    tokens.some(
-      (token) =>
-        token.start < index && (token.raw.endsWith(">") || token.raw.endsWith(">>")),
-    )
-  ) {
-    return true;
-  }
-  const tokenIndex = tokens.findIndex(
-    (token) => token.start <= index && index < token.end,
-  );
-  if (tokenIndex < 0) return false;
-  if (tokenIndex > 0) {
-    const previous = tokens[tokenIndex - 1].raw
-      .replace(/^["']|["']$/g, "")
-      .toLowerCase();
-    if (NAMED_WRITE.has(previous)) return true;
-    if (NAMED_READ.has(previous)) return false;
-  }
-  const verb = commandName(tokens[0].raw);
-  if (verb === "sed" || verb === "perl") {
-    return tokens.slice(1).some((token) => token.raw.startsWith("-i"));
-  }
-  if (verb === "git") {
-    return /\bgit\s+(clone|init|worktree|mv|rm|checkout|reset|clean|apply|am|pull|fetch)\b/i.test(
-      segment,
-    );
-  }
-  if (COPY_VERBS.has(verb)) {
-    const paths = tokens
-      .map((_token, i) => i)
-      .filter((i) => i > 0 && !isFlagToken(tokens[i].raw));
-    return paths.length > 0 && tokenIndex === paths[paths.length - 1];
-  }
-  return MOVE_VERBS.has(verb) || WRITE_VERBS.has(verb);
-}
-
-function looksLikePath(text: string): boolean {
-  return (
-    text === "." ||
-    text === ".." ||
-    text.includes("/") ||
-    text.includes("\\") ||
-    /^[A-Za-z]:/.test(text) ||
-    /^(~|%|\$)/.test(text)
-  );
-}
-
-function quoteSpans(text: string): Array<[number, number]> {
-  const spans: Array<[number, number]> = [];
-  for (const match of text.matchAll(/"([^"]*)"|'([^']*)'/g)) {
-    spans.push([match.index ?? 0, (match.index ?? 0) + match[0].length]);
-  }
-  return spans;
-}
-
-function insideSpans(spans: Array<[number, number]>, index: number): boolean {
-  return spans.some(([start, end]) => index >= start && index < end);
-}
-
-function scanCommand(policy: Policy | null, command: string, base: string): string | null {
-  if (!policy) return "access policy not loaded";
-  if (policy.enabled === false || !command) return null;
-  if ((policy as Policy & { missing?: boolean }).missing) {
+function scanCommand(command: string, base: string): string | null {
+  if (!command) return null;
+  if (!process.env.SOP_ACCESS_POLICY) {
     return "access policy snapshot missing (failing closed)";
   }
-  const spans = quoteSpans(command);
-  for (const match of command.matchAll(/"([^"]*)"|'([^']*)'/g)) {
-    const inner = (match[1] ?? match[2] ?? "").trim();
-    if (!inner || !looksLikePath(inner)) continue;
-    const write = writeIntent(command, match.index ?? 0);
-    const reason = check(policy, inner, write ? "write" : "read", base);
-    if (reason) return inner + ": " + reason;
+  const python = process.env.SOP_GUARD_PYTHON || "python";
+  try {
+    const output = execFileSync(
+      python,
+      [
+        "-m",
+        "supervisor.security.guard_cli",
+        "--policy-env",
+        "SOP_ACCESS_POLICY",
+        "--log-env",
+        "SOP_ACCESS_LOG",
+        "--check-command",
+      ],
+      {
+        input: JSON.stringify({ command, cwd: base || process.cwd() }),
+        encoding: "utf8",
+        timeout: 8000,
+        env: process.env,
+        windowsHide: true,
+      },
+    );
+    const result = JSON.parse(output);
+    return result.allow ? null : result.reason || "denied by the access policy";
+  } catch (err) {
+    return "shell analyzer unavailable (failing closed): " + String(err).slice(0, 160);
   }
-
-  const patterns = [
-    /(?<![\w])([A-Za-z]:[\\/][^\s"'|;&<>\n]*)/g,
-    /(\\\\[^\s"'|;&<>\n]+)/g,
-    /(?:~|%USERPROFILE%|\$HOME|\$\{HOME\})([\\/][^\s"'|;&<>\n]*)/g,
-  ];
-  for (const match of command.matchAll(/[^\s"'|;&<>]+/g)) {
-    if (insideSpans(spans, match.index ?? 0)) continue;
-    let token = match[0].replace(/["'`,;:)\]}]+$/, "");
-    if (!token || /^[-/\\%$~]/.test(token) || token.includes("://")) continue;
-    const eq = token.indexOf("=");
-    if (eq !== -1) token = token.slice(eq + 1);
-    if (!token) continue;
-    if (
-      token === "." ||
-      token === ".." ||
-      token.includes("/") ||
-      token.includes("\\") ||
-      /^[A-Za-z]:/.test(token)
-    ) {
-      const write = writeIntent(command, match.index ?? 0);
-      const reason = check(policy, token, write ? "write" : "read", base);
-      if (reason) return token + ": " + reason;
-    }
-  }
-
-  for (const pattern of patterns) {
-    for (const match of command.matchAll(pattern)) {
-      if (insideSpans(spans, match.index ?? 0)) continue;
-      const raw = match[0].replace(/["'`,;:)\]}]+$/, "");
-      const expanded = raw
-        .replace(/^~/, process.env.USERPROFILE || process.env.HOME || "~")
-        .replace(/%USERPROFILE%/gi, process.env.USERPROFILE || "")
-        .replace(/\$\{?HOME\}?/gi, process.env.HOME || process.env.USERPROFILE || "");
-      const write = writeIntent(command, match.index ?? 0);
-      const reason = check(policy, expanded, write ? "write" : "read", base);
-      if (reason) return raw + ": " + reason;
-    }
-  }
-  return null;
 }
 
-function blockReason(policy: Policy | null, event: any, cwd: string): string | null {
+function blockReason(policy: Policy, event: any, cwd: string): string | null {
   const tool = String(event?.toolName || "").toLowerCase();
   const input = event?.input || {};
   if (tool === "bash" || tool === "shell" || tool === "execute") {
-    return scanCommand(policy, String(input.command || input.cmd || ""), cwd);
+    return scanCommand(String(input.command || input.cmd || ""), cwd);
   }
   const access: "read" | "write" = ["write", "edit", "patch", "multiedit"].includes(tool)
     ? "write"
@@ -1198,16 +909,15 @@ function blockReason(policy: Policy | null, event: any, cwd: string): string | n
   if (Array.isArray(input.paths)) {
     candidates.push(...input.paths.filter((p: unknown) => typeof p === "string"));
   }
-  const base = cwd || process.cwd();
   for (const candidate of candidates) {
-    const reason = check(policy, candidate, access, base);
+    const reason = check(policy, candidate, access, cwd);
     if (reason) return candidate + ": " + reason;
   }
   if (tool === "patch" && typeof input.patchText === "string") {
     for (const line of input.patchText.split("\n")) {
       const match = line.match(/^\*\*\* .* File: (.+)$/);
       if (!match) continue;
-      const reason = check(policy, match[1].trim(), "write", base);
+      const reason = check(policy, match[1].trim(), "write", cwd);
       if (reason) return match[1].trim() + ": " + reason;
     }
   }
@@ -1216,13 +926,11 @@ function blockReason(policy: Policy | null, event: any, cwd: string): string | n
 
 export default function (pi: any) {
   pi.on("tool_call", async (event: any, ctx: any) => {
-    const policy = loadPolicy(ctx?.cwd || process.cwd());
-    const reason = blockReason(policy, event, ctx?.cwd || process.cwd());
+    const cwd = ctx?.cwd || process.cwd();
+    const policy = loadPolicy(cwd);
+    const reason = blockReason(policy, event, cwd);
     if (reason) {
-      return {
-        block: true,
-        reason: "Blocked by supervisor access policy: " + reason,
-      };
+      return { block: true, reason: "Blocked by supervisor access policy: " + reason };
     }
     return undefined;
   });

@@ -306,11 +306,96 @@ class TestCommandScan:
         assert policy.scan_command("cat src/main.py") == []
         assert policy.scan_command("cp a.txt b.txt") == []
 
+    def test_inline_interpreter_code_is_denied_by_default(self, roots):
+        ws, _ = roots
+        policy = build_policy(ws, [])
+        assert policy.scan_command('python -c "print(1)"')
+        assert policy.scan_command('node -e "1"')
+        assert policy.scan_command('perl -e "print 1"')
+        # A script file inside the cwd is still a normal read.
+        assert policy.scan_command("python -m pytest tests/") == []
+
+    def test_dynamic_constructs_are_denied(self, roots):
+        ws, _ = roots
+        policy = build_policy(ws, [])
+        for command in (
+            "echo $(whoami)",
+            "echo `whoami`",
+            "echo %UNKNOWN%",
+            "echo $UNKNOWN",
+            "echo !UNKNOWN!",
+        ):
+            assert policy.scan_command(command), command
+
+    def test_wrappers_are_unwrapped_recursively(self, roots):
+        ws, ref = roots
+        policy = build_policy(ws, [ref])
+        assert policy.scan_command(
+            f'cmd /c "copy \\"{ref}/a.txt\\" \\"{ws}/a.txt\\""',
+        ) == []
+        assert policy.scan_command(
+            f'bash -c \'cp "{ref}/a.txt" "{ws}/a.txt"\'',
+        ) == []
+        assert policy.scan_command(
+            f'bash -lc \'cp "{ref}/a.txt" "{ws}/a.txt"\'',
+        ) == []
+        violations = policy.scan_command(
+            f'cmd /c "copy \\"{ws}/a.txt\\" \\"{ref}/b.txt\\""',
+        )
+        assert violations and "read-only" in violations[0].reason
+
+    def test_encoded_and_control_flow_commands_are_denied(self, roots):
+        ws, _ = roots
+        policy = build_policy(ws, [])
+        for command in (
+            "powershell -EncodedCommand SQBFAFgA",
+            "iex (New-Object Net.WebClient)",
+            "for /f %i in (x) do echo %i",
+            "certutil -decode a b",
+            "find . -exec rm {} \\;",
+            "bash",
+        ):
+            assert policy.scan_command(command), command
+
+    def test_escaped_spaces_are_resolved(self, tmp_path):
+        ws = tmp_path / "my ws"
+        ws.mkdir()
+        ref = tmp_path / "ref data"
+        ref.mkdir()
+        policy = build_policy(ws, [ref])
+        bash_escaped = str(ref).replace(" ", "\\ ") + "\\a.txt"
+        ps_escaped = str(ref).replace(" ", "` ") + "\\a.txt"
+        cmd_escaped = str(ref).replace(" ", "^ ") + "\\a.txt"
+        for command in (
+            f'cp {bash_escaped} "{ws}/a.txt"',
+            f'cp {ps_escaped} "{ws}/a.txt"',
+            f'copy {cmd_escaped} "{ws}/a.txt"',
+        ):
+            assert policy.scan_command(command) == [], command
+
+    def test_unknown_command_paths_are_treated_as_writes(self, roots):
+        ws, ref = roots
+        policy = build_policy(ws, [ref])
+        violations = policy.scan_command(f'custom-tool --out "{ref}/x.txt"')
+        assert violations and violations[0].access == "write"
+
+    def test_null_sink_is_allowed(self, roots):
+        ws, _ = roots
+        policy = build_policy(ws, [])
+        assert policy.scan_command("echo hi > /dev/null") == []
+        assert policy.scan_command("echo hi > NUL") == []
+
+    def test_strict_mode_denies_interpreters(self, roots):
+        ws, _ = roots
+        policy = build_policy(ws, [], strict_dynamic=True)
+        assert policy.scan_command("python -m pytest tests/")
+        assert policy.scan_command("node script.js")
+
     def test_strict_dynamic_rejects_inline_code(self, roots):
         ws, _ = roots
         policy = build_policy(ws, [], strict_dynamic=True)
         violations = policy.scan_command('python -c "print(open(1))"')
-        assert violations and "inline" in violations[0].reason
+        assert violations and "strict" in violations[0].reason
 
 
 class TestWhitelistValidation:

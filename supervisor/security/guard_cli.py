@@ -236,22 +236,39 @@ def main(argv: list[str] | None = None) -> int:
         default="",
         help="Env var holding the violation log path",
     )
+    parser.add_argument(
+        "--check-command",
+        action="store_true",
+        help="Analyze {command,cwd} from stdin and print an allow/deny JSON",
+    )
     args = parser.parse_args(argv)
+
+    def _deny_check(reason: str) -> None:
+        print(json.dumps({"allow": False, "reason": reason, "violations": []}))
 
     policy_ref = args.policy
     if args.policy_env:
         policy_ref = os.environ.get(args.policy_env, "")
         if not policy_ref:
-            # The hook is installed globally in the user's codex home; outside
-            # a supervised run there is no policy and this must be a no-op.
+            # The codex hook is installed globally and stays inert outside a
+            # supervised run; the command analyzer is only ever called by an
+            # active gate, so a missing policy there fails closed.
+            if args.check_command:
+                _deny_check("access policy snapshot missing (failing closed)")
             return 0
     if not policy_ref:
+        if args.check_command:
+            _deny_check("access policy path is required")
+            return 0
         parser.error("either --policy or --policy-env is required")
 
     event = _read_stdin_json()
     try:
         policy = load_policy(Path(policy_ref))
     except (OSError, ValueError, json.JSONDecodeError) as exc:
+        if args.check_command:
+            _deny_check(f"access policy unavailable: {exc}")
+            return 0
         payload = {
             "hookSpecificOutput": {
                 "hookEventName": _EVENT_NAME,
@@ -261,6 +278,28 @@ def main(argv: list[str] | None = None) -> int:
             "systemMessage": f"Supervisor access policy unavailable: {exc}",
         }
         print(json.dumps(payload))
+        return 0
+
+    if args.check_command:
+        command = str(event.get("command") or "")
+        cwd = str(event.get("cwd") or policy.workspace)
+        violations = policy.scan_command(command, cwd)
+        reason = "; ".join(item.headline() for item in violations)
+        print(
+            json.dumps(
+                {
+                    "allow": not violations,
+                    "reason": reason,
+                    "violations": [item.as_dict() for item in violations],
+                },
+            ),
+        )
+        event["tool_name"] = event.get("tool_name") or "shell"
+        log_path = Path(args.log) if args.log else None
+        if args.log_env:
+            log_ref = os.environ.get(args.log_env, "")
+            log_path = Path(log_ref) if log_ref else None
+        log_violations(log_path, event, violations)
         return 0
 
     violations = violations_for_event(policy, event)

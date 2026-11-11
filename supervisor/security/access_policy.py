@@ -80,73 +80,6 @@ _DEVICE_NAMES = {
     "lpt9",
 }
 
-# Write intent markers. The scan is conservative: when a path follows one of
-# these, it is treated as a write (and therefore denied outside the cwd).
-_WRITE_VERBS = {
-    "rm",
-    "rmdir",
-    "del",
-    "erase",
-    "mv",
-    "move",
-    "cp",
-    "copy",
-    "xcopy",
-    "robocopy",
-    "mkdir",
-    "md",
-    "touch",
-    "tee",
-    "chmod",
-    "chown",
-    "attrib",
-    "icacls",
-    "takeown",
-    "ln",
-    "mklink",
-    "truncate",
-    "dd",
-    "install",
-    "unlink",
-    "rename",
-    "ren",
-    "sed",
-    "perl",
-    "remove-item",
-    "move-item",
-    "copy-item",
-    "new-item",
-    "set-content",
-    "add-content",
-    "out-file",
-    "clear-content",
-    "rename-item",
-    "expand-archive",
-    "compress-archive",
-}
-
-# Copy verbs: only the destination is a write; sources are reads. This is what
-# makes `cp <whitelist>/x ./x` legal while `cp ./x <whitelist>/x` stays denied.
-_COPY_VERBS = frozenset(
-    {"cp", "copy", "copy-item", "xcopy", "robocopy", "rsync", "scp", "install"},
-)
-# Move verbs remove the source, so the source is a write as well.
-_MOVE_VERBS = frozenset({"mv", "move", "move-item", "rename", "ren"})
-
-# Named parameters where the destination can come before the source
-# (`Copy-Item -Destination X -Path Y`); positional logic alone would read X
-# as a source and let a write into the read-only whitelist through.
-_NAMED_WRITE = frozenset(
-    {"-destination", "-target", "-outfile", "-outputfile", "-literalpath"},
-)
-_NAMED_READ = frozenset({"-path", "-source", "-from", "-include"})
-
-# Windows shell builtins whose arguments are paths, for `>`-less writes.
-_WRITE_REDIRECT_RE = re.compile(r"(?<![0-9])(?:>>?|1>>?|2>>?)\s*$")
-
-_QUOTE_TRIM = "\"'` \t\r\n,;:)]}"
-
-
 class AccessPolicyError(ValueError):
     """Raised when a whitelist entry cannot be accepted."""
 
@@ -316,76 +249,27 @@ class AccessPolicy:
     # -- shell command scanning ------------------------------------------ #
 
     def scan_command(self, command: str, cwd: str | Path | None = None) -> list[PolicyViolation]:
-        """Statically scan a shell command for out-of-policy paths.
+        """Analyse a shell command and return out-of-policy paths.
 
-        This is a *gate*, not a sandbox. It extracts absolute and
-        home-relative paths, decides read vs. write intent from redirections
-        and common write verbs, and denies anything outside the policy. Inline
-        interpreter code is rejected only when ``strict_dynamic`` is set;
-        otherwise its literal paths are still scanned.
+        Delegates to the conservative shell analyzer, which fails closed on
+        dynamic constructs (command substitution, unknown variables, encoded
+        commands, script blocks, heredocs, unknown interpreters). The analyzer
+        never executes the command; it only parses it.
         """
-        if not self.enabled or not command:
+        if not self.enabled or not command or not command.strip():
             return []
+        from supervisor.security.shell_scan import analyze
 
-        base = Path(cwd) if cwd else self.workspace
-        violations: list[PolicyViolation] = []
-        seen: set[tuple[str, str]] = set()
-
-        def add(path_text: str, access: AccessKind) -> None:
-            decision = self.check(path_text, access)
-            if decision.allowed:
-                return
-            key = (decision.normalized or path_text, access)
-            if key in seen:
-                return
-            seen.add(key)
-            violations.append(PolicyViolation(path_text, access, decision.reason))
-
-        if self.strict_dynamic and _has_inline_code(command):
-            violations.append(
+        try:
+            return analyze(self, command, cwd)
+        except Exception as exc:  # noqa: BLE001 - fail closed on analyzer bugs
+            return [
                 PolicyViolation(
                     _truncate(command, 120),
                     "write",
-                    "inline interpreter code cannot be statically verified",
-                )
-            )
-            return violations
-
-        # Shell-like tokenization: a quoted path is one token even when it
-        # contains spaces (`C:////Program Files\\...`), which a whitespace regex
-        # would truncate into a bogus path and a false denial.
-        for match in _shell_tokens(command):
-            token = _trim(match.group(0))
-            if not token:
-                continue
-            if token.startswith("-"):
-                if "=" not in token:
-                    continue
-                token = token.split("=", 1)[1]
-                if not token:
-                    continue
-            if "://" in token:
-                continue
-            if "=" in token:
-                token = token.split("=", 1)[1]
-                if not token:
-                    continue
-            if token.startswith("/"):
-                if _WINDOWS and _is_flag_token(token):
-                    continue
-                if not _looks_like_posix_path(token, base):
-                    continue
-                token = _posix_to_local(token)
-            if not _looks_like_path_token(token):
-                continue
-            add(token, "write" if _write_context(command, match.start()) else "read")
-
-        for match in re.finditer(r"\bcd\s+(?:/d\s+)?([^\s&|;]+)", command, re.IGNORECASE):
-            raw = _trim(match.group(1))
-            if raw and raw not in ("-", ".."):
-                add(raw, "read")
-
-        return violations
+                    f"command analysis failed: {exc}",
+                ),
+            ]
 
     # -- serialization for the engine gates ------------------------------- #
 
@@ -500,167 +384,6 @@ def _unsafe_reason(raw: str) -> str:
     if name in _DEVICE_NAMES:
         return f"DOS device name ({name}) is not allowed"
     return ""
-
-
-def _write_context(command: str, index: int) -> bool:
-    """Does the path at *index* sit in a write position?
-
-    Position matters: in ``cp <src> <dst>`` the destination is written and the
-    source is only read, while ``mv`` writes both. Treating every argument of a
-    copy as a write made "copy from a read-only whitelist into the cwd" fail.
-    """
-    start, end = _segment_bounds(command, index)
-    segment = command[start:end]
-    if _WRITE_REDIRECT_RE.search(command[start:index]):
-        return True
-
-    tokens = [
-        (match.start() + start, match.end() + start, match.group(0))
-        for match in re.finditer(r'"[^"]*"|\'[^\']*\'|\S+', segment)
-    ]
-    if not tokens:
-        return False
-    # `echo x > "quoted path"`: the redirect token is separated from the path
-    # by the quote, so the regex-only check above misses it.
-    if any(
-        raw.endswith((">", ">>")) for t_start, _, raw in tokens if t_start < index
-    ):
-        return True
-
-    token_index = next(
-        (i for i, (t_start, t_end, _) in enumerate(tokens) if t_start <= index < t_end),
-        None,
-    )
-    if token_index is None:
-        return False
-    if token_index > 0:
-        previous = _trim(tokens[token_index - 1][2]).lower()
-        if previous in _NAMED_WRITE:
-            return True
-        if previous in _NAMED_READ:
-            return False
-
-    verb = _command_name(tokens[0][2])
-    lowered = verb
-
-    if lowered in {"sed", "perl"}:
-        # `-i` is what turns these into in-place editors.
-        return any(token[2].startswith("-i") for token in tokens[1:])
-    if lowered == "git":
-        return bool(
-            re.search(
-                r"\bgit\s+(clone|init|worktree|mv|rm|checkout|reset|clean|apply|am|pull|fetch)\b",
-                segment,
-                re.IGNORECASE,
-            ),
-        )
-    if lowered in _COPY_VERBS:
-        paths = [
-            i
-            for i, (_, _, raw) in enumerate(tokens)
-            if i > 0 and not _is_flag_token(raw)
-        ]
-        return bool(paths) and token_index == paths[-1]
-    if lowered in _MOVE_VERBS or lowered in _WRITE_VERBS:
-        return True
-    return False
-
-
-def _segment_bounds(command: str, index: int) -> tuple[int, int]:
-    """Character span of the shell segment containing *index*."""
-    start = 0
-    for match in re.finditer(r"[|;&\n]", command[:index]):
-        start = match.end()
-    tail = re.search(r"[|;&\n]", command[index:])
-    end = index + tail.start() if tail else len(command)
-    return start, end
-
-
-def _is_flag_token(raw: str) -> bool:
-    """True for CLI flags, not paths (`-r`, `--recursive`, `/E`, `/MIR`)."""
-    token = raw.strip("\"'")
-    if token.startswith("--"):
-        return True
-    if token.startswith("-") and len(token) <= 8:
-        return True
-    # Windows copy flags: /E, /S, /MIR; real POSIX paths have more slashes.
-    return (
-        token.startswith("/")
-        and token.count("/") == 1
-        and len(token) <= 5
-        and token[1:].isalnum()
-    )
-
-
-def _command_name(raw: str) -> str:
-    name = raw.strip("\"'").replace("\\", "/").rsplit("/", 1)[-1].lower()
-    if name.endswith(".exe"):
-        name = name[:-4]
-    return name
-
-
-def _shell_tokens(command: str):
-    """Yield (match, raw) pairs; quoted strings stay whole."""
-    return re.finditer(r'"[^"]*"|\'[^\']*\'|\S+', command)
-
-
-def _looks_like_path_token(token: str) -> bool:
-    return (
-        token in {".", ".."}
-        or "/" in token
-        or "\\" in token
-        or bool(re.match(r"^[A-Za-z]:", token))
-        or token.startswith(("~", "%", "$"))
-    )
-
-
-def _trim(raw: str) -> str:
-    return raw.strip(_QUOTE_TRIM)
-
-
-def _looks_like_posix_path(raw: str, base: Path) -> bool:
-    if not raw.startswith("/") or raw.startswith("//"):
-        return False
-    if raw in ("/dev/null", "/dev/stdout", "/dev/stderr", "/dev/zero"):
-        return False
-    # `xcopy src dst /E`: a short all-alnum token is a Windows copy flag, not a
-    # filesystem path.
-    if len(raw) <= 5 and raw.count("/") == 1 and raw[1:].isalnum():
-        return False
-    # CLI flags such as `--opt/foo` are not paths.
-    if raw.count("/") < 1:
-        return False
-    # `/usr/bin/env`, `/bin/bash` etc. are legitimate paths but outside the
-    # policy on Windows; scanning them is harmless (they are denied only if
-    # they resolve locally). Skip well-known POSIX system roots on Windows so
-    # common shell grammar does not produce noise.
-    if _WINDOWS:
-        first = raw.split("/")[1].lower()
-        if first in {"usr", "bin", "etc", "opt", "var", "proc", "sys", "dev"}:
-            return False
-    return True
-
-
-def _posix_to_local(raw: str) -> str:
-    """Map ``/c/Users/x`` to ``C:/Users/x`` on Windows; leave others alone."""
-    if _WINDOWS:
-        match = re.match(r"^/([A-Za-z])/(.*)$", raw)
-        if match:
-            return f"{match.group(1).upper()}:/{match.group(2)}"
-    return raw
-
-
-def _has_inline_code(command: str) -> bool:
-    patterns = (
-        r"\bpython[0-9.]*\s+-c\b",
-        r"\bpy\s+-c\b",
-        r"\bnode\s+(-e|--eval)\b",
-        r"\b(bash|sh|zsh)\s+-c\b",
-        r"\bpwsh(\.exe)?\b.*\s-(c|command)\b",
-        r"\bpowershell(\.exe)?\b.*\s-(c|command)\b",
-        r"\bcmd(\.exe)?\s+/c\b",
-    )
-    return any(re.search(pattern, command, re.IGNORECASE) for pattern in patterns)
 
 
 def _truncate(text: str, limit: int) -> str:

@@ -527,14 +527,16 @@ def _access_section() -> None:
         ui.label(
             "The project cwd is read/write. Whitelisted directories are "
             "READ-ONLY. Everything else is denied for every backend "
-            "(opencode, codex, pi) - regardless of the agent's own rules.",
+            "(opencode, codex, pi) - regardless of the agent's own rules. "
+            "Shell commands are parsed; dynamic constructs (substitutions, "
+            "unknown variables, encoded commands) are denied outright.",
         ).classes("text-xs text-[#8b949e]")
         _bind_switch(
             "access_policy_enabled", "Enforce the hard path policy",
         ).props("dense")
         _bind_switch(
             "access_policy_strict",
-            "Also deny inline interpreter code (python -c / node -e / bash -c)",
+            "Strict: also deny interpreter execution (python/node/perl scripts)",
         ).props("dense")
 
         workspace = _workspace()

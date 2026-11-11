@@ -71,6 +71,18 @@ The policy snapshot lives outside the workspace (under
 file in the cwd. Blocked calls are written to a JSONL audit log and surfaced
 as `ACCESS POLICY BLOCKED ...` warnings in the job log.
 
+Shell commands are parsed by one conservative analyzer shared by all three
+backends (opencode/pi delegate to it from their gates). It handles POSIX,
+cmd.exe and PowerShell quoting and escaped spaces, known environment
+variables, redirect targets and wrapper commands (`cmd /c`, `pwsh -Command`,
+`bash -c`/`-lc`) recursively. It **denies what it cannot resolve**:
+command substitution, backticks, unknown variables, delayed expansion,
+encoded commands, script blocks, heredocs, control flow, `find -exec`,
+dangerous binaries (`wsl`, `ssh`, `certutil`, `mshta`, ...) and inline
+interpreter code. An unknown command's path arguments are treated as writes,
+so a custom `--out <path>` cannot write into a read-only whitelist. If the
+analyzer fails or times out, the tool call is denied.
+
 Before the first turn the supervisor runs a **preflight drill**: the policy
 engine is exercised against cwd / whitelist / outside paths and `..` command
 escapes, and for codex the installed hook is actually invoked with a synthetic

@@ -237,6 +237,36 @@ class TestGuardCli:
         assert proc.returncode == 0
         assert proc.stdout.strip() == ""
 
+    def test_cli_check_command_mode(self, layout, tmp_path):
+        ws, ref, _ = layout
+        install = install_access_guard(
+            ws, build_policy(ws, [ref]), "opencode", codex_home=tmp_path / "ch",
+        )
+        env = {**os.environ, **install.env}
+
+        def run(command: str) -> dict:
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "supervisor.security.guard_cli",
+                    "--policy-env",
+                    "SOP_ACCESS_POLICY",
+                    "--check-command",
+                ],
+                input=json.dumps({"command": command, "cwd": str(ws)}),
+                capture_output=True,
+                text=True,
+                env=env,
+                check=False,
+            )
+            assert proc.returncode == 0, proc.stderr
+            return json.loads(proc.stdout)
+
+        assert run(f'cp "{ref}/a.txt" "{ws}/b.txt"')["allow"] is True
+        assert run(f'cp "{ws}/a.txt" "{ref}/b.txt"')["allow"] is False
+        assert run('python -c "print(1)"')["allow"] is False
+
     def test_missing_policy_fails_closed(self, tmp_path):
         proc = subprocess.run(
             [

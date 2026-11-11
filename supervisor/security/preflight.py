@@ -115,6 +115,14 @@ def run_policy_drill(workspace: Path, policy: AccessPolicy) -> DrillReport:
         "absolute outside denied",
         bool(policy.scan_command(f'cat "{outside}"')),
     )
+    check(
+        "inline interpreter denied",
+        bool(policy.scan_command('python -c "print(1)"')),
+    )
+    check(
+        "dynamic command denied",
+        bool(policy.scan_command("echo $(whoami)")),
+    )
     return report
 
 

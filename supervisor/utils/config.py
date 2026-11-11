@@ -48,9 +48,9 @@ class SupervisorConfig:
     # tool_call extension, codex PreToolUse hook).
     access_policy_enabled: bool = True
     access_whitelist: tuple[str, ...] = ()
-    # Deny inline interpreter code (`python -c`, `node -e`, `bash -c`) that a
-    # static scanner cannot verify. Off by default: literal paths inside such
-    # commands are still scanned.
+    # Strict mode also denies every interpreter invocation (`python script.py`,
+    # `node app.js`), not just inline code. Inline code (`python -c`, `node -e`)
+    # and other dynamic constructs are always denied by the shell analyzer.
     access_policy_strict: bool = False
     read_external_feedback: bool = False
     max_tokens: int = 128_000
