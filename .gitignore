@@ -253,3 +253,8 @@ smoke_*.ps1
 headless_launch_*.py
 tools_payload_probe.py
 headless_launch_sop101*.py
+
+# Agent skills shipped with this repo (re-include: the blanket `tests` /
+# `test_*.py` rules above would otherwise drop the skill's own test suite)
+!.agents/skills/*/tests/
+!.agents/skills/*/tests/**

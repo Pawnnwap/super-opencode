@@ -70,6 +70,7 @@ def run_prompt(
             context_window=getattr(runner, "codex_context_window", 0) or 0,
             reasoning_effort=getattr(runner, "codex_reasoning_effort", "") or "",
             extra_config_flags=getattr(runner, "codex_extra_config_flags", None),
+            extra_flags=getattr(runner, "access_guard_flags", None),
         )
         # Per-subprocess env: feed the external API key via env var (codex
         # reads it through the provider's env_key) instead of the command

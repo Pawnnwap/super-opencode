@@ -34,6 +34,60 @@ Key capabilities:
 
 ---
 
+## Hard path policy (whitelist, read-only references)
+
+Every supervised run now enforces a deterministic filesystem boundary that
+overrides each backend's own permission defaults:
+
+| Scope | Read | Write |
+|-------|------|-------|
+| Project cwd (the run workspace) | allowed | allowed |
+| Whitelisted directories | allowed | **denied** (read-only, always) |
+| Everything else | denied | denied |
+
+Configure it on the Protocol Wizard under **Path Access Whitelist**:
+
+- add absolute reference directories (fixtures, corpora, sibling repos),
+- optionally deny inline interpreter code (`python -c`, `node -e`, `bash -c`),
+- use **AI suggest whitelist** to have the supervisor model propose the
+  directories a protocol refers to. Suggestions are re-validated locally:
+  drive roots, OS/program directories, the user-profile root, UNC shares,
+  missing paths and anything inside the workspace are rejected.
+
+Enforcement is native per engine, not a prompt request:
+
+- **opencode** - V1 `permission` path patterns (`external_directory` deny,
+  per-entry read allow / edit deny) plus a project plugin that also blocks
+  shell writes the permission scanner cannot classify. The V2 `permissions`
+  array is not written: opencode 1.x rejects the file when that key is present.
+- **pi** - a `tool_call` extension loaded with an explicit `-e`, returning
+  `{ block: true }` before the tool runs.
+- **codex** - a `PreToolUse` hook in `$CODEX_HOME/hooks.json` that runs the
+  supervisor's policy gate.
+
+The policy snapshot lives outside the workspace (under
+`~/.opencode_supervisor/access/`) and is handed to the backend through
+`SOP_ACCESS_POLICY`, so the agent cannot widen its own policy by editing a
+file in the cwd. Blocked calls are written to a JSONL audit log and surfaced
+as `ACCESS POLICY BLOCKED ...` warnings in the job log.
+
+Before the first turn the supervisor runs a **preflight drill**: the policy
+engine is exercised against cwd / whitelist / outside paths and `..` command
+escapes, and for codex the installed hook is actually invoked with a synthetic
+event. A gate that does not deny aborts the run instead of degrading silently.
+The same drill is available on demand from **Run policy drill** in the UI.
+
+This is a deterministic **rule gate**, not a kernel sandbox: it constrains the
+tools and commands the agents use, and deliberately does not claim to survive
+arbitrary native code. For a container-grade boundary (no network, read-only
+root, disposable filesystem) run the agent inside Docker/WSL or a VM as the
+`cage` project does, and keep this policy as the inner layer.
+
+Set `access_policy_enabled: false` in `~/.opencode_supervisor_settings.json`
+only when you deliberately want the previous unrestricted behaviour.
+
+---
+
 ## Prerequisites
 
 - Python 3.11 or higher

@@ -123,6 +123,7 @@ def build_cmd(
     context_window: int = 0,
     reasoning_effort: str = "",
     extra_config_flags: list[str] | None = None,
+    extra_flags: list[str] | None = None,
 ) -> list[str]:
     """Build a ``codex exec`` CLI command list.
 
@@ -176,6 +177,10 @@ def build_cmd(
     # token; after `resume` only the session selector and the prompt go.
     cmd += _CODEX_AUTONOMY_FLAGS
     cmd += _CODEX_CONFIG_FLAGS
+    # Access-guard flags (currently --dangerously-bypass-hook-trust when the
+    # supervisor's PreToolUse policy hook is installed).
+    if extra_flags:
+        cmd += list(extra_flags)
     # Optional per-caller config overrides (e.g. the connectivity probe
     # disables the plugins feature — see connectivity.py).
     if extra_config_flags:

@@ -67,6 +67,7 @@ def build_cmd(
     model: str | None = None,
     use_shell: bool = False,
     variant: str = "",
+    extra_flags: list[str] | None = None,
 ) -> list[str]:
     """Build a ``pi -p`` CLI command list.
 
@@ -125,6 +126,10 @@ def build_cmd(
 
     cmd += thinking_flags(variant)
     cmd += _PI_HYGIENE_FLAGS
+    # Explicit -e paths survive --no-extensions; this is where the supervisor's
+    # access guard is loaded without enabling project extension discovery.
+    if extra_flags:
+        cmd += list(extra_flags)
 
     # No trailing message argument: pi reads the prompt from stdin (see the
     # docstring for why argv prompts are unsafe on Windows — 8191 chars via

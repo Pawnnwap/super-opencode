@@ -41,6 +41,17 @@ class SupervisorConfig:
     # Error events are always written in full either way.
     log_detail: str = "headline"
     protected_files: tuple[str, ...] = ()
+    # Hard filesystem policy. The run workspace (cwd) is always read/write;
+    # every whitelist entry is read-only; everything else is denied for both
+    # reading and writing, regardless of the backend's own permission rules.
+    # Enforced natively per engine (opencode permissions + plugin, pi
+    # tool_call extension, codex PreToolUse hook).
+    access_policy_enabled: bool = True
+    access_whitelist: tuple[str, ...] = ()
+    # Deny inline interpreter code (`python -c`, `node -e`, `bash -c`) that a
+    # static scanner cannot verify. Off by default: literal paths inside such
+    # commands are still scanned.
+    access_policy_strict: bool = False
     read_external_feedback: bool = False
     max_tokens: int = 128_000
     max_protected_files_for_suggestions: int = 5
@@ -166,5 +177,6 @@ class SupervisorConfig:
         data["protocol_path"] = str(self.protocol_path)
         data["workspace"] = str(self.workspace)
         data["protected_files"] = list(self.protected_files)
+        data["access_whitelist"] = list(self.access_whitelist)
         data["harvest_job_ids"] = list(self.harvest_job_ids)
         return data

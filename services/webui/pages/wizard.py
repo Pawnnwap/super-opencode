@@ -134,6 +134,7 @@ def _on_workspace_change() -> None:
     # Workspace-dependent sections below capture the workspace at render
     # time; refresh them so they never serve (or write to) the old folder.
     _protected_section.refresh()
+    _access_section.refresh()
     _ignore_section.refresh()
     _skills_listing.refresh()
     _protocol_file_row.refresh()
@@ -513,6 +514,224 @@ def _remove_protected(path: str, options_holder: dict, container) -> None:
     app_state["protected_files"] = merged
     _save()
     _refresh_chips(merged, options_holder, container)
+
+
+# ── Access whitelist ──────────────────────────────────────────────────────────
+
+
+@ui.refreshable
+def _access_section() -> None:
+    from supervisor.security.access_policy import validate_whitelist_entry
+
+    with _section("Path Access Whitelist (hard rule)"):
+        ui.label(
+            "The project cwd is read/write. Whitelisted directories are "
+            "READ-ONLY. Everything else is denied for every backend "
+            "(opencode, codex, pi) - regardless of the agent's own rules.",
+        ).classes("text-xs text-[#8b949e]")
+        _bind_switch(
+            "access_policy_enabled", "Enforce the hard path policy",
+        ).props("dense")
+        _bind_switch(
+            "access_policy_strict",
+            "Also deny inline interpreter code (python -c / node -e / bash -c)",
+        ).props("dense")
+
+        workspace = _workspace()
+        if not workspace:
+            ui.label("Set a valid workspace path first.").classes("text-[#e3b341]")
+            return
+
+        status = ui.label("").classes("text-xs text-[#8b949e]")
+
+        with ui.row().classes("w-full items-center gap-2"):
+            path_input = ui.input(
+                "Add a read-only reference directory (absolute path)",
+            ).classes("grow mono")
+            add_button = ui.button("Add").props("dense")
+
+        def _add_path(value: str | None = None) -> None:
+            candidate = (value if value is not None else path_input.value or "").strip()
+            if not candidate:
+                status.set_text("Enter an absolute directory path.")
+                return
+            resolved, error = validate_whitelist_entry(candidate, workspace)
+            if resolved is None:
+                status.set_text(f"Rejected: {error}")
+                return
+            current = _list_str("access_whitelist")
+            key = str(resolved).lower()
+            if key not in {item.lower() for item in current}:
+                current.append(str(resolved))
+                app_state["access_whitelist"] = current
+                _save()
+            path_input.value = ""
+            status.set_text(f"Added read-only: {resolved}")
+            chips.refresh()
+
+        add_button.on_click(lambda: _add_path())
+        path_input.on("keydown.enter", lambda _e: _add_path())
+
+        @ui.refreshable
+        def chips() -> None:
+            current = _list_str("access_whitelist")
+            if not current:
+                ui.label("No whitelisted directories.").classes("text-xs text-[#8b949e]")
+                return
+            for entry in current:
+                with ui.row().classes("items-center gap-2"):
+                    ui.label(f"👁 RO  {entry}").classes("text-xs mono")
+                    ui.button(
+                        icon="close",
+                        on_click=lambda e=entry: _remove_whitelist(e),
+                    ).props("flat dense")
+
+        chips()
+
+        async def _suggest() -> None:
+            status.set_text("Asking the supervisor model for reference directories…")
+            async with busy_buttons(suggest_button):
+                app_state.save()
+                app_state.apply_api_config()
+                protocol_text = _protocol_text(workspace)
+                try:
+                    result = await nicegui_run.io_bound(
+                        _suggest_whitelist_paths,
+                        workspace,
+                        protocol_text,
+                        _list_str("access_whitelist"),
+                    )
+                except Exception as exc:  # noqa: BLE001 - surfaced in the UI
+                    status.set_text(f"Suggestion failed: {exc}")
+                    return
+            if not result.accepted:
+                reasons = "; ".join(
+                    f"{path}: {reason}" for path, reason in result.rejected[:3]
+                )
+                status.set_text(
+                    "No acceptable directories suggested."
+                    + (f" Rejected: {reasons}" if reasons else ""),
+                )
+                return
+            _show_suggestions(result, status)
+
+        suggest_button = ui.button("AI suggest whitelist", on_click=_suggest).props(
+            "dense outline color=primary",
+        )
+
+        async def _drill() -> None:
+            from supervisor.security.access_policy import AccessPolicy
+            from supervisor.security.preflight import run_policy_drill
+
+            policy = AccessPolicy(
+                workspace=workspace,
+                whitelist=tuple(Path(item) for item in _list_str("access_whitelist")),
+                enabled=bool(app_state.get("access_policy_enabled", True)),
+                strict_dynamic=bool(app_state.get("access_policy_strict", False)),
+            )
+            report = await nicegui_run.io_bound(run_policy_drill, workspace, policy)
+            body = "\n".join(check.line() for check in report.checks)
+            with ui.dialog() as dialog, ui.card().classes("w-full max-w-2xl"):
+                ui.label(
+                    ("Drill passed — " if report.ok else "Drill FAILED — ")
+                    + report.summary(),
+                ).classes("text-base font-bold")
+                ui.label(body).classes("text-xs mono whitespace-pre-wrap")
+                ui.button("Close", on_click=dialog.close).props("dense")
+            dialog.open()
+
+        ui.button("Run policy drill", on_click=_drill).props(
+            "dense outline",
+        )
+
+
+def _list_str(key: str) -> list[str]:
+    value = app_state.get(key) or []
+    if isinstance(value, str):
+        return [line.strip() for line in value.splitlines() if line.strip()]
+    return [str(item) for item in value]
+
+
+def _remove_whitelist(entry: str) -> None:
+    app_state["access_whitelist"] = [
+        item for item in _list_str("access_whitelist") if item != entry
+    ]
+    _save()
+    _access_section.refresh()
+
+
+def _protocol_text(workspace: Path) -> str:
+    text = str(app_state.get("protocol_md") or "").strip()
+    if text:
+        return text
+    for name in ("protocol.md", "PROTOCOL.md"):
+        candidate = workspace / name
+        try:
+            if candidate.is_file():
+                return candidate.read_text(encoding="utf-8", errors="ignore")[:6000]
+        except OSError:
+            continue
+    return ""
+
+
+def _suggest_whitelist_paths(workspace: Path, protocol_text: str, existing: list[str]):
+    from supervisor.security.whitelist_advisor import suggest_with_supervisor_llm
+
+    return suggest_with_supervisor_llm(
+        workspace,
+        protocol_text,
+        api_key=str(app_state.get("openai_key") or ""),
+        base_url=str(app_state.get("base_url") or ""),
+        model=str(app_state.get("supervisor_model") or "swift-1.5"),
+        existing=existing,
+    )
+
+
+def _show_suggestions(result, status) -> None:
+    with ui.dialog() as dialog, ui.card().classes("w-full max-w-3xl"):
+        ui.label("Suggested read-only directories").classes("text-lg font-bold")
+        ui.label(
+            "Every entry was validated against the hard policy "
+            "(existing absolute directories, outside the workspace, not a "
+            "system/drive root). Uncheck anything the task does not need.",
+        ).classes("text-xs text-[#8b949e]")
+        boxes = []
+        for suggestion in result.accepted:
+            with ui.row().classes("w-full items-start gap-2"):
+                box = ui.checkbox(value=True).props("dense")
+                with ui.column().classes("gap-0"):
+                    ui.label(str(suggestion.path)).classes("text-xs mono")
+                    ui.label(
+                        suggestion.reason
+                        + f"  (confidence {suggestion.confidence:.0%})",
+                    ).classes("text-xs text-[#8b949e]")
+                boxes.append((box, suggestion))
+        if result.rejected:
+            ui.label(
+                "Rejected by validation: "
+                + "; ".join(f"{path} ({reason})" for path, reason in result.rejected[:4]),
+            ).classes("text-xs text-[#e3b341]")
+
+        def _accept() -> None:
+            current = _list_str("access_whitelist")
+            added = 0
+            for box, suggestion in boxes:
+                if not box.value:
+                    continue
+                text = str(suggestion.path)
+                if text.lower() not in {item.lower() for item in current}:
+                    current.append(text)
+                    added += 1
+            app_state["access_whitelist"] = current
+            _save()
+            status.set_text(f"Added {added} read-only director{'y' if added == 1 else 'ies'}.")
+            dialog.close()
+            _access_section.refresh()
+
+        with ui.row().classes("w-full justify-end gap-2"):
+            ui.button("Cancel", on_click=dialog.close).props("flat")
+            ui.button("Add selected", on_click=_accept).props("color=primary")
+    dialog.open()
 
 
 # ── Ignore editor ─────────────────────────────────────────────────────────────
@@ -902,5 +1121,6 @@ def render() -> None:
     # Directly after the LLM configuration: the tests prove that config.
     _connectivity_section()
     _protected_section()
+    _access_section()
     _ignore_section()
     _protocol_section()

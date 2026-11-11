@@ -27,8 +27,17 @@ _PROTECTED_FILES = {".opencoderc", ".opencodeignore"}
 
 
 class WorkspaceGuard:
-    def __init__(self, workspace: Path, protected_files: Iterable[str] = ()):
+    def __init__(
+        self,
+        workspace: Path,
+        protected_files: Iterable[str] = (),
+        access_policy=None,
+    ):
         self.workspace = workspace.resolve()
+        # Hard path policy (supervisor.security.access_policy.AccessPolicy).
+        # When present its HARD RULE block replaces the soft "stay inside"
+        # reminder, because the native per-engine gate enforces it.
+        self.access_policy = access_policy
         self._protected_files: set[str] = set()
         self._ignore_matcher: IgnoreMatcher | None = None
         for pf in protected_files:
@@ -54,7 +63,10 @@ class WorkspaceGuard:
             except ValueError:
                 violations.append(candidate)
 
-        preamble = (
+        policy_block = (
+            self.access_policy.prompt_preamble() if self.access_policy is not None else ""
+        )
+        preamble = policy_block or (
             f"[WORKSPACE RESTRICTION] Only operate inside: {self.workspace}\n\n"
         )
         return preamble + message, violations
@@ -184,7 +196,7 @@ class WorkspaceGuard:
         touching the user's global opencode permissions. Existing project
         config is respected and left unchanged.
         """
-        config_path = Path(workspace) / ".opencode" / "config.json"
+        config_path = Path(workspace) / ".opencode" / "opencode.json"
         if config_path.exists():
             return None
         config_path.parent.mkdir(parents=True, exist_ok=True)

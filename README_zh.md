@@ -32,6 +32,49 @@
 
 ---
 
+## 硬性路径策略（白名单 / 只读引用目录）
+
+每次受监督运行都会执行一条确定性的文件系统边界，覆盖各后端自身的权限默认值：
+
+| 范围 | 读 | 写 |
+|------|----|----|
+| 项目 cwd（运行工作区） | 允许 | 允许 |
+| 白名单目录 | 允许 | **禁止**（始终只读） |
+| 其他所有路径 | 禁止 | 禁止 |
+
+在 Protocol Wizard 的 **Path Access Whitelist** 面板配置：
+
+- 添加绝对路径的引用目录（测试夹具、语料、相邻仓库）；
+- 可选禁止内联解释器代码（`python -c`、`node -e`、`bash -c`）；
+- **AI suggest whitelist** 会根据协议内容推荐目录。推荐结果会在本地重新校验：
+  盘符根目录、系统/程序目录、用户目录根、UNC 共享、不存在的路径以及工作区内部路径一律拒绝。
+
+强制由各后端原生执行，而不是提示词请求：
+
+- **opencode**：V1 `permission` 路径规则（`external_directory` 拒绝，逐条允许读、拒绝写），
+  外加项目插件拦截权限扫描器无法归类的 shell 写入；不写 V2 `permissions` 键，
+  因为 opencode 1.x 会因此判定整个配置文件无效；
+- **pi**：通过显式 `-e` 加载 `tool_call` 扩展，在工具执行前返回 `{ block: true }`；
+- **codex**：在 `$CODEX_HOME/hooks.json` 注册 `PreToolUse` 钩子，调用 supervisor 的策略闸门。
+
+策略快照存放在工作区之外（`~/.opencode_supervisor/access/`），通过
+`SOP_ACCESS_POLICY` 传给后端，agent 无法通过修改 cwd 内文件放宽自己的策略。
+被拦截的调用会写入 JSONL 审计日志，并以 `ACCESS POLICY BLOCKED ...` 告警出现在任务日志中。
+
+首轮对话前会执行一次**运行前演练**：用 cwd、白名单、外部路径与 `..` 命令逃逸
+实际验证策略引擎；对 codex 还会真实调用已安装的钩子并检查其返回 deny。
+闸门若不能拒绝，直接中止运行而不是静默降级。UI 中的 **Run policy drill**
+可随时手动执行同一套演练。
+
+这是一层确定性的**规则闸门**，不是内核沙箱：它约束 agent 使用的工具与命令，
+不宣称能抵御任意原生代码。若需要容器级边界（无网络、只读根、可丢弃文件系统），
+可像 `cage` 项目那样把 agent 放进 Docker/WSL 或虚拟机，本策略作为内层防线。
+
+仅在明确需要恢复旧的无限制行为时，才在 `~/.opencode_supervisor_settings.json`
+中设置 `access_policy_enabled: false`。
+
+---
+
 ## 前置要求
 
 - Python 3.11 或更高版本

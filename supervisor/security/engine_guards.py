@@ -1,0 +1,1026 @@
+"""Translate the access policy into each backend's native enforcement.
+
+Every backend gets the *same* rule set, expressed in the mechanism that
+backend actually honours before a tool runs:
+
+===========  ==============================================================
+opencode     V2 ``permissions`` rules (external_directory deny + read-only
+             whitelist) **and** a project plugin that blocks shell writes
+             the permission scanner cannot classify.
+pi           a project extension loaded with ``-e``; ``tool_call`` returns
+             ``{block: true}`` for policy violations.
+codex        a ``PreToolUse`` hook in ``$CODEX_HOME/hooks.json`` that runs
+             :mod:`supervisor.security.guard_cli`; the run also passes
+             ``--dangerously-bypass-hook-trust`` so the hook is active in
+             non-interactive execution.
+===========  ==============================================================
+
+The artifacts are derived state: re-running an install rewrites them, and
+disabling the policy removes exactly the pieces this module owns. The user's
+own config keys, hooks and extensions are preserved.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import logging
+import os
+import shutil
+import sys
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+from supervisor.security.access_policy import AccessPolicy
+
+logger = logging.getLogger(__name__)
+
+# Policy artifacts live OUTSIDE the agent's writable cwd: a hard rule the
+# agent can edit (or delete) is not a hard rule. The store is keyed by the
+# workspace and by the policy content, so parallel replicas of the same
+# workspace with different whitelists never share a file.
+POLICY_STORE_DIR = Path.home() / ".opencode_supervisor" / "access"
+POLICY_FILE_PREFIX = "policy-"
+VIOLATION_LOG_PREFIX = "violations-"
+GUARD_MARKER = "supervisor-access-guard"
+
+OPENCODE_CONFIG_REL = Path(".opencode") / "opencode.json"
+OPENCODE_PLUGIN_REL = Path(".opencode") / "plugin" / "supervisor_access_guard.js"
+PI_EXTENSION_REL = Path(".pi") / "extensions" / "supervisor-access-guard.ts"
+
+
+@dataclass
+class GuardInstallResult:
+    """What an install produced and which CLI flags the runner must add."""
+
+    engine: str
+    enabled: bool
+    artifacts: list[Path] = field(default_factory=list)
+    flags: list[str] = field(default_factory=list)
+    env: dict[str, str] = field(default_factory=dict)
+    warnings: list[str] = field(default_factory=list)
+    removed: list[Path] = field(default_factory=list)
+    # True when the engine's native gate could not be installed at all; the
+    # caller must refuse to start rather than run without the policy.
+    failed: bool = False
+    # True when the engine's native gate could not be installed at all; the
+    # caller must refuse to start rather than run without the policy.
+    failed: bool = False
+
+    @property
+    def policy_path(self) -> Path | None:
+        for artifact in self.artifacts:
+            if artifact.name.startswith(POLICY_FILE_PREFIX):
+                return artifact
+        return None
+
+
+def access_store_dir(workspace: Path) -> Path:
+    key = hashlib.sha1(
+        str(Path(workspace).resolve()).lower().encode("utf-8"),
+    ).hexdigest()[:16]
+    return POLICY_STORE_DIR / key
+
+
+def _policy_digest(policy: AccessPolicy) -> str:
+    payload = json.dumps(policy.snapshot(), sort_keys=True)
+    return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:10]
+
+
+def policy_path_for(workspace: Path, policy: AccessPolicy | None = None) -> Path:
+    """External policy snapshot path (never inside the agent's workspace)."""
+    directory = access_store_dir(workspace)
+    if policy is None:
+        return directory / f"{POLICY_FILE_PREFIX}current.json"
+    return directory / f"{POLICY_FILE_PREFIX}{_policy_digest(policy)}.json"
+
+
+def violation_log_for(workspace: Path, policy: AccessPolicy | None = None) -> Path:
+    directory = access_store_dir(workspace)
+    if policy is None:
+        return directory / f"{VIOLATION_LOG_PREFIX}current.jsonl"
+    return directory / f"{VIOLATION_LOG_PREFIX}{_policy_digest(policy)}.jsonl"
+
+
+def install_access_guard(
+    workspace: Path,
+    policy: AccessPolicy,
+    engine: str,
+    *,
+    codex_home: Path | None = None,
+) -> GuardInstallResult:
+    """Install the policy artifacts for *engine* (or remove them if disabled)."""
+    workspace = Path(workspace)
+    engine = (engine or "opencode").strip().lower()
+    result = GuardInstallResult(engine=engine, enabled=policy.enabled)
+
+    if not policy.enabled:
+        result.removed = remove_access_guard(workspace, engine, codex_home=codex_home)
+        return result
+
+    snapshot_path = _write_policy_snapshot(workspace, policy)
+    result.artifacts.append(snapshot_path)
+    log_path = violation_log_for(workspace, policy)
+
+    if engine == "opencode":
+        _install_opencode(workspace, policy, result)
+    elif engine == "pi":
+        _install_pi(workspace, policy, result)
+    elif engine == "codex":
+        _install_codex(workspace, policy, result, codex_home=codex_home)
+    else:
+        result.warnings.append(f"unknown engine {engine!r}: no native gate installed")
+
+    # All engines read the snapshot through this env var; it also lets the
+    # codex hook stay inert outside supervised runs.
+    result.env["SOP_ACCESS_POLICY"] = str(snapshot_path)
+    result.env["SOP_ACCESS_LOG"] = str(log_path)
+    # The codex hook runs in a fresh interpreter: make the supervisor package
+    # importable even when the app was not installed editable.
+    package_root = Path(__file__).resolve().parents[2]
+    inherited = os.environ.get("PYTHONPATH", "")
+    result.env["PYTHONPATH"] = (
+        str(package_root) + (os.pathsep + inherited if inherited else "")
+    )
+    return result
+
+
+# --------------------------------------------------------------------------- #
+# Shared snapshot
+# --------------------------------------------------------------------------- #
+
+
+def _write_policy_snapshot(workspace: Path, policy: AccessPolicy) -> Path:
+    path = policy_path_for(workspace, policy)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = policy.snapshot()
+    payload["generatedBy"] = "supervisor.security.engine_guards"
+    payload["workspaceDisplay"] = str(policy.workspace)
+    payload["whitelistDisplay"] = [str(item) for item in policy.whitelist]
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    return path
+
+
+# --------------------------------------------------------------------------- #
+# opencode
+# --------------------------------------------------------------------------- #
+
+
+def _install_opencode(
+    workspace: Path,
+    policy: AccessPolicy,
+    result: GuardInstallResult,
+) -> None:
+    config_path = workspace / OPENCODE_CONFIG_REL
+    try:
+        _merge_opencode_config(config_path, policy)
+        result.artifacts.append(config_path)
+    except (OSError, ValueError) as exc:
+        result.warnings.append(f"opencode permissions not installed: {exc}")
+
+    plugin_path = workspace / OPENCODE_PLUGIN_REL
+    try:
+        plugin_path.parent.mkdir(parents=True, exist_ok=True)
+        plugin_path.write_text(_OPENCODE_PLUGIN_JS, encoding="utf-8")
+        result.artifacts.append(plugin_path)
+    except OSError as exc:
+        result.warnings.append(f"opencode plugin not installed: {exc}")
+
+
+def opencode_permission_config(policy: AccessPolicy) -> dict[str, dict[str, str]]:
+    """V1 ``permission`` pattern maps for the installed opencode 1.x CLI.
+
+    V1 accepts a per-action map of whole-path globs with ``allow``/``deny``:
+
+    * ``external_directory`` denies every path outside the project, then
+      re-allows each whitelist directory - this is the read boundary;
+    * ``edit`` denies the whitelist directories, which keeps them read-only
+      even when the same path is readable;
+    * ``read`` explicitly allows the whitelist (harmless given the default
+      allow, but it documents intent and survives stricter user defaults).
+
+    The V2 ``permissions`` array is deliberately NOT written: opencode 1.x
+    treats that key as a configuration error ("V2 permissions are not
+    supported by OpenCode V1"), which would invalidate the whole file.
+    """
+    external: dict[str, str] = {"*": "deny"}
+    edit: dict[str, str] = {}
+    read: dict[str, str] = {}
+    for entry in policy.whitelist:
+        base = _oc_path(entry)
+        external[f"{base}/*"] = "allow"
+        read[f"{base}/*"] = "allow"
+        edit[f"{base}/*"] = "deny"
+        edit[base] = "deny"
+    permission: dict[str, dict[str, str]] = {"external_directory": external}
+    if edit:
+        permission["edit"] = edit
+    if read:
+        permission["read"] = read
+    return permission
+
+
+def _oc_path(path: Path) -> str:
+    return str(path).replace("\\", "/")
+
+
+def _merge_opencode_config(config_path: Path, policy: AccessPolicy) -> None:
+    config: dict[str, Any] = {}
+    if config_path.exists():
+        raw = config_path.read_text(encoding="utf-8").strip()
+        if raw:
+            data = json.loads(raw)
+            if not isinstance(data, dict):
+                raise ValueError(f"{config_path.name} is not a JSON object")
+            config = data
+
+    # A V2 rules array left by an earlier build makes opencode 1.x reject the
+    # whole file; strip only entries this module generated.
+    previous = _read_generated_rules(config_path)
+    existing_v2 = config.get("permissions")
+    if isinstance(existing_v2, list):
+        kept_v2 = [
+            rule for rule in existing_v2 if rule not in (previous.get("v2") or [])
+        ]
+        if kept_v2:
+            config["permissions"] = kept_v2
+        else:
+            config.pop("permissions", None)
+
+    # V1 permission: keep whatever the operator chose for unrelated tools,
+    # restore the tool grants a non-interactive run needs, then layer the path
+    # patterns this module owns.
+    permission = config.get("permission")
+    if not isinstance(permission, dict):
+        permission = {}
+    for tool in ("read", "edit", "write", "bash"):
+        permission.setdefault(tool, "allow")
+    _strip_v1_patterns(permission, previous.get("v1") or {})
+    generated = opencode_permission_config(policy)
+    for action, patterns in generated.items():
+        current = permission.get(action)
+        if not isinstance(current, dict):
+            current = {}
+        current.update(patterns)
+        permission[action] = current
+    config["permission"] = permission
+    config.setdefault("autoapprove", True)
+
+    _write_json_with_backup(config_path, config)
+    _remember_generated_rules(
+        config_path,
+        {
+            "v1": {
+                action: sorted(patterns)
+                for action, patterns in generated.items()
+            },
+        },
+    )
+
+
+def _rules_marker_path(config_path: Path) -> Path:
+    return config_path.parent / ".supervisor_generated_permissions.json"
+
+
+def _read_generated_rules(config_path: Path) -> dict[str, Any]:
+    marker = _rules_marker_path(config_path)
+    try:
+        data = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _strip_v1_patterns(permission: dict[str, Any], previous: dict[str, Any]) -> None:
+    for action, patterns in previous.items():
+        current = permission.get(action)
+        if not isinstance(current, dict):
+            continue
+        for pattern in patterns or []:
+            value = current.get(pattern)
+            if value in ("allow", "deny"):
+                current.pop(pattern, None)
+
+
+def _remember_generated_rules(config_path: Path, rules: dict[str, Any]) -> None:
+    marker = _rules_marker_path(config_path)
+    try:
+        marker.write_text(json.dumps(rules, indent=2) + "\n", encoding="utf-8")
+    except OSError:
+        logger.debug("could not write opencode rules marker", exc_info=True)
+
+
+def _write_json_with_backup(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        backup = path.with_suffix(path.suffix + ".bak-access")
+        if not backup.exists():
+            shutil.copyfile(path, backup)
+    text = json.dumps(payload, indent=2, ensure_ascii=False) + "\n"
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
+
+
+# --------------------------------------------------------------------------- #
+# pi
+# --------------------------------------------------------------------------- #
+
+
+def _install_pi(workspace: Path, policy: AccessPolicy, result: GuardInstallResult) -> None:
+    extension = workspace / PI_EXTENSION_REL
+    try:
+        extension.parent.mkdir(parents=True, exist_ok=True)
+        extension.write_text(_PI_EXTENSION_TS, encoding="utf-8")
+        result.artifacts.append(extension)
+    except OSError as exc:
+        result.warnings.append(f"pi extension not installed: {exc}")
+        result.failed = True
+        return
+    result.flags.extend(["-e", str(extension)])
+    # pi's project-local extension discovery needs project trust; an explicit
+    # -e path does not. --no-extensions still permits explicit paths, so the
+    # existing hygiene flags stay untouched.
+
+
+# --------------------------------------------------------------------------- #
+# codex
+# --------------------------------------------------------------------------- #
+
+
+def _install_codex(
+    workspace: Path,
+    policy: AccessPolicy,
+    result: GuardInstallResult,
+    *,
+    codex_home: Path | None = None,
+) -> None:
+    home = Path(codex_home) if codex_home else default_codex_home()
+    hooks_path = home / "hooks.json"
+    try:
+        _merge_codex_hooks(hooks_path, workspace)
+        result.artifacts.append(hooks_path)
+    except (OSError, ValueError) as exc:
+        result.warnings.append(f"codex hook not installed: {exc}")
+        result.failed = True
+        return
+
+    # Non-interactive `codex exec` skips hooks that were never trusted. The
+    # supervisor installs this hook itself and vets it by construction, so the
+    # per-invocation bypass is the correct trust decision here.
+    result.flags.append("--dangerously-bypass-hook-trust")
+
+
+def default_codex_home() -> Path:
+    return Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
+
+
+def _codex_hook_command() -> str:
+    args = "-m supervisor.security.guard_cli --policy-env SOP_ACCESS_POLICY --log-env SOP_ACCESS_LOG"
+    exe = sys.executable
+    if os.name != "nt":
+        return f'"{exe}" {args}'
+
+    # Windows hook commands are shell strings. An unquoted executable path is
+    # executed by both cmd.exe and the default CLI shell, while a quoted path
+    # needs a leading call operator that cmd.exe rejects. Prefer the short
+    # (8.3) form when the interpreter path contains spaces, and keep the call
+    # operator only as a last resort.
+    if " " not in exe:
+        return f"{exe} {args}"
+    short = _windows_short_path(exe)
+    if short and " " not in short:
+        return f"{short} {args}"
+    return f'& "{exe}" {args}'
+
+
+def _windows_short_path(path: str) -> str:
+    """Return the 8.3 form of *path* (empty when the volume has none)."""
+    try:
+        import ctypes
+
+        get_short = ctypes.windll.kernel32.GetShortPathNameW
+        needed = get_short(path, None, 0)
+        if not needed:
+            return ""
+        buffer = ctypes.create_unicode_buffer(needed)
+        if not get_short(path, buffer, needed):
+            return ""
+        return buffer.value
+    except (AttributeError, OSError):
+        return ""
+
+
+def _merge_codex_hooks(hooks_path: Path, workspace: Path) -> None:
+    data: dict[str, Any] = {}
+    if hooks_path.exists():
+        raw = hooks_path.read_text(encoding="utf-8").strip()
+        if raw:
+            parsed = json.loads(raw)
+            if not isinstance(parsed, dict):
+                raise ValueError("hooks.json is not a JSON object")
+            data = parsed
+
+    hooks = data.get("hooks")
+    if not isinstance(hooks, dict):
+        hooks = {}
+
+    entries = hooks.get("PreToolUse")
+    if not isinstance(entries, list):
+        entries = []
+
+    def is_ours(entry: Any) -> bool:
+        if not isinstance(entry, dict):
+            return False
+        for handler in entry.get("hooks") or []:
+            if isinstance(handler, dict) and GUARD_MARKER in str(handler.get("command", "")):
+                return True
+            if isinstance(handler, dict) and "supervisor.security.guard_cli" in str(handler.get("command", "")):
+                return True
+        return False
+
+    kept = [entry for entry in entries if not is_ours(entry)]
+    kept.append(
+        {
+            "hooks": [
+                {
+                    "type": "command",
+                    "command": _codex_hook_command(),
+                    "timeout": 20,
+                    "statusMessage": GUARD_MARKER,
+                },
+            ],
+        },
+    )
+    hooks["PreToolUse"] = kept
+    data["hooks"] = hooks
+
+    hooks_path.parent.mkdir(parents=True, exist_ok=True)
+    if hooks_path.exists():
+        backup = hooks_path.with_suffix(".json.bak-supervisor")
+        if not backup.exists():
+            shutil.copyfile(hooks_path, backup)
+    tmp = hooks_path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    os.replace(tmp, hooks_path)
+
+
+# --------------------------------------------------------------------------- #
+# Removal
+# --------------------------------------------------------------------------- #
+
+
+def remove_access_guard(
+    workspace: Path,
+    engine: str,
+    *,
+    codex_home: Path | None = None,
+) -> list[Path]:
+    """Remove the artifacts this module owns; leave everything else alone."""
+    workspace = Path(workspace)
+    engine = (engine or "").strip().lower()
+    removed: list[Path] = []
+
+    if engine == "opencode":
+        config_path = workspace / OPENCODE_CONFIG_REL
+        try:
+            if config_path.exists():
+                _strip_opencode_rules(config_path)
+        except (OSError, ValueError):
+            logger.debug("could not strip opencode permissions", exc_info=True)
+
+    for snapshot in access_store_dir(workspace).glob(f"{POLICY_FILE_PREFIX}*.json"):
+        try:
+            snapshot.unlink()
+            removed.append(snapshot)
+        except OSError:
+            logger.debug("could not remove policy snapshot %s", snapshot, exc_info=True)
+    marker = (workspace / OPENCODE_CONFIG_REL).parent / ".supervisor_generated_permissions.json"
+    if marker.exists():
+        marker.unlink()
+        removed.append(marker)
+
+    plugin = workspace / OPENCODE_PLUGIN_REL
+    if engine == "opencode" and _is_our_text(plugin, "supervisor_access_guard"):
+        plugin.unlink()
+        removed.append(plugin)
+
+    extension = workspace / PI_EXTENSION_REL
+    if engine == "pi" and _is_our_text(extension, GUARD_MARKER):
+        extension.unlink()
+        removed.append(extension)
+
+    if engine == "codex":
+        home = Path(codex_home) if codex_home else default_codex_home()
+        hooks_path = home / "hooks.json"
+        try:
+            if hooks_path.exists():
+                _strip_codex_hook(hooks_path)
+        except (OSError, ValueError):
+            logger.debug("could not strip codex hook", exc_info=True)
+
+    return removed
+
+
+def _is_our_text(path: Path, marker: str) -> bool:
+    try:
+        return path.is_file() and marker in path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return False
+
+
+def _strip_opencode_rules(config_path: Path) -> None:
+    data = json.loads(config_path.read_text(encoding="utf-8") or "{}")
+    if not isinstance(data, dict):
+        return
+    previous = _read_generated_rules(config_path)
+    permission = data.get("permission")
+    if isinstance(permission, dict):
+        _strip_v1_patterns(permission, previous.get("v1") or {})
+    rules = data.get("permissions")
+    if isinstance(rules, list):
+        data["permissions"] = [
+            rule for rule in rules if rule not in (previous.get("v2") or [])
+        ]
+    _write_json_with_backup(config_path, data)
+
+
+def _strip_codex_hook(hooks_path: Path) -> None:
+    data = json.loads(hooks_path.read_text(encoding="utf-8") or "{}")
+    hooks = data.get("hooks") if isinstance(data, dict) else None
+    if not isinstance(hooks, dict):
+        return
+    entries = hooks.get("PreToolUse")
+    if not isinstance(entries, list):
+        return
+    hooks["PreToolUse"] = [
+        entry
+        for entry in entries
+        if not (
+            isinstance(entry, dict)
+            and any(
+                GUARD_MARKER in str(handler.get("command", ""))
+                or "supervisor.security.guard_cli" in str(handler.get("command", ""))
+                for handler in entry.get("hooks") or []
+                if isinstance(handler, dict)
+            )
+        )
+    ]
+    hooks_path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
+# --------------------------------------------------------------------------- #
+# Templates
+# --------------------------------------------------------------------------- #
+
+_OPENCODE_PLUGIN_JS = r"""/**
+ * supervisor_access_guard - installed by opencode-supervisor.
+ *
+ * Hard path gate for every opencode tool call. Runs before the tool executes
+ * and throws to deny. The rule set comes from
+ * <workspace>/.supervisor/access_policy.json, written at run start.
+ *
+ * V1 plugin shape on purpose: no imports, so it loads even when the project
+ * has no node_modules and with `--pure`-style isolation.
+ */
+import fs from "node:fs";
+import path from "node:path";
+
+const POLICY_CANDIDATES = [
+  process.env.SOP_ACCESS_POLICY,
+  path.join(process.cwd(), ".supervisor", "access_policy.json"),
+];
+
+function loadPolicy(directory) {
+  const candidates = [...POLICY_CANDIDATES.filter(Boolean)];
+  if (directory) candidates.push(path.join(directory, ".supervisor", "access_policy.json"));
+  for (const candidate of candidates) {
+    try {
+      return JSON.parse(fs.readFileSync(candidate, "utf8"));
+    } catch (_) {
+      /* try the next candidate */
+    }
+  }
+  // Fail closed: the guard is installed only for supervised runs, so a
+  // missing snapshot means the policy could not be applied. Allowing every
+  // path here would silently disable the hard rule.
+  return { enabled: true, roots: [], missing: true };
+}
+
+function realResolve(target) {
+  let current = path.resolve(target);
+  const tail = [];
+  for (let i = 0; i < 64; i += 1) {
+    if (fs.existsSync(current)) break;
+    const parent = path.dirname(current);
+    if (parent === current) return path.resolve(target);
+    tail.unshift(path.basename(current));
+    current = parent;
+  }
+  try {
+    current = fs.realpathSync.native(current);
+  } catch (_) {
+    /* keep the lexical path */
+  }
+  return tail.length ? path.join(current, ...tail) : current;
+}
+
+const IS_WIN = process.platform === "win32";
+
+function norm(p) {
+  if (!IS_WIN) return p.replace(/\/+$/, "") || "/";
+  return p.replace(/[\\/]+/g, "\\").replace(/\\$/, "").toLowerCase();
+}
+
+function within(child, root) {
+  const c = norm(child);
+  const r = norm(root);
+  return c === r || c.startsWith(r + (IS_WIN ? "\\" : "/"));
+}
+
+function check(policy, rawPath, access, base) {
+  if (!policy) return "access policy not loaded";
+  if (policy.enabled === false) return null;
+  if (policy.missing) return "access policy snapshot missing (failing closed)";
+  let text = String(rawPath || "").trim();
+  if (!text) return "empty path";
+  if (text.startsWith("\\\\") || text.startsWith("\\\\.\\")) return "UNC or device paths are not allowed";
+  if (/^[A-Za-z]:[^\\/]/.test(text)) return "drive-relative paths are ambiguous";
+  text = text
+    .replace(/^~/, process.env.USERPROFILE || process.env.HOME || "~")
+    .replace(/%USERPROFILE%/gi, process.env.USERPROFILE || "")
+    .replace(/\$\{?HOME\}?/gi, process.env.HOME || process.env.USERPROFILE || "");
+  const target = path.isAbsolute(text) ? text : path.resolve(base || process.cwd(), text);
+  let resolved;
+  try {
+    resolved = realResolve(target);
+  } catch (err) {
+    return "unresolvable path: " + String(err);
+  }
+  for (const root of policy.roots || []) {
+    if (!within(resolved, root.path)) continue;
+    if (root.mode === "rw") return null;
+    if (access === "write") return "whitelist directories are read-only";
+    return null;
+  }
+  return "outside workspace and whitelist";
+}
+
+const WRITE_VERBS = new Set([
+  "rm", "rmdir", "del", "erase", "mv", "move", "cp", "copy", "xcopy", "robocopy",
+  "mkdir", "md", "touch", "tee", "chmod", "chown", "attrib", "icacls", "takeown",
+  "ln", "mklink", "truncate", "dd", "install", "unlink", "rename", "ren", "sed",
+  "perl", "remove-item", "move-item", "copy-item", "new-item", "set-content",
+  "add-content", "out-file", "clear-content", "rename-item",
+]);
+
+function collectPaths(text) {
+  const out = [];
+  const push = (value) => {
+    if (value) out.push(value.replace(/["'`,;:)\]}]+$/, ""));
+  };
+  for (const m of text.matchAll(/(?<![\w])([A-Za-z]:[\\/][^\s"'|;&<>\n]*)/g)) push(m[1]);
+  for (const m of text.matchAll(/(\\\\[^\s"'|;&<>\n]+)/g)) push(m[1]);
+  for (const m of text.matchAll(/(?:~|%USERPROFILE%|\$HOME|\$\{HOME\})([\\/][^\s"'|;&<>\n]*)/g)) {
+    push(m[0]);
+  }
+  // Relative path arguments (`cat ../../secret`) escape the cwd without an
+  // absolute spelling, so every path-shaped token is checked against the base.
+  for (const m of text.matchAll(/[^\s"'|;&<>]+/g)) {
+    let token = m[0];
+    if (!token || /^[-/\\%$~]/.test(token) || token.includes("://")) continue;
+    const eq = token.indexOf("=");
+    if (eq !== -1) token = token.slice(eq + 1);
+    if (!token) continue;
+    if (
+      token === "." ||
+      token === ".." ||
+      token.includes("/") ||
+      token.includes("\\") ||
+      /^[A-Za-z]:/.test(token)
+    ) {
+      push(token);
+    }
+  }
+  return out;
+}
+
+function writeIntent(command, index) {
+  const head = command.slice(0, index);
+  const segment = head.split(/[|;&\n]/).pop() || "";
+  if (/>\s*$/.test(segment)) return true;
+  return segment
+    .split(/\s+/)
+    .map((token) => token.toLowerCase().replace(/^["']|["']$/g, ""))
+    .some((token) => WRITE_VERBS.has(token));
+}
+
+function scanCommand(policy, command, base) {
+  if (!policy) return "access policy not loaded";
+  if (policy.enabled === false || !command) return null;
+  if (policy.missing) return "access policy snapshot missing (failing closed)";
+  for (const candidate of collectPaths(command)) {
+    const expanded = candidate
+      .replace(/^~/, process.env.USERPROFILE || process.env.HOME || "~")
+      .replace(/%USERPROFILE%/gi, process.env.USERPROFILE || "")
+      .replace(/\$\{?HOME\}?/gi, process.env.HOME || process.env.USERPROFILE || "");
+    const index = command.indexOf(candidate);
+    const reason = check(
+      policy,
+      expanded,
+      writeIntent(command, index) ? "write" : "read",
+      base || process.cwd(),
+    );
+    if (reason) return candidate + ": " + reason;
+  }
+  return null;
+}
+
+function toolPaths(args) {
+  const paths = [];
+  if (!args || typeof args !== "object") return paths;
+  for (const key of ["filePath", "file_path", "filepath", "path", "target", "destination"]) {
+    if (typeof args[key] === "string") paths.push(args[key]);
+  }
+  if (Array.isArray(args.paths)) paths.push(...args.paths.filter((p) => typeof p === "string"));
+  return paths;
+}
+
+export const SupervisorAccessGuard = async ({ directory, worktree }) => {
+  const policy = loadPolicy(directory || worktree);
+  return {
+    "tool.execute.before": async (input, output) => {
+      const tool = String(input?.tool || "").toLowerCase();
+      const args = output?.args || {};
+      if (tool === "bash" || tool === "shell" || tool === "execute") {
+        const command = String(args.command || args.cmd || "");
+        const violation = scanCommand(policy, command, directory || worktree);
+        if (violation) {
+          throw new Error(
+            "Blocked by supervisor access policy (shell write/read outside policy): " + violation,
+          );
+        }
+        return;
+      }
+      const access = ["write", "edit", "patch", "multiedit", "multi_edit"].includes(tool)
+        ? "write"
+        : "read";
+      const base = directory || worktree || process.cwd();
+      for (const candidate of toolPaths(args)) {
+        const reason = check(policy, candidate, access, base);
+        if (reason) {
+          throw new Error(
+            "Blocked by supervisor access policy: " + candidate + " (" + reason + ")",
+          );
+        }
+      }
+      if (tool === "patch" && typeof args.patchText === "string") {
+        for (const line of args.patchText.split("\n")) {
+          const match = line.match(/^\*\*\* .* File: (.+)$/);
+          if (!match) continue;
+          const reason = check(policy, match[1].trim(), "write", base);
+          if (reason) {
+            throw new Error(
+              "Blocked by supervisor access policy: " + match[1].trim() + " (" + reason + ")",
+            );
+          }
+        }
+      }
+    },
+  };
+};
+"""
+
+_PI_EXTENSION_TS = r"""/**
+ * supervisor-access-guard - installed by opencode-supervisor.
+ *
+ * pi loads this with an explicit `-e <path>` (project-local discovery would
+ * require project trust). Every tool call is checked before execution against
+ * <workspace>/.supervisor/access_policy.json; a violation returns
+ * { block: true } so pi never runs the tool.
+ */
+import fs from "node:fs";
+import path from "node:path";
+
+type Policy = {
+  enabled?: boolean;
+  roots?: Array<{ path: string; mode: "rw" | "ro" }>;
+};
+
+let cached: Policy | null = null;
+let cachedPath = "";
+
+function loadPolicy(cwd: string): Policy | null {
+  const candidates = [
+    process.env.SOP_ACCESS_POLICY,
+    path.join(cwd || process.cwd(), ".supervisor", "access_policy.json"),
+  ].filter(Boolean) as string[];
+  for (const candidate of candidates) {
+    if (cached && cachedPath === candidate) return cached;
+    try {
+      cached = JSON.parse(fs.readFileSync(candidate, "utf8")) as Policy;
+      cachedPath = candidate;
+      return cached;
+    } catch (_) {
+      /* next */
+    }
+  }
+  // Fail closed (see the opencode plugin): a missing snapshot must not turn
+  // the hard rule into an allow-all.
+  return { enabled: true, roots: [], missing: true } as Policy;
+}
+
+function realResolve(target: string): string {
+  let current = path.resolve(target);
+  const tail: string[] = [];
+  for (let i = 0; i < 64; i += 1) {
+    if (fs.existsSync(current)) break;
+    const parent = path.dirname(current);
+    if (parent === current) return path.resolve(target);
+    tail.unshift(path.basename(current));
+    current = parent;
+  }
+  try {
+    current = fs.realpathSync.native(current);
+  } catch (_) {
+    /* keep lexical */
+  }
+  return tail.length ? path.join(current, ...tail) : current;
+}
+
+const IS_WIN = process.platform === "win32";
+
+function norm(p: string): string {
+  if (!IS_WIN) return p.replace(/\/+$/, "") || "/";
+  return p.replace(/[\\/]+/g, "\\").replace(/\\$/, "").toLowerCase();
+}
+
+function within(child: string, root: string): boolean {
+  const c = norm(child);
+  const r = norm(root);
+  return c === r || c.startsWith(r + (IS_WIN ? "\\" : "/"));
+}
+
+function check(
+  policy: Policy | null,
+  rawPath: string,
+  access: "read" | "write",
+  base: string,
+): string | null {
+  if (!policy) return "access policy not loaded";
+  if (policy.enabled === false) return null;
+  if ((policy as Policy & { missing?: boolean }).missing) {
+    return "access policy snapshot missing (failing closed)";
+  }
+  let text = String(rawPath || "").trim();
+  if (!text) return "empty path";
+  if (text.startsWith("\\\\") || text.startsWith("\\\\.\\")) return "UNC or device paths are not allowed";
+  if (/^[A-Za-z]:[^\\/]/.test(text)) return "drive-relative paths are ambiguous";
+  text = text
+    .replace(/^~/, process.env.USERPROFILE || process.env.HOME || "~")
+    .replace(/%USERPROFILE%/gi, process.env.USERPROFILE || "")
+    .replace(/\$\{?HOME\}?/gi, process.env.HOME || process.env.USERPROFILE || "");
+  const target = path.isAbsolute(text) ? text : path.resolve(base || process.cwd(), text);
+  let resolved: string;
+  try {
+    resolved = realResolve(target);
+  } catch (err) {
+    return "unresolvable path: " + String(err);
+  }
+  for (const root of policy.roots || []) {
+    if (!within(resolved, root.path)) continue;
+    if (root.mode === "rw") return null;
+    return access === "write" ? "whitelist directories are read-only" : null;
+  }
+  return "outside workspace and whitelist";
+}
+
+const WRITE_VERBS = new Set([
+  "rm", "rmdir", "del", "erase", "mv", "move", "cp", "copy", "xcopy", "robocopy",
+  "mkdir", "md", "touch", "tee", "chmod", "chown", "attrib", "icacls", "takeown",
+  "ln", "mklink", "truncate", "dd", "install", "unlink", "rename", "ren", "sed",
+  "perl", "remove-item", "move-item", "copy-item", "new-item", "set-content",
+  "add-content", "out-file", "clear-content", "rename-item",
+]);
+
+function scanCommand(policy: Policy | null, command: string, base: string): string | null {
+  if (!policy) return "access policy not loaded";
+  if (policy.enabled === false || !command) return null;
+  if ((policy as Policy & { missing?: boolean }).missing) {
+    return "access policy snapshot missing (failing closed)";
+  }
+  const patterns = [
+    /(?<![\w])([A-Za-z]:[\\/][^\s"'|;&<>\n]*)/g,
+    /(\\\\[^\s"'|;&<>\n]+)/g,
+    /(?:~|%USERPROFILE%|\$HOME|\$\{HOME\})([\\/][^\s"'|;&<>\n]*)/g,
+  ];
+  for (const match of command.matchAll(/[^\s"'|;&<>]+/g)) {
+    let token = match[0].replace(/["'`,;:)\]}]+$/, "");
+    if (!token || /^[-/\\%$~]/.test(token) || token.includes("://")) continue;
+    const eq = token.indexOf("=");
+    if (eq !== -1) token = token.slice(eq + 1);
+    if (!token) continue;
+    if (
+      token === "." ||
+      token === ".." ||
+      token.includes("/") ||
+      token.includes("\\") ||
+      /^[A-Za-z]:/.test(token)
+    ) {
+      const head = command.slice(0, match.index ?? 0);
+      const segment = head.split(/[|;&\n]/).pop() || "";
+      const write =
+        />\s*$/.test(segment) ||
+        segment
+          .split(/\s+/)
+          .map((t) => t.toLowerCase().replace(/^["']|["']$/g, ""))
+          .some((t) => WRITE_VERBS.has(t));
+      const reason = check(policy, token, write ? "write" : "read", base);
+      if (reason) return token + ": " + reason;
+    }
+  }
+
+  for (const pattern of patterns) {
+    for (const match of command.matchAll(pattern)) {
+      const raw = match[0].replace(/["'`,;:)\]}]+$/, "");
+      const expanded = raw
+        .replace(/^~/, process.env.USERPROFILE || process.env.HOME || "~")
+        .replace(/%USERPROFILE%/gi, process.env.USERPROFILE || "")
+        .replace(/\$\{?HOME\}?/gi, process.env.HOME || process.env.USERPROFILE || "");
+      const head = command.slice(0, match.index ?? 0);
+      const segment = head.split(/[|;&\n]/).pop() || "";
+      const write =
+        />\s*$/.test(segment) ||
+        segment
+          .split(/\s+/)
+          .map((token) => token.toLowerCase().replace(/^["']|["']$/g, ""))
+          .some((token) => WRITE_VERBS.has(token));
+      const reason = check(policy, expanded, write ? "write" : "read", base);
+      if (reason) return raw + ": " + reason;
+    }
+  }
+  return null;
+}
+
+function blockReason(policy: Policy | null, event: any, cwd: string): string | null {
+  const tool = String(event?.toolName || "").toLowerCase();
+  const input = event?.input || {};
+  if (tool === "bash" || tool === "shell" || tool === "execute") {
+    return scanCommand(policy, String(input.command || input.cmd || ""), cwd);
+  }
+  const access: "read" | "write" = ["write", "edit", "patch", "multiedit"].includes(tool)
+    ? "write"
+    : "read";
+  const candidates: string[] = [];
+  for (const key of ["path", "filePath", "file_path", "filepath", "target", "destination"]) {
+    if (typeof input[key] === "string") candidates.push(input[key]);
+  }
+  if (Array.isArray(input.paths)) {
+    candidates.push(...input.paths.filter((p: unknown) => typeof p === "string"));
+  }
+  const base = cwd || process.cwd();
+  for (const candidate of candidates) {
+    const reason = check(policy, candidate, access, base);
+    if (reason) return candidate + ": " + reason;
+  }
+  if (tool === "patch" && typeof input.patchText === "string") {
+    for (const line of input.patchText.split("\n")) {
+      const match = line.match(/^\*\*\* .* File: (.+)$/);
+      if (!match) continue;
+      const reason = check(policy, match[1].trim(), "write", base);
+      if (reason) return match[1].trim() + ": " + reason;
+    }
+  }
+  return null;
+}
+
+export default function (pi: any) {
+  pi.on("tool_call", async (event: any, ctx: any) => {
+    const policy = loadPolicy(ctx?.cwd || process.cwd());
+    const reason = blockReason(policy, event, ctx?.cwd || process.cwd());
+    if (reason) {
+      return {
+        block: true,
+        reason: "Blocked by supervisor access policy: " + reason,
+      };
+    }
+    return undefined;
+  });
+}
+"""
+
+
+__all__ = [
+    "GUARD_MARKER",
+    "GuardInstallResult",
+    "POLICY_FILE_PREFIX",
+    "VIOLATION_LOG_PREFIX",
+    "access_store_dir",
+    "default_codex_home",
+    "install_access_guard",
+    "opencode_permission_config",
+    "policy_path_for",
+    "remove_access_guard",
+    "violation_log_for",
+]

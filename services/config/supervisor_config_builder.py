@@ -42,6 +42,17 @@ def build_supervisor_config(
         timeout=int(session_state["timeout"]) * 60,
         log_detail=_resolve_log_detail(session_state),
         protected_files=tuple(session_state.get("protected_files", [])),
+        access_policy_enabled=bool(
+            session_state.get("access_policy_enabled", True),
+        ),
+        access_whitelist=tuple(
+            str(item).strip()
+            for item in (session_state.get("access_whitelist", []) or [])
+            if str(item).strip()
+        ),
+        access_policy_strict=bool(
+            session_state.get("access_policy_strict", False),
+        ),
         max_tokens=int(session_state["max_tokens"]),
         enable_python_scanner=bool(session_state["enable_python_scanner"]),
         enable_occam_razor=bool(session_state.get("enable_occam_razor", False)),

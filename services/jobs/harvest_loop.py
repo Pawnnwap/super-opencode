@@ -272,6 +272,7 @@ class HarvestLoop:
             )
             permissions_path = self._prepare_agent_workspace(run_config, workspace)
             runner = create_runner(run_config)
+            self._install_access_guard(run_config, workspace, runner)
             self.runner = runner
             for event in runner.start(prompt):
                 if self._stop.is_set():
@@ -354,6 +355,39 @@ class HarvestLoop:
             )
             return None
         return Path(written) if written else None
+
+    @staticmethod
+    def _install_access_guard(run_config, workspace: Path, runner) -> None:
+        """Apply the hard path policy to a harvest turn's runner."""
+        from supervisor.security.access_policy import AccessPolicy
+        from supervisor.security.engine_guards import install_access_guard
+
+        policy = AccessPolicy.from_config(run_config)
+        result = install_access_guard(
+            workspace,
+            policy,
+            resolve_engine(run_config),
+        )
+        if result.failed:
+            raise RuntimeError(
+                f"access guard could not be installed: {'; '.join(result.warnings)}",
+            )
+        from supervisor.security.preflight import run_drill
+
+        drill = run_drill(
+            resolve_engine(run_config), workspace, policy, result,
+        )
+        if not drill.ok:
+            raise RuntimeError(
+                f"access policy drill failed: {drill.fail_text()}",
+            )
+        if result.flags:
+            setattr(runner, "access_guard_flags", list(result.flags))
+        if result.env:
+            setattr(runner, "access_guard_env", dict(result.env))
+            merged = dict(getattr(runner, "codex_extra_env", None) or {})
+            merged.update(result.env)
+            setattr(runner, "codex_extra_env", merged)
 
     @staticmethod
     def _cleanup_permissions(path: Path | None) -> None:

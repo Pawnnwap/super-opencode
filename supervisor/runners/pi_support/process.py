@@ -7,6 +7,7 @@ from supervisor.runners.pi_support.stream import classify_line
 from supervisor.runners.process_common import (
     ConfigErrorPolicy,
     EngineAttempt,
+    default_child_env,
     run_prompt_common,
 )
 
@@ -28,7 +29,10 @@ def run_prompt(
     """
 
     def _prepare(exe: str, model_for_cmd: str | None, use_shell: bool) -> EngineAttempt:
+        guard_env = dict(getattr(runner, "access_guard_env", None) or {})
+        env = {**default_child_env(), **guard_env} if guard_env else None
         return EngineAttempt(
+            env=env,
             cmd=build_cmd(
                 exe=exe,
                 prompt=prompt,
@@ -40,6 +44,7 @@ def run_prompt(
                 model=model_for_cmd,
                 use_shell=use_shell,
                 variant=getattr(runner, "opencode_variant", "") or "",
+                extra_flags=getattr(runner, "access_guard_flags", None),
             ),
         )
 

@@ -330,10 +330,16 @@ class BaseLoop:
         # auto-rejects permission prompts when no TTY is attached).
         from supervisor.runners.factory import resolve_engine
 
-        if resolve_engine(self.config) == "opencode":
+        engine = resolve_engine(self.config)
+        if engine == "opencode":
             written = self.guard.ensure_agent_permissions(self.config.workspace)
             if written:
                 logger.info("Project permission config written: %s", written)
+
+        # Hard path policy: translate the whitelist into the active engine's
+        # native gate before the first turn. The prompt block alone is advice;
+        # these artifacts are what actually deny the call.
+        self._install_access_guard(engine)
 
     def _init_components(self, agent: str = ""):
         from supervisor.analyzers.opencode_step_detector import OpencodeStepDetector
@@ -350,8 +356,129 @@ class BaseLoop:
             self.config.max_tokens,
             self.config.truncation_enabled,
         )
-        self.guard = WorkspaceGuard(self.config.workspace, self.config.protected_files)
+        self.access_policy = self._build_access_policy()
+        self.guard = WorkspaceGuard(
+            self.config.workspace,
+            self.config.protected_files,
+            access_policy=self.access_policy,
+        )
+        self.access_guard = None
+        self._violation_offset = 0
         self._step_detector = OpencodeStepDetector()
+
+    def _build_access_policy(self):
+        """Compute the run's hard path policy from the supervisor config."""
+        from supervisor.security.access_policy import AccessPolicy
+
+        try:
+            policy = AccessPolicy.from_config(self.config)
+        except (OSError, ValueError) as exc:
+            logger.warning("Access policy could not be built (%s); denying all", exc)
+            policy = AccessPolicy(
+                workspace=self.config.workspace, whitelist=(), enabled=True,
+            )
+        if policy.enabled:
+            logger.info(
+                "Access policy: writable=%s read-only=%s",
+                policy.workspace,
+                [str(item) for item in policy.whitelist] or "none",
+            )
+        return policy
+
+    def _install_access_guard(self, engine: str) -> None:
+        """Write the engine-specific gate and hand its flags to the runner."""
+        from supervisor.security.engine_guards import install_access_guard
+
+        try:
+            result = install_access_guard(
+                self.config.workspace,
+                self.access_policy,
+                engine,
+            )
+        except (OSError, ValueError) as exc:
+            # Fail closed: keep the run from starting with a policy the engine
+            # cannot enforce.
+            logger.error("Access guard installation failed: %s", exc)
+            raise RuntimeError(f"access guard installation failed: {exc}") from exc
+
+        self.access_guard = result
+        if result.failed:
+            raise RuntimeError(
+                "access guard could not be installed for "
+                f"{engine}: {'; '.join(result.warnings) or 'unknown error'}",
+            )
+        from supervisor.security.preflight import run_drill
+
+        drill = run_drill(engine, self.config.workspace, self.access_policy, result)
+        self.access_drill = drill
+        for check in drill.checks:
+            logger.info("Access drill %s", check.line())
+        if not drill.ok:
+            # Cage's canary lesson: prove the boundary instead of trusting the
+            # configuration. A gate that does not deny is a failed install.
+            raise RuntimeError(
+                f"access policy drill failed: {drill.fail_text()}",
+            )
+        if result.warnings:
+            for warning in result.warnings:
+                logger.warning("Access guard: %s", warning)
+        if result.flags:
+            setattr(self.runner, "access_guard_flags", list(result.flags))
+        if result.env:
+            # Every engine process layer merges this bag into the child env, so
+            # the native gate can find the policy snapshot (which lives outside
+            # the agent's writable cwd).
+            setattr(self.runner, "access_guard_env", dict(result.env))
+            merged = dict(getattr(self.runner, "codex_extra_env", None) or {})
+            merged.update(result.env)
+            setattr(self.runner, "codex_extra_env", merged)
+        logger.info(
+            "Access guard installed for %s: %s",
+            engine,
+            [str(path) for path in result.artifacts],
+        )
+
+    def _drain_access_violations(self) -> Generator[Event]:
+        """Surface policy blocks recorded by the engine gate as job events."""
+        import json
+
+        guard = getattr(self, "access_guard", None)
+        if not guard:
+            return
+        log_ref = (guard.env or {}).get("SOP_ACCESS_LOG", "")
+        if not log_ref:
+            return
+        path = Path(log_ref)
+        offset = getattr(self, "_violation_offset", 0)
+        try:
+            if not path.exists():
+                return
+            size = path.stat().st_size
+            if size < offset:
+                offset = 0  # rotated/truncated
+            if size == offset:
+                return
+            with open(path, "r", encoding="utf-8") as handle:
+                handle.seek(offset)
+                lines = handle.readlines()
+                self._violation_offset = handle.tell()
+        except OSError:
+            return
+
+        for line in lines[-5:]:
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            items = "; ".join(
+                f"{item.get('path')} ({item.get('reason')})"
+                for item in record.get("violations", [])
+                if isinstance(item, dict)
+            )
+            yield _ev(
+                "warn",
+                f"ACCESS POLICY BLOCKED {record.get('tool') or 'tool'}: {items}",
+            )
 
     def _create_supervisor(
         self,
@@ -621,6 +748,7 @@ class BaseLoop:
             f"Retrying… (attempt {self._failures}/{self.config.max_retries})",
         )
         yield from self.runner.start(self._restart_prompt())
+        yield from self._drain_access_violations()
 
     def _handle_loop(self, reason: str) -> Generator[Event]:
         """Agent got stuck looping mid-turn: it was killed; restart it clean.
@@ -1270,6 +1398,7 @@ class BaseLoop:
         )
         yield _ev("opencode_prompt", safe_prompt, prompt_kind="unblock")
         yield from self.runner.send(safe_prompt)
+        yield from self._drain_access_violations()
         return True
 
     def _on_blocked(self, verdict, reason: str) -> Generator[Event]:
@@ -1650,6 +1779,7 @@ class BaseLoop:
 
         yield _ev("opencode_prompt", safe_msg, prompt_kind="turn")
         yield from self.runner.send(safe_msg)
+        yield from self._drain_access_violations()
 
         yield from self._yield_suggestions(
             actual_output,
@@ -1886,6 +2016,7 @@ class BaseLoop:
             )
         yield _ev("opencode_prompt", msg, prompt_kind="compaction")
         yield from self.runner.send(msg)
+        yield from self._drain_access_violations()
         compaction_output, _timed_out = self.runner.read_output()
         if compaction_output.strip():
             yield _ev("opencode_output", compaction_output)
@@ -1906,6 +2037,7 @@ class BaseLoop:
         restart_prompt = self._get_restart_prompt_for_continuation()
         yield _ev("opencode_prompt", restart_prompt, prompt_kind="restart")
         yield from self.runner.start(restart_prompt)
+        yield from self._drain_access_violations()
         self.runner.mark_session_active()
 
     def _update_context_monitor(self) -> Generator[Event]:
