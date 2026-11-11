@@ -20,7 +20,8 @@ from pathlib import Path
 import pytest
 
 from services.jobs import job_manager as jm
-from services.jobs.job_manager import JobManager
+from services.jobs.job_manager import JobManager, claim_order
+from services.jobs.store_client import StoreJobClient
 from supervisor.utils.config import SupervisorConfig
 
 
@@ -195,3 +196,53 @@ def test_cancel_if_live_is_idempotent_while_the_job_drains(tmp_path):
     assert stop.is_set()
     assert manager.cancel_if_live("job_x") is False
     assert manager.cancel_if_live("job_missing") is False
+
+
+def test_claim_order_is_fifo_and_batch_ordered():
+    # Enqueue time first: an older record wins regardless of its hash id.
+    old = {"created_at": 100.0, "batch_id": "b", "replica_index": 2}
+    new = {"created_at": 200.0, "batch_id": "b", "replica_index": 1}
+    assert claim_order(old, "run_z") < claim_order(new, "run_a")
+    # Replicas of one batch share created_at; replica_index breaks the tie.
+    r2 = {"created_at": 100.0, "batch_id": "b", "replica_index": 2}
+    r1 = {"created_at": 100.0, "batch_id": "b", "replica_index": 1}
+    assert claim_order(r1, "run_x") < claim_order(r2, "run_y")
+    # Legacy records without created_at fall back to the enqueue heartbeat.
+    assert claim_order({"heartbeat_at": 50.0}, "run_a") < claim_order({"heartbeat_at": 60.0}, "run_b")
+
+
+def test_claim_pending_fills_free_slots_oldest_first(tmp_path, stub_loops, monkeypatch):
+    """5 queued, 2 slots: 2 threads (FIFO), the other 3 store-only."""
+    monkeypatch.setattr(jm, "codex_engine_ready", lambda explicit="": (True, ""))
+    from services.jobs.worker_service import _claim_pending
+
+    store_dir = tmp_path / "store"
+    client = StoreJobClient(str(store_dir))
+    manager = JobManager(str(store_dir), max_parallel_jobs=2)
+    ids = []
+    for i in range(5):
+        jid = client.enqueue_job("run", _config(tmp_path / f"ws{i}"))
+        state = manager.store.get_job_state(jid)
+        state["created_at"] = 1000.0 + i  # deterministic enqueue order
+        manager.store.save_job_state(jid, state)
+        ids.append(jid)
+
+    # Order the records deliberately reversed to prove the sort does the work.
+    pending = [
+        (claim_order(manager.store.get_job_state(jid), jid), jid)
+        for jid in reversed(ids)
+    ]
+    claimed: set[str] = set()
+    assert _claim_pending(manager, pending, claimed) == ids[:2]
+    assert claimed == set(ids[:2])
+    assert manager.available_slots() == 0
+    assert manager.active_job_count() == 2  # no parked threads
+    assert not manager.run_stored_job(ids[2])  # full: stays PENDING
+    assert _states(manager)[ids[2]] == "PENDING"
+
+    # Finishing jobs frees the slots; the counter never leaks.
+    StubLoop.release.set()
+    assert _wait_for(lambda: sum(
+        1 for s in _states(manager).values() if s == "SUCCESS"
+    ) == 2)
+    assert _wait_for(lambda: manager.available_slots() == 2)

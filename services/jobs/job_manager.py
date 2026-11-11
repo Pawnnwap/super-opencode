@@ -65,6 +65,72 @@ def final_state_from_logs(logs: list[dict[str, Any]]) -> str:
     return "FAILED"
 
 
+def claim_order(state: dict[str, Any], job_id: str) -> tuple[float, str, int, str]:
+    """FIFO key for PENDING claims (``list_jobs`` order is filesystem order).
+
+    ``created_at`` is written by both enqueue paths; records from before that
+    field fall back to the enqueue heartbeat. Batch replicas share a creation
+    time, so ``replica_index`` keeps them in their intended order.
+    """
+    created = (
+        state.get("created_at")
+        or state.get("heartbeat_at")
+        or state.get("updated_at")
+        or 0.0
+    )
+    try:
+        created = float(created)
+    except (TypeError, ValueError):
+        created = 0.0
+    try:
+        replica = int(state.get("replica_index") or 0)
+    except (TypeError, ValueError):
+        replica = 0
+    return (created, str(state.get("batch_id") or ""), replica, job_id)
+
+
+def pending_record(
+    job_type: str,
+    config: SupervisorConfig,
+    meta: dict[str, Any] | None,
+    now: float,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """The PENDING store record shared by both enqueue paths, plus its meta.
+
+    ``meta`` gains the created_at claim-order key, which is also carried into
+    the RUNNING write; returning it keeps the two callers from drifting.
+    """
+    meta = dict(meta or {})
+    meta.setdefault("created_at", now)
+    return {
+        "type": job_type,
+        "state": "PENDING",
+        "progress": 0.0,
+        "heartbeat_at": now,
+        "config": config.to_state_dict(),
+        "report": "",
+        **meta,
+    }, meta
+
+
+def assert_workspace_free(store: JobStateStore, workspace: Path) -> None:
+    """Raise when an active job already owns *workspace*.
+
+    Blocks on any non-terminal state: a PENDING peer sharing the workspace
+    would race the run for ``.opencode/sessions``. The caller holds its
+    manager's lock so the scan and the following PENDING write are atomic
+    (two concurrent enqueues for one workspace must not both pass).
+    """
+    for job_id in store.list_jobs():
+        state = store.get_job_state(job_id)
+        if state and state.get("state") in ACTIVE_JOB_STATES:
+            existing = Path(state.get("config", {}).get("workspace", "")).resolve()
+            if existing == workspace:
+                raise ValueError(
+                    f"Another task is already active in this workspace: {workspace}",
+                )
+
+
 class JobManager:
     """Manages long-running supervisor and self-evolution jobs."""
 
@@ -99,6 +165,11 @@ class JobManager:
 
     def set_max_stored_jobs(self, value: int) -> None:
         self._max_stored = max(0, int(value))
+
+    def available_slots(self) -> int:
+        """Free run slots for the daemon's claim gate (no parked threads)."""
+        with self._cond:
+            return max(0, self._max_parallel - self._running_count)
 
     def prune_stored_jobs(self) -> list[str]:
         """Drop log payloads of the oldest terminal jobs past the cap.
@@ -164,38 +235,18 @@ class JobManager:
         parallel-study batches can be rendered and cancelled as one unit.
         """
         new_workspace = Path(config.workspace).resolve()
-        # Block on any non-terminal state, not just RUNNING. A PENDING peer
-        # would otherwise be allowed to share the workspace and race us for
-        # `.opencode/sessions`, defeating per-task session isolation.
         job_id = f"{job_type}_{uuid.uuid4().hex[:8]}"
         stop_event = threading.Event()
-        meta = dict(meta or {})
+        record, meta = pending_record(job_type, config, meta, time.time())
 
         # Hold the lock across the collision check AND the PENDING write so
         # two concurrent enqueues for the same workspace cannot both pass the
         # guard. Without this, each caller could read the store before either
         # one has written its PENDING record.
         with self._lock:
-            for jid in self.store.list_jobs():
-                state = self.store.get_job_state(jid)
-                if state and state.get("state") in ACTIVE_JOB_STATES:
-                    existing_workspace = Path(state.get("config", {}).get("workspace", "")).resolve()
-                    if existing_workspace == new_workspace:
-                        raise ValueError(f"Another task is already active in this workspace: {new_workspace}")
-
+            assert_workspace_free(self.store, new_workspace)
             self._active_jobs[job_id] = {"stop_event": stop_event, "loop": None}
-
-            # Initial state — written while still holding the lock so the
-            # next enqueue's collision scan is guaranteed to observe it.
-            self.store.save_job_state(job_id, {
-                "type": job_type,
-                "state": "PENDING",
-                "progress": 0.0,
-                "heartbeat_at": time.time(),
-                "config": self._serialize_config(config),
-                "report": "",
-                **meta,
-            })
+            self.store.save_job_state(job_id, record)
 
         # Start worker thread. The name shows up in log records (via the
         # threadName formatter token) so concurrent jobs can be told apart
@@ -254,8 +305,10 @@ class JobManager:
 
         The worker daemon's claim path: the UI enqueues by writing a PENDING
         record, and this turns the record into a live worker thread here.
-        Callers must keep their own claimed-id set - a parked job stays
-        PENDING until a run slot frees.
+        Callers must keep their own claimed-id set.
+
+        A claim requires a free run slot (reserved atomically with the thread
+        start); a full manager returns ``False`` and the record stays PENDING.
         """
         state = self.store.get_job_state(job_id)
         if not state or state.get("state") != "PENDING":
@@ -285,19 +338,29 @@ class JobManager:
         job_type = str(state.get("type") or "run")
         meta = {
             k: state[k]
-            for k in ("batch_id", "replica_index", "replica_count")
+            for k in ("batch_id", "replica_index", "replica_count", "created_at")
             if state.get(k) is not None
         }
         stop_event = threading.Event()
-        with self._lock:
+        with self._cond:
+            if self._running_count >= self._max_parallel:
+                return False
+            self._running_count += 1
+            self._sync_parallel_flag()
             self._active_jobs[job_id] = {"stop_event": stop_event, "loop": None}
         thread = threading.Thread(
             target=self._worker,
-            args=(job_id, job_type, config, stop_event, meta),
+            args=(job_id, job_type, config, stop_event, meta, True),
             daemon=True,
             name=f"job-{job_id}",
         )
-        thread.start()
+        try:
+            thread.start()
+        except Exception:
+            self._release_slot()
+            with self._lock:
+                self._active_jobs.pop(job_id, None)
+            raise
         return True
 
     def active_job_count(self) -> int:
@@ -392,21 +455,23 @@ class JobManager:
         config: SupervisorConfig,
         stop_event: threading.Event,
         meta: dict[str, Any] | None = None,
+        slot_reserved: bool = False,
     ):
         """Worker thread that executes the job loop."""
         meta = dict(meta or {})
-        # Only release the run slot in `finally` if one was actually taken —
-        # the cancelled-while-parked path never increments the counter.
-        slot_held = False
+        # Only release a slot that was taken: run_stored_job reserves it
+        # before the thread starts, the in-process enqueue path parks here.
+        slot_held = slot_reserved
         sentinel = self._cancel_sentinel_path(job_id)
         try:
-            # Park in PENDING while all run slots are taken. A cancellation
-            # while parked has already written CANCELLED — just leave.
-            if not self._wait_for_slot(stop_event):
-                with self._lock:
-                    self._active_jobs.pop(job_id, None)
-                return
-            slot_held = True
+            if not slot_reserved:
+                # Park in PENDING while all run slots are taken. A cancellation
+                # while parked has already written CANCELLED — just leave.
+                if not self._wait_for_slot(stop_event):
+                    with self._lock:
+                        self._active_jobs.pop(job_id, None)
+                    return
+                slot_held = True
 
             # cancel_batch may have written CANCELLED while we were parked.
             stored = self.store.get_job_state(job_id) or {}
@@ -525,7 +590,7 @@ class JobManager:
         except Exception as e:
             import traceback
             error_msg = f"Worker error: {e!s}\n{traceback.format_exc()}"
-            logger.error("Job %s failed: %s", job_id, e, exc_info=True)
+            logger.exception("Job %s failed", job_id)
             self.store.append_log(job_id, {"level": "error", "msg": error_msg})
             self._update_state(job_id, "FAILED", report=report_content if "report_content" in locals() else "")
         finally:

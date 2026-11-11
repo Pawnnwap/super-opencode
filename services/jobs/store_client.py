@@ -23,7 +23,11 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from services.jobs.job_manager import JobManager
+from services.jobs.job_manager import (
+    JobManager,
+    assert_workspace_free,
+    pending_record,
+)
 from services.jobs.job_states import (
     ACTIVE_JOB_STATES,
     JOB_STORE_DIR,
@@ -80,33 +84,12 @@ class StoreJobClient:
         meta: dict[str, Any] | None = None,
     ) -> str:
         """Write a PENDING record; the worker daemon claims and runs it."""
-        new_workspace = Path(config.workspace).resolve()
         job_id = f"{job_type}_{uuid.uuid4().hex[:8]}"
-        meta = dict(meta or {})
+        record, _ = pending_record(job_type, config, meta, time.time())
 
-        # Same lock discipline as JobManager.enqueue_job: the collision scan
-        # and the PENDING write are atomic, so two concurrent enqueues for
-        # one workspace cannot both pass.
         with self._lock:
-            for jid in self.store.list_jobs():
-                state = self.store.get_job_state(jid)
-                if state and state.get("state") in ACTIVE_JOB_STATES:
-                    existing = Path(
-                        state.get("config", {}).get("workspace", ""),
-                    ).resolve()
-                    if existing == new_workspace:
-                        raise ValueError(
-                            f"Another task is already active in this workspace: {new_workspace}",
-                        )
-            self.store.save_job_state(job_id, {
-                "type": job_type,
-                "state": "PENDING",
-                "progress": 0.0,
-                "heartbeat_at": time.time(),
-                "config": config.to_state_dict(),
-                "report": "",
-                **meta,
-            })
+            assert_workspace_free(self.store, Path(config.workspace).resolve())
+            self.store.save_job_state(job_id, record)
         return job_id
 
     def cancel_job(self, job_id: str) -> None:

@@ -27,7 +27,7 @@ from pathlib import Path
 
 from services.config.settings import sanitize_proxy_env
 from services.jobs.code_freshness import code_fingerprint, freshness_action
-from services.jobs.job_manager import JobManager
+from services.jobs.job_manager import JobManager, claim_order
 from services.jobs.job_states import JOB_STORE_DIR, WORKER_SETTINGS_FILE
 from services.runtime import death_capture
 
@@ -118,6 +118,30 @@ def _mark_orphans(manager: JobManager) -> list[str]:
             })
             flagged.append(job_id)
     return flagged
+
+
+def _claim_pending(
+    manager: JobManager,
+    pending: list[tuple[tuple, str]],
+    claimed: set[str],
+) -> list[str]:
+    """Claim sorted PENDING records into free slots; returns the new claims.
+
+    Materializing every PENDING record would park a thread per queued job
+    behind the concurrency cap - and active_job_count() counts parked jobs,
+    so a code redeploy would wait for the entire queue to drain. Claim only
+    what a slot can hold, oldest first.
+    """
+    newly: list[str] = []
+    pending.sort()
+    for _order, job_id in pending:
+        if manager.available_slots() <= 0:
+            break
+        if manager.run_stored_job(job_id):
+            claimed.add(job_id)
+            newly.append(job_id)
+            logger.info("claimed PENDING job %s", job_id)
+    return newly
 
 
 def main() -> int:
@@ -220,36 +244,27 @@ def main() -> int:
                 applied_settings = dict(settings)
                 logger.info("applied settings: %s", applied_settings)
 
-            checked_this_poll = False
+            pending: list[tuple[tuple, str]] = []
             for job_id in manager.store.list_jobs():
                 if job_id in claimed:
-                    # Claimed jobs are never re-claimed, but a cross-process
-                    # cancel can arrive at any moment: the sentinel file (not
-                    # the state field - the worker heartbeat rewrites it) is
-                    # the durable request, honoured here AND by the worker
-                    # itself, so even a worker parked in a silent stream get
-                    # gets its codex tree killed within one poll cycle.
-                    if manager.cancel_sentinel_exists(job_id):
-                        if manager.cancel_if_live(job_id):
-                            logger.info("honoured cancel request for %s", job_id)
+                    # A cross-process cancel can arrive at any moment; the
+                    # sentinel file (not the state field, which this worker's
+                    # heartbeat rewrites) is the durable request.
+                    if manager.cancel_sentinel_exists(job_id) and manager.cancel_if_live(job_id):
+                        logger.info("honoured cancel request for %s", job_id)
                     continue
                 state = manager.store.get_job_state(job_id) or {}
                 st = state.get("state")
                 if st == "PENDING":
-                    # One claim-time freshness check per poll: a deployment
-                    # that landed after the periodic check must not slip a job
-                    # through, while per-job hashing would rescan the tree for
-                    # every queued job on every second.
-                    if not checked_this_poll:
-                        check_freshness()
-                        checked_this_poll = True
-                    if allow_claims and manager.run_stored_job(job_id):
-                        claimed.add(job_id)
-                        logger.info("claimed PENDING job %s", job_id)
-                elif st == "CANCELLED":
-                    # A UI-side cancel request for a job this daemon runs.
-                    if manager.cancel_if_live(job_id):
-                        logger.info("honoured CANCELLED request for %s", job_id)
+                    pending.append((claim_order(state, job_id), job_id))
+                elif st == "CANCELLED" and manager.cancel_if_live(job_id):
+                    logger.info("honoured CANCELLED request for %s", job_id)
+
+            # Claim only into a FREE slot, oldest first (see _claim_pending).
+            if pending:
+                check_freshness()
+                if allow_claims:
+                    _claim_pending(manager, pending, claimed)
             manager.prune_stored_jobs()
         except Exception:
             logger.exception("worker daemon poll cycle failed")

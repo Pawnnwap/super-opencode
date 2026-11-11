@@ -88,6 +88,7 @@ def test_ui_enqueue_writes_pending_record_only(tmp_path):
     state = manager.store.get_job_state(job_id)
     assert state["state"] == "PENDING"
     assert state["config"]["workspace"]
+    assert state.get("created_at")  # FIFO claim key, shared by both paths
     # The UI process spawned no worker: nothing is live in any manager.
     assert manager._active_jobs == {}
 
