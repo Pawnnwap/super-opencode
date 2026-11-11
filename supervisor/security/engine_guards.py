@@ -706,14 +706,81 @@ function collectPaths(text) {
   return out;
 }
 
+const COPY_VERBS = new Set([
+  "cp", "copy", "copy-item", "xcopy", "robocopy", "rsync", "scp", "install",
+]);
+const MOVE_VERBS = new Set(["mv", "move", "move-item", "rename", "ren"]);
+
+function segmentBounds(command, index) {
+  let start = 0;
+  const before = command.slice(0, index);
+  const separator = /[|;&\n]/g;
+  let match;
+  while ((match = separator.exec(before))) start = match.index + 1;
+  const tail = command.slice(index).search(/[|;&\n]/);
+  return [start, tail === -1 ? command.length : index + tail];
+}
+
+function isFlagToken(raw) {
+  const token = raw.replace(/^["']|["']$/g, "");
+  if (token.startsWith("--")) return true;
+  if (token.startsWith("-") && token.length <= 8) return true;
+  return (
+    token.startsWith("/") &&
+    (token.match(/\//g) || []).length === 1 &&
+    token.length <= 5 &&
+    /^[A-Za-z0-9]+$/.test(token.slice(1))
+  );
+}
+
+function commandName(raw) {
+  let token = raw.replace(/^["']|["']$/g, "").replace(/\\/g, "/");
+  token = token.split("/").pop().toLowerCase();
+  return token.endsWith(".exe") ? token.slice(0, -4) : token;
+}
+
 function writeIntent(command, index) {
-  const head = command.slice(0, index);
-  const segment = head.split(/[|;&\n]/).pop() || "";
-  if (/>\s*$/.test(segment)) return true;
-  return segment
-    .split(/\s+/)
-    .map((token) => token.toLowerCase().replace(/^["']|["']$/g, ""))
-    .some((token) => WRITE_VERBS.has(token));
+  const [start, end] = segmentBounds(command, index);
+  const segment = command.slice(start, end);
+  if (/>\s*$/.test(command.slice(start, index))) return true;
+  const tokens = [];
+  const tokenPattern = /"[^"]*"|'[^']*'|\S+/g;
+  let match;
+  while ((match = tokenPattern.exec(segment))) {
+    tokens.push({
+      start: start + match.index,
+      end: start + match.index + match[0].length,
+      raw: match[0],
+    });
+  }
+  if (
+    tokens.some(
+      (token) =>
+        token.start < index && (token.raw.endsWith(">") || token.raw.endsWith(">>")),
+    )
+  ) {
+    return true;
+  }
+  const tokenIndex = tokens.findIndex(
+    (token) => token.start <= index && index < token.end,
+  );
+  if (tokenIndex < 0) return false;
+  const verb = commandName(tokens[0].raw);
+  if (verb === "sed" || verb === "perl") {
+    return tokens.slice(1).some((token) => token.raw.startsWith("-i"));
+  }
+  if (verb === "git") {
+    return /\bgit\s+(clone|init|worktree|mv|rm|checkout|reset|clean|apply|am|pull|fetch)\b/i.test(
+      segment,
+    );
+  }
+  if (COPY_VERBS.has(verb)) {
+    const paths = tokens
+      .map((token, i) => i)
+      .filter((i) => i > 0 && !isFlagToken(tokens[i].raw));
+    return paths.length > 0 && tokenIndex === paths[paths.length - 1];
+  }
+  return MOVE_VERBS.has(verb) || WRITE_VERBS.has(verb);
 }
 
 function scanCommand(policy, command, base) {
@@ -904,6 +971,83 @@ const WRITE_VERBS = new Set([
   "add-content", "out-file", "clear-content", "rename-item",
 ]);
 
+const COPY_VERBS = new Set([
+  "cp", "copy", "copy-item", "xcopy", "robocopy", "rsync", "scp", "install",
+]);
+const MOVE_VERBS = new Set(["mv", "move", "move-item", "rename", "ren"]);
+
+function segmentBounds(command: string, index: number): [number, number] {
+  let start = 0;
+  const before = command.slice(0, index);
+  const separator = /[|;&\n]/g;
+  let match: RegExpExecArray | null;
+  while ((match = separator.exec(before))) start = match.index + 1;
+  const tail = command.slice(index).search(/[|;&\n]/);
+  return [start, tail === -1 ? command.length : index + tail];
+}
+
+function isFlagToken(raw: string): boolean {
+  const token = raw.replace(/^["']|["']$/g, "");
+  if (token.startsWith("--")) return true;
+  if (token.startsWith("-") && token.length <= 8) return true;
+  return (
+    token.startsWith("/") &&
+    (token.match(/\//g) || []).length === 1 &&
+    token.length <= 5 &&
+    /^[A-Za-z0-9]+$/.test(token.slice(1))
+  );
+}
+
+function commandName(raw: string): string {
+  let token = raw.replace(/^["']|["']$/g, "").replace(/\\/g, "/");
+  token = token.split("/").pop()!.toLowerCase();
+  return token.endsWith(".exe") ? token.slice(0, -4) : token;
+}
+
+function writeIntent(command: string, index: number): boolean {
+  const [start, end] = segmentBounds(command, index);
+  const segment = command.slice(start, end);
+  if (/>\s*$/.test(command.slice(start, index))) return true;
+  const tokens: Array<{ start: number; end: number; raw: string }> = [];
+  const tokenPattern = /"[^"]*"|'[^']*'|\S+/g;
+  let match: RegExpExecArray | null;
+  while ((match = tokenPattern.exec(segment))) {
+    tokens.push({
+      start: start + match.index,
+      end: start + match.index + match[0].length,
+      raw: match[0],
+    });
+  }
+  if (
+    tokens.some(
+      (token) =>
+        token.start < index && (token.raw.endsWith(">") || token.raw.endsWith(">>")),
+    )
+  ) {
+    return true;
+  }
+  const tokenIndex = tokens.findIndex(
+    (token) => token.start <= index && index < token.end,
+  );
+  if (tokenIndex < 0) return false;
+  const verb = commandName(tokens[0].raw);
+  if (verb === "sed" || verb === "perl") {
+    return tokens.slice(1).some((token) => token.raw.startsWith("-i"));
+  }
+  if (verb === "git") {
+    return /\bgit\s+(clone|init|worktree|mv|rm|checkout|reset|clean|apply|am|pull|fetch)\b/i.test(
+      segment,
+    );
+  }
+  if (COPY_VERBS.has(verb)) {
+    const paths = tokens
+      .map((_token, i) => i)
+      .filter((i) => i > 0 && !isFlagToken(tokens[i].raw));
+    return paths.length > 0 && tokenIndex === paths[paths.length - 1];
+  }
+  return MOVE_VERBS.has(verb) || WRITE_VERBS.has(verb);
+}
+
 function scanCommand(policy: Policy | null, command: string, base: string): string | null {
   if (!policy) return "access policy not loaded";
   if (policy.enabled === false || !command) return null;
@@ -928,14 +1072,7 @@ function scanCommand(policy: Policy | null, command: string, base: string): stri
       token.includes("\\") ||
       /^[A-Za-z]:/.test(token)
     ) {
-      const head = command.slice(0, match.index ?? 0);
-      const segment = head.split(/[|;&\n]/).pop() || "";
-      const write =
-        />\s*$/.test(segment) ||
-        segment
-          .split(/\s+/)
-          .map((t) => t.toLowerCase().replace(/^["']|["']$/g, ""))
-          .some((t) => WRITE_VERBS.has(t));
+      const write = writeIntent(command, match.index ?? 0);
       const reason = check(policy, token, write ? "write" : "read", base);
       if (reason) return token + ": " + reason;
     }
@@ -948,14 +1085,7 @@ function scanCommand(policy: Policy | null, command: string, base: string): stri
         .replace(/^~/, process.env.USERPROFILE || process.env.HOME || "~")
         .replace(/%USERPROFILE%/gi, process.env.USERPROFILE || "")
         .replace(/\$\{?HOME\}?/gi, process.env.HOME || process.env.USERPROFILE || "");
-      const head = command.slice(0, match.index ?? 0);
-      const segment = head.split(/[|;&\n]/).pop() || "";
-      const write =
-        />\s*$/.test(segment) ||
-        segment
-          .split(/\s+/)
-          .map((token) => token.toLowerCase().replace(/^["']|["']$/g, ""))
-          .some((token) => WRITE_VERBS.has(token));
+      const write = writeIntent(command, match.index ?? 0);
       const reason = check(policy, expanded, write ? "write" : "read", base);
       if (reason) return raw + ": " + reason;
     }

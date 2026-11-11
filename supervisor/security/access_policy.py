@@ -130,6 +130,14 @@ _WRITE_VERBS = {
     "compress-archive",
 }
 
+# Copy verbs: only the destination is a write; sources are reads. This is what
+# makes `cp <whitelist>/x ./x` legal while `cp ./x <whitelist>/x` stays denied.
+_COPY_VERBS = frozenset(
+    {"cp", "copy", "copy-item", "xcopy", "robocopy", "rsync", "scp", "install"},
+)
+# Move verbs remove the source, so the source is a write as well.
+_MOVE_VERBS = frozenset({"mv", "move", "move-item", "rename", "ren"})
+
 # Windows shell builtins whose arguments are paths, for `>`-less writes.
 _WRITE_REDIRECT_RE = re.compile(r"(?<![0-9])(?:>>?|1>>?|2>>?)\s*$")
 
@@ -502,31 +510,94 @@ def _unsafe_reason(raw: str) -> str:
 
 
 def _write_context(command: str, index: int) -> bool:
-    """Heuristic: does the path at *index* sit in a write position?"""
-    head = command[:index]
-    if _WRITE_REDIRECT_RE.search(head):
+    """Does the path at *index* sit in a write position?
+
+    Position matters: in ``cp <src> <dst>`` the destination is written and the
+    source is only read, while ``mv`` writes both. Treating every argument of a
+    copy as a write made "copy from a read-only whitelist into the cwd" fail.
+    """
+    start, end = _segment_bounds(command, index)
+    segment = command[start:end]
+    if _WRITE_REDIRECT_RE.search(command[start:index]):
         return True
-    # Look at the current command segment (after the last separator).
-    segment = re.split(r"[|;&\n]", head)[-1]
-    tokens = [t for t in re.split(r"\s+", segment.strip()) if t]
+
+    tokens = [
+        (match.start() + start, match.end() + start, match.group(0))
+        for match in re.finditer(r'"[^"]*"|\'[^\']*\'|\S+', segment)
+    ]
     if not tokens:
         return False
-    lowered = [t.lower().strip("\"'") for t in tokens]
-    if any(t in _WRITE_VERBS for t in lowered):
-        return True
-    # git subcommands that materialize files (clone/checkout/...) are writes;
-    # read-only inspection (status/log/diff) is not.
-    if re.search(
-        r"\bgit\s+(clone|init|worktree|mv|rm|checkout|reset|clean|apply|am|pull|fetch)\b",
-        segment,
-        re.IGNORECASE,
+    # `echo x > "quoted path"`: the redirect token is separated from the path
+    # by the quote, so the regex-only check above misses it.
+    if any(
+        raw.endswith((">", ">>")) for t_start, _, raw in tokens if t_start < index
     ):
         return True
-    # `git ...` is not treated as a write unless a write verb is present.
-    for token in lowered:
-        if token.endswith((">", ">>")):
-            return True
+
+    token_index = next(
+        (i for i, (t_start, t_end, _) in enumerate(tokens) if t_start <= index < t_end),
+        None,
+    )
+    if token_index is None:
+        return False
+
+    verb = _command_name(tokens[0][2])
+    lowered = verb
+
+    if lowered in {"sed", "perl"}:
+        # `-i` is what turns these into in-place editors.
+        return any(token[2].startswith("-i") for token in tokens[1:])
+    if lowered == "git":
+        return bool(
+            re.search(
+                r"\bgit\s+(clone|init|worktree|mv|rm|checkout|reset|clean|apply|am|pull|fetch)\b",
+                segment,
+                re.IGNORECASE,
+            ),
+        )
+    if lowered in _COPY_VERBS:
+        paths = [
+            i
+            for i, (_, _, raw) in enumerate(tokens)
+            if i > 0 and not _is_flag_token(raw)
+        ]
+        return bool(paths) and token_index == paths[-1]
+    if lowered in _MOVE_VERBS or lowered in _WRITE_VERBS:
+        return True
     return False
+
+
+def _segment_bounds(command: str, index: int) -> tuple[int, int]:
+    """Character span of the shell segment containing *index*."""
+    start = 0
+    for match in re.finditer(r"[|;&\n]", command[:index]):
+        start = match.end()
+    tail = re.search(r"[|;&\n]", command[index:])
+    end = index + tail.start() if tail else len(command)
+    return start, end
+
+
+def _is_flag_token(raw: str) -> bool:
+    """True for CLI flags, not paths (`-r`, `--recursive`, `/E`, `/MIR`)."""
+    token = raw.strip("\"'")
+    if token.startswith("--"):
+        return True
+    if token.startswith("-") and len(token) <= 8:
+        return True
+    # Windows copy flags: /E, /S, /MIR; real POSIX paths have more slashes.
+    return (
+        token.startswith("/")
+        and token.count("/") == 1
+        and len(token) <= 5
+        and token[1:].isalnum()
+    )
+
+
+def _command_name(raw: str) -> str:
+    name = raw.strip("\"'").replace("\\", "/").rsplit("/", 1)[-1].lower()
+    if name.endswith(".exe"):
+        name = name[:-4]
+    return name
 
 
 def _trim(raw: str) -> str:
@@ -537,6 +608,10 @@ def _looks_like_posix_path(raw: str, base: Path) -> bool:
     if not raw.startswith("/") or raw.startswith("//"):
         return False
     if raw in ("/dev/null", "/dev/stdout", "/dev/stderr", "/dev/zero"):
+        return False
+    # `xcopy src dst /E`: a short all-alnum token is a Windows copy flag, not a
+    # filesystem path.
+    if len(raw) <= 5 and raw.count("/") == 1 and raw[1:].isalnum():
         return False
     # CLI flags such as `--opt/foo` are not paths.
     if raw.count("/") < 1:
