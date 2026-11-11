@@ -90,6 +90,63 @@ if (-not $proxyUp) {
 }
 
 # --- job worker
+function Get-WorkerProcesses {
+  # Match the command line, never the lock's pid: a recycled pid must not get
+  # an unrelated process killed.
+  Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue |
+    Where-Object { $_.CommandLine -and $_.CommandLine -like '*-m services.jobs.worker_service*' }
+}
+
+function Stop-WorkerTree([object[]]$Procs) {
+  foreach ($w in $Procs) {
+    Log ("  kill: worker pid {0} (tree)" -f $w.ProcessId)
+    & taskkill /F /T /PID $w.ProcessId 2>&1 | ForEach-Object { if ("$_".Trim()) { Log "  $_" } }
+  }
+  if ($Procs.Count -gt 0) { Start-Sleep -Seconds 3 }
+}
+
 if (-not (Test-JobWorkerAlive)) {
+  $lockPath = Join-Path $root '.job_store\worker.lock'
+  $lockAge = 0
+  if (Test-Path $lockPath) {
+    $lockAge = ((Get-Date) - (Get-Item $lockPath).LastWriteTime).TotalSeconds
+  }
+  $workers = @(Get-WorkerProcesses)
+  # A healthy worker touches its lock every second, so 30s+ means wedged -
+  # alive but unable to run its own loop (2026-11-10: a pathological regex
+  # held the GIL for 11h). Such a process must be killed, not shadowed:
+  # starting a second daemon would leave the first one's codex children
+  # running. A worker younger than 5 minutes is probably still importing
+  # (measured minutes under load), so it is left alone.
+  $wedged = @($workers | Where-Object {
+    ((Get-Date) - $_.CreationDate).TotalSeconds -ge 300
+  })
+  if ($wedged.Count -gt 0) {
+    Log ("worker: lock stale {0:N0}s - killing {1} wedged process tree(s)" -f $lockAge, $wedged.Count)
+    Stop-WorkerTree $wedged
+  } elseif ($workers.Count -gt 0) {
+    Log ("worker: start in progress (pid {0}, {1:N0}s old) - leaving it alone" -f `
+      $workers[0].ProcessId, ((Get-Date) - $workers[0].CreationDate).TotalSeconds)
+    exit 0
+  }
   Invoke-Repair 'job worker lock stale - starting the worker' @('-AppOnly')
+}
+
+# --- queue liveness: PENDING work plus a free slot must make progress.
+# Heartbeat freshness proves the process is alive, not that it is claiming.
+$queueProbe = Join-Path $root 'checks\watch_queue_liveness.ps1'
+$queueState = Join-Path $root '.job_store\watch_queue.state'
+$queueOut = @(& powershell -NoProfile -ExecutionPolicy Bypass -File $queueProbe `
+  -StoreDir (Join-Path $root '.job_store') -StateFile $queueState 2>&1)
+$queueCode = $LASTEXITCODE
+$queueVerdict = "$($queueOut[-1])"
+if ($queueVerdict.Trim() -and $queueVerdict -notmatch '\sOK$') {
+  foreach ($line in $queueOut) { if ("$line".Trim()) { Log "  $line" } }
+}
+if ($queueCode -eq 1 -and (Test-JobWorkerAlive)) {
+  # STALLED-IDLE only: nothing is in flight, so the restart loses no work.
+  # STALLED-RUNNING exits 0 (log only) and never reaches this branch.
+  Log 'queue: idle worker not claiming PENDING work - restarting it'
+  Stop-WorkerTree @(Get-WorkerProcesses)
+  Invoke-Repair 'job worker idle but not claiming PENDING work - restarting it' @('-AppOnly')
 }

@@ -194,21 +194,31 @@ function Start-JobWorker {
     Write-Output 'worker: daemon already running (lock fresh) - skipped'
     return
   }
-  foreach ($name in @('job_worker.out.log', 'job_worker.err.log')) {
-    $p = Join-Path $root $name
+  $outLog = Join-Path $root 'job_worker.out.log'
+  $errLog = Join-Path $root 'job_worker.err.log'
+  $rotated = $true
+  foreach ($p in @($outLog, $errLog)) {
     if (Test-Path $p) {
       try {
-        Move-Item -Force -Path $p -Destination (Join-Path $root "$name.$stamp")
+        Move-Item -Force -Path $p -Destination "$p.$stamp"
       } catch {
-        Remove-Item -Force -Path $p -ErrorAction SilentlyContinue
+        $rotated = $false
       }
     }
+  }
+  if (-not $rotated) {
+    # A wedged predecessor can still hold the canonical logs open. cmd silently
+    # skips the python command when its redirect cannot open the file (the
+    # "worker" then exits immediately and every repair repeats), so use
+    # per-start names instead of failing the whole start.
+    $outLog = "$outLog.$stamp"
+    $errLog = "$errLog.$stamp"
   }
   # Exit-code sentinel: appended only when python exits on its own (see
   # Start-CapabilityProxy) - its absence marks a hard kill. Delayed
   # expansion so the recorded code/time are the EXIT ones, not launch-time.
   $inner = 'set SOP_JOB_WORKER=1&& cd /d "{0}" && "{1}" -u -m services.jobs.worker_service > "{2}" 2> "{3}" & echo !DATE! !TIME! exitcode=!ERRORLEVEL!>> "{4}"' -f `
-    $root, $python, (Join-Path $root 'job_worker.out.log'), (Join-Path $root 'job_worker.err.log'),
+    $root, $python, $outLog, $errLog,
     (Join-Path $root 'job_worker.exitcode')
   Start-Process -FilePath 'cmd.exe' `
     -ArgumentList @('/v:on', '/c', $inner) `
@@ -221,8 +231,7 @@ function Start-JobWorker {
       return
     }
   }
-  Write-Output 'worker: NOT READY after 15s - inspect job_worker.err.log'
-  exit 1
+  Write-Output 'worker: still starting after 15s (imports can take minutes) - process left running'
 }
 
 function Ensure-ScheduledTasks {
