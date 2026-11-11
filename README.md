@@ -20,7 +20,7 @@ Key capabilities:
 - **Goal guard** — Evidence-gated completion: "all targets met" is a proposal, validated against deterministic evidence
 - **Loop & stagnation detection** — Intra-turn tool-loop detection plus cross-turn workspace-fingerprint stagnation with a nudge ladder
 - **Native file editing** — OpenCode, Codex, and pi use their maintained read, edit, patch, and write tools
-- **Web UI** — NiceGUI dashboard: Protocol Wizard, Live Run, and Self-Evolution pages, with a persisted background-job board and full-page live job screens
+- **Web UI** — NiceGUI dashboard: Protocol Wizard, Live Run, Harvester, and Self-Evolution pages, with a persisted background-job board and full-page live job screens
 - **Plan mode** — Configurable pre-execution planning rounds with read-only opencode analysis
 - **Occam's razor pass** — Optional post-success redundancy-reduction stage that runs on an archive copy, never the live workspace
 - **Task-state journal** — Append-only `TASK_STATE.md` progress journal re-injected after context resets
@@ -426,11 +426,11 @@ the restart prompt so the agent resumes with continuity.
 
 ## Web UI Pages
 
-Three NiceGUI pages, served at `/` and `/wizard` (Protocol Wizard), `/run`,
-and `/evolve`. Launching a task or an evolution enqueues a background job via
-the `JobManager` — job state and logs persist under `.job_store/`, so runs
-continue independently of the browser. The left drawer shows live queue
-stats and locks Run/Evolve until the connectivity tests pass.
+Four NiceGUI pages, served at `/` and `/wizard` (Protocol Wizard), `/run`,
+`/harvest`, and `/evolve`. Launching a task or an evolution enqueues a
+background job via the `JobManager` — job state and logs persist under
+`.job_store/`, so runs continue independently of the browser. The left drawer
+shows live queue stats and locks Run/Evolve until the connectivity tests pass.
 
 Job logs are headline-sized by default: each event persists as one key
 line, full bodies of large blocks go to `<job_id>.full` sidecar files
@@ -483,7 +483,25 @@ Features:
 - Stop a running job at any time
 - Final report with download button (available after the run completes)
 
-### ③ Self-Evolution
+### ③ Harvester
+Collect finished runs into one clean folder. Pick runs with checkboxes, or
+type a string — matched against job id, workspace, batch id, and the final
+report — and matching runs are selected automatically. Set a custom harvest
+prompt and output location; every launch creates a fresh
+`harvest_<timestamp>/` folder containing:
+
+- `<workspace>__<job>/report.md` — the run's stored final report (always)
+- `<workspace>__<job>/run.json` — provenance and collection status
+- `<workspace>__<job>/harvest.md` — the agent's distilled result, or a fallback
+- `INDEX.md` — every selected run, its state, and collection status
+- `HARVEST.md` — a batch-level summary across the per-run notes
+
+The configured agent (codex / opencode / pi) applies the harvest prompt to
+each run. A run whose agent fails or writes nothing still gets its report,
+metadata, and a fallback note, so the collection is never incomplete. Harvest
+jobs have their own board and live screen.
+
+### ④ Self-Evolution
 Point the system at **its own source tree**.
 
 1. Describe what you want debugged or improved
@@ -511,7 +529,7 @@ Self-evolution features:
 ## Architecture
 
 ```
-app.py                              Web UI  (3 pages: Wizard, Live Run, Self-Evolution)
+app.py                              Web UI  (4 pages: Wizard, Live Run, Harvester, Self-Evolution)
 supervisor/
   __init__.py                       Package marker
   memory_policy_evaluator.py        Fixed-suite gate for durable-memory policies
@@ -600,7 +618,7 @@ services/
   webui/                            NiceGUI shell: layout/theme, persisted app state, job-manager
                                     singleton, log formatting, startup tasks
     components/                     Task board, live job screen, log panel, progress widgets
-    pages/                          wizard, run, evolve pages
+    pages/                          wizard, run, harvest, evolve pages
 
 checks/                             Integration and end-to-end check scripts
 docs/                               Research notes

@@ -154,9 +154,17 @@ class SupervisorConfig:
     # P(close) at or above this is required before the arbiter may close.
     jev_decision_threshold: float = 0.80
 
+    # Harvest jobs only: the terminal runs to collect, the operator's harvest
+    # focus, and the exact output folder (one subfolder per run). Run/evolve
+    # jobs leave these untouched.
+    harvest_job_ids: tuple[str, ...] = ()
+    harvest_prompt: str = ""
+    harvest_dir: str = ""
+
     def to_state_dict(self) -> dict[str, object]:
         data = asdict(self)
         data["protocol_path"] = str(self.protocol_path)
         data["workspace"] = str(self.workspace)
         data["protected_files"] = list(self.protected_files)
+        data["harvest_job_ids"] = list(self.harvest_job_ids)
         return data

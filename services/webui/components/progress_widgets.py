@@ -15,11 +15,14 @@ from services.webui.log_format import (
 class ProgressWidgets:
     """Breadcrumb + token bar that update element values (no rebuilds)."""
 
-    def __init__(self, max_tokens: int):
+    def __init__(self, max_tokens: int, show_phase: bool = True):
         self.max_tokens = max_tokens
         # ui.html (not ui.label): the breadcrumb carries .phase-* markup that
-        # a plain-text label would show literally.
-        self.breadcrumb_label = ui.html("").classes("text-xs text-[#8b949e]")
+        # a plain-text label would show literally. Harvest jobs have no
+        # code/test/review pipeline, so they render without it.
+        self.breadcrumb_label = None
+        if show_phase:
+            self.breadcrumb_label = ui.html("").classes("text-xs text-[#8b949e]")
         self._breadcrumb_html = ""
         self.status_label = ui.label("").classes("text-sm")
         with ui.row().classes("w-full items-center gap-2"):
@@ -32,10 +35,11 @@ class ProgressWidgets:
         logs = logs or []
         # The 2s poll rebuilds the DOM on every set_content, which restarts
         # the chip's CSS animations — push only genuine phase changes.
-        html = phase_breadcrumb(phase_state(logs, state)) if logs else ""
-        if html != self._breadcrumb_html:
-            self.breadcrumb_label.set_content(html)
-            self._breadcrumb_html = html
+        if self.breadcrumb_label is not None:
+            html = phase_breadcrumb(phase_state(logs, state)) if logs else ""
+            if html != self._breadcrumb_html:
+                self.breadcrumb_label.set_content(html)
+                self._breadcrumb_html = html
 
         if state == "RUNNING":
             heartbeat_count = sum(

@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from services.jobs.event_recorder import EventRecorder
+from services.jobs.harvest_loop import HarvestLoop
 from services.jobs.job_states import (
     ACTIVE_JOB_STATES,
     JOB_STORE_DIR,
@@ -298,6 +299,7 @@ class JobManager:
         kwargs["protocol_path"] = Path(kwargs["protocol_path"])
         kwargs["workspace"] = Path(kwargs["workspace"])
         kwargs["protected_files"] = tuple(kwargs.get("protected_files") or ())
+        kwargs["harvest_job_ids"] = tuple(kwargs.get("harvest_job_ids") or ())
         return SupervisorConfig(**kwargs)
 
     def run_stored_job(self, job_id: str) -> bool:
@@ -494,6 +496,8 @@ class JobManager:
                 loop = SupervisorLoop(config)
             elif job_type == "evolve":
                 loop = SelfEvolutionLoop(config)
+            elif job_type == "harvest":
+                loop = HarvestLoop(config, store=self.store)
             else:
                 raise ValueError(f"Unknown job type: {job_type}")
 

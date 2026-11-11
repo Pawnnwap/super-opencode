@@ -206,6 +206,18 @@ def run_page(job_id: str = "") -> None:
     run.render(job_id=job_id)
 
 
+@ui.page("/harvest")
+@ui.page("/harvest/{job_id}")
+async def harvest_page(job_id: str = "") -> None:
+    layout.apply_theme()
+    job_manager = get_job_manager()
+    layout.render_shell("harvest", job_manager)
+    layout.render_startup_banner()
+    from services.webui.pages import harvest
+
+    await harvest.render(job_id=job_id)
+
+
 @ui.page("/evolve")
 @ui.page("/evolve/{job_id}")
 def evolve_page(job_id: str = "") -> None:

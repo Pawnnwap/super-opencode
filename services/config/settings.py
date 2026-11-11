@@ -38,6 +38,8 @@ _PERSIST_KEYS = [
     "log_detail",
     "max_parallel_jobs",
     "max_stored_jobs",
+    "harvest_prompt",
+    "harvest_dir",
     "raw_input",
     "raw_target",
     "raw_restrictions",
@@ -89,6 +91,10 @@ DEFAULTS: dict = {
     # Terminal jobs beyond this count lose their log payloads (.logs/.full)
     # on the next enqueue; state summaries stay for the board history.
     "max_stored_jobs": 50,
+    # Harvester: last operator prompt and output parent. Empty prompt means
+    # the built-in default; empty dir follows the configured workspace.
+    "harvest_prompt": "",
+    "harvest_dir": "",
     "protected_files": [],
     "evo_goal": "",
     "evo_extra_restrictions": "",

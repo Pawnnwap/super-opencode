@@ -48,11 +48,21 @@ def _workspace_name(job: dict) -> str:
 class JobBoard:
     """Self-refreshing board for one job type ("run" | "evolve")."""
 
-    def __init__(self, job_manager, job_type: str, *, is_evolution: bool):
+    def __init__(
+        self,
+        job_manager,
+        job_type: str,
+        *,
+        is_evolution: bool,
+        base_path: str | None = None,
+    ):
         self.job_manager = job_manager
         self.job_type = job_type
         self.is_evolution = is_evolution
-        self.base_path = "/evolve" if is_evolution else "/run"
+        self.base_path = base_path or ("/evolve" if is_evolution else "/run")
+        # Harvest jobs have no code/test/review pipeline; a phase breadcrumb
+        # would render every phase as "todo" forever.
+        self.show_phase = job_type != "harvest"
         self.max_tokens = int(app_state.get("max_tokens") or 150000)
         self._queue_signature = None
         self._snapshot_signature = None
@@ -360,7 +370,7 @@ class JobBoard:
         if last:
             ui.label(f"Last: {last}").classes("text-xs text-[#8b949e]")
         logs = safe_logs(selected["status"])
-        ProgressWidgets(self.max_tokens).update(
+        ProgressWidgets(self.max_tokens, show_phase=self.show_phase).update(
             logs,
             selected["status"].get("state", "UNKNOWN"),
             is_evolution=self.is_evolution,

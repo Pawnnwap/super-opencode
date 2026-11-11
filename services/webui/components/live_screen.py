@@ -39,6 +39,8 @@ class LiveJobScreen:
         self.base_path = base_path
         self.is_evolution = is_evolution
         self.running_message = running_message
+        # Harvest jobs have no code/test/review pipeline to show.
+        self.show_phase = job_type != "harvest"
         self.max_tokens = int(app_state.get("max_tokens") or 150000)
         self._read_failures = 0
 
@@ -60,7 +62,9 @@ class LiveJobScreen:
 
         with ui.row().classes("w-full gap-4 flex-nowrap"):
             with ui.column().classes("flex-[2]"):
-                self.progress = ProgressWidgets(self.max_tokens)
+                self.progress = ProgressWidgets(
+                    self.max_tokens, show_phase=self.show_phase,
+                )
                 ui.label("Latest").classes("text-sm font-bold text-[#9ecbff]")
                 self.tail = TailStrip(keep=5)
                 with ui.expansion("完整日志", value=False).classes("w-full"):
@@ -190,6 +194,7 @@ class LiveJobScreen:
 
     def _render_details(self, status: dict) -> None:
         state = status.get("state", "UNKNOWN")
+        config = status.get("config", {})
         ui.label("Details").classes("text-sm font-bold text-[#9ecbff]")
         ui.label(f"State: {state}").classes("text-xs")
         started = time.strftime(
@@ -197,16 +202,31 @@ class LiveJobScreen:
             time.localtime(float(status.get("updated_at") or 0)),
         )
         ui.label(f"Started/Updated: {started}").classes("text-xs")
-        ui.label(
-            f"Supervisor model: {app_state.get('supervisor_model') or '(not set)'}",
-        ).classes("text-xs")
-        engine = status.get("config", {}).get("engine") or "opencode"
-        ui.label(f"{engine.capitalize()} model: {app_state.get('opencode_model') or '(not set)'}").classes(
-            "text-xs",
-        )
-        if not self.is_evolution:
-            occam = status.get("config", {}).get("enable_occam_razor", False)
-            ui.label(f"Occam Razor: {'on' if occam else 'off'}").classes("text-xs")
+        engine = config.get("engine") or "opencode"
+        if self.job_type == "harvest":
+            ui.label(
+                f"{engine.capitalize()} model: "
+                f"{app_state.get('opencode_model') or '(not set)'}",
+            ).classes("text-xs")
+            runs = config.get("harvest_job_ids") or []
+            ui.label(f"Runs selected: {len(runs)}").classes("text-xs")
+            folder = config.get("harvest_dir") or config.get("workspace") or "?"
+            ui.label(f"Harvest folder: {folder}").classes(
+                "text-xs mono text-[#8b949e]",
+            )
+        else:
+            ui.label(
+                f"Supervisor model: {app_state.get('supervisor_model') or '(not set)'}",
+            ).classes("text-xs")
+            ui.label(
+                f"{engine.capitalize()} model: "
+                f"{app_state.get('opencode_model') or '(not set)'}",
+            ).classes("text-xs")
+            if not self.is_evolution:
+                occam = config.get("enable_occam_razor", False)
+                ui.label(f"Occam Razor: {'on' if occam else 'off'}").classes(
+                    "text-xs",
+                )
 
         # No report block here on purpose: _render_report is the single
         # report surface - this column used to render the SAME report a
@@ -216,13 +236,16 @@ class LiveJobScreen:
         report = status.get("report")
         if not report:
             return
-        title = "Evolution Report" if self.is_evolution else "Report"
+        if self.job_type == "harvest":
+            title = "Harvest Summary"
+        else:
+            title = "Evolution Report" if self.is_evolution else "Report"
         with ui.expansion(title, value=True).classes("w-full"):
             ui.markdown(report)
             ui.button(
                 "Download",
                 on_click=lambda: ui.download(
                     report.encode("utf-8"),
-                    f"{'evolution' if self.is_evolution else 'run'}_report_{self.job_id}.md",
+                    f"{'evolution' if self.is_evolution else self.job_type}_report_{self.job_id}.md",
                 ),
             )

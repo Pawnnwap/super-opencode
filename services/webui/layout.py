@@ -101,6 +101,7 @@ PILL_MAP = {
 _PAGES = [
     ("wizard", "Protocol Wizard", "✍️"),
     ("run", "Live Run", "▶"),
+    ("harvest", "Harvester", "🧺"),
     ("evolve", "Self-Evolution", "🧬"),
 ]
 
@@ -244,6 +245,8 @@ def render_shell(active: str, job_manager) -> None:
         with ui.column().classes("gap-1 text-xs text-[#8b949e] w-full"):
             ui.label("Run queue").classes("font-bold text-[#9ecbff]")
             ui.label(_queue_stats_line(job_manager, "run"))
+            ui.label("Harvest queue").classes("font-bold text-[#9ecbff] mt-2")
+            ui.label(_queue_stats_line(job_manager, "harvest"))
             ui.label("Evolution queue").classes("font-bold text-[#9ecbff] mt-2")
             ui.label(_queue_stats_line(job_manager, "evolve"))
         ui.space()
