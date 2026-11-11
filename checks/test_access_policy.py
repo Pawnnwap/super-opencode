@@ -222,6 +222,35 @@ class TestCommandScan:
         violations = policy.scan_command(f'sed -i s/a/b/ "{ref}/a.txt"')
         assert violations and violations[0].access == "write"
 
+    def test_quoted_paths_with_spaces_are_whole_tokens(self, tmp_path):
+        ws = tmp_path / "my project"
+        ws.mkdir()
+        ref = tmp_path / "ref data"
+        ref.mkdir()
+        policy = build_policy(ws, [ref])
+
+        # A quoted spaced path is one token; truncating it at the space used to
+        # produce a bogus `...\ref` path and reject a legal copy.
+        assert policy.scan_command(f'cp "{ref}/a b.txt" "{ws}/a b.txt"') == []
+        assert policy.scan_command(f'copy "{ref}\\a b.txt" "{ws}\\a b.txt"') == []
+        assert policy.scan_command(f'xcopy "{ref}" "{ws}\\copy" /E /I') == []
+        assert policy.scan_command(f'cat "{ref}/a b.txt"') == []
+
+        violations = policy.scan_command(f'echo hi > "{ref}/x y.txt"')
+        assert violations and "read-only" in violations[0].reason
+
+    def test_named_destination_cannot_bypass(self, roots):
+        ws, ref = roots
+        policy = build_policy(ws, [ref])
+        # Destination first: positional logic alone would read it as a source.
+        violations = policy.scan_command(
+            f'Copy-Item -Destination "{ref}/b.txt" -Path "{ws}/a.txt"',
+        )
+        assert violations and "read-only" in violations[0].reason
+        assert policy.scan_command(
+            f'Copy-Item -Destination "{ws}/b.txt" -Path "{ref}/a.txt"',
+        ) == []
+
     def test_read_from_whitelist_is_allowed(self, roots):
         ws, ref = roots
         policy = build_policy(ws, [ref])

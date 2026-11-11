@@ -80,11 +80,6 @@ _DEVICE_NAMES = {
     "lpt9",
 }
 
-# Absolute-path shapes worth extracting from a shell command.
-_ABS_WIN_RE = re.compile(r"""(?<![\w])([A-Za-z]:[\\/][^\s"'|;&<>\n]*)""")
-_ABS_UNC_RE = re.compile(r"""(\\\\[^\s"'|;&<>\n]+)""")
-_ABS_POSIX_RE = re.compile(r"""(?<![\w:/.-])(/(?!/)[^\s"'|;&<>\n]+)""")
-
 # Write intent markers. The scan is conservative: when a path follows one of
 # these, it is treated as a write (and therefore denied outside the cwd).
 _WRITE_VERBS = {
@@ -137,6 +132,14 @@ _COPY_VERBS = frozenset(
 )
 # Move verbs remove the source, so the source is a write as well.
 _MOVE_VERBS = frozenset({"mv", "move", "move-item", "rename", "ren"})
+
+# Named parameters where the destination can come before the source
+# (`Copy-Item -Destination X -Path Y`); positional logic alone would read X
+# as a source and let a write into the read-only whitelist through.
+_NAMED_WRITE = frozenset(
+    {"-destination", "-target", "-outfile", "-outputfile", "-literalpath"},
+)
+_NAMED_READ = frozenset({"-path", "-source", "-from", "-include"})
 
 # Windows shell builtins whose arguments are paths, for `>`-less writes.
 _WRITE_REDIRECT_RE = re.compile(r"(?<![0-9])(?:>>?|1>>?|2>>?)\s*$")
@@ -348,44 +351,34 @@ class AccessPolicy:
             )
             return violations
 
-        for match in _ABS_WIN_RE.finditer(command):
-            raw = _trim(match.group(1))
-            if raw:
-                add(raw, "write" if _write_context(command, match.start()) else "read")
-
-        for match in _ABS_UNC_RE.finditer(command):
-            raw = _trim(match.group(1))
-            if raw:
-                add(raw, "read")  # UNC is denied outright
-
-        for match in _ABS_POSIX_RE.finditer(command):
-            raw = _trim(match.group(1))
-            if not _looks_like_posix_path(raw, base):
-                continue
-            add(_posix_to_local(raw), "write" if _write_context(command, match.start()) else "read")
-
-        for match in re.finditer(r"(?:~|%USERPROFILE%|\$HOME|\$\{HOME\})([\\/][^\s\"'|;&<>\n]*)", command):
-            raw = _trim(match.group(0))
-            expanded = os.path.expandvars(os.path.expanduser(raw))
-            add(expanded, "write" if _write_context(command, match.start()) else "read")
-
-        # Relative path arguments: `cat ../../secret` or `cp x ../out/y` escape
-        # the cwd without ever spelling an absolute path. Resolve every
-        # path-shaped token against the cwd and check it like any other path.
-        for match in re.finditer(r"""[^\s"'|;&<>]+""", command):
+        # Shell-like tokenization: a quoted path is one token even when it
+        # contains spaces (`C:////Program Files\\...`), which a whitespace regex
+        # would truncate into a bogus path and a false denial.
+        for match in _shell_tokens(command):
             token = _trim(match.group(0))
-            if not token or token.startswith(("-", "/", "\\", "%", "$", "~")):
+            if not token:
                 continue
+            if token.startswith("-"):
+                if "=" not in token:
+                    continue
+                token = token.split("=", 1)[1]
+                if not token:
+                    continue
             if "://" in token:
                 continue
             if "=" in token:
                 token = token.split("=", 1)[1]
                 if not token:
                     continue
-            if token in {".", ".."} or "/" in token or "\\" in token or re.match(
-                r"^[A-Za-z]:", token,
-            ):
-                add(token, "write" if _write_context(command, match.start()) else "read")
+            if token.startswith("/"):
+                if _WINDOWS and _is_flag_token(token):
+                    continue
+                if not _looks_like_posix_path(token, base):
+                    continue
+                token = _posix_to_local(token)
+            if not _looks_like_path_token(token):
+                continue
+            add(token, "write" if _write_context(command, match.start()) else "read")
 
         for match in re.finditer(r"\bcd\s+(?:/d\s+)?([^\s&|;]+)", command, re.IGNORECASE):
             raw = _trim(match.group(1))
@@ -540,6 +533,12 @@ def _write_context(command: str, index: int) -> bool:
     )
     if token_index is None:
         return False
+    if token_index > 0:
+        previous = _trim(tokens[token_index - 1][2]).lower()
+        if previous in _NAMED_WRITE:
+            return True
+        if previous in _NAMED_READ:
+            return False
 
     verb = _command_name(tokens[0][2])
     lowered = verb
@@ -600,8 +599,23 @@ def _command_name(raw: str) -> str:
     return name
 
 
+def _shell_tokens(command: str):
+    """Yield (match, raw) pairs; quoted strings stay whole."""
+    return re.finditer(r'"[^"]*"|\'[^\']*\'|\S+', command)
+
+
+def _looks_like_path_token(token: str) -> bool:
+    return (
+        token in {".", ".."}
+        or "/" in token
+        or "\\" in token
+        or bool(re.match(r"^[A-Za-z]:", token))
+        or token.startswith(("~", "%", "$"))
+    )
+
+
 def _trim(raw: str) -> str:
-    return raw.rstrip(_QUOTE_TRIM)
+    return raw.strip(_QUOTE_TRIM)
 
 
 def _looks_like_posix_path(raw: str, base: Path) -> bool:

@@ -675,33 +675,66 @@ const WRITE_VERBS = new Set([
   "add-content", "out-file", "clear-content", "rename-item",
 ]);
 
+function looksLikePath(text) {
+  return (
+    text === "." ||
+    text === ".." ||
+    text.includes("/") ||
+    text.includes("\\") ||
+    /^[A-Za-z]:/.test(text) ||
+    /^(~|%|\$)/.test(text)
+  );
+}
+
+function quoteSpans(text) {
+  const spans = [];
+  for (const match of text.matchAll(/"([^"]*)"|'([^']*)'/g)) {
+    spans.push([match.index, match.index + match[0].length]);
+  }
+  return spans;
+}
+
+function insideSpans(spans, index) {
+  return spans.some(([start, end]) => index >= start && index < end);
+}
+
 function collectPaths(text) {
   const out = [];
+  const spans = quoteSpans(text);
   const push = (value) => {
     if (value) out.push(value.replace(/["'`,;:)\]}]+$/, ""));
   };
-  for (const m of text.matchAll(/(?<![\w])([A-Za-z]:[\\/][^\s"'|;&<>\n]*)/g)) push(m[1]);
-  for (const m of text.matchAll(/(\\\\[^\s"'|;&<>\n]+)/g)) push(m[1]);
-  for (const m of text.matchAll(/(?:~|%USERPROFILE%|\$HOME|\$\{HOME\})([\\/][^\s"'|;&<>\n]*)/g)) {
-    push(m[0]);
+
+  // A quoted path is one unit even when it contains spaces
+  // (`C:////Program Files\\...`); the whitespace regexes below would truncate it
+  // into a bogus path and cause a false denial.
+  for (const match of text.matchAll(/"([^"]*)"|'([^']*)'/g)) {
+    const inner = (match[1] ?? match[2] ?? "").trim();
+    if (inner && looksLikePath(inner)) push(inner);
+  }
+
+  for (const match of text.matchAll(/(?<![\w])([A-Za-z]:[\\/][^\s"'|;&<>\n]*)/g)) {
+    if (insideSpans(spans, match.index)) continue;
+    push(match[1]);
+  }
+  for (const match of text.matchAll(/(\\\\[^\s"'|;&<>\n]+)/g)) {
+    if (insideSpans(spans, match.index)) continue;
+    push(match[1]);
+  }
+  for (const match of text.matchAll(/(?:~|%USERPROFILE%|\$HOME|\$\{HOME\})([\\/][^\s"'|;&<>\n]*)/g)) {
+    if (insideSpans(spans, match.index)) continue;
+    push(match[0]);
   }
   // Relative path arguments (`cat ../../secret`) escape the cwd without an
   // absolute spelling, so every path-shaped token is checked against the base.
-  for (const m of text.matchAll(/[^\s"'|;&<>]+/g)) {
-    let token = m[0];
+  for (const match of text.matchAll(/[^\s"'|;&<>]+/g)) {
+    if (insideSpans(spans, match.index)) continue;
+    let token = match[0];
     if (!token || /^[-/\\%$~]/.test(token) || token.includes("://")) continue;
     const eq = token.indexOf("=");
     if (eq !== -1) token = token.slice(eq + 1);
     if (!token) continue;
-    if (
-      token === "." ||
-      token === ".." ||
-      token.includes("/") ||
-      token.includes("\\") ||
-      /^[A-Za-z]:/.test(token)
-    ) {
-      push(token);
-    }
+    if (looksLikePath(token)) push(token);
   }
   return out;
 }
@@ -710,6 +743,10 @@ const COPY_VERBS = new Set([
   "cp", "copy", "copy-item", "xcopy", "robocopy", "rsync", "scp", "install",
 ]);
 const MOVE_VERBS = new Set(["mv", "move", "move-item", "rename", "ren"]);
+const NAMED_WRITE = new Set([
+  "-destination", "-target", "-outfile", "-outputfile", "-literalpath",
+]);
+const NAMED_READ = new Set(["-path", "-source", "-from", "-include"]);
 
 function segmentBounds(command, index) {
   let start = 0;
@@ -765,6 +802,13 @@ function writeIntent(command, index) {
     (token) => token.start <= index && index < token.end,
   );
   if (tokenIndex < 0) return false;
+  if (tokenIndex > 0) {
+    const previous = tokens[tokenIndex - 1].raw
+      .replace(/^["']|["']$/g, "")
+      .toLowerCase();
+    if (NAMED_WRITE.has(previous)) return true;
+    if (NAMED_READ.has(previous)) return false;
+  }
   const verb = commandName(tokens[0].raw);
   if (verb === "sed" || verb === "perl") {
     return tokens.slice(1).some((token) => token.raw.startsWith("-i"));
@@ -975,6 +1019,10 @@ const COPY_VERBS = new Set([
   "cp", "copy", "copy-item", "xcopy", "robocopy", "rsync", "scp", "install",
 ]);
 const MOVE_VERBS = new Set(["mv", "move", "move-item", "rename", "ren"]);
+const NAMED_WRITE = new Set([
+  "-destination", "-target", "-outfile", "-outputfile", "-literalpath",
+]);
+const NAMED_READ = new Set(["-path", "-source", "-from", "-include"]);
 
 function segmentBounds(command: string, index: number): [number, number] {
   let start = 0;
@@ -1030,6 +1078,13 @@ function writeIntent(command: string, index: number): boolean {
     (token) => token.start <= index && index < token.end,
   );
   if (tokenIndex < 0) return false;
+  if (tokenIndex > 0) {
+    const previous = tokens[tokenIndex - 1].raw
+      .replace(/^["']|["']$/g, "")
+      .toLowerCase();
+    if (NAMED_WRITE.has(previous)) return true;
+    if (NAMED_READ.has(previous)) return false;
+  }
   const verb = commandName(tokens[0].raw);
   if (verb === "sed" || verb === "perl") {
     return tokens.slice(1).some((token) => token.raw.startsWith("-i"));
@@ -1048,18 +1103,51 @@ function writeIntent(command: string, index: number): boolean {
   return MOVE_VERBS.has(verb) || WRITE_VERBS.has(verb);
 }
 
+function looksLikePath(text: string): boolean {
+  return (
+    text === "." ||
+    text === ".." ||
+    text.includes("/") ||
+    text.includes("\\") ||
+    /^[A-Za-z]:/.test(text) ||
+    /^(~|%|\$)/.test(text)
+  );
+}
+
+function quoteSpans(text: string): Array<[number, number]> {
+  const spans: Array<[number, number]> = [];
+  for (const match of text.matchAll(/"([^"]*)"|'([^']*)'/g)) {
+    spans.push([match.index ?? 0, (match.index ?? 0) + match[0].length]);
+  }
+  return spans;
+}
+
+function insideSpans(spans: Array<[number, number]>, index: number): boolean {
+  return spans.some(([start, end]) => index >= start && index < end);
+}
+
 function scanCommand(policy: Policy | null, command: string, base: string): string | null {
   if (!policy) return "access policy not loaded";
   if (policy.enabled === false || !command) return null;
   if ((policy as Policy & { missing?: boolean }).missing) {
     return "access policy snapshot missing (failing closed)";
   }
+  const spans = quoteSpans(command);
+  for (const match of command.matchAll(/"([^"]*)"|'([^']*)'/g)) {
+    const inner = (match[1] ?? match[2] ?? "").trim();
+    if (!inner || !looksLikePath(inner)) continue;
+    const write = writeIntent(command, match.index ?? 0);
+    const reason = check(policy, inner, write ? "write" : "read", base);
+    if (reason) return inner + ": " + reason;
+  }
+
   const patterns = [
     /(?<![\w])([A-Za-z]:[\\/][^\s"'|;&<>\n]*)/g,
     /(\\\\[^\s"'|;&<>\n]+)/g,
     /(?:~|%USERPROFILE%|\$HOME|\$\{HOME\})([\\/][^\s"'|;&<>\n]*)/g,
   ];
   for (const match of command.matchAll(/[^\s"'|;&<>]+/g)) {
+    if (insideSpans(spans, match.index ?? 0)) continue;
     let token = match[0].replace(/["'`,;:)\]}]+$/, "");
     if (!token || /^[-/\\%$~]/.test(token) || token.includes("://")) continue;
     const eq = token.indexOf("=");
@@ -1080,6 +1168,7 @@ function scanCommand(policy: Policy | null, command: string, base: string): stri
 
   for (const pattern of patterns) {
     for (const match of command.matchAll(pattern)) {
+      if (insideSpans(spans, match.index ?? 0)) continue;
       const raw = match[0].replace(/["'`,;:)\]}]+$/, "");
       const expanded = raw
         .replace(/^~/, process.env.USERPROFILE || process.env.HOME || "~")
