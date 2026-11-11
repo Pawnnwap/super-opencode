@@ -37,10 +37,26 @@ from supervisor.runners.command_common import (
 )
 from supervisor.runners.opencode_support.result import RunResult
 from supervisor.runners.opencode_support.stream import LineEvent
+from supervisor.runners.process_utils import remember_process_identity
 from supervisor.runners.stream_driver import StreamOutcome, consume_process_stream
 from supervisor.utils.text_utils import coerce_str
 
 logger = logging.getLogger(__name__)
+
+
+def _cancel_event(runner):
+    """The runner's cancel Event, or None for test doubles without one."""
+    event = getattr(runner, "cancel_event", None)
+    return event if callable(getattr(event, "is_set", None)) else None
+
+
+def _cancel_requested(runner) -> bool:
+    event = _cancel_event(runner)
+    return bool(event is not None and event.is_set())
+
+
+def _cancelled_result() -> RunResult:
+    return RunResult(stderr="[CANCELLED]", returncode=-1, cancelled=True)
 
 
 def default_child_env() -> dict[str, str]:
@@ -105,10 +121,22 @@ def run_prompt_common(
     """
     prompt = coerce_str(prompt, f"prompt ({engine} _run_prompt)")
 
+    if _cancel_requested(runner):
+        runner._last_result = _cancelled_result()
+        yield {"level": "info", "msg": f"{engine} turn cancelled before launch."}
+        return
+
     exe = find_exe_fn(runner.opencode_executable)
     using_backup = False
 
     while True:
+        # Cancel can arrive between a failed attempt and its backup retry:
+        # never launch another model call after the operator pressed STOP.
+        if _cancel_requested(runner):
+            runner._last_result = _cancelled_result()
+            yield {"level": "info", "msg": f"{engine} turn cancelled."}
+            return
+
         model_for_cmd = (
             runner.opencode_model_backup if using_backup else runner.opencode_model
         )
@@ -153,6 +181,9 @@ def run_prompt_common(
                 env=child_env,
                 shell=use_shell,
             )
+            # Record the OS identity at spawn so a later tree-kill can never
+            # signal a reused PID (see process_utils.remember_process_identity).
+            remember_process_identity(runner._process)
             threading.Thread(
                 target=feed_stdin_prompt,
                 args=(runner._process, prompt),
@@ -166,7 +197,21 @@ def run_prompt_common(
                 timeout=runner.timeout,
                 loop_detector=LoopDetector(),
                 abort_on=provider_connection_error,
+                cancel_event=_cancel_event(runner),
             )
+
+            if outcome.cancelled:
+                # Never treat a STOP as a failed turn: no backup fallback, no
+                # retry, no session capture. The job worker writes CANCELLED.
+                runner._last_result = RunResult(
+                    stdout=outcome.stdout,
+                    stderr=outcome.stderr or "[CANCELLED]",
+                    returncode=-1,
+                    cancelled=True,
+                    prose=outcome.prose,
+                )
+                logger.info("%s turn cancelled by operator", engine)
+                return
 
             if tokens_from_outcome is not None:
                 estimated = tokens_from_outcome(outcome)
@@ -287,7 +332,11 @@ def run_prompt_common(
                 using_backup = True
                 continue
 
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - whole attempt boundary
+            if _cancel_requested(runner):
+                runner._last_result = _cancelled_result()
+                logger.info("%s turn cancelled during launch", engine)
+                return
             time.sleep(3)
             logger.error(
                 "%s launch error - exc=%s using_backup=%s model_for_cmd=%r (type=%s) "

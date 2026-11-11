@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import logging
 import subprocess
+import threading
 from collections.abc import Callable, Generator
 from pathlib import Path
 
@@ -133,6 +134,11 @@ class BaseRunner:
 
         self._last_result: RunResult | None = None
         self._chars_exchanged: int = 0
+        # Operator cancellation. The process layer checks this every 0.5 s
+        # while consuming the engine's event stream, so a STOP exits the job
+        # thread even when a detached descendant still holds the stdout pipe
+        # open (the OS tree-kill alone cannot close such an inherited handle).
+        self._cancel_event = threading.Event()
         # Real cumulative context tokens from the engine's event stream
         # (0 until the stream reports them). Preferred over the chars/4
         # estimate when available.
@@ -186,9 +192,17 @@ class BaseRunner:
         """Return True if the runner is currently active."""
         return self._alive
 
+    @property
+    def cancel_event(self) -> threading.Event:
+        """Set by :meth:`stop`; the engine stream exits promptly on it."""
+        return self._cancel_event
+
     def stop(self) -> None:
         self._alive = False
         self._session_active = False
+        # Signal FIRST: the stream consumer may be blocked on a pipe held by
+        # a detached descendant, and the event is what frees the job thread.
+        self._cancel_event.set()
         if self._process is not None:
             # Tree-kill: on Windows the direct child is the cmd.exe shim of a
             # `.cmd` install; killing only it orphans the real CLI process,
@@ -240,6 +254,12 @@ class BaseRunner:
         it explicitly. Engines that capture sessions out-of-band (opencode)
         override this with their diffing flow.
         """
+        if self._cancel_event.is_set():
+            yield {
+                "level": "warn",
+                "msg": f"{self._engine} start skipped: run cancelled.",
+            }
+            return
         validated = validate_message(
             initial_prompt, "initial_prompt (start)", engine=self._engine
         )
@@ -266,6 +286,12 @@ class BaseRunner:
         self.enable_continuation(True)
 
     def send(self, message: str) -> Generator[dict]:
+        if self._cancel_event.is_set():
+            yield {
+                "level": "warn",
+                "msg": f"{self._engine} turn skipped: run cancelled.",
+            }
+            return
         validated = validate_message(message, "message (send)", engine=self._engine)
         resolved_message = (
             validated
@@ -351,6 +377,9 @@ class BaseRunner:
         self._session_active = False
         self._use_continue = False
         self._session_id = None
+        # Context compaction stops the old session's process and immediately
+        # starts a fresh one; that cleanup is not an operator cancel.
+        self._cancel_event.clear()
 
     def reset_context_counter(self) -> None:
         self._chars_exchanged = 0

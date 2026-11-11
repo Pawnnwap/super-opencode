@@ -11,7 +11,9 @@ spawned its own grandchildren (they inherit the write handle). A direct
 ``for line in proc.stdout`` then blocks forever. Reading in a daemon thread and
 pulling from a ``queue.Queue`` with a deadline means the consumer never blocks
 past the timeout; on timeout we kill the whole process tree and abandon the
-(daemon) reader.
+(daemon) reader. Operator cancellation uses the same deadline: a cancel event
+is checked every 0.5 s, so a detached descendant holding the pipe cannot keep
+a cancelled job's worker slot occupied.
 """
 
 from __future__ import annotations
@@ -47,6 +49,7 @@ class StreamOutcome:
     aborted: bool = False  # killed because the provider was unreachable
     abort_reason: str = ""  # matched connection-error signature
     tool_count: int = 0  # tool items observed in this turn (≈ model requests - 1)
+    cancelled: bool = False  # operator STOP; never retried or judged
 
 
 def _drain_stderr(proc, sink: list[str]) -> None:
@@ -93,6 +96,7 @@ def consume_process_stream(
     timeout: int,
     loop_detector=None,
     abort_on: Callable[[str], str | None] | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> Generator[dict, None, StreamOutcome]:
     """Stream *proc* stdout via *classify_line*, yield live tool markers.
 
@@ -178,8 +182,16 @@ def consume_process_stream(
     loop_reason = ""
     aborted = False
     abort_reason = ""
+    cancelled = False
     succeeded = False  # any model text or tool activity happened
     while True:
+        # Operator STOP is checked on the same 0.5 s cadence as the queue
+        # wait. This is the only exit that does not depend on EOF: a detached
+        # descendant can inherit the child's stdout write handle and keep the
+        # reader blocked long after the engine tree was killed.
+        if cancel_event is not None and cancel_event.is_set():
+            cancelled = True
+            break
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             timed_out = True
@@ -232,26 +244,37 @@ def consume_process_stream(
                     _kill_process_tree(proc)
                     break
 
-    if timed_out or looped or aborted:
-        if timed_out:
-            _kill_process_tree(proc)
-        # Best-effort: fold any lines already buffered before the kill, so a
-        # timeout/loop-kill still preserves partial output. No live yields here.
-        drain_deadline = time.monotonic() + 1.0
-        while time.monotonic() < drain_deadline:
-            try:
-                item = out_q.get(timeout=0.1)
-            except queue.Empty:
-                break
-            if item is _STDOUT_DONE:
-                break
-            _accumulate(classify_line(item))
+    if cancelled:
+        _kill_process_tree(proc)
+        # The direct child dies here; the daemon reader/stderr threads may
+        # still be blocked on a pipe inherited by a detached descendant. They
+        # must not delay the cancelled job, so no join and only a short reap.
+        try:
+            proc.wait(timeout=2)
+        except Exception:  # noqa: BLE001, S110 - best-effort reap
+            pass
+    else:
+        if timed_out or looped or aborted:
+            if timed_out:
+                _kill_process_tree(proc)
+            # Best-effort: fold any lines already buffered before the kill, so
+            # a timeout/loop-kill still preserves partial output. No live
+            # yields here.
+            drain_deadline = time.monotonic() + 1.0
+            while time.monotonic() < drain_deadline:
+                try:
+                    item = out_q.get(timeout=0.1)
+                except queue.Empty:
+                    break
+                if item is _STDOUT_DONE:
+                    break
+                _accumulate(classify_line(item))
 
-    try:
-        proc.wait(timeout=10)
-    except Exception:  # noqa: BLE001, S110 - best-effort reap; kill already ran
-        pass
-    stderr_thread.join(timeout=5)
+        try:
+            proc.wait(timeout=10)
+        except Exception:  # noqa: BLE001, S110 - best-effort reap; kill already ran
+            pass
+        stderr_thread.join(timeout=5)
 
     returncode = proc.returncode
     if returncode is None:
@@ -276,4 +299,5 @@ def consume_process_stream(
         aborted=aborted,
         abort_reason=abort_reason,
         tool_count=len(markers),
+        cancelled=cancelled,
     )
