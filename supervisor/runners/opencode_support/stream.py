@@ -68,6 +68,27 @@ class LineEvent:
     count_for_loop: bool = True
 
 
+def parse_event_line(line: str | None) -> tuple[str | None, dict | None]:
+    """Split one engine stream line into ``(line, event)``.
+
+    ``(None, None)`` for a blank line; ``(line, None)`` for a non-JSON or
+    non-object payload (the caller surfaces it as raw text). Shared so both
+    engines treat malformed lines identically.
+    """
+    if line is None:
+        return None, None
+    line = line.strip()
+    if not line:
+        return None, None
+    try:
+        event = json.loads(line)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return line, None
+    if not isinstance(event, dict):
+        return line, None
+    return line, event
+
+
 def tool_marker_from(tool, inp) -> str:
     """Compact ``[tool] <intent>`` marker from a tool name + input payload.
 
@@ -107,18 +128,10 @@ def classify_line(line: str | None) -> LineEvent | None:
     Returns ``None`` for blank lines.  Non-JSON / unexpected shapes return a
     ``raw`` event so the caller can still surface the text.
     """
+    line, event = parse_event_line(line)
     if line is None:
         return None
-    line = line.strip()
-    if not line:
-        return None
-
-    try:
-        event = json.loads(line)
-    except (json.JSONDecodeError, TypeError, ValueError):
-        return LineEvent(kind="raw", raw=line)
-
-    if not isinstance(event, dict):
+    if event is None:
         return LineEvent(kind="raw", raw=line)
 
     etype = event.get("type", "")

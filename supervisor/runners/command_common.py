@@ -109,9 +109,19 @@ def resolve_model_arg(
 # preceded by the PowerShell call operator. On Windows every agent shell tool
 # call repeats the full exe path (C:\\WINDOWS\\...\\powershell.exe, the conda
 # python, ...) — pure noise in a one-line tool breadcrumb.
+#
+# LINEAR-TIME INVARIANT: a segment may not contain a separator. The previous
+# `(?:[^\s"']*?[\\/])*` let every separator be consumed either by the lazy
+# tail or by the trailing class, so a long slash run (a URL path, a base64
+# blob) that never reaches an interpreter name backtracked exponentially —
+# 26 URL segments ran >8s, and on 2026-11-10 03:00 one such line held the GIL
+# inside re.sub for 11+ hours and froze every job in the worker. Do not
+# reintroduce an ambiguous inner quantifier here.
+#
+# The lookbehind keeps `https://…` from matching at the scheme's `s:`.
 _EXE_PATH_RE = re.compile(
     r'(?:&\s+)?["\']?'
-    r'[A-Za-z]:[\\/](?:[^\s"\']*?[\\/])*'
+    r'(?<![A-Za-z0-9])[A-Za-z]:[\\/](?:[^\s"\'\\/]*[\\/])*'
     r'(?P<name>powershell|pwsh|cmd|pythonw?|bash|sh|node|npm|npx|uvx?|conda)'
     r'(?:\.exe|\.cmd|\.bat|\.ps1)?'
     r'["\']?',
@@ -142,6 +152,11 @@ _SHELL_WRAPPER_RE = re.compile(
 # parsers share one number.
 TOOL_DETAIL_LIMIT = 200
 
+# The marker keeps at most ``limit`` chars, so scanning more than a few KiB of
+# the raw detail buys nothing. The bound also caps memory and any downstream
+# regex work on absurd single-line tool payloads (multi-MB diffs/outputs).
+_TOOL_DETAIL_INPUT_LIMIT = 8192
+
 
 def compact_tool_detail(detail: str, limit: int = TOOL_DETAIL_LIMIT) -> str:
     """Compact a tool-call detail string for the ``[tool] …`` breadcrumb.
@@ -155,7 +170,7 @@ def compact_tool_detail(detail: str, limit: int = TOOL_DETAIL_LIMIT) -> str:
     on the marker, so distinct calls must stay distinct; only the
     ever-repeating wrapper noise is removed. Capped at *limit* chars.
     """
-    text = " ".join((detail or "").split())
+    text = " ".join((detail or "")[:_TOOL_DETAIL_INPUT_LIMIT].split())
     if not text:
         return ""
     text = _EXE_PATH_RE.sub(lambda m: m.group("name"), text)

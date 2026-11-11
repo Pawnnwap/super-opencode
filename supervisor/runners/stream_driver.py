@@ -32,6 +32,13 @@ logger = logging.getLogger(__name__)
 
 _STDOUT_DONE = object()  # sentinel: reader thread finished
 
+# A single stdout line is parsed and regex-rewritten on the consumer's thread
+# while every other job in the worker waits for the GIL. Legitimate events
+# (prose, tool markers, reasoning) are orders of magnitude smaller than this;
+# a bigger line is a runaway payload, so cut it before it enters the queue.
+# Truncation breaks the JSON framing and the line surfaces as a raw event.
+_MAX_LINE_CHARS = 8 * 1024 * 1024
+
 
 @dataclass
 class StreamOutcome:
@@ -77,6 +84,8 @@ def _read_stdout(stream, out_q: queue.Queue) -> None:
     try:
         if stream is not None:
             for line in stream:
+                if len(line) > _MAX_LINE_CHARS:
+                    line = line[:_MAX_LINE_CHARS]
                 out_q.put(line)
     except Exception:  # noqa: BLE001, S110 - EOF is the only signal we need
         pass

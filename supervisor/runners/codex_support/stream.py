@@ -42,10 +42,12 @@ codex run still surfaces *something* even if a field name drifts.
 
 from __future__ import annotations
 
-import json
-
 from supervisor.runners.command_common import TOOL_DETAIL_LIMIT, compact_tool_detail
-from supervisor.runners.opencode_support.stream import LineEvent, build_output
+from supervisor.runners.opencode_support.stream import (
+    LineEvent,
+    build_output,
+    parse_event_line,
+)
 from supervisor.utils.text_utils import head_tail_excerpt
 
 __all__ = [
@@ -223,17 +225,10 @@ def classify_line(line: str | None) -> LineEvent | None:
     Returns ``None`` for blank lines. Non-JSON / unexpected shapes return a
     ``raw`` event so the caller can still surface the text.
     """
+    line, event = parse_event_line(line)
     if line is None:
         return None
-    line = line.strip()
-    if not line:
-        return None
-
-    try:
-        event = json.loads(line)
-    except (json.JSONDecodeError, TypeError, ValueError):
-        return LineEvent(kind="raw", raw=line)
-    if not isinstance(event, dict):
+    if event is None:
         return LineEvent(kind="raw", raw=line)
 
     etype = event.get("type", "")

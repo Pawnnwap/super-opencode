@@ -12,10 +12,13 @@ absolute exe paths become bare names, `$env:VAR="…"; ` preludes vanish.
 """
 
 import json
+import time
 
 from supervisor.runners.codex_support.stream import classify_line as codex_classify
 from supervisor.runners.command_common import compact_tool_detail
-from supervisor.runners.opencode_support.stream import classify_line as opencode_classify
+from supervisor.runners.opencode_support.stream import (
+    classify_line as opencode_classify,
+)
 
 USER_SAMPLE = (
     '"C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command '
@@ -77,6 +80,40 @@ def test_identical_semantics_stay_deduped():
 def test_cap_respected():
     out = compact_tool_detail("python -c \"print('" + "x" * 500 + "')\"")
     assert len(out) <= 200
+
+
+def test_long_url_and_path_runs_stay_linear():
+    # Regression: the old `(?:[^\s"']*?[\\/])*` backtracked exponentially on
+    # separator runs that never reach an interpreter name. On 2026-11-10 a
+    # long URL in a shell command held the GIL for 11+ hours inside this
+    # function and froze every job in the worker. 26 segments already took
+    # >8s; these must be instant.
+    for detail in (
+        "https://api.example.com/" + "/".join(f"v{i}" for i in range(40)),
+        "C:/" + "/".join(f"seg{i}" for i in range(300)) + "/file.txt",
+        "C:\\" + "\\".join(f"seg{i}" for i in range(300)) + "\\file.txt",
+    ):
+        started = time.perf_counter()
+        compact_tool_detail(detail)
+        elapsed = time.perf_counter() - started
+        assert elapsed < 2.0, (len(detail), elapsed)
+
+
+def test_urls_are_not_mistaken_for_exe_paths():
+    # The scheme's `s:/` matches a drive-letter prefix; it must not be
+    # rewritten (and must not trigger the path scan at all).
+    for url in (
+        "https://api.example.com/v1/tools/python",
+        "curl -s https://example.org/~user/bin/node -o out.bin",
+    ):
+        assert compact_tool_detail(url) == url, compact_tool_detail(url)
+
+
+def test_oversized_detail_keeps_the_same_prefix():
+    detail = "git log --oneline " + "x" * 100_000
+    out = compact_tool_detail(detail)
+    assert out.startswith("git log --oneline xxx")
+    assert len(out) == 200
 
 
 def test_codex_engine_emits_compact_marker():
