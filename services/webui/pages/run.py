@@ -59,49 +59,49 @@ def _render_launch_form(workspace: Path) -> None:
     with ui.card().classes("w-full bg-[#161b22]"):
         ui.label("Start New Task").classes("text-sm font-bold text-[#9ecbff]")
         ui.label(f"Primary workspace: {workspace}").classes("text-xs text-[#8b949e]")
-        # 80% of launches use the wizard defaults: options stay collapsed,
-        # but the live summary keeps the effective settings visible.
-        with ui.expansion("Launch options").classes("w-full").props("dense"):
-            with ui.row().classes("items-end gap-4 flex-wrap"):
-                plan_rounds = ui.number(
-                    "Plan mode rounds",
-                    value=int(app_state.get("plan_mode_rounds", 1)),
-                    min=0,
-                    max=10,
-                    on_change=lambda _e: _update_summary(),
-                )
-                occam = ui.switch(
-                    "Occam Razor",
-                    value=bool(app_state.get("enable_occam_razor")),
-                    on_change=lambda _e: _update_summary(),
-                )
-                skills = ui.switch(
-                    "Supervisor skills",
-                    value=bool(app_state.get("enable_supervisor_skills")),
-                    on_change=lambda _e: _update_summary(),
-                ).tooltip(
-                    "Show the supervisor a skill catalog it may load on demand "
-                    "(LOAD_SKILL); judge-context only.",
-                )
-            with ui.row().classes("items-end gap-4 flex-wrap"):
-                replicas = ui.number(
-                    "Parallel instances",
-                    value=1,
-                    min=1,
-                    max=16,
-                    on_change=lambda _e: _update_summary(),
-                ).tooltip(
-                    ">1 clones this workspace N times (one isolated study per "
-                    "copy) and launches them as one batch.",
-                )
-                init_mode = ui.select(
-                    {"copy": "复制工作区（排除产物）", "protocol": "仅 protocol.md"},
-                    value="copy",
-                    label="Replica init",
-                    on_change=lambda _e: _update_summary(),
-                ).tooltip(
-                    "How each parallel instance's workspace is seeded.",
-                )
+        # Laid out flat on purpose: these are the settings a launch depends on,
+        # and hiding them behind a disclosure made the effective options easy
+        # to miss. The live summary keeps the values visible even so.
+        with ui.row().classes("items-end gap-4 flex-wrap"):
+            plan_rounds = ui.number(
+                "Plan mode rounds",
+                value=int(app_state.get("plan_mode_rounds", 1)),
+                min=0,
+                max=10,
+                on_change=lambda _e: _update_summary(),
+            )
+            occam = ui.switch(
+                "Occam Razor",
+                value=bool(app_state.get("enable_occam_razor")),
+                on_change=lambda _e: _update_summary(),
+            )
+            skills = ui.switch(
+                "Supervisor skills",
+                value=bool(app_state.get("enable_supervisor_skills")),
+                on_change=lambda _e: _update_summary(),
+            ).tooltip(
+                "Show the supervisor a skill catalog it may load on demand "
+                "(LOAD_SKILL); judge-context only.",
+            )
+        with ui.row().classes("items-end gap-4 flex-wrap"):
+            replicas = ui.number(
+                "Parallel instances",
+                value=1,
+                min=1,
+                max=16,
+                on_change=lambda _e: _update_summary(),
+            ).tooltip(
+                ">1 clones this workspace N times (one isolated study per "
+                "copy) and launches them as one batch.",
+            )
+            init_mode = ui.select(
+                {"copy": "复制工作区（排除产物）", "protocol": "仅 protocol.md"},
+                value="copy",
+                label="Replica init",
+                on_change=lambda _e: _update_summary(),
+            ).tooltip(
+                "How each parallel instance's workspace is seeded.",
+            )
         summary = ui.label("").classes("text-xs text-[#8b949e] mono")
 
         def _update_summary() -> None:
@@ -196,20 +196,10 @@ def render(job_id: str = "") -> None:
         return
 
     ui.label("Live Run").classes("text-2xl font-bold")
-    # How-now sweep: one pure button — click wakes a fresh agent session to
-    # report on all live sessions (runs and batch sub-runs).
-    HowNowPanel()
     _render_readiness(workspace)
+    # Launch parameters first, then the on-demand sweep, then the board.
+    _render_launch_form(workspace)
+    HowNowPanel()
 
-    def _board() -> None:
-        ui.label("Task Board").classes("text-lg font-bold mt-4")
-        JobBoard(manager, "run", is_evolution=False)
-
-    # Contextual priority: with live work the board is what the user came
-    # for, so it leads; when idle the launch form leads.
-    if _has_running_job():
-        _board()
-        _render_launch_form(workspace)
-    else:
-        _render_launch_form(workspace)
-        _board()
+    ui.label("Task Board").classes("text-lg font-bold mt-4")
+    JobBoard(manager, "run", is_evolution=False)

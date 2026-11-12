@@ -1,8 +1,7 @@
-"""Job board: metrics, filters, active queue, history, snapshot pane."""
+"""Job board: metrics, filters, active queue, and history."""
 
 from __future__ import annotations
 
-import time
 from pathlib import Path
 
 from nicegui import ui, run as nicegui_run
@@ -12,20 +11,13 @@ from services.jobs.job_states import (
     ATTENTION_JOB_STATES,
     TERMINAL_JOB_STATES,
 )
-from services.webui.components.progress_widgets import ProgressWidgets
 from services.webui.layout import format_status_pill
 from services.webui.log_format import (
-    DEFAULT_HIDDEN_LEVELS,
-    attention_count,
-    fmt_ts,
     last_event_line,
-    markdown_preview,
     safe_logs,
     workspace_name,
     workspace_path,
 )
-from services.webui.state import app_state
-from supervisor.utils.text_utils import sanitize_event_message
 
 
 def may_pause_autorefresh(
@@ -60,17 +52,10 @@ class JobBoard:
         self.job_type = job_type
         self.is_evolution = is_evolution
         self.base_path = base_path or ("/evolve" if is_evolution else "/run")
-        # Harvest jobs have no code/test/review pipeline; a phase breadcrumb
-        # would render every phase as "todo" forever.
-        self.show_phase = job_type != "harvest"
-        self.max_tokens = int(app_state.get("max_tokens") or 150000)
         self._queue_signature = None
-        self._snapshot_signature = None
 
         self._build_filters()
         self.queue_col = ui.column().classes("w-full")
-        self._queue_signature = None
-        self._snapshot_signature = None
         self.timer = ui.timer(1.5, self.refresh)
         self.refresh_sync()
 
@@ -207,7 +192,6 @@ class JobBoard:
             with self.queue_col:
                 ui.label("No matching tasks.").classes("text-[#8b949e]")
             self._queue_signature = None
-            self._snapshot_signature = None
             if may_pause_autorefresh(self.auto_refresh.value, active, incomplete):
                 self.timer.active = False
             return
@@ -227,24 +211,11 @@ class JobBoard:
             )
             for job in filtered
         )
-        selected_id = filtered[0]["id"]
-        selected = filtered[0]
-        snapshot_signature = (
-            selected_id,
-            selected["status"].get("state", ""),
-            len(safe_logs(selected["status"])),
-        )
-        self._snapshot_selected = (selected, snapshot_signature)
-        if signature != self._queue_signature or snapshot_signature != self._snapshot_signature:
+        if signature != self._queue_signature:
             self._queue_signature = signature
-            self._snapshot_signature = snapshot_signature
             self.queue_col.clear()
             with self.queue_col:
-                with ui.row().classes("w-full gap-4 flex-nowrap"):
-                    with ui.column().classes("flex-[1.7] gap-2"):
-                        self._render_queue(filtered)
-                    with ui.column().classes("flex-1 gap-2"):
-                        self._render_snapshot(selected)
+                self._render_queue(filtered)
 
     # ------------------------------------------------------------------ #
 
@@ -261,7 +232,8 @@ class JobBoard:
                 "text-sm font-bold text-[#9ecbff]",
             )
             # Parallel-study replicas render as ONE group card per batch;
-            # standalone jobs keep their individual cards.
+            # standalone jobs keep their individual cards. Four per row keeps
+            # the whole board readable on the standard desktop width.
             by_batch: dict[str, list[dict]] = {}
             standalone: list[dict] = []
             for job in active:
@@ -270,17 +242,19 @@ class JobBoard:
                     by_batch.setdefault(batch_id, []).append(job)
                 else:
                     standalone.append(job)
-            for batch_id, members in sorted(by_batch.items()):
-                self._render_batch_card(batch_id, members)
-            for job in standalone:
-                self._render_card(job)
+            with ui.grid(columns=4).classes("w-full gap-2"):
+                for batch_id, members in sorted(by_batch.items()):
+                    self._render_batch_card(batch_id, members)
+                for job in standalone:
+                    self._render_card(job)
         if history:
             expanded = not active and not filters_active
             with ui.expansion(f"History ({len(history)})", value=expanded).classes(
                 "w-full",
             ):
-                for job in history[:20]:
-                    self._render_card(job)
+                with ui.grid(columns=4).classes("w-full gap-2"):
+                    for job in history[:20]:
+                        self._render_card(job)
 
     def _render_batch_card(self, batch_id: str, members: list[dict]) -> None:
         states = [m["status"].get("state", "?") for m in members]
@@ -314,47 +288,48 @@ class JobBoard:
         ui.notify(f"Cancelled {len(cancelled)} job(s) of batch {batch_id}")
 
     def _render_card(self, job: dict) -> None:
+        """Three lines: identity, workspace reveal, actions."""
         job_id = job["id"]
         status = job["status"]
         state = status.get("state", "UNKNOWN")
-        with ui.card().classes("w-full bg-[#161b22]"):
-            with ui.row().classes("w-full items-center justify-between"):
+        workspace = workspace_path(job)
+
+        with ui.card().classes("w-full bg-[#161b22] gap-1"):
+            # line 1: run id + status (stop stays with the state it changes)
+            with ui.row().classes("w-full items-center justify-between flex-nowrap"):
                 ui.html(
                     f"<span class='mono text-xs'>{job_id}</span>"
                     f"{format_status_pill(state)}",
                 )
-                with ui.row():
-                    if state == "RUNNING":
-                        ui.button(
-                            icon="stop", on_click=lambda j=job_id: self._stop(j),
-                        ).props("flat dense color=red")
-                    elif state in TERMINAL_JOB_STATES:
-                        ui.button(
-                            icon="delete",
-                            on_click=lambda j=job_id: self._delete(j),
-                        ).props("flat dense")
+                if state == "RUNNING":
                     ui.button(
-                        icon="open_in_new",
-                        on_click=lambda j=job_id: ui.navigate.to(
-                            f"{self.base_path}/{j}", new_tab=True,
+                        icon="stop", on_click=lambda j=job_id: self._stop(j),
+                    ).props("flat dense color=red").tooltip("Stop this run")
+
+            # line 2: workspace folder + one-click reveal in the file manager
+            name = workspace_name(job) or "(no workspace)"
+            with ui.row().classes("w-full items-center gap-1 flex-nowrap"):
+                ui.label(f"📁 {name}").classes("text-xs text-[#8b949e] truncate")
+                if workspace and Path(workspace).is_dir():
+                    ui.button(
+                        icon="folder_open",
+                        on_click=lambda _e, j=job_id: ui.run_javascript(
+                            f"fetch('/jobs/{j}/open-folder', {{method: 'POST'}})",
                         ),
-                    ).props("flat dense")
-            meta = []
-            name = workspace_name(job)
-            if name:
-                meta.append(f"📁 {name}")
-            updated = float(status.get("updated_at") or 0)
-            if updated and state == "RUNNING":
-                mins, secs = divmod(max(0, int(time.time() - updated)), 60)
-                meta.append(f"⏱ {mins}m {secs:02d}s")
-            errors = attention_count(status)
-            if errors:
-                meta.append(f"❌ {errors}")
-            if meta:
-                ui.label(" · ".join(meta)).classes("text-xs text-[#8b949e]")
-            last = last_event_line(job)
-            if last:
-                ui.label(f"› {last}").classes("text-xs text-[#8b949e]")
+                    ).props("flat dense").tooltip("Open in the file manager")
+
+            # line 3: detail + removal
+            with ui.row().classes("w-full items-center gap-2"):
+                ui.button(
+                    "View", icon="open_in_new",
+                    on_click=lambda j=job_id: ui.navigate.to(
+                        f"{self.base_path}/{j}", new_tab=True,
+                    ),
+                ).props("flat dense").tooltip("Open the live screen")
+                if state in TERMINAL_JOB_STATES:
+                    ui.button(
+                        icon="delete", on_click=lambda j=job_id: self._delete(j),
+                    ).props("flat dense").tooltip("Remove this record")
 
     def _stop(self, job_id: str) -> None:
         self.job_manager.cancel_job(job_id)
@@ -365,48 +340,3 @@ class JobBoard:
         self.refresh_sync()
 
     # ------------------------------------------------------------------ #
-
-    def _render_snapshot(self, selected: dict) -> None:
-        selected_id = selected["id"]
-        ui.label("Task Snapshot").classes("text-sm font-bold text-[#9ecbff]")
-        ui.html(
-            f"<span class='mono text-xs'>{selected_id}</span>"
-            f"{format_status_pill(selected['status'].get('state', 'UNKNOWN'))}",
-        )
-        workspace = workspace_path(selected)
-        if workspace:
-            ui.label(f"Workspace: {workspace_name(selected)}").classes(
-                "text-xs text-[#8b949e]",
-            )
-        updated = float(selected["status"].get("updated_at") or 0)
-        if updated:
-            ui.label(
-                "Updated: "
-                + time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(updated)),
-            ).classes("text-xs text-[#8b949e]")
-        last = last_event_line(selected, 180)
-        if last:
-            ui.label(f"Last: {last}").classes("text-xs text-[#8b949e]")
-        logs = safe_logs(selected["status"])
-        ProgressWidgets(self.max_tokens, show_phase=self.show_phase).update(
-            logs,
-            selected["status"].get("state", "UNKNOWN"),
-            is_evolution=self.is_evolution,
-        )
-        with ui.expansion("Recent log").classes("w-full"):
-            mini = ui.log(max_lines=60).classes("log-box w-full h-56")
-            # One shared noise filter: the local tuple here had drifted from
-            # log_format.DEFAULT_HIDDEN_LEVELS.
-            visible = [
-                e for e in logs[-40:]
-                if isinstance(e, dict)
-                and (e.get("level") or "info") not in DEFAULT_HIDDEN_LEVELS
-            ]
-            for event in visible:
-                ts = fmt_ts(event)
-                text = sanitize_event_message(event.get("msg") or "")
-                mini.push(f"[{ts}] {text}" if ts else text)
-        report = selected["status"].get("report")
-        if report:
-            with ui.expansion("Report preview").classes("w-full"):
-                ui.markdown(markdown_preview(report, 2000))

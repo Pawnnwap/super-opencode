@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import subprocess
 import sys
 import threading
 import time
@@ -180,6 +181,34 @@ def _ui_watchdog() -> None:
 @app.get('/healthz')
 def _healthz() -> dict:
     return {'ok': True}
+
+
+@app.post('/jobs/{job_id}/open-folder')
+def _open_job_folder(job_id: str):
+    """Reveal a job's workspace in the OS file manager (local board shortcut).
+
+    The path comes from the job record only - never from the request - and the
+    server binds 127.0.0.1, so this cannot open arbitrary locations remotely.
+    """
+    from fastapi.responses import JSONResponse
+
+    record = get_job_manager().get_job_summary(job_id) or {}
+    workspace = str((record.get("config") or {}).get("workspace") or "")
+    path = Path(workspace)
+    if not workspace or not path.is_dir():
+        return JSONResponse(
+            {"ok": False, "error": "workspace folder not found"}, status_code=404,
+        )
+    try:
+        if os.name == "nt":
+            os.startfile(str(path))  # type: ignore[attr-defined]
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", str(path)])
+        else:
+            subprocess.Popen(["xdg-open", str(path)])
+    except OSError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+    return {"ok": True}
 
 
 @ui.page("/")
