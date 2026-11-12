@@ -22,6 +22,7 @@ import json
 import logging
 import os
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -41,6 +42,12 @@ _LOADED_CODE_FINGERPRINT = code_fingerprint()
 _LOCK_FILE = "worker.lock"
 _POLL_SECONDS = 1.0
 _STALE_SECONDS = 15.0
+# Liveness pulse cadence and the silent-stall detector threshold (see
+# _LoopPulse): the watchdog tree-kills the worker once the lock ages past
+# its own threshold, so the lock must be touched independently of whatever
+# the poll loop is doing.
+_PULSE_SECONDS = 1.0
+_STALL_DUMP_SECONDS = 15.0
 # How often the daemon compares its imported code with the tree on disk.
 # Content hashing ~1.3 MB is milliseconds; a deployment must not wait for a
 # natural worker restart (one stayed stale for 20 hours).
@@ -81,6 +88,55 @@ def _touch_lock(store_dir: Path) -> None:
         lock_path.write_text(json.dumps({"pid": os.getpid()}), encoding="utf-8")
 
 
+class _LoopPulse(threading.Thread):
+    """Touches ``worker.lock`` independent of the poll loop; forensics on stall.
+
+    The lock is the watchdog's only liveness signal (watch_suprun.ps1
+    tree-kills the worker at 30 s of lock age, and the successor marks every
+    RUNNING job ABANDONED), but it used to be touched only at the top of the
+    poll loop - so ONE blocked poll step looked exactly like a dead daemon.
+    On 2026-11-11 that killed four healthy runs four times (16:55, 17:51,
+    20:15, 22:23) while their job threads streamed events fine to the last
+    second: the runs were "abandoned silently at some stage".
+
+    This thread touches the lock every second no matter where the loop is.
+    A blocked loop is a degraded worker (no claims/cancels), never a dead
+    one: live jobs keep their processes and the queue probe still recovers a
+    claim-stalled idle worker. When the loop falls silent for
+    ``_STALL_DUMP_SECONDS`` every thread's stack is dumped into the fatal
+    log, naming the step the loop is stuck in.
+    """
+
+    def __init__(self, store_dir: Path):
+        super().__init__(name="lock-pulse", daemon=True)
+        self._store_dir = store_dir
+        self._last_progress = time.time()
+        self._last_step = "startup"
+        self._stall_dumped = False
+
+    def note(self, step: str) -> None:
+        """Record poll-loop progress; cheap attribute writes only."""
+        self._last_step = step
+        self._last_progress = time.time()
+
+    def run(self) -> None:
+        while True:
+            try:
+                time.sleep(_PULSE_SECONDS)
+                _touch_lock(self._store_dir)
+                gap = time.time() - self._last_progress
+                if gap >= _STALL_DUMP_SECONDS:
+                    if not self._stall_dumped:
+                        self._stall_dumped = True
+                        death_capture.dump_stacks(
+                            f"poll loop stalled {gap:.0f}s at step '{self._last_step}'"
+                        )
+                else:
+                    self._stall_dumped = False
+            except Exception:  # noqa: BLE001 - the pulse must outlive any blip
+                logger.exception("lock pulse iteration failed")
+
+
 def _reexec_worker() -> None:
     """Replace this process image so a fresh interpreter imports the new code.
 
@@ -97,24 +153,46 @@ def _reexec_worker() -> None:
     )
 
 
+def _last_activity(store, job_id: str) -> str:
+    """One-line digest of the job's newest log event: where the run stopped."""
+    for event in reversed(store.tail_logs(job_id, 3)):
+        msg = " ".join(str(event.get("msg") or "").split())
+        if msg:
+            return msg[:160]
+    return ""
+
+
 def _mark_orphans(manager: JobManager) -> list[str]:
     """Flag RUNNING records as abandoned at daemon start.
 
     PENDING records are queued work, not orphans: a job enqueued while the
     daemon was down (or held during an in-place re-exec) must be claimed by
     the new daemon, not thrown away.
+
+    The record is not a silent tombstone: it carries ``abandon_reason``,
+    ``abandoned_at`` and a ``last_activity`` digest of the newest log event,
+    and the warn line shows the stage the run stopped at.
     """
     flagged: list[str] = []
     for job_id in manager.store.list_jobs():
         state = manager.store.get_job_state(job_id) or {}
         if state.get("state") == "RUNNING":
+            last = _last_activity(manager.store, job_id)
             state["state"] = "ABANDONED"
+            state["abandon_reason"] = (
+                "worker daemon restarted while this job was active"
+            )
+            state["abandoned_at"] = time.time()
+            if last:
+                state["last_activity"] = last
             manager.store.save_job_state(job_id, state)
             manager.store.append_log(job_id, {
                 "level": "warn",
                 "msg": "Worker daemon restarted while this job was active - "
-                       "marked ABANDONED (re-enqueue via the board or "
-                       "SUPERVISOR_REPLAY_JOB=<job_id>).",
+                       "marked ABANDONED at stage: "
+                       + (last or "(no recent activity)")
+                       + " (re-enqueue via the board or "
+                         "SUPERVISOR_REPLAY_JOB=<job_id>).",
             })
             flagged.append(job_id)
     return flagged
@@ -175,6 +253,11 @@ def main() -> int:
         logger.info("another worker daemon holds the lock - exiting")
         return 0
 
+    # Liveness is no longer the poll loop's job: one blocked loop step must
+    # not read as a dead daemon to the watchdog (see _LoopPulse).
+    pulse = _LoopPulse(store_dir)
+    pulse.start()
+
     # Only RUNNING records are orphans; PENDING jobs are queued work and are
     # claimed by this daemon, including after an in-place re-exec.
     orphaned = _mark_orphans(manager)
@@ -222,15 +305,17 @@ def main() -> int:
     while True:
         time.sleep(_POLL_SECONDS)
         try:
-            _touch_lock(store_dir)
+            pulse.note("poll")
 
             # Freshness gate: this process runs the modules it imported at
             # boot. If the tree changed underneath it, never start another
             # job on that stale code; wait for live jobs, then re-exec.
             if time.time() - last_code_check >= _CODE_CHECK_SECONDS:
+                pulse.note("freshness")
                 check_freshness()
 
             # Settings handoff: the UI writes worker_settings.json on change.
+            pulse.note("settings-scan")
             settings = _read_settings(store_dir)
             if settings != applied_settings:
                 if "max_parallel_jobs" in settings:
@@ -262,9 +347,11 @@ def main() -> int:
 
             # Claim only into a FREE slot, oldest first (see _claim_pending).
             if pending:
+                pulse.note("claim")
                 check_freshness()
                 if allow_claims:
                     _claim_pending(manager, pending, claimed)
+            pulse.note("prune")
             manager.prune_stored_jobs()
         except Exception:
             logger.exception("worker daemon poll cycle failed")
