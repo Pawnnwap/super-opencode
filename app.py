@@ -18,7 +18,7 @@ from nicegui import app, core, ui
 
 from services.config.settings import sanitize_proxy_env
 from services.runtime import death_capture
-from services.webui import layout, startup
+from services.webui import error_net, layout, startup
 from services.webui.jobs import get_job_manager
 
 # The UI also builds openai clients (wizard, protocol builder, connectivity
@@ -94,6 +94,10 @@ def _install_forensics() -> None:
     )
     death_capture.install("app.fatal.log")
     log.info("death capture armed (app.fatal.log), pid %d", os.getpid())
+
+    # An uncaught handler exception must reach the operator, not just stderr.
+    # See services/webui/error_net.py for why NiceGUI's default is invisible.
+    error_net.install()
 
     @app.on_connect
     def _log_connect(client) -> None:

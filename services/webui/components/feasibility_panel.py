@@ -379,21 +379,30 @@ def render(workspace: Path, protocol_text: str | Callable[[], str] = "") -> None
                     except Exception as exc:  # noqa: BLE001 — surface, keep rows
                         gen_status.set_text(f"Draft failed: {str(exc)[:200]}")
                         return
+                    drafted = facts_to_gate_rows(facts)
+                    if not drafted:
+                        gen_status.set_text(
+                            "Draft contained no gates — nothing filled.",
+                        )
+                        return
+                    rows[:] = drafted
+                    _rebuild_rows()
+                    _refresh_verdict()
+                    _persist()
+                    blocked = sum(1 for row in rows if row["status"] == "blocked")
+                    gen_status.set_text(
+                        f"Drafted {len(rows)} gate(s) ({blocked} blocked) — "
+                        "auto-saved; edit freely.",
+                    )
+            # ``_persist`` writes the facts file; an OSError there (read-only
+            # dir, locked file) used to escape into NiceGUI's async task, which
+            # only logs to stderr — the operator saw a button that did nothing
+            # after the rows were already redrawn.
+            except Exception as exc:  # noqa: BLE001 — must never be silent
+                gen_status.set_text(f"Draft failed: {type(exc).__name__}: {str(exc)[:200]}")
             finally:
                 _draft_call.end()
                 cancel_button.set_visibility(False)
-            drafted = facts_to_gate_rows(facts)
-            if not drafted:
-                gen_status.set_text("Draft contained no gates — nothing filled.")
-                return
-            rows[:] = drafted
-            _rebuild_rows()
-            _refresh_verdict()
-            _persist()
-            blocked = sum(1 for row in rows if row["status"] == "blocked")
-            gen_status.set_text(
-                f"Drafted {len(rows)} gate(s) ({blocked} blocked) — auto-saved; edit freely.",
-            )
 
         with ui.row().classes("gap-3"):
             gen_button = ui.button(

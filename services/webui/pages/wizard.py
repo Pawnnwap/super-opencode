@@ -551,8 +551,18 @@ def _protection_section() -> None:
                     )
                 except Exception as exc:  # noqa: BLE001 — surfaced in the status
                     notes.append(f"ignore suggestion failed: {str(exc)[:120]}")
-                summary = apply_generation(workspace, paths, patterns)
-            _profile_sync(workspace)
+                # apply_generation + _profile_sync WRITE profile/ignore files;
+                # an OSError there escaped into NiceGUI's async task, which only
+                # logs to stderr, so the button looked dead while nothing was
+                # applied and no reason was shown.
+                try:
+                    summary = apply_generation(workspace, paths, patterns)
+                    _profile_sync(workspace)
+                except Exception as exc:  # noqa: BLE001 — must never be silent
+                    status.set_text(
+                        f"Auto-generate failed: {type(exc).__name__}: {str(exc)[:200]}",
+                    )
+                    return
             _access_section.refresh()
             _protected_section.refresh()
             _ignore_section.refresh()
@@ -884,30 +894,42 @@ def _connectivity_section() -> None:
                 return
             status.set_text("Testing… (agent up to ~60s)")
             async with busy_buttons(*test_buttons):
-                if kind in ("agent", "all"):
-                    ok, message = await nicegui_run.io_bound(
-                        test_agent_connectivity,
-                        app_state.get("engine") or "opencode",
-                        app_state.get("opencode_executable") or "",
-                        app_state.get("opencode_model"),
-                        app_state.get("opencode_model_backup"),
-                        45,
-                        app_state.get("codex_base_url") or "",
-                        app_state.get("codex_api_key") or "",
-                    )
-                    app_state.flags["opencode_test_passed"] = ok
-                    status.set_text(f"{engine}: {'✅' if ok else '❌'} {message[:160]}")
-                if kind in ("supervisor", "all"):
-                    ok, message = await nicegui_run.io_bound(
-                        test_supervisor_connectivity,
-                        app_state.get("openai_key"),
-                        app_state.get("supervisor_model") or "swift-1.5",
-                        app_state.get("base_url") or None,
-                    )
-                    app_state.flags["supervisor_test_passed"] = ok
+                # The probes swallow their own transport failures, but the temp
+                # dir mkdir (connectivity._ephemeral_workspace) and the OpenAI
+                # client constructor run OUTSIDE those guards and can raise
+                # OSError / ValueError. Uncaught they vanished into NiceGUI's
+                # async task while the buttons re-enabled: a dead-looking Test.
+                try:
+                    if kind in ("agent", "all"):
+                        ok, message = await nicegui_run.io_bound(
+                            test_agent_connectivity,
+                            app_state.get("engine") or "opencode",
+                            app_state.get("opencode_executable") or "",
+                            app_state.get("opencode_model"),
+                            app_state.get("opencode_model_backup"),
+                            45,
+                            app_state.get("codex_base_url") or "",
+                            app_state.get("codex_api_key") or "",
+                        )
+                        app_state.flags["opencode_test_passed"] = ok
+                        status.set_text(f"{engine}: {'✅' if ok else '❌'} {message[:160]}")
+                    if kind in ("supervisor", "all"):
+                        ok, message = await nicegui_run.io_bound(
+                            test_supervisor_connectivity,
+                            app_state.get("openai_key"),
+                            app_state.get("supervisor_model") or "swift-1.5",
+                            app_state.get("base_url") or None,
+                        )
+                        app_state.flags["supervisor_test_passed"] = ok
+                        status.set_text(
+                            f"supervisor: {'✅' if ok else '❌'} {message[:160]}",
+                        )
+                except Exception as exc:  # noqa: BLE001 — must never be silent
                     status.set_text(
-                        f"supervisor: {'✅' if ok else '❌'} {message[:160]}",
+                        f"Connectivity test failed: {type(exc).__name__}: "
+                        f"{str(exc)[:200]}",
                     )
+                    return
                 if app_state.tests_ok():
                     status.set_text("✅ Both connectivity tests passed — Live Run unlocked.")
 

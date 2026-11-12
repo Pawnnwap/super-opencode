@@ -122,12 +122,12 @@ def _render_launch_form(workspace: Path) -> None:
             # the browser leaves the page.
             async with busy_buttons(launch_button):
                 count = int(replicas.value or 1)
-                if count > 1:
-                    from services.webui.batch_launch import launch_study_batch
+                try:
+                    if count > 1:
+                        from services.webui.batch_launch import launch_study_batch
 
-                    save_and_apply_settings()
-                    sync_max_parallel_jobs()
-                    try:
+                        save_and_apply_settings()
+                        sync_max_parallel_jobs()
                         _batch_id, job_ids, _cfgs = launch_study_batch(
                             app_state.as_mapping(),
                             get_job_manager(),
@@ -138,30 +138,31 @@ def _render_launch_form(workspace: Path) -> None:
                             enable_occam_razor=bool(occam.value),
                             enable_supervisor_skills=bool(skills.value),
                         )
-                    # Every failure mode here is a filesystem failure
-                    # (``shutil.Error`` from a file a running tool holds open,
-                    # disk full, path too long), not a ValueError. Catching only
-                    # ValueError let those escape into NiceGUI's async task
-                    # where they vanish; busy_buttons' finally then re-enabled
-                    # the button, so the operator saw a Launch that "did
-                    # nothing". Surface the reason instead.
-                    except Exception as exc:  # noqa: BLE001 - must never be silent
-                        ui.notify(
-                            f"Batch launch failed: {type(exc).__name__}: "
-                            f"{str(exc)[:600]}",
-                            type="negative",
+                        ui.notify(f"Batch launched: {len(job_ids)} instance(s)")
+                        target = f"/run/{job_ids[0]}"
+                    else:
+                        job_id = _launch_run(
+                            workspace,
+                            int(plan_rounds.value or 0),
+                            bool(occam.value),
+                            bool(skills.value),
                         )
-                        return
-                    ui.notify(f"Batch launched: {len(job_ids)} instance(s)")
-                    ui.navigate.to(f"/run/{job_ids[0]}")
-                else:
-                    job_id = _launch_run(
-                        workspace,
-                        int(plan_rounds.value or 0),
-                        bool(occam.value),
-                        bool(skills.value),
+                        target = f"/run/{job_id}"
+                # BOTH branches need this, not just the batch one. Every way a
+                # launch fails is a filesystem/settings failure (``shutil.Error``
+                # on a file a running tool holds open, ``OSError`` writing the
+                # job store, ``KeyError`` on a missing setting), never a
+                # ValueError. Uncaught, they vanish into NiceGUI's async task
+                # (its default handler only writes stderr, which the browser
+                # never sees) while busy_buttons' finally re-enables the button -
+                # the operator sees a Launch click that "does nothing".
+                except Exception as exc:  # noqa: BLE001 - must never be silent
+                    ui.notify(
+                        f"Launch failed: {type(exc).__name__}: {str(exc)[:600]}",
+                        type="negative",
                     )
-                    ui.navigate.to(f"/run/{job_id}")
+                    return
+                ui.navigate.to(target)
 
         with ui.row().classes("items-center gap-3"):
             launch_button = ui.button("Launch", on_click=_launch).props(

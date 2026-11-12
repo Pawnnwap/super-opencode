@@ -276,18 +276,26 @@ class HarvesterPanel:
         app_state["harvest_dir"] = location
         save_and_apply_settings()
         sync_max_parallel_jobs()
-        config = build_supervisor_config(
-            app_state.as_mapping(),
-            protocol_path=batch / "protocol.md",
-            workspace=batch,
-            harvest_job_ids=tuple(job_ids),
-            harvest_prompt=prompt,
-            harvest_dir=str(batch),
-        )
+        # Config build + enqueue can fail with OSError (job store write) or
+        # KeyError (a missing setting) as well as the workspace-collision
+        # ValueError. Only ValueError was caught, so the rest escaped to
+        # NiceGUI's default handler - a stderr line the browser never shows -
+        # leaving the operator with a Harvest click that silently did nothing.
         try:
+            config = build_supervisor_config(
+                app_state.as_mapping(),
+                protocol_path=batch / "protocol.md",
+                workspace=batch,
+                harvest_job_ids=tuple(job_ids),
+                harvest_prompt=prompt,
+                harvest_dir=str(batch),
+            )
             job_id = self.manager.enqueue_job(HARVEST_JOB_TYPE, config)
-        except ValueError as exc:
-            ui.notify(str(exc), type="negative")
+        except Exception as exc:  # noqa: BLE001 - must never be silent
+            ui.notify(
+                f"Harvest launch failed: {type(exc).__name__}: {str(exc)[:400]}",
+                type="negative",
+            )
             try:
                 batch.rmdir()
             except OSError:
