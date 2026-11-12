@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import os
 import re
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Literal
@@ -472,11 +473,13 @@ def build_policy(
 
 
 def agent_infrastructure_roots() -> tuple[Path, ...]:
-    """Existing agent config/skill directories every run may read.
+    """Existing agent config/skill/interpreter directories every run may read.
 
     Skills live in one general folder; hooks and config are per-agent, so
-    each agent's home is detected separately. Read-only like any whitelist
-    entry; missing directories are skipped.
+    each agent's home is detected separately. Conda environment roots are
+    discovered too (active prefix, the interpreter's own prefix, standard
+    install locations) so absolute interpreter paths are usable. Read-only
+    like any whitelist entry; missing directories are skipped.
     """
     home = Path.home()
     candidates = [
@@ -488,6 +491,7 @@ def agent_infrastructure_roots() -> tuple[Path, ...]:
     env_home = (os.environ.get("CODEX_HOME") or "").strip()
     if env_home:
         candidates.append(Path(env_home))
+    candidates.extend(_conda_env_roots())
     roots: list[Path] = []
     for candidate in candidates:
         try:
@@ -496,6 +500,58 @@ def agent_infrastructure_roots() -> tuple[Path, ...]:
         except OSError:
             continue
     return tuple(roots)
+
+
+def _conda_env_roots() -> list[Path]:
+    """Existing conda ``envs`` roots, discovered (never hard-coded per env)."""
+    candidates: list[Path] = []
+    seen: set[str] = set()
+
+    def add(path: Path | str | None) -> None:
+        if not path:
+            return
+        try:
+            candidate = Path(path)
+        except (TypeError, ValueError):
+            return
+        if not candidate.is_dir():
+            return
+        if candidate.name.lower() != "envs" and not (candidate / "conda-meta").is_dir():
+            return
+        key = os.path.normcase(str(candidate))
+        if key not in seen:
+            seen.add(key)
+            candidates.append(candidate)
+
+    def add_from_prefix(value: str | None) -> None:
+        if not value:
+            return
+        prefix = Path(value)
+        add(prefix.parent)  # <root>/envs when an env is active
+        add(prefix)         # <root>/envs/<name> (has conda-meta)
+
+    add_from_prefix(os.environ.get("CONDA_PREFIX"))
+    conda_exe = (os.environ.get("CONDA_EXE") or "").strip()
+    if conda_exe:
+        add(Path(conda_exe).parent.parent / "envs")
+    for attr in ("base_prefix", "prefix"):
+        add_from_prefix(str(getattr(sys, attr, "") or ""))
+
+    home = Path.home()
+    bases = [
+        home / ".conda",
+        home / "miniconda3",
+        home / "anaconda3",
+        home / "miniforge3",
+        home / "mambaforge",
+        Path("/opt/conda"),
+    ]
+    programdata = (os.environ.get("ProgramData") or "").strip()
+    if programdata:
+        bases.extend([Path(programdata) / "miniconda3", Path(programdata) / "Anaconda3"])
+    for base in bases:
+        add(base / "envs")
+    return candidates
 
 
 def _is_dangerous_root(path: Path) -> bool:

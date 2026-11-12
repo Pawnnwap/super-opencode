@@ -438,10 +438,18 @@ class TestWhitelistValidation:
 
 
 def test_from_config_reads_whitelist(tmp_path, monkeypatch):
+    import sys
+
     from supervisor.utils.config import SupervisorConfig
 
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "home"))
     monkeypatch.delenv("CODEX_HOME", raising=False)
+    monkeypatch.delenv("CONDA_PREFIX", raising=False)
+    monkeypatch.delenv("CONDA_EXE", raising=False)
+    # Keep the machine's own conda installs out of this exact-list assertion.
+    monkeypatch.setattr(sys, "base_prefix", str(tmp_path / "no-conda"), raising=False)
+    monkeypatch.setattr(sys, "prefix", str(tmp_path / "no-venv"), raising=False)
+    monkeypatch.setenv("ProgramData", str(tmp_path / "programdata"))
     ws = tmp_path / "ws"
     ws.mkdir()
     ref = tmp_path / "ref"
@@ -490,6 +498,30 @@ def test_agent_roots_include_env_codex_home(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
     monkeypatch.setenv("CODEX_HOME", str(dedicated))
     assert dedicated in agent_infrastructure_roots()
+
+
+def test_agent_roots_include_detected_conda_envs(tmp_path, monkeypatch):
+    from supervisor.security.access_policy import agent_infrastructure_roots
+
+    home = tmp_path / "home"
+    (home / "miniconda3" / "envs" / "ic").mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    monkeypatch.delenv("CONDA_PREFIX", raising=False)
+    monkeypatch.delenv("CONDA_EXE", raising=False)
+    assert home / "miniconda3" / "envs" in agent_infrastructure_roots()
+
+
+def test_agent_roots_include_active_conda_prefix(tmp_path, monkeypatch):
+    from supervisor.security.access_policy import agent_infrastructure_roots
+
+    home = tmp_path / "home"
+    home.mkdir()
+    env = tmp_path / "conda" / "envs" / "ic"
+    env.mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    monkeypatch.setenv("CONDA_PREFIX", str(env))
+    monkeypatch.delenv("CONDA_EXE", raising=False)
+    assert tmp_path / "conda" / "envs" in agent_infrastructure_roots()
 
 
 if __name__ == "__main__":
