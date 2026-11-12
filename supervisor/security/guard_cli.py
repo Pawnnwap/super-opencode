@@ -97,6 +97,36 @@ def _looks_like_path(text: str) -> bool:
     )
 
 
+_PATCH_FILE_VERBS = ("Add", "Update", "Delete")
+
+
+def _patch_payload(tool_input: dict[str, Any]) -> str:
+    """The patch text when this event carries one (any engine shape)."""
+    texts: list[str] = []
+    for key in ("command", "cmd", "input", "patch", "patchText", "patch_text"):
+        value = tool_input.get(key)
+        if isinstance(value, str) and value:
+            texts.append(value)
+    joined = "\n".join(texts)
+    if any(marker in joined for marker in ("*** Begin Patch", "*** Update File:",
+                                          "*** Add File:", "*** Delete File:")):
+        return joined
+    return ""
+
+
+def _patch_file_headers(patch_text: str) -> list[str]:
+    paths: list[str] = []
+    for line in str(patch_text or "").splitlines():
+        stripped = line.strip()
+        for verb in _PATCH_FILE_VERBS:
+            prefix = f"*** {verb} File: "
+            if stripped.startswith(prefix):
+                candidate = stripped[len(prefix):].strip()
+                if candidate:
+                    paths.append(candidate)
+    return paths
+
+
 def violations_for_event(policy: AccessPolicy, event: dict[str, Any]) -> list[PolicyViolation]:
     tool = str(event.get("tool_name") or event.get("tool") or "").strip().lower()
     tool_input = event.get("tool_input") or event.get("input") or {}
@@ -104,6 +134,21 @@ def violations_for_event(policy: AccessPolicy, event: dict[str, Any]) -> list[Po
 
     if not isinstance(tool_input, dict):
         tool_input = {"value": tool_input}
+
+    # A patch is a file operation, not a shell command: codex sends the whole
+    # patch text in the tool "command" field, and scanning that body as shell
+    # denied legitimate Python lines ('{', '/', '..' tokens) on 2026-11-12.
+    # Validate the patch's file headers instead and ignore the body.
+    patch_text = _patch_payload(tool_input)
+    if patch_text:
+        violations: list[PolicyViolation] = []
+        for candidate in _patch_file_headers(patch_text):
+            decision = policy.check(candidate, "write")
+            if not decision.allowed:
+                violations.append(
+                    PolicyViolation(candidate, "write", decision.reason),
+                )
+        return violations
 
     # Any tool carrying a command string is a shell escape: scan the text
     # rather than treating the whole string as one path. This also covers
@@ -144,23 +189,7 @@ def violations_for_event(policy: AccessPolicy, event: dict[str, Any]) -> list[Po
         "rename_file",
     }
     access = "write" if tool in write_tools else "read"
-    violations: list[PolicyViolation] = []
-
-    # `apply_patch` carries the whole patch in `input`; its file headers are
-    # the authoritative paths (`*** Update File: C:\...`).
-    patch_text = str(tool_input.get("input") or tool_input.get("patch") or "")
-    if tool in {"apply_patch", "patch"} and patch_text:
-        for line in patch_text.splitlines():
-            if line.startswith("*** ") and " File: " in line:
-                candidate = line.split(" File: ", 1)[1].strip()
-                if candidate:
-                    decision = policy.check(candidate, access)
-                    if not decision.allowed:
-                        violations.append(
-                            PolicyViolation(candidate, access, decision.reason)
-                        )
-        if violations:
-            return violations
+    violations = []
 
     candidates: list[str] = []
     for key in ("path", "file_path", "filePath", "filepath", "target", "destination", "src", "dst"):

@@ -309,6 +309,37 @@ class TestGuardCli:
         violations = violations_for_event(policy, event)
         assert violations
 
+    def test_apply_patch_body_is_not_a_shell_command(self, layout):
+        # Codex sends the whole patch as the tool "command"; scanning that
+        # body as shell denied legitimate Python (`{`, `/`, `..`) on live runs.
+        ws, _, policy = layout
+        patch = (
+            "*** Begin Patch\n*** Update File: tools/x.py\n@@\n"
+            "+data = {\"key\": 1}\n"
+            "+ratio = a / b\n"
+            "+parent = os.path.join(a, \"..\")\n"
+            "*** End Patch"
+        )
+        assert violations_for_event(
+            policy, self._event("apply_patch", {"command": patch}, ws),
+        ) == []
+        assert violations_for_event(
+            policy, self._event("apply_patch", {"input": patch}, ws),
+        ) == []
+        heredoc = "apply_patch <<'EOF'\n" + patch + "\nEOF\n"
+        assert violations_for_event(
+            policy, self._event("Bash", {"command": heredoc}, ws),
+        ) == []
+
+    def test_apply_patch_command_still_denies_outside_header(self, layout, tmp_path):
+        ws, _, policy = layout
+        target = tmp_path / "outside.txt"
+        patch = f"*** Begin Patch\n*** Add File: {target}\n+x\n*** End Patch"
+        violations = violations_for_event(
+            policy, self._event("apply_patch", {"command": patch}, ws),
+        )
+        assert violations and violations[0].path == str(target)
+
     def test_shell_command_is_scanned(self, layout, tmp_path):
         ws, _, policy = layout
         event = self._event("shell", {"command": f'type "{tmp_path / "secret.txt"}"'}, ws)
