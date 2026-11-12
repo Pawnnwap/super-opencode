@@ -137,6 +137,44 @@ def test_disable_removes_only_our_opencode_pieces(layout):
     assert not policy_path_for(ws, policy).exists()
 
 
+def test_opencode_install_writes_pointer_and_rendered_plugin(layout):
+    ws, _, policy = layout
+    result = install_access_guard(ws, policy, "opencode", codex_home=ws / "codex_home")
+    pointer = ws / ".supervisor" / "access_policy.json"
+    assert pointer in result.artifacts
+    data = json.loads(pointer.read_text(encoding="utf-8"))
+    assert data["store"] == str(policy_path_for(ws, policy))
+    assert data["workspace"] == str(ws)
+    assert "roots" not in data  # a redirect, never a snapshot in the workspace
+    plugin_text = (ws / ".opencode" / "plugin" / "supervisor_access_guard.js").read_text(
+        encoding="utf-8",
+    )
+    assert "__SOP_GUARD_PYTHON__" not in plugin_text
+    assert "__SOP_REPO_ROOT__" not in plugin_text
+    assert json.dumps(sys.executable) in plugin_text  # escaped for JS
+    assert json.dumps(str(Path(engine_guards.__file__).resolve().parents[2])) in plugin_text
+    assert "supervisor.access-guard" in plugin_text
+    assert "execute.before" in plugin_text
+
+
+def test_opencode_remove_deletes_pointer_but_keeps_foreign_snapshot(layout):
+    ws, _, policy = layout
+    disabled = build_policy(ws, [], enabled=False)
+    install_access_guard(ws, policy, "opencode", codex_home=ws / "codex_home")
+    install_access_guard(ws, disabled, "opencode", codex_home=ws / "codex_home")
+    assert not (ws / ".supervisor" / "access_policy.json").exists()
+    # A full snapshot file at the pointer path is the user's own: never ours.
+    foreign = ws / ".supervisor" / "access_policy.json"
+    foreign.parent.mkdir(parents=True, exist_ok=True)
+    foreign.write_text(json.dumps({"roots": [{"path": str(ws), "mode": "rw"}]}), encoding="utf-8")
+    install_access_guard(ws, disabled, "opencode", codex_home=ws / "codex_home")
+    assert foreign.is_file()
+    # But our pointer shape is removed again on the next disable.
+    install_access_guard(ws, policy, "opencode", codex_home=ws / "codex_home")
+    install_access_guard(ws, disabled, "opencode", codex_home=ws / "codex_home")
+    assert not foreign.is_file()
+
+
 def test_pi_install_writes_extension_and_flags(layout):
     ws, _, policy = layout
     result = install_access_guard(ws, policy, "pi", codex_home=ws / "codex_home")

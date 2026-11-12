@@ -82,6 +82,51 @@ def test_cap_respected():
     assert len(out) <= 200
 
 
+def test_opencode_step_finish_tokens_22x_sum():
+    # opencode 2.2.x dropped "tokens.total" (captured live on v2.2.7); the
+    # context total is input+output+reasoning. Without the fallback the
+    # supervisor's context tracking read 0 for every step on 2.x.
+    line = json.dumps(
+        {
+            "type": "step_finish",
+            "part": {
+                "type": "step-finish",
+                "reason": "tool-calls",
+                "cost": 0,
+                "tokens": {
+                    "input": 16030,
+                    "output": 51,
+                    "reasoning": 291,
+                    "cache": {"read": 0, "write": 0},
+                },
+            },
+        },
+    )
+    event = opencode_classify(line)
+    assert event.kind == "tokens"
+    assert event.tokens_total == 16030 + 51 + 291
+
+
+def test_opencode_step_finish_tokens_explicit_total_wins():
+    # Older shapes that still carry "total" keep working.
+    line = json.dumps(
+        {
+            "type": "step_finish",
+            "part": {"type": "step-finish", "tokens": {"total": 16531, "input": 16030}},
+        },
+    )
+    assert opencode_classify(line).tokens_total == 16531
+
+
+def test_opencode_step_finish_tokens_garbage_is_zero():
+    for part in (
+        {"type": "step-finish", "tokens": {"cache": {"read": 0}}},
+        {"type": "step-finish"},
+        {},
+    ):
+        assert opencode_classify(json.dumps({"type": "step_finish", "part": part})).tokens_total == 0
+
+
 def test_long_url_and_path_runs_stay_linear():
     # Regression: the old `(?:[^\s"']*?[\\/])*` backtracked exponentially on
     # separator runs that never reach an interpreter name. On 2026-11-10 a

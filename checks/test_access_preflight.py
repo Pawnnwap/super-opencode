@@ -116,6 +116,24 @@ def test_static_drill_opencode(layout):
     install = install_access_guard(ws, policy, "opencode", codex_home=ws / "ch")
     report = run_drill("opencode", ws, policy, install)
     assert report.ok, report.fail_text()
+    names = {check.name for check in report.checks}
+    assert "opencode policy pointer into store" in names
+    assert "opencode snapshot matches workspace" in names
+
+
+def test_opencode_drill_rejects_pointer_outside_store(layout):
+    ws, ref = layout
+    policy = build_policy(ws, [ref])
+    install = install_access_guard(ws, policy, "opencode", codex_home=ws / "ch")
+    pointer = ws / ".supervisor" / "access_policy.json"
+    data = json.loads(pointer.read_text(encoding="utf-8"))
+    data["store"] = str(ws / "evil" / "policy-forged.json")
+    pointer.write_text(json.dumps(data), encoding="utf-8")
+    report = run_drill("opencode", ws, policy, install)
+    assert not report.ok
+    assert "opencode policy pointer into store" in {
+        check.name for check in report.failures()
+    }
 
 
 def test_static_drill_pi(layout):

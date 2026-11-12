@@ -23,8 +23,12 @@ import tempfile
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
+from supervisor.security import engine_guards as _engine_guards
 from supervisor.security.access_policy import AccessPolicy, is_within
-from supervisor.security.engine_guards import GUARD_MARKER, GuardInstallResult
+from supervisor.security.engine_guards import (
+    GUARD_MARKER,
+    GuardInstallResult,
+)
 
 
 @dataclass(frozen=True)
@@ -183,6 +187,63 @@ def run_policy_drill(workspace: Path, policy: AccessPolicy) -> DrillReport:
     return report
 
 
+def _opencode_pointer_checks(workspace: Path) -> list[DrillCheck]:
+    """The plugin loads its snapshot through a workspace pointer into the
+    read-only store; prove the pointer exists, stays inside the store and the
+    snapshot it names still owns this workspace."""
+    checks: list[DrillCheck] = []
+    pointer = workspace / ".supervisor" / "access_policy.json"
+    data: dict = {}
+    store: Path | None = None
+    try:
+        loaded = json.loads(pointer.read_text(encoding="utf-8"))
+        if isinstance(loaded, dict):
+            data = loaded
+            store = Path(str(data.get("store") or ""))
+    except (OSError, json.JSONDecodeError):
+        pass
+    store_ok = False
+    if store is not None and str(store):
+        try:
+            store_ok = is_within(
+                Path(os.path.realpath(str(store))),
+                Path(os.path.realpath(str(_engine_guards.POLICY_STORE_DIR))),
+            )
+        except (OSError, ValueError):
+            store_ok = False
+    checks.append(
+        DrillCheck(
+            "opencode policy pointer into store",
+            bool(data.get("store")) and "roots" not in data and store_ok,
+            str(pointer),
+        ),
+    )
+    snapshot_ok = False
+    if store_ok:
+        try:
+            snap = json.loads(store.read_text(encoding="utf-8"))
+            ws_real = Path(os.path.realpath(str(workspace)))
+            rw_roots = [
+                Path(str(entry.get("path") or ""))
+                for entry in (snap.get("roots") or [])
+                if isinstance(entry, dict) and entry.get("mode") == "rw"
+            ]
+            snapshot_ok = snap.get("enabled", True) is not False and any(
+                is_within(ws_real, root) and is_within(root, ws_real)
+                for root in rw_roots
+            )
+        except (OSError, ValueError, json.JSONDecodeError):
+            snapshot_ok = False
+    checks.append(
+        DrillCheck(
+            "opencode snapshot matches workspace",
+            snapshot_ok,
+            str(store or "missing"),
+        ),
+    )
+    return checks
+
+
 def _static_gate_checks(
     engine: str,
     workspace: Path,
@@ -216,15 +277,21 @@ def _static_gate_checks(
 
     if engine == "opencode":
         plugin = workspace / ".opencode" / "plugin" / "supervisor_access_guard.js"
+        plugin_text = ""
+        try:
+            plugin_text = plugin.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            pass
         checks.append(
             DrillCheck(
                 "opencode plugin installed",
-                plugin.is_file() and "SupervisorAccessGuard" in plugin.read_text(
-                    encoding="utf-8", errors="ignore",
-                ),
+                plugin.is_file()
+                and GUARD_MARKER in plugin_text
+                and "execute.before" in plugin_text,
                 str(plugin),
             ),
         )
+        checks.extend(_opencode_pointer_checks(workspace))
         config = workspace / ".opencode" / "opencode.json"
         deny = {}
         try:

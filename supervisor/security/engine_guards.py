@@ -4,9 +4,13 @@ Every backend gets the *same* rule set, expressed in the mechanism that
 backend actually honours before a tool runs:
 
 ===========  ==============================================================
-opencode     V2 ``permissions`` rules (external_directory deny + read-only
-             whitelist) **and** a project plugin that blocks shell writes
-             the permission scanner cannot classify.
+opencode     a workspace plugin (dual entrypoint: opencode 2.x ``setup`` and
+             opencode 1.x ``server``) that checks every tool call's paths and
+             delegates shell commands to :mod:`supervisor.security.guard_cli`;
+             the plugin loads its snapshot through a workspace pointer into
+             the read-only store (the shared opencode server does not inherit
+             the runner's env), and the V1 ``permission`` map stays the
+             file-tool back stop.
 pi           a project extension loaded with ``-e``; ``tool_call`` returns
              ``{block: true}`` for policy violations.
 codex        a ``PreToolUse`` hook that runs :mod:`supervisor.security.guard_cli`,
@@ -52,6 +56,11 @@ CODEX_HOOKS_END = "# <<< supervisor-access-guard <<<"
 
 OPENCODE_CONFIG_REL = Path(".opencode") / "opencode.json"
 OPENCODE_PLUGIN_REL = Path(".opencode") / "plugin" / "supervisor_access_guard.js"
+# Workspace pointer to the store snapshot. The plugin runs inside opencode's
+# long-lived server, which does not inherit the runner's environment, so the
+# snapshot must be findable without env - but never READ from the writable
+# workspace itself, hence a pointer validated against the store root.
+OPENCODE_POINTER_REL = Path(".supervisor") / "access_policy.json"
 PI_EXTENSION_REL = Path(".pi") / "extensions" / "supervisor-access-guard.ts"
 
 
@@ -129,7 +138,7 @@ def install_access_guard(
     log_path = violation_log_for(workspace, policy)
 
     if engine == "opencode":
-        _install_opencode(workspace, policy, result)
+        _install_opencode(workspace, policy, result, snapshot_path)
     elif engine == "pi":
         _install_pi(workspace, policy, result)
     elif engine == "codex":
@@ -178,6 +187,7 @@ def _install_opencode(
     workspace: Path,
     policy: AccessPolicy,
     result: GuardInstallResult,
+    snapshot_path: Path,
 ) -> None:
     config_path = workspace / OPENCODE_CONFIG_REL
     try:
@@ -185,14 +195,51 @@ def _install_opencode(
         result.artifacts.append(config_path)
     except (OSError, ValueError) as exc:
         result.warnings.append(f"opencode permissions not installed: {exc}")
+        result.failed = True
 
     plugin_path = workspace / OPENCODE_PLUGIN_REL
     try:
         plugin_path.parent.mkdir(parents=True, exist_ok=True)
-        plugin_path.write_text(_OPENCODE_PLUGIN_JS, encoding="utf-8")
+        plugin_path.write_text(_render_opencode_plugin(), encoding="utf-8")
         result.artifacts.append(plugin_path)
     except OSError as exc:
         result.warnings.append(f"opencode plugin not installed: {exc}")
+        result.failed = True
+
+    pointer_path = workspace / OPENCODE_POINTER_REL
+    try:
+        pointer_path.parent.mkdir(parents=True, exist_ok=True)
+        pointer_path.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "store": str(snapshot_path),
+                    "workspace": str(workspace),
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        result.artifacts.append(pointer_path)
+    except OSError as exc:
+        result.warnings.append(f"opencode policy pointer not installed: {exc}")
+        result.failed = True
+
+
+def _render_opencode_plugin() -> str:
+    """Embed install-time absolutes into the plugin template.
+
+    The shared opencode server does not inherit the runner's environment, so
+    the analyzer interpreter and the importable package root are written into
+    the plugin itself (JSON-escaped for JS); the env overrides still win.
+    """
+    package_root = Path(__file__).resolve().parents[2]
+    return (
+        _OPENCODE_PLUGIN_JS
+        .replace("__SOP_GUARD_PYTHON__", json.dumps(str(sys.executable)))
+        .replace("__SOP_REPO_ROOT__", json.dumps(str(package_root)))
+    )
 
 
 def opencode_permission_config(policy: AccessPolicy) -> dict[str, dict[str, str]]:
@@ -592,6 +639,17 @@ def remove_access_guard(
                 _strip_opencode_rules(config_path)
         except (OSError, ValueError):
             logger.debug("could not strip opencode permissions", exc_info=True)
+        pointer = workspace / OPENCODE_POINTER_REL
+        try:
+            if pointer.is_file():
+                data = json.loads(pointer.read_text(encoding="utf-8"))
+                # Only our pointer shape (a redirect, not a full snapshot) is
+                # ours to remove; a user's own snapshot file stays.
+                if isinstance(data, dict) and data.get("store") and "roots" not in data:
+                    pointer.unlink()
+                    removed.append(pointer)
+        except (OSError, ValueError, json.JSONDecodeError):
+            logger.debug("could not remove opencode policy pointer", exc_info=True)
 
     for snapshot in access_store_dir(workspace).glob(f"{POLICY_FILE_PREFIX}*.json"):
         try:
@@ -678,38 +736,43 @@ def _strip_codex_hook(hooks_path: Path) -> None:
 # Templates
 # --------------------------------------------------------------------------- #
 
-_OPENCODE_PLUGIN_JS = r"""/**
- * supervisor_access_guard - installed by opencode-supervisor.
+_OPENCODE_PLUGIN_JS = r"""
+/**
+ * supervisor-access-guard (supervisor_access_guard.js) - installed by
+ * opencode-supervisor.
  *
  * Hard path gate for every opencode tool call. File paths are checked here;
  * shell commands are delegated to the supervisor's Python analyzer
- * (`shell_scan`) so all three engines share one parser and one rule set.
+ * (`supervisor.security.guard_cli`) so all engines share one parser and one
+ * rule set.
  *
  * A missing policy, a failed analyzer or a timeout denies the call: the gate
- * fails closed. V1 plugin shape on purpose (no project imports), so it loads
- * without node_modules.
+ * fails closed. Dual entrypoint, no SDK import (loads without node_modules):
+ * opencode 2.x default-exports the Plugin.define-shaped object and runs
+ * `setup()`; opencode 1.x (>= 1.18.29) calls `server()` for the classic
+ * hooks object.
+ *
+ * The policy snapshot lives in the supervisor's read-only store
+ * (~/.opencode_supervisor/access), never in the agent-writable workspace:
+ * the workspace only holds a pointer file (`.supervisor/access_policy.json`
+ * -> store path). A pointer is honored only when it resolves inside the
+ * store AND the snapshot owns this workspace (a rw root equal to this
+ * directory), so a workspace-writable file can never inject, redirect or
+ * borrow a policy. The V1 `permission` config map stays the file-tool back
+ * stop: opencode 2.2.x still honors `permission.external_directory`.
  */
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 
-const POLICY_CANDIDATES = [
-  process.env.SOP_ACCESS_POLICY,
-  path.join(process.cwd(), ".supervisor", "access_policy.json"),
-];
+// Install-time absolutes: the shared background service does not inherit the
+// runner's environment, so the interpreter and importable package root are
+// embedded when the plugin is written (env overrides still win).
+const DEFAULT_GUARD_PYTHON = __SOP_GUARD_PYTHON__;
+const DEFAULT_REPO_ROOT = __SOP_REPO_ROOT__;
 
-function loadPolicy(directory) {
-  const candidates = [...POLICY_CANDIDATES.filter(Boolean)];
-  if (directory) candidates.push(path.join(directory, ".supervisor", "access_policy.json"));
-  for (const candidate of candidates) {
-    try {
-      return JSON.parse(fs.readFileSync(candidate, "utf8"));
-    } catch (_) {
-      /* try the next candidate */
-    }
-  }
-  return { enabled: true, roots: [], missing: true };
-}
+const POINTER_REL = path.join(".supervisor", "access_policy.json");
 
 function realResolve(target) {
   let current = path.resolve(target);
@@ -742,10 +805,90 @@ function within(child, root) {
   return c === r || c.startsWith(r + (IS_WIN ? "\\" : "/"));
 }
 
-function check(policy, rawPath, access, base) {
+function storeRoot() {
+  return realResolve(path.join(os.homedir(), ".opencode_supervisor", "access"));
+}
+
+function miss(reason) {
+  return {
+    missing: true,
+    missingReason: reason,
+    snapshot: null,
+    policyPath: "",
+    logPath: "",
+  };
+}
+
+function resolvePolicy(directory) {
+  const root = storeRoot();
+  const candidates = [];
+  const envPath = process.env.SOP_ACCESS_POLICY || "";
+  if (envPath) candidates.push({ file: envPath, trustedFull: true });
+  for (const base of [process.cwd(), directory]) {
+    if (base) candidates.push({ file: path.join(String(base), POINTER_REL), trustedFull: false });
+  }
+  for (const candidate of candidates) {
+    let raw;
+    try {
+      raw = JSON.parse(fs.readFileSync(candidate.file, "utf8"));
+    } catch (_) {
+      continue;
+    }
+    if (!raw || typeof raw !== "object") continue;
+    let snapshotFile = candidate.file;
+    if (!candidate.trustedFull) {
+      // Workspace files are agent-writable: only a POINTER into the store is
+      // honored, never a snapshot sitting in the workspace itself.
+      if (typeof raw.store !== "string" || !raw.store || raw.roots) continue;
+      snapshotFile = realResolve(raw.store);
+      if (!within(snapshotFile, root)) {
+        return miss("policy pointer points outside the supervisor store: " + raw.store);
+      }
+      try {
+        raw = JSON.parse(fs.readFileSync(snapshotFile, "utf8"));
+      } catch (err) {
+        return miss("policy snapshot unreadable: " + String(err).slice(0, 80));
+      }
+      if (!raw || typeof raw !== "object" || !Array.isArray(raw.roots)) {
+        return miss("policy snapshot malformed: " + snapshotFile);
+      }
+    } else if (!Array.isArray(raw.roots)) {
+      continue;
+    }
+    // The snapshot must own this directory (matching rw root), so project A
+    // cannot borrow project B's wider boundary through its own pointer.
+    const here = norm(realResolve(directory || process.cwd()));
+    const owns = (raw.roots || []).some(
+      (entry) =>
+        entry && entry.mode === "rw" && norm(String(entry.path || "")) === here,
+    );
+    if (!owns) {
+      return miss("policy snapshot does not match this workspace: " + snapshotFile);
+    }
+    const logFile = path.join(
+      path.dirname(snapshotFile),
+      path.basename(snapshotFile)
+        .replace(/^policy-/, "violations-")
+        .replace(/\.json$/, ".jsonl"),
+    );
+    return {
+      missing: false,
+      missingReason: "",
+      snapshot: raw,
+      policyPath: snapshotFile,
+      logPath: logFile,
+    };
+  }
+  return miss("no policy pointer in workspace (failing closed)");
+}
+
+function check(resolved, rawPath, access, base) {
+  if (resolved.missing) {
+    return resolved.missingReason || "access policy snapshot missing (failing closed)";
+  }
+  const policy = resolved.snapshot;
   if (!policy) return "access policy not loaded";
   if (policy.enabled === false) return null;
-  if (policy.missing) return "access policy snapshot missing (failing closed)";
   let text = String(rawPath || "").trim();
   if (!text) return "empty path";
   if (text.startsWith("\\\\") || text.startsWith("\\\\.\\")) return "UNC or device paths are not allowed";
@@ -755,14 +898,14 @@ function check(policy, rawPath, access, base) {
     .replace(/%USERPROFILE%/gi, process.env.USERPROFILE || "")
     .replace(/\$\{?HOME\}?/gi, process.env.HOME || process.env.USERPROFILE || "");
   const target = path.isAbsolute(text) ? text : path.resolve(base || process.cwd(), text);
-  let resolved;
+  let resolvedPath;
   try {
-    resolved = realResolve(target);
+    resolvedPath = realResolve(target);
   } catch (err) {
     return "unresolvable path: " + String(err);
   }
   for (const root of policy.roots || []) {
-    if (!within(resolved, root.path)) continue;
+    if (!within(resolvedPath, root.path)) continue;
     if (root.mode === "rw") return null;
     return access === "write" ? "whitelist directories are read-only" : null;
   }
@@ -775,29 +918,34 @@ function check(policy, rawPath, access, base) {
  * commands, wrappers it cannot unwrap), so an unparseable command is denied
  * rather than guessed at.
  */
-function scanCommand(command, base) {
+function scanCommand(command, base, resolved) {
   if (!command) return null;
-  if (!process.env.SOP_ACCESS_POLICY) {
-    return "access policy snapshot missing (failing closed)";
+  if (resolved.missing) {
+    return resolved.missingReason || "access policy snapshot missing (failing closed)";
   }
-  const python = process.env.SOP_GUARD_PYTHON || "python";
+  const python = process.env.SOP_GUARD_PYTHON || DEFAULT_GUARD_PYTHON;
+  const childEnv = { ...process.env };
+  if (!childEnv.PYTHONPATH || !childEnv.PYTHONPATH.includes(DEFAULT_REPO_ROOT)) {
+    childEnv.PYTHONPATH = DEFAULT_REPO_ROOT
+      + (childEnv.PYTHONPATH ? path.delimiter + childEnv.PYTHONPATH : "");
+  }
   try {
     const output = execFileSync(
       python,
       [
         "-m",
         "supervisor.security.guard_cli",
-        "--policy-env",
-        "SOP_ACCESS_POLICY",
-        "--log-env",
-        "SOP_ACCESS_LOG",
+        "--policy",
+        resolved.policyPath,
+        "--log",
+        resolved.logPath,
         "--check-command",
       ],
       {
         input: JSON.stringify({ command: String(command), cwd: base || process.cwd() }),
         encoding: "utf8",
         timeout: 8000,
-        env: process.env,
+        env: childEnv,
         windowsHide: true,
       },
     );
@@ -818,47 +966,60 @@ function toolPaths(args) {
   return paths;
 }
 
-export const SupervisorAccessGuard = async ({ directory, worktree }) => {
-  const policy = loadPolicy(directory || worktree);
-  return {
-    "tool.execute.before": async (input, output) => {
-      const tool = String(input?.tool || "").toLowerCase();
-      const args = output?.args || {};
-      const base = directory || worktree || process.cwd();
+function gateToolCall(tool, args, resolved, base) {
+  if (tool === "bash" || tool === "shell" || tool === "execute") {
+    const reason = scanCommand(String(args.command || args.cmd || ""), base, resolved);
+    if (reason) {
+      throw new Error("Blocked by supervisor access policy (shell): " + reason);
+    }
+    return;
+  }
 
-      if (tool === "bash" || tool === "shell" || tool === "execute") {
-        const reason = scanCommand(String(args.command || args.cmd || ""), base);
-        if (reason) {
-          throw new Error("Blocked by supervisor access policy (shell): " + reason);
-        }
-        return;
+  const access = ["write", "edit", "patch", "multiedit", "multi_edit"].includes(tool)
+    ? "write"
+    : "read";
+  for (const candidate of toolPaths(args)) {
+    const reason = check(resolved, candidate, access, base);
+    if (reason) {
+      throw new Error(
+        "Blocked by supervisor access policy: " + candidate + " (" + reason + ")",
+      );
+    }
+  }
+  if (tool === "patch" && typeof args.patchText === "string") {
+    for (const line of args.patchText.split("\n")) {
+      const match = line.match(/^\*\*\* .* File: (.+)$/);
+      if (!match) continue;
+      const reason = check(resolved, match[1].trim(), "write", base);
+      if (reason) {
+        throw new Error(
+          "Blocked by supervisor access policy: " + match[1].trim() + " (" + reason + ")",
+        );
       }
+    }
+  }
+}
 
-      const access = ["write", "edit", "patch", "multiedit", "multi_edit"].includes(tool)
-        ? "write"
-        : "read";
-      for (const candidate of toolPaths(args)) {
-        const reason = check(policy, candidate, access, base);
-        if (reason) {
-          throw new Error(
-            "Blocked by supervisor access policy: " + candidate + " (" + reason + ")",
-          );
-        }
-      }
-      if (tool === "patch" && typeof args.patchText === "string") {
-        for (const line of args.patchText.split("\n")) {
-          const match = line.match(/^\*\*\* .* File: (.+)$/);
-          if (!match) continue;
-          const reason = check(policy, match[1].trim(), "write", base);
-          if (reason) {
-            throw new Error(
-              "Blocked by supervisor access policy: " + match[1].trim() + " (" + reason + ")",
-            );
-          }
-        }
-      }
-    },
-  };
+export default {
+  id: "supervisor.access-guard",
+  async setup(ctx) {
+    const directory = ctx?.location?.directory || ctx?.location?.project?.path || process.cwd();
+    const resolved = resolvePolicy(directory);
+    const base = directory || process.cwd();
+    await ctx.tool.hook("execute.before", (event) => {
+      gateToolCall(String(event?.tool || "").toLowerCase(), event?.input || {}, resolved, base);
+    });
+  },
+  async server(context) {
+    const directory = context?.directory || context?.worktree || process.cwd();
+    const resolved = resolvePolicy(directory);
+    const base = directory || process.cwd();
+    return {
+      "tool.execute.before": async (input, output) => {
+        gateToolCall(String(input?.tool || "").toLowerCase(), output?.args || {}, resolved, base);
+      },
+    };
+  },
 };
 """
 

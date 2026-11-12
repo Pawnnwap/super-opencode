@@ -10,6 +10,10 @@ care about (verified against opencode 2.x output) are::
                                            "input":{...},"output":"...big..."}}}
     {"type":"step_finish","part":{"type":"step-finish",
                                   "tokens":{"total":16531, ...}, ...}}
+                                  # opencode 2.2.x dropped "total":
+                                  # tokens={"input":16030,"output":51,
+                                  #         "reasoning":291,"cache":{...}} -
+                                  # the context total is input+output+reasoning.
 
 This module is deliberately pure (no I/O, no subprocess) so it can be unit
 tested against captured event lines.  The supervisor consumes it to:
@@ -148,7 +152,19 @@ def classify_line(line: str | None) -> LineEvent | None:
 
     if etype in ("step_finish", "step-finish"):
         tokens = part.get("tokens")
-        total = tokens.get("total") if isinstance(tokens, dict) else None
+        if not isinstance(tokens, dict):
+            return LineEvent(kind="tokens", tokens_total=0)
+        total = tokens.get("total")
+        if not (isinstance(total, (int, float)) and total > 0):
+            # opencode 2.2.x dropped the "total" field (verified live on
+            # v2.2.7): the per-request context size is the prompt tokens plus
+            # this step's output and reasoning. Without this the supervisor's
+            # context tracking would read 0 for every step on 2.x.
+            total = sum(
+                tokens.get(key) or 0
+                for key in ("input", "output", "reasoning")
+                if isinstance(tokens.get(key), (int, float))
+            )
         n = int(total) if isinstance(total, (int, float)) and total > 0 else 0
         return LineEvent(kind="tokens", tokens_total=n)
 
