@@ -91,10 +91,11 @@ def _touch_lock(store_dir: Path) -> None:
 class _LoopPulse(threading.Thread):
     """Touches ``worker.lock`` independent of the poll loop; forensics on stall.
 
-    The lock is the watchdog's only liveness signal (watch_suprun.ps1
-    tree-kills the worker at 30 s of lock age, and the successor marks every
-    RUNNING job ABANDONED), but it used to be touched only at the top of the
-    poll loop - so ONE blocked poll step looked exactly like a dead daemon.
+    The lock is the guardian's only liveness signal (services/runtime/
+    guardian.py treats 30 s of lock age as stale and the successor marks
+    every RUNNING job ABANDONED), but it used to be touched only at the top
+    of the poll loop - so ONE blocked poll step looked exactly like a dead
+    daemon.
     On 2026-11-11 that killed four healthy runs four times (16:55, 17:51,
     20:15, 22:23) while their job threads streamed events fine to the last
     second: the runs were "abandoned silently at some stage".

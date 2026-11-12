@@ -53,6 +53,31 @@ function Test-PortListening([int]$Port) {
   [bool](Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue)
 }
 
+function Write-PortsFile {
+  # The guardian reads this instead of hard-coding 8501/8321, so a custom
+  # -AppPort / -ProxyPort stays fully configurable end to end.
+  $store = Join-Path $root '.job_store'
+  if (-not (Test-Path $store)) { New-Item -ItemType Directory -Path $store | Out-Null }
+  @{ app = $AppPort; proxy = $ProxyPort; upstream = $upstream } | ConvertTo-Json |
+    Set-Content (Join-Path $store 'ports.json') -Encoding utf8
+}
+
+function Sync-CodexHomeProxyPort {
+  # The dedicated codex home names the proxy base_url; keep it in step with
+  # -ProxyPort (written BOM-free so the TOML parser keeps working).
+  $cfg = Join-Path $root '.codex_home_soprun\config.toml'
+  if (-not (Test-Path $cfg)) { return }
+  $text = Get-Content $cfg -Raw
+  $updated = [regex]::Replace(
+    $text,
+    'base_url\s*=\s*"http://127\.0\.0\.1:\d+/v1"',
+    ('base_url = "http://127.0.0.1:{0}/v1"' -f $ProxyPort)
+  )
+  if ($updated -ne $text) {
+    [IO.File]::WriteAllText($cfg, $updated, (New-Object System.Text.UTF8Encoding($false)))
+  }
+}
+
 function Get-PortOwnerPid([int]$Port) {
   (Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue |
     Select-Object -First 1).OwningProcess
@@ -84,6 +109,7 @@ function Stop-ServiceProcess([int]$Port) {
 }
 
 function Start-CapabilityProxy {
+  Sync-CodexHomeProxyPort
   if (Test-PortListening $ProxyPort) {
     $live = ''
     try {
@@ -235,38 +261,55 @@ function Start-JobWorker {
 }
 
 function Ensure-ScheduledTasks {
-  # Both healers must be owned by the Task Scheduler, never by a session: a
-  # session-owned watcher dies in the same harvest that kills the stack
-  # (2026-11-08 19:18:45) and then heals nothing. soprun_detached_launch is
-  # the on-demand start handle (schtasks /Run); soprun_watchdog re-probes and
-  # repairs every couple of minutes from its repetition trigger - no living
-  # process to lose, so it revives the stack after ANY death, including a
-  # total one.
-  $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew `
+  # Ownership rule (2026-11-08 19:18:45): a session-owned healer dies in the
+  # same harvest that kills the stack, so the start handle and the healer are
+  # Task Scheduler tasks:
+  #   soprun_detached_launch   - on-demand start handle (schtasks /Run)
+  #   soprun_guardian          - ONE long-lived pythonw process (no console)
+  #                              that probes and repairs the stack
+  #   soprun_guardian_backstop - every 15 min, pythonw --once: restarts the
+  #                              guardian itself when its heartbeat goes stale
+  # The guardian is plain Python (services/runtime/guardian.py), so the
+  # monitoring logic is portable; only its launcher command is Windows-bound.
+  $launchSettings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew `
     -ExecutionTimeLimit (New-TimeSpan -Minutes 30) -StartWhenAvailable `
     -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
-  # -WindowStyle Hidden on both actions: an interactive-logon task without it
-  # opens a console window on EVERY fire - the watchdog's 2-minute cadence
-  # flashed a PowerShell pop-up all day. Child consoles (the queue probe, the
-  # repair calls) attach to this hidden console and stay invisible too.
+  $guardianSettings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew `
+    -ExecutionTimeLimit (New-TimeSpan -Days 3650) -StartWhenAvailable `
+    -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+    -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1)
+  $pythonw = Join-Path $root 'venv\Scripts\pythonw.exe'
+  $guardianPy = Join-Path $root 'services\runtime\guardian.py'
+
   $launchAction = New-ScheduledTaskAction -Execute 'powershell.exe' `
     -Argument ('-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "{0}\start_suprun.ps1" -Detached' -f $root) `
     -WorkingDirectory $root
   $launchTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddYears(5)
   Register-ScheduledTask -TaskName soprun_detached_launch -Action $launchAction `
-    -Trigger $launchTrigger -Settings $settings -Force | Out-Null
-  $watchAction = New-ScheduledTaskAction -Execute 'powershell.exe' `
-    -Argument ('-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "{0}\watch_suprun.ps1"' -f $root) `
-    -WorkingDirectory $root
-  # Repetition every 2 min for 10 years; first fire 2 min out so it cannot
-  # race the very launch it guards (each delegated start re-registers and
-  # refreshes the horizon; MaxValue duration is rejected by the schema).
-  $watchTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(2) `
-    -RepetitionInterval (New-TimeSpan -Minutes 2) `
+    -Trigger $launchTrigger -Settings $launchSettings -Force | Out-Null
+
+  # pythonw owns no console at all - the 2-minute PowerShell pop-up is gone.
+  $guardianAction = New-ScheduledTaskAction -Execute $pythonw `
+    -Argument ('"{0}"' -f $guardianPy) -WorkingDirectory $root
+  # -AtLogOn without -User means "any user" and needs elevation; the service
+  # belongs to the operator's session, so bind the trigger to that user.
+  $guardianTrigger = New-ScheduledTaskTrigger -AtLogOn -User ([System.Security.Principal.WindowsIdentity]::GetCurrent().Name)
+  Register-ScheduledTask -TaskName soprun_guardian -Action $guardianAction `
+    -Trigger $guardianTrigger -Settings $guardianSettings -Force | Out-Null
+
+  $backstopAction = New-ScheduledTaskAction -Execute $pythonw `
+    -Argument ('"{0}" --once' -f $guardianPy) -WorkingDirectory $root
+  # Sparse first fire + 15-min repetition (MaxValue duration is rejected).
+  $backstopTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(15) `
+    -RepetitionInterval (New-TimeSpan -Minutes 15) `
     -RepetitionDuration (New-TimeSpan -Days 3650)
-  Register-ScheduledTask -TaskName soprun_watchdog -Action $watchAction `
-    -Trigger $watchTrigger -Settings $settings -Force | Out-Null
-  Write-Output 'tasks  : soprun_detached_launch (on-demand start) + soprun_watchdog (probe every 2min) registered'
+  Register-ScheduledTask -TaskName soprun_guardian_backstop -Action $backstopAction `
+    -Trigger $backstopTrigger -Settings $guardianSettings -Force | Out-Null
+
+  # Retired 2-minute poller: remove the task (its script is deleted too).
+  Unregister-ScheduledTask -TaskName soprun_watchdog -Confirm:$false -ErrorAction SilentlyContinue
+  schtasks /Run /TN soprun_guardian 2>&1 | Out-Null
+  Write-Output 'tasks  : soprun_detached_launch + soprun_guardian (pythonw) + soprun_guardian_backstop (15min) registered'
 }
 
 function Invoke-DelegatedStart {
@@ -278,6 +321,7 @@ function Invoke-DelegatedStart {
   if ($Restart -and (Test-PortListening $AppPort)) {
     Stop-ServiceProcess $AppPort
   }
+  Write-PortsFile
   @{ upstream = $upstream } | ConvertTo-Json |
     Set-Content (Join-Path $root '.job_store\launch.pending') -Encoding utf8
   Ensure-ScheduledTasks
@@ -305,6 +349,7 @@ if (-not $Detached) {
 }
 if (-not $AppOnly) { Start-CapabilityProxy }
 if (-not $ProxyOnly) {
+  Write-PortsFile
   Start-JobWorker
   Start-SupervisorApp
 }

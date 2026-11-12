@@ -11,9 +11,9 @@ layer end to end:
 - the UI watchdog touches ``.job_store/ui.lock`` (death clock) and logs
   client connect/disconnect/delete;
 - the browser beacon forwards socket/tab events into the server log;
-- self-heal lives in Task-Scheduler-owned scheduled tasks and session
-  invocations of the launcher delegate to them (a session-owned watcher
-  died in the same 2026-11-08 harvest that killed the stack).
+- self-heal lives in Task-Scheduler-owned tasks (guardian + backstop) and
+  session invocations of the launcher delegate to them (a session-owned
+  watcher died in the same 2026-11-08 harvest that killed the stack).
 """
 
 from __future__ import annotations
@@ -73,29 +73,33 @@ def test_self_heal_is_task_owned_not_session_owned():
     # the stack - so it shared the stack's fate: the 2026-11-08 19:18:45
     # session harvest killed watcher and stack in one sweep and the UI stayed
     # down for 15+ hours. Self-heal must live in scheduled tasks instead:
-    # soprun_detached_launch (on-demand start), soprun_watchdog (periodic
-    # probe+repair). A session invocation of start_suprun.ps1 must DELEGATE
-    # to the task-owned action and never spawn service processes itself.
+    # soprun_detached_launch (on-demand start), soprun_guardian (one long-lived
+    # pythonw guardian) and soprun_guardian_backstop (sparse heartbeat check).
+    # A session invocation of start_suprun.ps1 must DELEGATE to the task-owned
+    # action and never spawn service processes itself.
     src = _read("start_suprun.ps1")
     assert "[switch]$Detached" in src
     assert "if (-not $Detached)" in src
     assert "schtasks /Run /TN soprun_detached_launch" in src
-    assert "soprun_watchdog" in src
-    # no long-lived session-owned watcher process may exist again
-    assert "function Start-UiWatcher" not in src
-    watch = _read("watch_suprun.ps1")
-    assert "while ($true)" not in watch  # one-shot; the task trigger is the loop
-    assert "start_suprun.ps1" in watch and "-Detached" in watch
+    assert "soprun_guardian_backstop" in src
+    assert "soprun_guardian" in src
+    assert "pythonw.exe" in src
+    # the 2-minute PM poller is retired (its task is unregistered on start)
+    assert "Unregister-ScheduledTask -TaskName soprun_watchdog" in src
+    assert "watch_suprun.ps1" not in src
+    guardian = _read("services", "runtime", "guardian.py")
+    assert "def run_guardian" in guardian and "def backstop" in guardian
+    assert "start_suprun.ps1" in guardian and "-Detached" in guardian
 
 
 def test_scheduled_task_actions_never_open_a_console_window():
     # An interactive-logon scheduled task without -WindowStyle Hidden opens a
-    # console window on EVERY fire. Both task actions are registered from here,
-    # and soprun_watchdog fires every 2 minutes - the missing flag popped a
-    # PowerShell window all day (user report 2026-11-12).
+    # console window on EVERY fire. The launch action keeps the flag; the
+    # guardian actions are pythonw, which owns no console at all.
     src = _read("start_suprun.ps1")
-    assert src.count("-WindowStyle Hidden -File") == 2
-    assert "-ExecutionPolicy Bypass -File \"{0}\\watch_suprun.ps1\"" not in src
+    assert "-WindowStyle Hidden -File" in src
+    assert "venv\\Scripts\\pythonw.exe" in src
+    assert "watch_suprun.ps1" not in src
 
 
 def test_ui_arms_death_capture_and_lifecycle_logs():

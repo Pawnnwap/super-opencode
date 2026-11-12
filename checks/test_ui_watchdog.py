@@ -6,10 +6,10 @@ The 2026-11-01 incident: uvicorn's loop factory forced ProactorEventLoop
 on, and nothing reached the log. app.py now opts into the selector loop via
 `loop="none"` + WindowsSelectorEventLoopPolicy, and a watchdog thread probes
 loop responsiveness every 10s so a freeze is timed and attributed in the
-log. Serving health and revival belong to the task-owned soprun_watchdog
-(watch_suprun.ps1): the old in-process HTTP probe was redundant with it,
-never repaired anything, and each probe built a full page that churned one
-"client deleted" line into ui.lifecycle a minute later.
+log. Serving health and revival belong to the task-owned Python guardian
+(services/runtime/guardian.py): the old in-process HTTP probe was redundant
+with it, never repaired anything, and each probe built a full page that
+churned one "client deleted" line into ui.lifecycle a minute later.
 """
 import sys
 from pathlib import Path
@@ -39,13 +39,15 @@ def test_engineio_disconnect_stub_is_complete():
 def test_watchdog_is_loop_probe_only_serving_is_task_owned():
     assert "call_soon_threadsafe" in _APP_SRC
     assert "loop is frozen" in _APP_SRC
-    # no in-process HTTP probing: redundant with the task-owned watchdog and
+    # no in-process HTTP probing: redundant with the task-owned guardian and
     # the probe churned a UI client per call
     assert "urllib" not in _APP_SRC
-    # ... and the task-owned watchdog probes a side-effect-free route
+    # ... and the guardian probes a side-effect-free route
     assert "/healthz" in _APP_SRC
-    watch = (_REPO / "watch_suprun.ps1").read_text(encoding="utf-8")
-    assert "healthz" in watch
+    guardian = (_REPO / "services" / "runtime" / "guardian.py").read_text(
+        encoding="utf-8",
+    )
+    assert "/healthz" in guardian
 
 
 def test_selector_loop_is_the_platform_default_under_the_policy():
