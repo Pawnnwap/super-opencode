@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 import supervisor.security.engine_guards as engine_guards
+import supervisor.security.preflight as preflight
 from supervisor.security.access_policy import build_policy
 from supervisor.security.engine_guards import install_access_guard
 from supervisor.security.preflight import run_drill, run_policy_drill
@@ -70,6 +71,43 @@ def test_policy_drill_detects_a_leaky_policy(layout):
     names = {check.name for check in report.failures()}
     assert "outside read denied" in names
     assert "inside shell command allowed" in names
+
+
+def test_policy_drill_passes_with_whitelisted_parent(tmp_path):
+    # Study layout: the workspace sits inside a read-only reference tree.
+    # The drill's old fixed fixtures (ws.parent, ws+"-evil") landed inside
+    # the whitelist and turned legitimate read grants into false failures.
+    root = tmp_path / "research"
+    ws = root / "studies" / "study_r1"
+    ws.mkdir(parents=True)
+    policy = build_policy(ws, [root])
+    report = run_policy_drill(ws, policy)
+    assert report.ok, report.fail_text()
+    sibling = Path(str(ws) + "-evil")
+    assert policy.check_read(sibling / "x").allowed
+    assert not policy.check_write(sibling / "x").allowed
+
+
+def test_codex_drill_with_whitelisted_parent(tmp_path):
+    root = tmp_path / "research"
+    ws = root / "studies" / "study_r1"
+    ws.mkdir(parents=True)
+    policy = build_policy(ws, [root])
+    install = install_access_guard(ws, policy, "codex", codex_home=tmp_path / "codex_home")
+    report = run_drill("codex", ws, policy, install)
+    assert report.ok, report.fail_text()
+    names = {check.name for check in report.checks}
+    assert "codex gate denies outside read" in names
+
+
+def test_policy_drill_one_explicit_failure_without_outside_root(layout, monkeypatch):
+    ws, ref = layout
+    monkeypatch.setattr(preflight, "_outside_fixture", lambda ws, roots: None)
+    report = run_policy_drill(ws, build_policy(ws, [ref]))
+    assert not report.ok
+    failures = report.failures()
+    assert len(failures) == 1
+    assert failures[0].name == "outside drill root"
 
 
 def test_static_drill_opencode(layout):

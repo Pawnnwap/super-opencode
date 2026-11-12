@@ -40,12 +40,8 @@ _PERSIST_KEYS = [
     "max_stored_jobs",
     "harvest_prompt",
     "harvest_dir",
-    "raw_input",
-    "raw_target",
-    "raw_restrictions",
     "evo_goal",
     "evo_extra_restrictions",
-    "enable_python_scanner",
     "enable_occam_razor",
     "access_policy_enabled",
     "access_whitelist",
@@ -64,10 +60,6 @@ _PERSIST_KEYS = [
 # Default values for every setting the UI binds to (persisted keys above plus
 # session-only values kept here so all pages share one source of defaults).
 DEFAULTS: dict = {
-    "protocol_md": "",
-    "raw_input": "",
-    "raw_target": "",
-    "raw_restrictions": "",
     "openai_key": "",
     "base_url": "",
     "workspace": "",
@@ -106,7 +98,6 @@ DEFAULTS: dict = {
     "access_policy_strict": False,
     "evo_goal": "",
     "evo_extra_restrictions": "",
-    "enable_python_scanner": True,
     "enable_occam_razor": False,
     "enable_supervisor_skills": True,
     "supervisor_skills_dir": "",

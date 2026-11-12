@@ -174,9 +174,11 @@ class AccessPolicy:
         raw = getattr(config, "access_whitelist", ()) or ()
         if isinstance(raw, str):
             raw = [line for line in raw.splitlines() if line.strip()]
+        entries = [Path(str(item)) for item in raw if str(item).strip()]
+        entries.extend(agent_infrastructure_roots())
         return cls(
             workspace=Path(getattr(config, "workspace")),
-            whitelist=tuple(Path(str(item)) for item in raw if str(item).strip()),
+            whitelist=tuple(entries),
             enabled=bool(getattr(config, "access_policy_enabled", True)),
             strict_dynamic=bool(getattr(config, "access_policy_strict", False)),
         )
@@ -469,6 +471,33 @@ def build_policy(
     )
 
 
+def agent_infrastructure_roots() -> tuple[Path, ...]:
+    """Existing agent config/skill directories every run may read.
+
+    Skills live in one general folder; hooks and config are per-agent, so
+    each agent's home is detected separately. Read-only like any whitelist
+    entry; missing directories are skipped.
+    """
+    home = Path.home()
+    candidates = [
+        home / ".agents" / "skills",
+        home / ".codex",
+        home / ".config" / "opencode",
+        home / ".pi",
+    ]
+    env_home = (os.environ.get("CODEX_HOME") or "").strip()
+    if env_home:
+        candidates.append(Path(env_home))
+    roots: list[Path] = []
+    for candidate in candidates:
+        try:
+            if candidate.is_dir():
+                roots.append(candidate)
+        except OSError:
+            continue
+    return tuple(roots)
+
+
 def _is_dangerous_root(path: Path) -> bool:
     """True for drive/filesystem roots and OS trees (never whitelistable)."""
     if path.parent == path:
@@ -488,6 +517,7 @@ __all__ = [
     "AccessPolicyError",
     "PolicyDecision",
     "PolicyViolation",
+    "agent_infrastructure_roots",
     "build_policy",
     "is_within",
     "validate_whitelist_entry",

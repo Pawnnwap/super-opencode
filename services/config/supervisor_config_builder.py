@@ -5,6 +5,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from supervisor.security.access_profile import merge_profile
 from supervisor.utils.config import SupervisorConfig
 
 
@@ -24,6 +25,10 @@ def build_supervisor_config(
     workspace: Path,
     **overrides,
 ) -> SupervisorConfig:
+    # The workspace profile (access_protection.json) is authoritative for
+    # access/protection settings; settings-file values are the fallback.
+    workspace = Path(workspace)
+    session_state = merge_profile(session_state, workspace)
     defaults = dict(
         protocol_path=protocol_path,
         workspace=workspace,
@@ -54,7 +59,6 @@ def build_supervisor_config(
             session_state.get("access_policy_strict", False),
         ),
         max_tokens=int(session_state["max_tokens"]),
-        enable_python_scanner=bool(session_state["enable_python_scanner"]),
         enable_occam_razor=bool(session_state.get("enable_occam_razor", False)),
         enable_supervisor_skills=bool(
             session_state.get("enable_supervisor_skills", True),

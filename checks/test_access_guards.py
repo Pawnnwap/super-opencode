@@ -19,6 +19,7 @@ from supervisor.security.engine_guards import (
     policy_path_for,
 )
 from supervisor.security.guard_cli import decision_payload, violations_for_event
+from supervisor.security.preflight import run_drill
 from supervisor.security.whitelist_advisor import parse_suggestions, suggest_whitelist
 
 
@@ -187,6 +188,94 @@ def test_codex_disable_removes_hook(layout, tmp_path):
         for handler in entry.get("hooks", [])
     ]
     assert not any("supervisor.security.guard_cli" in command for command in commands)
+
+
+def test_codex_install_joins_toml_representation(layout, tmp_path):
+    ws, _, policy = layout
+    home = tmp_path / "codex_home"
+    home.mkdir()
+    config = home / "config.toml"
+    original = (
+        'model = "x"\n\n[[hooks.PostToolUse]]\nmatcher = "Edit"\n'
+        'hooks = [\n  { type = "command", command = "echo gate" },\n]\n'
+    )
+    config.write_text(original, encoding="utf-8")
+
+    result = install_access_guard(ws, policy, "codex", codex_home=home)
+    assert not (home / "hooks.json").exists()
+    assert config in result.artifacts
+    text = config.read_text(encoding="utf-8")
+    assert original in text
+    assert "supervisor.security.guard_cli" in text
+    assert "--dangerously-bypass-hook-trust" in result.flags
+
+    # Reinstall keeps exactly one managed block.
+    install_access_guard(ws, policy, "codex", codex_home=home)
+    text = config.read_text(encoding="utf-8")
+    assert text.count("[[hooks.PreToolUse]]") == 1
+
+    # Disabling restores the operator's file.
+    install_access_guard(ws, build_policy(ws, [], enabled=False), "codex", codex_home=home)
+    assert config.read_text(encoding="utf-8").rstrip() == original.rstrip()
+
+
+def test_codex_install_migrates_supervisor_only_hooks_json(layout, tmp_path):
+    ws, _, policy = layout
+    home = tmp_path / "codex_home"
+    home.mkdir()
+    (home / "config.toml").write_text(
+        '[[hooks.Stop]]\nhooks = [\n  { type = "command", command = "echo stop" },\n]\n',
+        encoding="utf-8",
+    )
+    hooks = home / "hooks.json"
+    hooks.write_text(
+        json.dumps({"hooks": {"PreToolUse": [{"hooks": [
+            {"type": "command", "command": "python -m supervisor.security.guard_cli"},
+        ]}]}}),
+        encoding="utf-8",
+    )
+
+    result = install_access_guard(ws, policy, "codex", codex_home=home)
+    assert not hooks.exists()
+    assert hooks in result.removed
+    assert (home / "hooks.json.bak-supervisor").exists()
+    assert "supervisor.security.guard_cli" in (home / "config.toml").read_text(encoding="utf-8")
+
+
+def test_codex_install_keeps_foreign_hooks_json(layout, tmp_path):
+    ws, _, policy = layout
+    home = tmp_path / "codex_home"
+    home.mkdir()
+    (home / "config.toml").write_text(
+        '[[hooks.Stop]]\nhooks = [\n  { type = "command", command = "echo stop" },\n]\n',
+        encoding="utf-8",
+    )
+    hooks = home / "hooks.json"
+    hooks.write_text(
+        json.dumps({"hooks": {"SessionStart": [
+            {"hooks": [{"type": "command", "command": "echo keep"}]},
+        ]}}),
+        encoding="utf-8",
+    )
+
+    result = install_access_guard(ws, policy, "codex", codex_home=home)
+    assert hooks.exists()
+    assert any("single representation" in warning for warning in result.warnings)
+    data = json.loads(hooks.read_text(encoding="utf-8"))
+    assert data["hooks"]["SessionStart"][0]["hooks"][0]["command"] == "echo keep"
+
+
+def test_codex_drill_with_toml_hooks(layout, tmp_path):
+    ws, _, policy = layout
+    home = tmp_path / "codex_home"
+    home.mkdir()
+    (home / "config.toml").write_text(
+        '[[hooks.Stop]]\nhooks = [\n  { type = "command", command = "echo stop" },\n]\n',
+        encoding="utf-8",
+    )
+    install = install_access_guard(ws, policy, "codex", codex_home=home)
+    report = run_drill("codex", ws, policy, install)
+    assert report.ok, report.fail_text()
 
 
 class TestGuardCli:

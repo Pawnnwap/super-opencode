@@ -9,8 +9,10 @@ opencode     V2 ``permissions`` rules (external_directory deny + read-only
              the permission scanner cannot classify.
 pi           a project extension loaded with ``-e``; ``tool_call`` returns
              ``{block: true}`` for policy violations.
-codex        a ``PreToolUse`` hook in ``$CODEX_HOME/hooks.json`` that runs
-             :mod:`supervisor.security.guard_cli`; the run also passes
+codex        a ``PreToolUse`` hook that runs :mod:`supervisor.security.guard_cli`,
+             merged into whichever representation the codex home already uses
+             (``config.toml`` ``[[hooks]]`` tables or ``hooks.json`` - codex
+             rejects both at one layer); the run also passes
              ``--dangerously-bypass-hook-trust`` so the hook is active in
              non-interactive execution.
 ===========  ==============================================================
@@ -26,6 +28,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import shutil
 import sys
 from dataclasses import dataclass, field
@@ -44,6 +47,8 @@ POLICY_STORE_DIR = Path.home() / ".opencode_supervisor" / "access"
 POLICY_FILE_PREFIX = "policy-"
 VIOLATION_LOG_PREFIX = "violations-"
 GUARD_MARKER = "supervisor-access-guard"
+CODEX_HOOKS_BEGIN = "# >>> supervisor-access-guard (managed by super-opencode; do not edit) >>>"
+CODEX_HOOKS_END = "# <<< supervisor-access-guard <<<"
 
 OPENCODE_CONFIG_REL = Path(".opencode") / "opencode.json"
 OPENCODE_PLUGIN_REL = Path(".opencode") / "plugin" / "supervisor_access_guard.js"
@@ -359,10 +364,18 @@ def _install_codex(
     codex_home: Path | None = None,
 ) -> None:
     home = Path(codex_home) if codex_home else default_codex_home()
+    config_path = home / "config.toml"
     hooks_path = home / "hooks.json"
     try:
-        _merge_codex_hooks(hooks_path, workspace)
-        result.artifacts.append(hooks_path)
+        if _toml_has_hooks(config_path):
+            # codex rejects two hook representations in one layer; join the
+            # one this home already uses instead of creating a second.
+            _merge_codex_toml(config_path, _codex_hook_command())
+            result.artifacts.append(config_path)
+            _migrate_hooks_json(hooks_path, result)
+        else:
+            _merge_codex_hooks(hooks_path, workspace)
+            result.artifacts.append(hooks_path)
     except (OSError, ValueError) as exc:
         result.warnings.append(f"codex hook not installed: {exc}")
         result.failed = True
@@ -372,6 +385,92 @@ def _install_codex(
     # supervisor installs this hook itself and vets it by construction, so the
     # per-invocation bypass is the correct trust decision here.
     result.flags.append("--dangerously-bypass-hook-trust")
+
+
+def _toml_has_hooks(config_path: Path) -> bool:
+    try:
+        text = config_path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    try:
+        import tomllib
+
+        return bool(tomllib.loads(text).get("hooks"))
+    except ImportError:
+        return bool(re.search(r"^\s*\[\[hooks\.", text, re.MULTILINE))
+    except ValueError:
+        # Unparseable TOML: fall back to the surface shape so we still join
+        # the representation instead of adding a conflicting second one.
+        return bool(re.search(r"^\s*\[\[hooks\.", text, re.MULTILINE))
+
+
+def _toml_quote(value: str) -> str:
+    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def _managed_toml_block(command: str) -> str:
+    return (
+        f"{CODEX_HOOKS_BEGIN}\n"
+        "[[hooks.PreToolUse]]\n"
+        "hooks = [\n"
+        f'  {{ type = "command", command = {_toml_quote(command)}, timeout = 20, statusMessage = "{GUARD_MARKER}" }},\n'
+        "]\n"
+        f"{CODEX_HOOKS_END}\n"
+    )
+
+
+def _strip_managed_toml(text: str) -> str:
+    pattern = re.compile(
+        re.escape(CODEX_HOOKS_BEGIN) + r".*?" + re.escape(CODEX_HOOKS_END) + r"\n?",
+        re.DOTALL,
+    )
+    return pattern.sub("", text)
+
+
+def _merge_codex_toml(config_path: Path, command: str) -> None:
+    text = config_path.read_text(encoding="utf-8") if config_path.exists() else ""
+    cleaned = _strip_managed_toml(text).rstrip("\n")
+    if config_path.exists():
+        backup = config_path.parent / (config_path.name + ".bak-supervisor")
+        if not backup.exists():
+            shutil.copyfile(config_path, backup)
+    payload = (cleaned + "\n\n" if cleaned else "") + _managed_toml_block(command)
+    tmp = config_path.parent / (config_path.name + ".tmp")
+    tmp.write_text(payload, encoding="utf-8")
+    os.replace(tmp, config_path)
+
+
+def _migrate_hooks_json(hooks_path: Path, result: GuardInstallResult) -> None:
+    """Drop our hooks.json entry when the home uses TOML hooks.
+
+    A hooks.json holding only our entry is supervisor-created and safe to
+    delete; foreign entries stay, and the remaining dual representation is
+    the operator's to resolve (warned, not silently rewritten).
+    """
+    if not hooks_path.exists():
+        return
+    try:
+        data = json.loads(hooks_path.read_text(encoding="utf-8") or "{}")
+    except (OSError, ValueError):
+        return
+    hooks = data.get("hooks") if isinstance(data, dict) else None
+    if not isinstance(hooks, dict):
+        return
+    entries = hooks.get("PreToolUse") or []
+    foreign = [entry for entry in entries if not _is_our_hook_entry(entry)]
+    other_events = [key for key, value in hooks.items() if key != "PreToolUse" and value]
+    if foreign or other_events:
+        _strip_codex_hook(hooks_path)
+        result.warnings.append(
+            f"{hooks_path} holds non-supervisor hooks alongside config.toml hooks; "
+            "codex prefers a single representation per layer"
+        )
+        return
+    backup = hooks_path.parent / (hooks_path.name + ".bak-supervisor")
+    if not backup.exists():
+        shutil.copyfile(hooks_path, backup)
+    hooks_path.unlink()
+    result.removed.append(hooks_path)
 
 
 def default_codex_home() -> Path:
@@ -414,6 +513,18 @@ def _windows_short_path(path: str) -> str:
         return ""
 
 
+def _is_our_hook_entry(entry: Any) -> bool:
+    if not isinstance(entry, dict):
+        return False
+    for handler in entry.get("hooks") or []:
+        if isinstance(handler, dict) and (
+            GUARD_MARKER in str(handler.get("command", ""))
+            or "supervisor.security.guard_cli" in str(handler.get("command", ""))
+        ):
+            return True
+    return False
+
+
 def _merge_codex_hooks(hooks_path: Path, workspace: Path) -> None:
     data: dict[str, Any] = {}
     if hooks_path.exists():
@@ -432,17 +543,7 @@ def _merge_codex_hooks(hooks_path: Path, workspace: Path) -> None:
     if not isinstance(entries, list):
         entries = []
 
-    def is_ours(entry: Any) -> bool:
-        if not isinstance(entry, dict):
-            return False
-        for handler in entry.get("hooks") or []:
-            if isinstance(handler, dict) and GUARD_MARKER in str(handler.get("command", "")):
-                return True
-            if isinstance(handler, dict) and "supervisor.security.guard_cli" in str(handler.get("command", "")):
-                return True
-        return False
-
-    kept = [entry for entry in entries if not is_ours(entry)]
+    kept = [entry for entry in entries if not _is_our_hook_entry(entry)]
     kept.append(
         {
             "hooks": [
@@ -515,6 +616,19 @@ def remove_access_guard(
 
     if engine == "codex":
         home = Path(codex_home) if codex_home else default_codex_home()
+        config_path = home / "config.toml"
+        try:
+            if config_path.exists():
+                text = config_path.read_text(encoding="utf-8")
+                cleaned = _strip_managed_toml(text)
+                if cleaned != text:
+                    cleaned = cleaned.rstrip("\n")
+                    tmp = config_path.parent / (config_path.name + ".tmp")
+                    tmp.write_text(cleaned + "\n" if cleaned else "", encoding="utf-8")
+                    os.replace(tmp, config_path)
+                    removed.append(config_path)
+        except (OSError, ValueError):
+            logger.debug("could not strip codex TOML hook", exc_info=True)
         hooks_path = home / "hooks.json"
         try:
             if hooks_path.exists():
@@ -556,19 +670,7 @@ def _strip_codex_hook(hooks_path: Path) -> None:
     entries = hooks.get("PreToolUse")
     if not isinstance(entries, list):
         return
-    hooks["PreToolUse"] = [
-        entry
-        for entry in entries
-        if not (
-            isinstance(entry, dict)
-            and any(
-                GUARD_MARKER in str(handler.get("command", ""))
-                or "supervisor.security.guard_cli" in str(handler.get("command", ""))
-                for handler in entry.get("hooks") or []
-                if isinstance(handler, dict)
-            )
-        )
-    ]
+    hooks["PreToolUse"] = [entry for entry in entries if not _is_our_hook_entry(entry)]
     hooks_path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
 

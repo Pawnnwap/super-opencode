@@ -19,10 +19,11 @@ import json
 import os
 import subprocess
 import sys
-from dataclasses import dataclass, field
+import tempfile
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
-from supervisor.security.access_policy import AccessPolicy
+from supervisor.security.access_policy import AccessPolicy, is_within
 from supervisor.security.engine_guards import GUARD_MARKER, GuardInstallResult
 
 
@@ -71,15 +72,49 @@ def run_drill(
     report = run_policy_drill(workspace, policy)
     report.checks.extend(_static_gate_checks(engine, workspace, install))
     if engine == "codex" and install is not None and install.policy_path:
-        report.checks.extend(_codex_hook_checks(workspace, install))
+        ws = Path(os.path.realpath(str(workspace)))
+        found = _outside_fixture(ws, (ws, *tuple(policy.whitelist)))
+        outside = found[0] if found else None
+        report.checks.extend(_codex_hook_checks(workspace, install, outside))
     return report
 
 
+def _outside_fixture(ws: Path, roots: tuple[Path, ...]) -> tuple[Path, int] | None:
+    """Pick a drill secret outside *roots*, as close to the workspace as possible.
+
+    Returns ``(secret_path, ancestor_depth)``; depth 0 marks a temp/home
+    fallback (no relative escape available). ``None`` when every candidate
+    is covered by the roots.
+    """
+    for depth, base in enumerate(ws.parents, start=1):
+        secret = base / "cage-drill-outside" / "secret.txt"
+        escape = base / "cage-drill-secret.txt"
+        if not any(is_within(path, root) for path in (secret, escape) for root in roots):
+            return secret, depth
+    for base in (Path(tempfile.gettempdir()), Path.home()):
+        secret = Path(os.path.realpath(str(base))) / "cage-drill-outside" / "secret.txt"
+        if not any(is_within(secret, root) for root in roots):
+            return secret, 0
+    return None
+
+
+def _without_whitelist(policy: AccessPolicy) -> AccessPolicy:
+    """The cwd boundary alone, for probes whose target the whitelist covers."""
+    if isinstance(policy, AccessPolicy):
+        return replace(policy, whitelist=())
+    return policy
+
+
 def run_policy_drill(workspace: Path, policy: AccessPolicy) -> DrillReport:
-    """Prove the policy engine agrees with the documented boundary."""
-    ws = Path(workspace)
+    """Prove the policy engine agrees with the configured boundary.
+
+    Fixtures must sit outside cwd AND the whitelist: a read-only reference
+    tree may legitimately contain the workspace's parent, and a secret there
+    is readable by design - not a cage leak.
+    """
+    ws = Path(os.path.realpath(str(workspace)))
     report = DrillReport()
-    outside = ws.parent / "cage-drill-outside" / "secret.txt"
+    found = _outside_fixture(ws, (ws, *tuple(policy.whitelist)))
     sibling = Path(str(ws) + "-evil")
 
     def check(name: str, ok: bool, detail: str = "") -> None:
@@ -87,13 +122,43 @@ def run_policy_drill(workspace: Path, policy: AccessPolicy) -> DrillReport:
 
     check("cwd readable", policy.check_read(ws / "drill.txt").allowed)
     check("cwd writable", policy.check_write(ws / "drill.txt").allowed)
+
+    sibling_probe = policy
+    sibling_detail = str(sibling)
+    if any(is_within(sibling, root) for root in policy.whitelist):
+        sibling_probe = _without_whitelist(policy)
+        sibling_detail += " (whitelist covers it; cwd boundary probed alone)"
     check(
         "sibling-prefix path denied",
-        not policy.check_read(sibling / "x").allowed,
-        str(sibling),
+        not sibling_probe.check_read(sibling / "x").allowed,
+        sibling_detail,
     )
-    check("outside read denied", not policy.check_read(outside).allowed, str(outside))
-    check("outside write denied", not policy.check_write(outside).allowed, str(outside))
+
+    if found is None:
+        check(
+            "outside drill root",
+            False,
+            "whitelist covers every candidate root; cannot prove the outside boundary",
+        )
+    else:
+        outside, depth = found
+        check("outside read denied", not policy.check_read(outside).allowed, str(outside))
+        check("outside write denied", not policy.check_write(outside).allowed, str(outside))
+        if depth:
+            escape = "cat " + "../" * depth + "cage-drill-secret.txt"
+            check("relative escape denied", bool(policy.scan_command(escape)), escape)
+        else:
+            escape = "cat ../../cage-drill-secret.txt"
+            check(
+                "relative escape denied",
+                bool(_without_whitelist(policy).scan_command(escape)),
+                "ancestors whitelisted; cwd boundary probed alone",
+            )
+        check(
+            "absolute outside denied",
+            bool(policy.scan_command(f'cat "{outside}"')),
+            str(outside),
+        )
 
     if policy.whitelist:
         entry = policy.whitelist[0]
@@ -107,14 +172,6 @@ def run_policy_drill(workspace: Path, policy: AccessPolicy) -> DrillReport:
         check("whitelist empty is explicit", True, "no read-only roots configured")
 
     check("inside shell command allowed", not policy.scan_command("cat src/drill.txt"))
-    check(
-        "relative escape denied",
-        bool(policy.scan_command("cat ../../cage-drill-secret.txt")),
-    )
-    check(
-        "absolute outside denied",
-        bool(policy.scan_command(f'cat "{outside}"')),
-    )
     check(
         "inline interpreter denied",
         bool(policy.scan_command('python -c "print(1)"')),
@@ -211,23 +268,32 @@ def _static_gate_checks(
             ),
         )
     elif engine == "codex":
-        hooks_value = install.artifacts[-1] if install.artifacts else None
-        hooks_path = Path(hooks_value) if hooks_value and str(hooks_value).endswith(".json") else None
+        hook_artifact = next(
+            (item for item in install.artifacts if item.name in ("hooks.json", "config.toml")),
+            None,
+        )
         present = False
-        if hooks_path and hooks_path.is_file():
-            try:
-                data = json.loads(hooks_path.read_text(encoding="utf-8"))
-                for entry in data.get("hooks", {}).get("PreToolUse", []):
-                    for handler in entry.get("hooks", []):
-                        if "supervisor.security.guard_cli" in str(handler.get("command", "")):
-                            present = True
-            except (OSError, json.JSONDecodeError):
-                present = False
+        if hook_artifact and hook_artifact.is_file():
+            text = hook_artifact.read_text(encoding="utf-8", errors="ignore")
+            if hook_artifact.name == "config.toml":
+                present = (
+                    "[[hooks.PreToolUse]]" in text
+                    and "supervisor.security.guard_cli" in text
+                )
+            else:
+                try:
+                    data = json.loads(text)
+                    for entry in data.get("hooks", {}).get("PreToolUse", []):
+                        for handler in entry.get("hooks", []):
+                            if "supervisor.security.guard_cli" in str(handler.get("command", "")):
+                                present = True
+                except (OSError, json.JSONDecodeError):
+                    present = False
         checks.append(
             DrillCheck(
                 "codex PreToolUse hook registered",
                 present,
-                str(hooks_path or "hooks.json not found"),
+                str(hook_artifact or "hook artifact not found"),
             ),
         )
         checks.append(
@@ -247,29 +313,40 @@ def _read_json(path: Path) -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def _codex_hook_checks(workspace: Path, install: GuardInstallResult) -> list[DrillCheck]:
-    """Execute the installed codex gate twice: deny outside, allow inside."""
+def _codex_hook_checks(
+    workspace: Path,
+    install: GuardInstallResult,
+    outside: Path | None,
+) -> list[DrillCheck]:
+    """Execute the installed codex gate twice: deny outside, allow inside.
+
+    *outside* is the policy drill's fixture (already proven outside every
+    root); when none exists the policy drill carries the explicit failure.
+    """
     snapshot = install.policy_path
     if snapshot is None:
         return [DrillCheck("codex gate drill", False, "policy snapshot missing")]
 
     env = {k: str(v) for k, v in (install.env or {}).items()}
-    outside = Path(workspace).parent / "cage-drill-outside" / "secret.txt"
-
-    denied = _run_hook(snapshot, env, workspace, f'cat "{outside}"')
+    checks: list[DrillCheck] = []
+    if outside is not None:
+        denied = _run_hook(snapshot, env, workspace, f'cat "{outside}"')
+        checks.append(
+            DrillCheck(
+                "codex gate denies outside read",
+                '"deny"' in denied,
+                _short(denied),
+            )
+        )
     allowed = _run_hook(snapshot, env, workspace, "cat src/drill.txt")
-    return [
-        DrillCheck(
-            "codex gate denies outside read",
-            '"deny"' in denied,
-            _short(denied),
-        ),
+    checks.append(
         DrillCheck(
             "codex gate allows cwd read",
             allowed.strip() == "",
             _short(allowed) or "no decision",
-        ),
-    ]
+        )
+    )
+    return checks
 
 
 def _run_hook(

@@ -437,9 +437,11 @@ class TestWhitelistValidation:
         assert validate_whitelist_entry(str(ref) + "/*", ws)[0] is None
 
 
-def test_from_config_reads_whitelist(tmp_path):
+def test_from_config_reads_whitelist(tmp_path, monkeypatch):
     from supervisor.utils.config import SupervisorConfig
 
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "home"))
+    monkeypatch.delenv("CODEX_HOME", raising=False)
     ws = tmp_path / "ws"
     ws.mkdir()
     ref = tmp_path / "ref"
@@ -454,6 +456,40 @@ def test_from_config_reads_whitelist(tmp_path):
     assert policy.whitelist == (ref.resolve(),)
     assert policy.check_read(ref / "x").allowed
     assert not policy.check_write(ref / "x").allowed
+
+
+def test_from_config_auto_whitelists_agent_infrastructure(tmp_path, monkeypatch):
+    from supervisor.utils.config import SupervisorConfig
+
+    home = tmp_path / "home"
+    (home / ".agents" / "skills").mkdir(parents=True)
+    (home / ".codex").mkdir()
+    (home / ".pi").mkdir()
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    monkeypatch.delenv("CODEX_HOME", raising=False)
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    cfg = SupervisorConfig(protocol_path=tmp_path / "protocol.md", workspace=ws)
+    policy = AccessPolicy.from_config(cfg)
+    assert home / ".codex" in policy.whitelist
+    assert home / ".agents" / "skills" in policy.whitelist
+    assert home / ".pi" in policy.whitelist
+    assert home / ".config" / "opencode" not in policy.whitelist  # missing dirs skipped
+    hook = home / ".codex" / "hooks.json"
+    assert policy.check_read(hook).allowed
+    assert not policy.check_write(hook).allowed
+
+
+def test_agent_roots_include_env_codex_home(tmp_path, monkeypatch):
+    from supervisor.security.access_policy import agent_infrastructure_roots
+
+    home = tmp_path / "home"
+    home.mkdir()
+    dedicated = tmp_path / "dedicated_home"
+    dedicated.mkdir()
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    monkeypatch.setenv("CODEX_HOME", str(dedicated))
+    assert dedicated in agent_infrastructure_roots()
 
 
 if __name__ == "__main__":
