@@ -235,14 +235,10 @@ def count_target_gates(protocol_text: str) -> int | None:
 
 def workspace_sources(workspace: Path) -> dict:
     """What the gate can see in ``workspace``: protocol + prior artifacts."""
+    from supervisor.protocols.protocol import read_protocol_text, resolve_protocol_path
+
     workspace = Path(workspace)
-    protocol = workspace / "protocol.md"
-    protocol_text = ""
-    if protocol.is_file():
-        try:
-            protocol_text = protocol.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            protocol_text = ""
+    protocol_text = read_protocol_text(resolve_protocol_path(workspace))
     return {
         "protocol_found": bool(protocol_text),
         "target_gates": count_target_gates(protocol_text),

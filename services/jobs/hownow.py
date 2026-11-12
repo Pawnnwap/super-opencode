@@ -25,6 +25,7 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 
 from services.jobs.job_states import ACTIVE_JOB_STATES
+from supervisor.protocols.protocol import resolve_protocol_path
 
 logger = logging.getLogger(__name__)
 
@@ -250,7 +251,7 @@ def run_hownow_sweep(
     workspace = Path(str(session_state.get("workspace") or "").strip() or ".")
     config = build_supervisor_config(
         session_state,
-        protocol_path=workspace / "protocol.md",
+        protocol_path=resolve_protocol_path(workspace),
         workspace=workspace,
         timeout=SWEEP_TIMEOUT_SECONDS,
     )

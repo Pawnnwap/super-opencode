@@ -59,6 +59,9 @@ class LiveJobScreen:
         state = status["state"]
         self._render_header(status, state)
         self._render_switcher(status, state)
+        # Report slot sits ABOVE the live stream: once a job finishes, its
+        # report is the primary content, not an appendix below the logs.
+        self.report_slot = ui.column().classes("w-full")
 
         with ui.row().classes("w-full gap-4 flex-nowrap"):
             with ui.column().classes("flex-[2]"):
@@ -193,10 +196,9 @@ class LiveJobScreen:
         ).classes("w-96 mono")
 
     def _render_details(self, status: dict) -> None:
-        state = status.get("state", "UNKNOWN")
         config = status.get("config", {})
         ui.label("Details").classes("text-sm font-bold text-[#9ecbff]")
-        ui.label(f"State: {state}").classes("text-xs")
+        # No State row: the header pill already shows it, live-updated.
         started = time.strftime(
             "%Y-%m-%d %H:%M:%S",
             time.localtime(float(status.get("updated_at") or 0)),
@@ -240,12 +242,14 @@ class LiveJobScreen:
             title = "Harvest Summary"
         else:
             title = "Evolution Report" if self.is_evolution else "Report"
-        with ui.expansion(title, value=True).classes("w-full"):
-            ui.markdown(report)
-            ui.button(
-                "Download",
-                on_click=lambda: ui.download(
-                    report.encode("utf-8"),
-                    f"{'evolution' if self.is_evolution else self.job_type}_report_{self.job_id}.md",
-                ),
-            )
+        self.report_slot.clear()
+        with self.report_slot:
+            with ui.expansion(title, value=True).classes("w-full"):
+                ui.markdown(report)
+                ui.button(
+                    "Download",
+                    on_click=lambda: ui.download(
+                        report.encode("utf-8"),
+                        f"{'evolution' if self.is_evolution else self.job_type}_report_{self.job_id}.md",
+                    ),
+                )

@@ -1,7 +1,13 @@
-"""supervisor/protocol.py — parse and validate protocol.md."""
+"""supervisor/protocol.py — parse, store, and render protocol files.
+
+Canonical storage is ``protocol.jsonl`` (one JSON object per line: a version
+header plus one object per section). Legacy ``protocol.md`` files are still
+read; prompts always receive rendered markdown.
+"""
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -10,6 +16,15 @@ _REQUIRED = {"INPUT", "TARGET", "RESTRICTIONS"}
 _HEADING_RE = re.compile(
     r"^#{1,3}\s+(INPUT|TARGET|RESTRICTIONS)\s*$", re.IGNORECASE | re.MULTILINE,
 )
+
+PROTOCOL_JSONL_NAME = "protocol.jsonl"
+PROTOCOL_MD_NAME = "protocol.md"
+JSONL_VERSION = 1
+
+# A wrapper fence pair the model occasionally returns around the whole file:
+# an opening ```markdown / ``` line and a closing ``` line.
+_FENCE_OPEN_RE = re.compile(r"^\s*```(?:markdown|md)?[ \t]*\r?\n", re.IGNORECASE)
+_FENCE_CLOSE_RE = re.compile(r"\r?\n[ \t]*```[ \t]*$")
 
 PROTECTED_PATHS_RESTRICTION = "- Do not delete or modify the .opencode directory or its contents\n- Do not delete or rename the .checkpoints directory\n- Do not delete or rename the archive directory"
 
@@ -60,11 +75,11 @@ class Protocol:
 
 
 def load_protocol(path: Path) -> Protocol:
-    if not path.exists():
+    if not Path(path).exists():
         raise FileNotFoundError(f"Protocol file not found: {path}")
     # utf-8-sig transparently strips a leading BOM, which editors and
     # pasted LLM output otherwise turn into a "missing: INPUT" failure.
-    raw = path.read_text(encoding="utf-8-sig")
+    raw = Path(path).read_text(encoding="utf-8-sig")
     return _parse(raw)
 
 
@@ -72,8 +87,124 @@ def parse_protocol_text(text: str) -> Protocol:
     return _parse(text)
 
 
+def strip_code_fences(text: str) -> str:
+    """Drop a wrapper ```markdown / ``` fence pair around generated output.
+
+    A trailing fence alone is removed only when it is the file's only fence -
+    otherwise it belongs to a real code block inside the protocol.
+    """
+    text = str(text or "").strip()
+    opener = _FENCE_OPEN_RE.match(text)
+    if opener:
+        text = text[opener.end():]
+        if _FENCE_CLOSE_RE.search(text):
+            text = _FENCE_CLOSE_RE.sub("", text)
+    elif text.count("```") == 1 and _FENCE_CLOSE_RE.search(text):
+        text = _FENCE_CLOSE_RE.sub("", text)
+    return text.strip() + "\n"
+
+
+def protocol_to_jsonl(protocol: Protocol) -> str:
+    """One line per section; the first line carries the format version."""
+    lines = [json.dumps({"type": "protocol", "version": JSONL_VERSION})]
+    for name, content in (
+        ("INPUT", protocol.input_section),
+        ("TARGET", protocol.target_section),
+        ("RESTRICTIONS", protocol.restrictions_section),
+    ):
+        lines.append(json.dumps({"section": name, "content": content}, ensure_ascii=False))
+    return "\n".join(lines) + "\n"
+
+
+def looks_like_jsonl_protocol(raw: str) -> bool:
+    for line in str(raw or "").splitlines():
+        text = line.strip()
+        if not text:
+            continue
+        try:
+            data = json.loads(text)
+        except ValueError:
+            return False
+        return isinstance(data, dict) and (
+            data.get("type") == "protocol" or "section" in data
+        )
+    return False
+
+
+def protocol_from_jsonl(raw: str) -> Protocol:
+    sections: dict[str, str] = {}
+    for line in str(raw or "").splitlines():
+        text = line.strip()
+        if not text:
+            continue
+        data = json.loads(text)
+        if not isinstance(data, dict):
+            raise ValueError("protocol.jsonl lines must be JSON objects")
+        name = data.get("section")
+        if name:
+            sections[str(name).upper()] = str(data.get("content", ""))
+    missing = _REQUIRED - set(sections)
+    if missing:
+        raise ValueError(
+            f"protocol.jsonl is missing: {', '.join(sorted(missing))}",
+        )
+    protocol = Protocol(
+        raw="",
+        input_section=sections["INPUT"].strip(),
+        target_section=sections["TARGET"].strip(),
+        restrictions_section=sections["RESTRICTIONS"].strip(),
+    )
+    protocol.raw = protocol.to_markdown()
+    return protocol
+
+
+def render_protocol_text(raw: str) -> str:
+    """Stored protocol content -> markdown text for prompts."""
+    if looks_like_jsonl_protocol(raw):
+        return protocol_from_jsonl(raw).to_markdown()
+    return strip_code_fences(raw)
+
+
+def resolve_protocol_path(workspace: Path) -> Path:
+    """The protocol file a run should use: JSONL first, legacy md fallback."""
+    workspace = Path(workspace)
+    jsonl = workspace / PROTOCOL_JSONL_NAME
+    if jsonl.is_file():
+        return jsonl
+    legacy = workspace / PROTOCOL_MD_NAME
+    if legacy.is_file():
+        return legacy
+    return jsonl
+
+
+def read_protocol_text(path: Path) -> str:
+    """Rendered markdown for prompts; '' when unreadable, raw on bad JSONL."""
+    try:
+        raw = Path(path).read_text(encoding="utf-8-sig")
+    except OSError:
+        return ""
+    try:
+        return render_protocol_text(raw)
+    except ValueError:
+        return raw
+
+
+def save_protocol(workspace: Path, protocol: Protocol) -> Path:
+    """Write the canonical JSONL; a superseded legacy protocol.md is removed."""
+    workspace = Path(workspace)
+    path = workspace / PROTOCOL_JSONL_NAME
+    path.write_text(protocol_to_jsonl(protocol), encoding="utf-8")
+    legacy = workspace / PROTOCOL_MD_NAME
+    if legacy.is_file():
+        legacy.unlink()
+    return path
+
+
 def _parse(raw: str) -> Protocol:
-    raw = raw.lstrip("\ufeff")
+    raw = str(raw or "").lstrip("\ufeff")
+    if looks_like_jsonl_protocol(raw):
+        return protocol_from_jsonl(raw)
+    raw = strip_code_fences(raw)
     sections = _split(raw)
     missing = _REQUIRED - set(sections)
     if missing:

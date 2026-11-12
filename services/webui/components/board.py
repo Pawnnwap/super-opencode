@@ -97,22 +97,30 @@ class JobBoard:
         return jobs, unreadable
 
     def _build_filters(self) -> None:
-        with ui.row().classes("w-full items-end gap-3 flex-wrap"):
-            self.state_filter = ui.select(
-                ["All states", "Active queue", "RUNNING", "PENDING", "SUCCESS",
-                 "FAILED", "CANCELLED", "BLOCKED"],
-                value="All states",
-                label="State",
-                on_change=self.refresh,
-            ).classes("w-40")
-            self.workspace_filter = ui.select(
-                ["All workspaces"], value="All workspaces", label="Workspace",
-                on_change=self.refresh,
-            ).classes("w-48")
-            self.search_input = ui.input("Search", on_change=self.refresh).classes(
-                "mono w-64",
-            )
-            self.auto_refresh = ui.switch("Auto-refresh", value=True)
+        # Secondary controls: collapsed until asked for. The metrics line
+        # below stays visible, and the header flags when a filter is active
+        # so a narrowed board is never a silent surprise.
+        self.filter_exp = ui.expansion("Search & filter").classes("w-full").props(
+            "dense",
+        )
+        self._filter_caption = "Search & filter"
+        with self.filter_exp:
+            with ui.row().classes("w-full items-end gap-3 flex-wrap"):
+                self.state_filter = ui.select(
+                    ["All states", "Active queue", "RUNNING", "PENDING", "SUCCESS",
+                     "FAILED", "CANCELLED", "BLOCKED"],
+                    value="All states",
+                    label="State",
+                    on_change=self.refresh,
+                ).classes("w-40")
+                self.workspace_filter = ui.select(
+                    ["All workspaces"], value="All workspaces", label="Workspace",
+                    on_change=self.refresh,
+                ).classes("w-48")
+                self.search_input = ui.input("Search", on_change=self.refresh).classes(
+                    "mono w-64",
+                )
+                self.auto_refresh = ui.switch("Auto-refresh", value=True)
         self.metrics_label = ui.label("").classes("text-xs text-[#8b949e]")
 
     def _apply_filters(self, jobs: list[dict]) -> list[dict]:
@@ -182,6 +190,16 @@ class JobBoard:
             f"{counts['SUCCESS']} success · {counts['BLOCKED']} blocked · "
             f"{attention} need attention",
         )
+
+        filters_active = (
+            self.state_filter.value != "All states"
+            or self.workspace_filter.value != "All workspaces"
+            or bool((self.search_input.value or "").strip())
+        )
+        caption = "Search & filter · active" if filters_active else "Search & filter"
+        if caption != self._filter_caption:
+            self._filter_caption = caption
+            self.filter_exp.set_text(caption)
 
         filtered = self._apply_filters(jobs)
         if not filtered:

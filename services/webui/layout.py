@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from nicegui import ui
 
 from services.jobs.job_states import ACTIVE_JOB_STATES
@@ -10,6 +12,8 @@ from services.webui.state import app_state
 CUSTOM_CSS = """
 @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;600&family=Syne:wght@400;700;800&display=swap');
 body { font-family: 'Syne', sans-serif; background-color: #0d0f14; color: #c9d1d9; }
+/* Drawer nav items are buttons, not prose links: no default underline. */
+a.nav-item, a.nav-item:hover { text-decoration: none; }
 h1 { font-family: 'Syne', sans-serif; font-weight: 800; color: #58a6ff; letter-spacing: -1px; }
 h2 { font-family: 'Syne', sans-serif; font-weight: 700; color: #79c0ff; }
 h3 { font-family: 'Syne', sans-serif; font-weight: 600; color: #9ecbff; }
@@ -233,8 +237,14 @@ def render_shell(active: str, job_manager) -> None:
                 and not tests_ok
                 and not _has_active_jobs(job_manager)
             )
-            nav = ui.link(label, f"/{key}").classes(
-                "block w-full text-left px-3 py-2 rounded"
+            # Empty link text: the icon + label row inside is the whole
+            # item. Passing the label here too printed every name twice.
+            nav = ui.link(target=f"/{key}").classes(
+                "nav-item block w-full text-left px-3 py-2 rounded"
+                + (
+                    " bg-[#1f6feb22] text-[#58a6ff] font-bold"
+                    if key == active else ""
+                )
                 + (" opacity-50" if locked else " hover:bg-[#161b22]"),
             )
             with nav:
@@ -243,21 +253,42 @@ def render_shell(active: str, job_manager) -> None:
                     ui.label(label + (" 🔒" if locked else ""))
         ui.separator()
         with ui.column().classes("gap-1 text-xs text-[#8b949e] w-full"):
-            ui.label("Run queue").classes("font-bold text-[#9ecbff]")
-            ui.label(_queue_stats_line(job_manager, "run"))
-            ui.label("Harvest queue").classes("font-bold text-[#9ecbff] mt-2")
-            ui.label(_queue_stats_line(job_manager, "harvest"))
-            ui.label("Evolution queue").classes("font-bold text-[#9ecbff] mt-2")
-            ui.label(_queue_stats_line(job_manager, "evolve"))
+            ui.label("Queues").classes("font-bold text-[#9ecbff]")
+            for queue_label, job_type in (
+                ("Run", "run"), ("Harvest", "harvest"), ("Evolution", "evolve"),
+            ):
+                with ui.row().classes("w-full justify-between items-center"):
+                    ui.label(queue_label)
+                    ui.label(_queue_stats_line(job_manager, job_type)).classes(
+                        "mono",
+                    )
         ui.space()
         ui.label("nicegui · opencode").classes("text-[#484f58] text-xs mt-auto")
 
+    # Global context, not a second page title: every page already carries
+    # its own heading, so repeating the page name here just printed it twice.
+    workspace_raw = str(app_state.get("workspace") or "").strip()
+    where = Path(workspace_raw).name if workspace_raw else "(no workspace)"
+    engine = app_state.get("engine") or "opencode"
+    model = app_state.get("opencode_model") or "(no model)"
     with ui.header().classes("bg-[#0a0c10] border-b border-[#21262d] items-center"):
-        ui.label("Supervisor Console").classes("text-sm text-[#8b949e] mono")
+        ui.label(f"📁 {where} · {engine} · {model}").classes(
+            "text-xs text-[#8b949e] mono",
+        )
+        ui.space()
+        if tests_ok:
+            ui.label("✅ ready to launch").classes("text-xs text-[#3fb950]")
+        else:
+            ui.label("🔒 tests pending").classes("text-xs text-[#e3b341]")
 
 
 def render_startup_banner() -> None:
-    """Live banner of the background startup tasks (upgrades, MCP, cleanup)."""
+    """Live banner of the background startup tasks (upgrades, MCP, cleanup).
+
+    Progressive disclosure: once every task is done the banner disappears
+    (finished startup is not news); a failed task keeps it open so the bad
+    news is never buried in a collapsed panel.
+    """
     from services.webui import startup
 
     items = startup.statuses()
@@ -266,8 +297,21 @@ def render_startup_banner() -> None:
             "text-xs text-[#8b949e]",
         )
         return
+    # The pipeline appends a "running" and later a "done"/"failed" record per
+    # task; keep only the latest record so each task shows once and the
+    # all-done check can actually fire.
+    latest: dict[str, dict] = {}
+    for item in items:
+        latest[item["task"]] = item
+    items = list(latest.values())
+    done = sum(1 for item in items if item["state"] == "done")
+    if done == len(items):
+        return
+    failed = any(item["state"] == "failed" for item in items)
     icons = {"running": "⏳", "done": "✅", "failed": "❌"}
-    with ui.expansion("Startup tasks").classes("w-full").props("dense"):
+    with ui.expansion(
+        f"Startup tasks ({done}/{len(items)} done)", value=failed,
+    ).classes("w-full").props("dense"):
         for item in items:
             icon = icons.get(item["state"], "•")
             detail = f" — {item['detail']}" if item["detail"] else ""

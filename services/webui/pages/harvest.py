@@ -139,18 +139,35 @@ class HarvesterPanel:
             ui.label(f"Agent: {engine} · {model}").classes(
                 "text-xs text-[#8b949e]",
             )
-            self.prompt_input = ui.textarea(
-                "Harvest prompt (applied to each run)", value=_default_prompt(),
-            ).classes("w-full mono").props("autogrow").style("min-height: 5rem")
+            # Where the files land is a decision-time fact: stays visible.
             self.location_input = ui.input(
                 "Harvest location", value=_default_location(),
-            ).classes("w-full mono")
-            ui.label(
+            ).classes("w-full mono").tooltip(
                 "A fresh harvest_<timestamp>/ folder is created inside this "
                 "location. Each run gets its own subfolder with report.md, "
                 "run.json and harvest.md; the root gets INDEX.md and a batch "
                 "HARVEST.md.",
-            ).classes("text-xs text-[#8b949e]")
+            )
+            # The prompt is usually the default: collapsed, with the header
+            # saying whether a custom one is in effect.
+            prompt_exp = ui.expansion("Harvest prompt").classes("w-full").props(
+                "dense",
+            )
+
+            def _prompt_caption() -> str:
+                current = str(self.prompt_input.value or "").strip()
+                custom = current and current != DEFAULT_HARVEST_PROMPT
+                return (
+                    "Harvest prompt · custom" if custom
+                    else "Harvest prompt · default"
+                )
+
+            with prompt_exp:
+                self.prompt_input = ui.textarea(
+                    "Applied to each run", value=_default_prompt(),
+                    on_change=lambda _e: prompt_exp.set_text(_prompt_caption()),
+                ).classes("w-full mono").props("autogrow").style("min-height: 5rem")
+            prompt_exp.set_text(_prompt_caption())
             with ui.row().classes("items-center gap-3"):
                 self.launch_button = ui.button(
                     "Harvest selected", on_click=self._launch,

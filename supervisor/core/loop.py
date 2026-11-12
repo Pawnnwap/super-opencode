@@ -19,8 +19,8 @@ from supervisor.analyzers.opencode_step_detector import StepProgress
 from supervisor.core.llm_supervisor import StepContext, SupervisorVerdict
 from supervisor.core.loop_base import BaseLoop, Event, LoopState, _ev
 from supervisor.core.occam_razor import OccamRazorStage
+from supervisor.protocols.protocol import read_protocol_text
 from supervisor.utils.config import SupervisorConfig
-from supervisor.utils.filesystem.file_ops import safe_read_text
 
 logger = logging.getLogger(__name__)
 
@@ -192,7 +192,7 @@ class SupervisorLoop(BaseLoop):
             "info",
             "[occam] Occam Razor enabled. Starting copy-only reduction pass after live success.",
         )
-        protocol_text = safe_read_text(self.config.protocol_path)
+        protocol_text = read_protocol_text(self.config.protocol_path)
         try:
             stage = OccamRazorStage(self.config, protocol_text)
             yield from stage.run()
@@ -230,7 +230,7 @@ class SupervisorLoop(BaseLoop):
             agent="plan",
         )
 
-        protocol_text = safe_read_text(self.config.protocol_path)
+        protocol_text = read_protocol_text(self.config.protocol_path)
         ws = self.config.workspace.resolve()
         protected_files_desc = self.guard.get_all_protected_files_description()
         # Known gate ceilings / blocked gates shape a realistic plan as much
@@ -534,7 +534,7 @@ class SupervisorLoop(BaseLoop):
     def _init_prompt(self) -> str:
         from supervisor.prompts import INIT_PROMPT_TEMPLATE
 
-        text = safe_read_text(self.config.protocol_path)
+        text = read_protocol_text(self.config.protocol_path)
         ws = self.config.workspace.resolve()
         protected_files_desc = self.guard.get_all_protected_files_description()
         goal_section = self._goal_checklist_section()
@@ -593,7 +593,7 @@ class SupervisorLoop(BaseLoop):
             drift = validate_refs(
                 gates,
                 count_target_gates(
-                    safe_read_text(self.config.protocol_path),
+                    read_protocol_text(self.config.protocol_path),
                 ),
             )
             if drift and drift != getattr(self, "_rubric_drift_logged", None):
@@ -689,7 +689,7 @@ class SupervisorLoop(BaseLoop):
                 evaluations,
                 manual,
                 run_id=time.strftime("%Y%m%d-%H%M%S"),
-                protocol_text=safe_read_text(self.config.protocol_path),
+                protocol_text=read_protocol_text(self.config.protocol_path),
             )
             results_path = default_gate_results_path(self.config.workspace)
             results_path.parent.mkdir(parents=True, exist_ok=True)

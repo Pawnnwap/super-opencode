@@ -29,14 +29,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-try:
-    from vulnerability.python_scanner import scan as _vuln_scan
-
-    logger.info("Vulnerability scanner imported successfully")
-except ImportError:
-    logger.warning("Python vulnerability scanner not available")
-    _vuln_scan = None
-
 Event = dict
 
 
@@ -281,8 +273,6 @@ class BaseLoop:
         # Per-file change markers for the current turn (path -> "+new" etc.),
         # consumed by the judge's file-selection listing.
         self._turn_deltas: dict[str, str] = {}
-        self._python_scanner_ran: bool = False
-        self._vuln_autofixed: bool = False
         # Supervisor skill bank (set up by _setup_skill_bank after the
         # supervisor exists); None = feature off or no skills discovered.
         self._skill_bank = None
@@ -517,69 +507,8 @@ class BaseLoop:
             )
         return LLMSupervisor(**kwargs)
 
-    def _run_python_scanner(self) -> Generator[Event]:
-        """Run python_scanner.py on workspace if .py files exist and not yet run."""
-        if self._python_scanner_ran:
-            return
-        if _vuln_scan is None:
-            return
-        if not self.config or not self.config.workspace:
-            return
-
-        workspace = self.config.workspace.resolve()
-        if not workspace.exists():
-            return
-
-        py_files = []
-        for root, dirs, files in os.walk(workspace):
-            dirs[:] = [d for d in dirs if not d.startswith(".")]
-            for f in files:
-                if f.endswith(".py"):
-                    py_files.append(f)
-                    break
-            if py_files:
-                break
-
-        if not py_files:
-            return
-
-        self._python_scanner_ran = True
-        yield _ev(
-            "info",
-            f"Running python_scanner on {len(py_files)} Python file(s)...",
-        )
-
-        try:
-            import concurrent.futures
-
-            _SCAN_TIMEOUT = 300  # 5-minute hard ceiling for the whole scan
-
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _pool:
-                _future = _pool.submit(
-                    _vuln_scan,
-                    target=str(workspace),
-                    autofix_first=True,
-                    print_output=False,
-                )
-                try:
-                    _future.result(timeout=_SCAN_TIMEOUT)
-                except concurrent.futures.TimeoutError:
-                    yield _ev("warn", f"python_scanner timed out after {_SCAN_TIMEOUT}s, continuing")
-                    return
-
-            # Startup autofix already mutated the workspace; mark it so the
-            # first judgement scan does NOT autofix a second time.
-            self._vuln_autofixed = True
-            yield _ev("info", "python_scanner completed")
-        except Exception as e:
-            yield _ev("warn", f"python_scanner failed: {e}")
-
-        return
-
     def run_streaming(self) -> Generator[Event]:
         try:
-            if self.config and getattr(self.config, "enable_python_scanner", True):
-                yield from self._run_python_scanner()
             yield from self._run()
         except GeneratorExit:
             self._state = LoopState.ENDED_FAILURE
@@ -1747,8 +1676,6 @@ class BaseLoop:
                 feedback_text = guidance + "\n\n" + feedback_text
         yield from self._drain_jev_notes()
 
-        vuln_scan = self.scan_for_vulnerabilities()
-        feedback_text = feedback_text + (vuln_scan or "")
         safe_msg = yield from self._sanitize_feedback(feedback_text)
 
         safe_msg = yield from self._post_judge_feedback(safe_msg, actual_output)
@@ -2291,106 +2218,3 @@ class BaseLoop:
         except (PermissionError, OSError) as e:
             logger.warning(f"Failed to write {filename} to workspace: {e}")
             return False
-
-    def scan_for_vulnerabilities(self) -> str | None:
-        """Run vulnerability scan on workspace Python files, return formatted results or None."""
-        if _vuln_scan is None:
-            logger.debug("Vulnerability scanner not available, skipping scan")
-            return None
-
-        from supervisor.workspace.ignore_patterns import IgnoreMatcher
-
-        workspace = self.config.workspace.resolve()
-        logger.debug("Starting vulnerability scan on workspace: %s", workspace)
-
-        ignore_matcher = IgnoreMatcher(workspace)
-        ignore_matcher.load_from_workspace(workspace)
-
-        has_py = False
-        for root, dirs, files in os.walk(workspace):
-            rel_root = str(Path(root).resolve().relative_to(workspace))
-
-            if any(part.startswith(".") for part in Path(rel_root).parts):
-                dirs[:] = []
-                continue
-
-            dirs[:] = [
-                d
-                for d in dirs
-                if not d.startswith(".")
-                and not ignore_matcher.matches(
-                    f"{rel_root}/{d}" if rel_root != "." else d,
-                )
-            ]
-            if any(
-                f.endswith(".py")
-                and not ignore_matcher.matches(
-                    f"{rel_root}/{f}" if rel_root != "." else f,
-                )
-                for f in files
-            ):
-                has_py = True
-                break
-
-        if not has_py:
-            logger.debug(
-                "No Python files found in workspace, skipping vulnerability scan",
-            )
-            return None
-
-        logger.debug("Python files present; running vulnerability scan")
-        try:
-            # Autofix is a workspace-mutating pass — run it only on the first
-            # scan of a run; later judgements scan without re-applying autofixes.
-            autofix_first = not self._vuln_autofixed
-            self._vuln_autofixed = True
-            findings = _vuln_scan(
-                target=str(workspace),
-                min_severity="HIGH",
-                autofix_first=autofix_first,
-                scan_deps=False,
-                print_output=False,
-            )
-            logger.debug("Vulnerability scan returned %d finding(s)", len(findings))
-        except Exception:
-            logger.exception("Vulnerability scan failed with exception")
-            return None
-
-        def _should_include(finding) -> bool:
-            fpath = finding.file.replace("\\", "/")
-            try:
-                rel = str(Path(finding.file).resolve().relative_to(workspace))
-            except (ValueError, OSError):
-                rel = fpath
-            if any(part.startswith(".") for part in Path(rel).parts):
-                return False
-            if ignore_matcher.matches(rel):
-                return False
-            return True
-
-        findings = [f for f in findings if _should_include(f)]
-        logger.debug("After filtering: %d finding(s) remain", len(findings))
-
-        if not findings:
-            logger.debug("No relevant vulnerability findings after filtering")
-            return None
-
-        by_severity = {}
-        for f in findings:
-            by_severity.setdefault(f.severity, []).append(f)
-
-        lines = [
-            "\n\n--- vulnerability scan ---",
-            f"Found {len(findings)} issue(s) (HIGH+ severity, dependencies excluded):",
-        ]
-        for sev in ("CRITICAL", "HIGH"):
-            if sev in by_severity:
-                lines.append(f"\n{sev} ({len(by_severity[sev])}):")
-                for f in by_severity[sev]:
-                    lines.append(f"  - {f.file}:{f.line} [{f.tool}] {f.message}")
-                    if f.suggestion:
-                        lines.append(f"    Fix: {f.suggestion}")
-
-        result = "\n".join(lines)
-        logger.debug("Vulnerability scan results formatted: %d issue(s)", len(findings))
-        return result

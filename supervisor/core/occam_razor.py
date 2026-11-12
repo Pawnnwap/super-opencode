@@ -282,7 +282,6 @@ class OccamRazorStage:
                     workspace=copy_workspace,
                     protocol_path=protocol_snapshot,
                     protected_files=(),
-                    enable_python_scanner=False,
                     enable_occam_razor=False,
                     plan_mode_rounds=0,
                 ),

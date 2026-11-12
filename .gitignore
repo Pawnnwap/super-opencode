@@ -245,6 +245,7 @@ experience.md
 !/.codex_home_soprun/config.toml
 codex_capability_cache.json
 codex_capability_cache.json.*
+hownow_cache.json
 codex_compat_proxy.[0-9]*
 .codex_pinned/
 probe_*.py

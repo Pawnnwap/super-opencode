@@ -35,6 +35,7 @@ from services.jobs.harvest import (
     write_run_meta,
 )
 from services.jobs.state_store import JobStateStore
+from supervisor.protocols.protocol import resolve_protocol_path
 from supervisor.runners.factory import create_runner, resolve_engine
 from supervisor.workspace.workspace_guard import WorkspaceGuard
 
@@ -268,7 +269,7 @@ class HarvestLoop:
             run_config = replace(
                 self.config,
                 workspace=workspace,
-                protocol_path=workspace / "protocol.md",
+                protocol_path=resolve_protocol_path(workspace),
             )
             permissions_path = self._prepare_agent_workspace(run_config, workspace)
             runner = create_runner(run_config)

@@ -60,7 +60,6 @@ def _session_state(ws: Path) -> dict:
         "timeout": 10,
         "protected_files": [],
         "max_tokens": 100000,
-        "enable_python_scanner": True,
         "enable_occam_razor": False,
         "enable_supervisor_skills": True,
         "supervisor_skills_dir": "",
@@ -116,6 +115,25 @@ def test_missing_protocol_raises(tmp_path):
     ws.mkdir()
     with pytest.raises(ValueError, match="protocol.md"):
         provision_replica(ws, ws.parent / "r1", "protocol")
+
+
+def test_jsonl_protocol_replica(tmp_path):
+    from supervisor.protocols.protocol import parse_protocol_text, save_protocol
+
+    ws = _make_workspace(tmp_path)
+    save_protocol(ws, parse_protocol_text((ws / "protocol.md").read_text(encoding="utf-8")))
+
+    replica = ws.parent / "study_ws_studies" / "batch_r1"
+    provision_replica(ws, replica, "protocol")
+    names = {path.name for path in replica.iterdir()}
+    assert "protocol.jsonl" in names
+    assert "protocol.md" not in names
+
+    manager = RecordingManager()
+    _batch, _ids, configs = launch_study_batch(
+        _session_state(ws), manager, ws, 1, init_mode="protocol",
+    )
+    assert configs[0].protocol_path.name == "protocol.jsonl"
 
 
 def test_partial_failure_cleans_unenqueued_replicas(tmp_path):

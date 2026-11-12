@@ -1,4 +1,4 @@
-"""Incremental live log panel (ui.log — appends lines, no re-render flicker).
+"""Live log widgets: a compact tail strip and a full newest-first panel.
 
 Two widgets live here:
 
@@ -91,7 +91,7 @@ class TailStrip:
 
 
 class LogPanel:
-    """Renders the job's event stream into a ui.log, pushing only new lines."""
+    """The job's event stream, newest first, rebuilt only when it changes."""
 
     def __init__(
         self,
@@ -99,32 +99,27 @@ class LogPanel:
         detail_fetcher: Callable[[int], dict | None] | None = None,
         download_fetcher: Callable[[], list] | None = None,
     ):
-        self.show_verbose = True
-        self.newest_first = False
-        self.show_noise = False
-        self._pushed = 0
+        self.max_lines = max_lines
         self._signature = None
+        self._logs: list[dict] = []
         self._detail_fetcher = detail_fetcher
         self._download_fetcher = download_fetcher
 
         with ui.row().classes("w-full items-center gap-3 flex-wrap"):
-            self.search_input = ui.input(placeholder="🔍 Search logs…").classes(
-                "mono w-64",
-            )
+            self.search_input = ui.input(
+                placeholder="🔍 Search logs…", on_change=lambda _e: self._refresh(),
+            ).classes("mono w-64").props("debounce=300")
             self.counts_label = ui.label("").classes("text-xs text-[#8b949e]")
             self.speech_switch = ui.switch(
-                "Agent speech", value=True, on_change=self._reset,
+                "Agent speech", value=True, on_change=lambda _e: self._refresh(),
             ).tooltip(
                 "The agent's plain-text prose and reasoning summaries "
                 "(💭 thoughts). Tool I/O stays out; tool markers have their "
                 "own toggle.",
             )
             self.tool_switch = ui.switch(
-                "Tool use", value=True, on_change=self._reset,
+                "Tool use", value=True, on_change=lambda _e: self._refresh(),
             ).tooltip("Shell / edit / mcp tool markers from the agent.")
-            self.newest_switch = ui.switch(
-                "Newest first", value=False, on_change=self._reset,
-            )
             if detail_fetcher is not None:
                 self.ref_input = ui.input(placeholder="event #").classes("mono w-24")
                 ui.button("查看全文", on_click=self._show_ref).props("flat dense")
@@ -132,14 +127,16 @@ class LogPanel:
                 ui.button(
                     icon="download", on_click=self._download,
                 ).props("flat dense")
-        self.log = ui.log(max_lines=max_lines).classes("log-box w-full h-[520px]")
+        self.log = ui.log(max_lines=max_lines).classes(
+            "log-box log-panel-newest w-full h-[520px]",
+        )
 
     # ------------------------------------------------------------------ #
 
-    def _reset(self) -> None:
-        self._pushed = 0
-        self._signature = None
-        self.log.clear()
+    def _refresh(self) -> None:
+        # Re-render from the cached stream so search and the category
+        # toggles work even on a finished job (no live tick to piggyback on).
+        self.update(self._logs)
 
     async def _download(self) -> None:
         """Full log text, built on a worker thread on demand (one click)."""
@@ -192,6 +189,7 @@ class LogPanel:
 
     def update(self, logs: list[dict]) -> None:
         logs = logs or []
+        self._logs = logs
         counts = event_counts(logs)
         self.counts_label.set_text(
             f"🔴 {counts['error']}  ·  🟡 {counts['warn']}  ·  🔧 {counts['tool']}",
@@ -207,16 +205,39 @@ class LogPanel:
             hidden.add("agent_thought")
         search = (self.search_input.value or "").strip()
         filtered = filter_events(logs, search, hidden)
-        start = start_ts(logs)
 
-        # Re-push from scratch when the stream shrank (new run); otherwise
-        # append only new events.
-        if len(filtered) < self._pushed:
-            self.log.clear()
-            self._pushed = 0
-        new_events = filtered[self._pushed:]
-        if self.newest_switch.value and new_events:
-            new_events = list(reversed(new_events))
-        for event in new_events:
+        # Newest first is hardcoded. ui.log appends and follows the bottom,
+        # so a newest-first view is rendered by re-pushing the newest
+        # max_lines in reverse and pinning the scroll to the top. Rebuild
+        # only when the visible content actually changes (new events, search,
+        # or a category toggle) so an idle stream costs nothing.
+        signature = (
+            len(filtered),
+            filtered[-1].get("ts") if filtered else 0,
+            search,
+            bool(self.tool_switch.value),
+            bool(self.speech_switch.value),
+        )
+        if signature == self._signature:
+            return
+        self._signature = signature
+        start = start_ts(logs)
+        visible = filtered[-self.max_lines:] if self.max_lines else filtered
+        self.log.clear()
+        for event in reversed(visible):
             self.log.push(self._format_line(event, start))
-        self._pushed = len(filtered)
+        # ui.log auto-follows the bottom on render; a large log renders
+        # slower than a single delayed scroll, so pin the top repeatedly for
+        # a short window until rendering settles. Landing at the top also
+        # flips ui.log's bottom-follow off for subsequent updates.
+        ui.run_javascript(
+            '(() => {'
+            ' const sel = ".log-panel-newest .q-scrollarea__container";'
+            ' let n = 0;'
+            ' const t = setInterval(() => {'
+            '   const el = document.querySelector(sel);'
+            '   if (el) el.scrollTop = 0;'
+            '   if (++n > 15) clearInterval(t);'
+            ' }, 40);'
+            '})()',
+        )

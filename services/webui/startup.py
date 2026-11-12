@@ -20,6 +20,7 @@ from services.runtime.app_bootstrap import (
     auto_upgrade_pi,
 )
 from services.jobs.job_states import ACTIVE_JOB_STATES
+from supervisor.protocols.protocol import resolve_protocol_path
 from services.runtime.workspace_cleanup import clean_workspace_artifacts
 
 _statuses: list[dict] = []
@@ -86,10 +87,9 @@ def _launch_from_env() -> str:
         index += 1
         config = build_supervisor_config(
             app_state.as_mapping(),
-            protocol_path=ws / "protocol.md",
+            protocol_path=resolve_protocol_path(ws),
             workspace=ws,
             plan_mode_rounds=rounds,
-            enable_python_scanner=bool(app_state.get("enable_python_scanner")),
             enable_occam_razor=bool(app_state.get("enable_occam_razor", False)),
             enable_supervisor_skills=bool(
                 app_state.get("enable_supervisor_skills", True),

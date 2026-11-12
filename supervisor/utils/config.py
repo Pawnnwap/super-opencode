@@ -81,7 +81,6 @@ class SupervisorConfig:
     # the stored verdict without another LLM call.
     reuse_identical_verdicts: bool = True
     plan_mode_rounds: int = 0
-    enable_python_scanner: bool = True
     enable_occam_razor: bool = False
     # Goal guard (book ch.8 exit validation): treat the judge's DONE as a
     # proposal validated against deterministic evidence before the run ends.

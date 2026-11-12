@@ -37,13 +37,12 @@ def _write_meta(content: str, workspace: Path) -> Path:
 
 
 def _launch_evolve(
-    workspace: Path, scanner: bool, occam: bool, skills: bool,
+    workspace: Path, occam: bool, skills: bool,
 ) -> None:
     job_id = launch_job(
         "evolve",
         workspace,
         protocol_name="meta_protocol.md",
-        enable_python_scanner=scanner,
         enable_occam_razor=occam,
         enable_supervisor_skills=skills,
     )
@@ -78,10 +77,16 @@ def render(job_id: str = "") -> None:
             "What should the system improve?",
             value=app_state.get("evo_goal") or "",
         ).classes("w-full mono")
-        extra_area = ui.textarea(
+        # Optional extra input: collapsed when empty, open when it carries
+        # constraints so they are never silently in effect.
+        with ui.expansion(
             "Extra restrictions (optional)",
-            value=app_state.get("evo_extra_restrictions") or "",
-        ).classes("w-full mono")
+            value=bool((app_state.get("evo_extra_restrictions") or "").strip()),
+        ).classes("w-full").props("dense"):
+            extra_area = ui.textarea(
+                "Extra restrictions",
+                value=app_state.get("evo_extra_restrictions") or "",
+            ).classes("w-full mono")
 
         status_label = ui.label("").classes("text-xs text-[#8b949e]")
         meta_exp = ui.expansion("Generated meta_protocol.md").classes("w-full hidden")
@@ -105,7 +110,6 @@ def render(job_id: str = "") -> None:
                     status_label.set_text(f"Meta-protocol build failed: {exc}")
                     return
             _write_meta(content, workspace)
-            app_state["protocol_md"] = content
             status_label.set_text("meta_protocol.md written to workspace.")
             meta_exp.classes(remove="hidden")
             with meta_exp:
@@ -117,27 +121,41 @@ def render(job_id: str = "") -> None:
 
     with ui.card().classes("w-full bg-[#161b22]"):
         ui.label("Start Evolution").classes("text-sm font-bold text-[#9ecbff]")
-        with ui.row().classes("items-end gap-4 flex-wrap"):
-            scanner = ui.switch(
-                "Python scanner", value=bool(app_state.get("enable_python_scanner")),
+        # Same pattern as the Run page: defaults collapsed, effective
+        # settings kept visible in a live summary.
+        with ui.expansion("Launch options").classes("w-full").props("dense"):
+            with ui.row().classes("items-end gap-4 flex-wrap"):
+                occam = ui.switch(
+                    "Occam Razor",
+                    value=bool(app_state.get("enable_occam_razor")),
+                    on_change=lambda _e: _update_summary(),
+                )
+                skills = ui.switch(
+                    "Supervisor skills",
+                    value=bool(app_state.get("enable_supervisor_skills")),
+                    on_change=lambda _e: _update_summary(),
+                )
+        summary = ui.label("").classes("text-xs text-[#8b949e] mono")
+
+        def _update_summary() -> None:
+            summary.set_text(
+                f"occam {'on' if occam.value else 'off'} · "
+                f"skills {'on' if skills.value else 'off'}",
             )
-            occam = ui.switch(
-                "Occam Razor", value=bool(app_state.get("enable_occam_razor")),
-            )
-            skills = ui.switch(
-                "Supervisor skills",
-                value=bool(app_state.get("enable_supervisor_skills")),
-            )
+
         async def _launch() -> None:
             async with busy_buttons(launch_button):
                 _launch_evolve(
                     workspace,
-                    bool(scanner.value),
                     bool(occam.value),
                     bool(skills.value),
                 )
 
-        launch_button = ui.button("Launch", on_click=_launch).props("color=primary")
+        with ui.row().classes("items-center gap-3"):
+            launch_button = ui.button("Launch", on_click=_launch).props(
+                "color=primary",
+            )
+        _update_summary()
 
     ui.label("Evolution Board").classes("text-lg font-bold mt-4")
     JobBoard(manager, "evolve", is_evolution=True)

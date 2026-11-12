@@ -22,6 +22,7 @@ from typing import Any
 
 from services.config.supervisor_config_builder import build_supervisor_config
 from supervisor.core.task_state import TASK_STATE_FILENAME
+from supervisor.protocols.protocol import resolve_protocol_path
 from supervisor.utils.config import SupervisorConfig
 
 # Run artifacts that must NOT seed a fresh replica: snapshots and journals
@@ -71,14 +72,27 @@ def provision_replica(
     "protocol": an empty dir holding only protocol.md — for research
     protocols that need no seeded code.
     """
-    protocol_src = workspace / "protocol.md"
-    if not protocol_src.exists():
-        raise ValueError(f"No protocol.md in {workspace} — save one first.")
+    from supervisor.protocols.protocol import resolve_protocol_path
+
+    protocol_src = resolve_protocol_path(workspace)
+    if not protocol_src.is_file():
+        raise ValueError(
+            f"No protocol file (protocol.jsonl or protocol.md) in {workspace} — "
+            "save one first.",
+        )
 
     replica.parent.mkdir(parents=True, exist_ok=True)
     if init_mode == "protocol":
         replica.mkdir(parents=True)
-        shutil.copy2(protocol_src, replica / "protocol.md")
+        shutil.copy2(protocol_src, replica / protocol_src.name)
+        # The acceptance gates travel with the protocol they were drafted
+        # from; without them every replica restarts gate-blind.
+        facts = workspace / "feasibility_facts.json"
+        if facts.is_file():
+            shutil.copy2(facts, replica / "feasibility_facts.json")
+        profile = workspace / "access_protection.json"
+        if profile.is_file():
+            shutil.copy2(profile, replica / "access_protection.json")
     elif init_mode == "copy":
         if replica.exists():
             raise ValueError(f"Replica directory already exists: {replica}")
@@ -111,13 +125,14 @@ def launch_study_batch(
 
     job_ids: list[str] = []
     configs: list[SupervisorConfig] = []
+    protocol_name = resolve_protocol_path(workspace).name
     try:
         for index in range(1, replicas + 1):
             replica = parent / f"{batch_id}_r{index}"
             provision_replica(workspace, replica, init_mode)
             config = build_supervisor_config(
                 session_state,
-                protocol_path=replica / "protocol.md",
+                protocol_path=replica / protocol_name,
                 workspace=replica,
                 **overrides,
             )

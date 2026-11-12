@@ -1,17 +1,22 @@
-"""Live Run page's how-now sweep: one pure button, live key steps, final report.
+"""Live Run page's how-now sweep: one button, process-wide state, final report.
 
-Click → a FRESH agent session (the configured engine of choice) is woken with
-the hownow text plus the record-keeper's live-session snapshot. Its key steps
-stream into a tail strip while it works, and the finished Markdown report
-renders in place once it is done. The functionality is deliberately just the
-button — no options, no inputs.
+The sweep runs in a process-wide daemon thread with ALL state in a module
+singleton — never on the page instance — so switching or closing the page
+loses nothing: any later page load re-attaches to a running sweep, and the
+finished report is cached (in memory and on disk) with its timestamp.
+
+Display contract:
+- while running: elapsed/step status plus the newest key steps (tail strip);
+- once finished: ONLY the final report (or error), stamped with its time.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import threading
 import time
+from pathlib import Path
 
 from nicegui import ui
 
@@ -22,97 +27,193 @@ from services.webui.state import app_state
 
 logger = logging.getLogger(__name__)
 
+_PROJECT_ROOT = Path(__file__).resolve().parents[3]
+# Plain root-level cache, like codex_capability_cache.json. NOT inside
+# .job_store: the store globs *.json there as job records.
+_CACHE_PATH = _PROJECT_ROOT / "hownow_cache.json"
 
-class HowNowPanel:
-    """The whole hownow surface: a button, then progress, then the report."""
 
-    # One sweep at a time, process-wide (a second click while one is running
-    # would spawn a second agent session for the same question).
-    _busy = False
+class _SweepState:
+    """Process-wide sweep state; every page is only a view onto it."""
 
-    def __init__(self):
-        self._steps: list[dict] = []
-        self._report = ""
-        self._error = ""
-        self._done = False
-        self._started_at = 0.0
-        self._status: ui.label | None = None
-        self._tail: TailStrip | None = None
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.busy = False
+        self.steps: list[dict] = []
+        self.report = ""
+        self.error = ""
+        self.started_at = 0.0
+        self.finished_at = 0.0
 
-        ui.button("How Now", on_click=self._start).props("color=primary").tooltip(
-            "Wakes a fresh agent session to sweep every live run session "
-            "(runs and batch sub-runs) and report which ones need you.",
+
+_state = _SweepState()
+
+
+def _load_cache() -> None:
+    try:
+        data = json.loads(_CACHE_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    with _state.lock:
+        _state.report = str(data.get("report") or "")
+        _state.error = str(data.get("error") or "")
+        _state.started_at = float(data.get("started_at") or 0)
+        _state.finished_at = float(data.get("finished_at") or 0)
+
+
+def _save_cache() -> None:
+    with _state.lock:
+        data = {
+            "report": _state.report,
+            "error": _state.error,
+            "started_at": _state.started_at,
+            "finished_at": _state.finished_at,
+        }
+    try:
+        _CACHE_PATH.write_text(
+            json.dumps(data, ensure_ascii=False), encoding="utf-8",
         )
-        self._results = ui.column().classes("w-full gap-2")
-        self._timer = ui.timer(1.0, self._tick)
-        self._timer.active = False
+    except OSError as exc:
+        logger.warning("cannot write hownow cache: %s", exc)
 
-    # ------------------------------------------------------------------ #
 
-    def _start(self) -> None:
-        if HowNowPanel._busy:
-            ui.notify("A how-now sweep is already running.", type="warning")
-            return
-        HowNowPanel._busy = True
-        self._steps = []
-        self._report = ""
-        self._error = ""
-        self._done = False
-        self._started_at = time.time()
-        self._results.clear()
-        with self._results:
-            self._status = ui.label("Waking a fresh session…").classes(
-                "text-xs text-[#8b949e]",
-            )
-            self._tail = TailStrip(keep=6)
-        self._timer.active = True
-        threading.Thread(
-            target=self._run, daemon=True, name="hownow-sweep",
-        ).start()
+_load_cache()
 
-    def _run(self) -> None:
-        try:
-            app_state.save()
-            app_state.apply_api_config()
-            self._report = run_hownow_sweep(
-                app_state.as_mapping(),
-                get_job_manager().store,
-                on_event=self._on_event,
-            )
-        except Exception as exc:  # noqa: BLE001 — surfaced on the panel
-            logger.exception("hownow sweep failed")
-            self._error = str(exc)
-        finally:
-            self._done = True
-            HowNowPanel._busy = False
 
-    def _on_event(self, event: dict) -> None:
-        # Key steps of the hownow session's progress (info + tool markers).
-        self._steps.append({
+def _on_event(event: dict) -> None:
+    with _state.lock:
+        _state.steps.append({
             "ts": time.time(),
             "level": event.get("level") or "info",
             "msg": event.get("msg") or "",
         })
 
-    def _tick(self) -> None:
-        if self._tail is not None:
-            self._tail.update(list(self._steps))
-        if not self._done:
-            if self._status is not None:
-                elapsed = int(time.time() - self._started_at)
-                self._status.set_text(
-                    f"Sweeping live sessions… {elapsed}s, "
-                    f"{len(self._steps)} step(s)",
-                )
+
+def _run_sweep() -> None:
+    # No UI element is ever touched from this thread: pages come and go
+    # while the sweep runs, and none of them own its outcome.
+    report = ""
+    error = ""
+    try:
+        app_state.save()
+        app_state.apply_api_config()
+        report = run_hownow_sweep(
+            app_state.as_mapping(),
+            get_job_manager().store,
+            on_event=_on_event,
+        )
+    except Exception as exc:
+        logger.exception("hownow sweep failed")
+        error = str(exc)
+    finally:
+        with _state.lock:
+            _state.report = report
+            _state.error = error
+            _state.finished_at = time.time()
+        # Persist BEFORE publishing "done": a restart (or a page tick) right
+        # after busy clears must already find the result on disk.
+        _save_cache()
+        with _state.lock:
+            _state.busy = False
+
+
+def start_sweep() -> bool:
+    """Start the one process-wide sweep; False when one is already running."""
+    with _state.lock:
+        if _state.busy:
+            return False
+        _state.busy = True
+        _state.steps = []
+        _state.report = ""
+        _state.error = ""
+        _state.started_at = time.time()
+        _state.finished_at = 0.0
+    threading.Thread(target=_run_sweep, daemon=True, name="hownow-sweep").start()
+    return True
+
+
+def _fmt_time(ts: float) -> str:
+    return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts)) if ts else ""
+
+
+class HowNowPanel:
+    """A view onto the process-wide sweep: button, progress, final report.
+
+    Every instance polls the same singleton, so any number of pages/tabs
+    re-attach to a running sweep and all show the cached result afterwards.
+    """
+
+    def __init__(self):
+        self._mode = ""
+        self._signature = None
+        self._status: ui.label | None = None
+        self._tail: TailStrip | None = None
+
+        ui.button("How Now", on_click=self._start).props("color=primary").tooltip(
+            "Wakes a fresh agent session to sweep every live run session "
+            "(runs and batch sub-runs) and report which ones need you. "
+            "The sweep keeps running if you leave this page.",
+        )
+        self._results = ui.column().classes("w-full gap-2")
+        self._timer = ui.timer(1.0, self._tick)
+        # Immediate tick: re-attach to a running sweep or show the cached
+        # result right at page load, without waiting a second.
+        self._tick()
+
+    def _start(self) -> None:
+        if not start_sweep():
+            ui.notify("A how-now sweep is already running.", type="warning")
             return
-        self._timer.active = False
-        if self._status is not None:
-            if self._error:
-                self._status.set_text(f"Sweep failed: {self._error}")
-            else:
-                self._status.set_text("Sweep complete.")
-        if self._error:
-            ui.notify(f"How-now sweep failed: {self._error}", type="negative")
+        self._tick()
+
+    def _tick(self) -> None:
+        with _state.lock:
+            busy = _state.busy
+            steps = list(_state.steps) if busy else []
+            report = _state.report
+            error = _state.error
+            started_at = _state.started_at
+            finished_at = _state.finished_at
+
+        if busy:
+            if self._mode != "running":
+                self._mode = "running"
+                self._signature = None
+                self._results.clear()
+                with self._results:
+                    self._status = ui.label("").classes("text-xs text-[#8b949e]")
+                    self._tail = TailStrip(keep=6)
+            elapsed = int(time.time() - started_at)
+            self._status.set_text(
+                f"Sweeping live sessions… {elapsed}s, {len(steps)} step(s)",
+            )
+            self._tail.update(steps)
+            return
+
+        # Finished (or cached from an earlier run): ONLY the final message,
+        # stamped with its time — the progress tail is gone.
+        signature = (finished_at, report, error)
+        if self._mode == "done" and signature == self._signature:
+            return
+        self._mode = "done"
+        self._signature = signature
+        self._status = None
+        self._tail = None
+        self._results.clear()
+        if not report and not error:
             return
         with self._results:
-            ui.markdown(self._report)
+            took = (
+                int(finished_at - started_at)
+                if started_at and finished_at else 0
+            )
+            ui.label(
+                f"How-now sweep · {_fmt_time(finished_at)}"
+                + (f" · {took}s" if took else ""),
+            ).classes("text-xs text-[#8b949e] mono")
+            if error:
+                ui.label(f"Sweep failed: {error}").classes(
+                    "text-sm text-[#f85149]",
+                )
+            else:
+                ui.markdown(report)

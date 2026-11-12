@@ -58,10 +58,12 @@ def _bind_input(
     ).classes(classes or "w-72 mono")
 
 
-def _bind_switch(key: str, label: str):
+def _bind_switch(key: str, label: str, *, on_change: Callable[[], None] | None = None):
     def _change(e) -> None:
         app_state[key] = bool(e.value)
         _save()
+        if on_change is not None:
+            on_change()
 
     return ui.switch(label, value=bool(app_state.get(key)), on_change=_change)
 
@@ -108,9 +110,32 @@ def _workspace() -> Path | None:
     return None
 
 
+def _profile_sync(workspace: Path, *, create: bool = False) -> dict:
+    """The workspace profile is authoritative; seed it from settings if absent."""
+    from supervisor.security.access_profile import PROFILE_KEYS, load_profile, save_profile
+
+    if create and not load_profile(workspace):
+        save_profile(workspace, {key: app_state.get(key) for key in PROFILE_KEYS})
+    profile = load_profile(workspace)
+    for key in PROFILE_KEYS:
+        if key in profile:
+            app_state[key] = profile[key]
+    return profile
+
+
+def _profile_save(workspace: Path) -> None:
+    """Persist every protection edit into the workspace immediately."""
+    from supervisor.security.access_profile import PROFILE_KEYS, save_profile
+
+    save_profile(workspace, {key: app_state.get(key) for key in PROFILE_KEYS})
+
+
 def _section(title: str, *, open_: bool = False):
     """One collapsible panel of the wizard, visually consistent."""
     return ui.expansion(title, value=open_).classes("w-full bg-[#161b22]")
+
+
+_GROUP_LABEL = "text-xs font-bold text-[#9ecbff] mt-2"
 
 
 def _list_workspace_files(workspace: Path, limit: int) -> list[str]:
@@ -133,36 +158,30 @@ def _list_workspace_files(workspace: Path, limit: int) -> list[str]:
 def _on_workspace_change() -> None:
     # Workspace-dependent sections below capture the workspace at render
     # time; refresh them so they never serve (or write to) the old folder.
-    _protected_section.refresh()
-    _access_section.refresh()
-    _ignore_section.refresh()
+    _protection_section.refresh()
     _skills_listing.refresh()
-    _protocol_file_row.refresh()
+    _protocol_section.refresh()
 
 
 # ── Configuration section ─────────────────────────────────────────────────────
 
 
 def _config_section() -> None:
+    """Essentials only: the few fields every launch depends on.
+
+    Progressive disclosure: backups, reasoning effort, jev, behavior
+    switches, limits and maintenance live in Advanced settings (collapsed).
+    """
     with _section("Configuration", open_=True):
         with ui.row().classes("w-full gap-4 flex-wrap"):
             _bind_input("openai_key", "API key", password=True)
             _bind_input("base_url", "API base URL (optional)")
-        with ui.row().classes("w-full gap-4 flex-wrap items-end"):
-            _bind_input(
-                "workspace",
-                "Workspace path",
-                classes="flex-grow mono",
-                on_change=_on_workspace_change,
-            )
-            ui.button(
-                "Clean artifacts",
-                on_click=lambda: _clean_artifacts(),
-            ).props("flat dense")
-        from services.config.connectivity import REASONING_EFFORT_CHOICES
-
-        # One line: engine + the supervisor pair + its effort - four short
-        # fields that each had (or shared) a row before.
+        _bind_input(
+            "workspace",
+            "Workspace path",
+            classes="w-full mono",
+            on_change=_on_workspace_change,
+        )
         with ui.row().classes("w-full gap-4 flex-wrap items-end"):
             ui.select(
                 ["opencode", "codex", "pi"],
@@ -170,107 +189,8 @@ def _config_section() -> None:
                 label="Execution engine",
                 on_change=lambda e: _set_engine(e.value),
             ).classes("w-48")
+            _agent_model_field()
             _bind_input("supervisor_model", "Supervisor (judge) model")
-            _bind_input("supervisor_model_backup", "Supervisor backup model")
-            _reasoning_select(
-                "supervisor_reasoning",
-                "Supervisor thinking effort",
-                choices=REASONING_EFFORT_CHOICES,
-            )
-        # Structured decision service (jev): opt-in final arbiter for the
-        # textual judgment calls (closing, contradictions, stagnation,
-        # protocol flags, DONE proposals). Deterministic gates stay hard.
-        with ui.row().classes("w-full gap-4 flex-wrap items-end"):
-            _bind_switch(
-                "enable_jev_decisions",
-                "Jev decision arbiter",
-            ).tooltip(
-                "Ask the structured-decision service to arbitrate textual "
-                "judgment calls: terminal / stand-down wording, MET-claim "
-                "contradictions, stagnation, protocol flags, DONE proposals. "
-                "Falls back to the text heuristics when the service is "
-                "unavailable.",
-            )
-            _bind_input(
-                "jev_decision_url",
-                "Jev decision URL",
-                classes="flex-grow mono",
-            ).tooltip(
-                "POST target of the noul/choice decision API, e.g. "
-                "http://192.168.18.65/systemone/api/v1/systemone.",
-            )
-            _bind_input(
-                "jev_decision_api_key",
-                "Jev API key (optional)",
-                password=True,
-            )
-            _bind_number("jev_decision_timeout", "Jev timeout (s)", min=1, max=300)
-            _bind_float(
-                "jev_decision_threshold",
-                "Jev confidence threshold",
-                min=0.50, max=0.99,
-            )
-            _bind_switch(
-                "enable_blocked_rescue",
-                "Unblock rescue plan",
-            ).tooltip(
-                "On the first BLOCKED verdict, force the judge to research the "
-                "blocker on the web and write a recovery plan; jev rules "
-                "whether it is feasible. A feasible plan cancels BLOCKED and "
-                "is sent to the executor. Any failure closes as before. "
-                "Only active when the jev arbiter is enabled."
-            )
-        if (app_state.get("engine") or "opencode") == "codex":
-            with ui.row().classes("w-full gap-4 flex-wrap"):
-                _bind_input("codex_base_url", "Codex base URL (responses API)")
-                _bind_input("codex_api_key", "Codex API key", password=True)
-        _model_section()
-        with ui.row().classes("w-full gap-6 flex-wrap"):
-            _bind_switch("enable_python_scanner", "Python scanner")
-            _bind_switch("enable_occam_razor", "Occam Razor")
-            _bind_switch("enable_supervisor_skills", "Supervisor skills")
-
-            def _log_detail_change(e) -> None:
-                app_state["log_detail"] = "full" if e.value else "headline"
-                _save()
-
-            ui.switch(
-                "Full job logs (debug)",
-                value=(app_state.get("log_detail") or "headline") == "full",
-                on_change=_log_detail_change,
-            ).tooltip(
-                "Off: one key line per event, full bodies kept in the job's "
-                "sidecar (errors always inline). On: verbatim events.",
-            )
-        # Larger gap + per-field widths sized to their titles: readable
-        # labels beat cramming six params onto one line.
-        with ui.row().classes("w-full gap-6 flex-wrap"):
-            _bind_number("max_retries", "Max retries", min=1, max=10)
-            _bind_number("context_threshold", "Context threshold %", min=10, max=95)
-            _bind_number("max_tokens", "Max tokens", min=1000, max=2000000)
-            _bind_number("timeout", "Turn timeout (min)", min=1, max=120)
-            _bind_number("max_parallel_jobs", "Max parallel jobs", min=1, max=32)
-            _bind_number(
-                "max_stored_jobs", "Stored jobs (log retention)",
-                min=5, max=1000, classes="w-56",
-            )
-        # Both rarely-touched optional strings share one line; the detail
-        # lives in the tooltip so the label itself never ellipsizes.
-        with ui.row().classes("w-full gap-4 flex-wrap"):
-            npm_registry = _bind_input("npm_registry", "npm registry for CLI upgrades",
-                                       classes="flex-grow mono")
-            npm_registry.tooltip("Empty = the default registry.")
-            skills_dir = _bind_input(
-                "supervisor_skills_dir",
-                "Supervisor skills extra dir (optional)",
-                classes="flex-grow mono",
-                on_change=_skills_listing.refresh,
-            )
-            skills_dir.tooltip(
-                "Beyond the built-in bank and the workspace's "
-                ".opencode/supervisor_skills directory.",
-            )
-        _skills_listing()
 
 
 @ui.refreshable
@@ -367,43 +287,166 @@ def _agent_variant_choices(engine: str, model: str) -> list[str]:
     return list(REASONING_EFFORT_CHOICES)
 
 
-def _model_section() -> None:
+def _agent_model_field() -> None:
+    """Agent model droplist (or free input) + fetch button, nothing else."""
     engine = (app_state.get("engine") or "opencode").strip().lower()
     models = (
         app_state.opencode_models if app_state.model_list_engine == engine else []
     )
-    with ui.row().classes("w-full gap-4 flex-wrap items-end"):
-        if models:
-            current = app_state.get("opencode_model") or models[0]
-            options = models + ["(custom)"]
-            if current and current not in options:
-                options = [current] + options
-            ui.select(
-                options,
-                value=current,
-                label=f"Agent model ({engine})",
-                on_change=lambda e: _set_model(e.value),
-            ).classes("w-80")
-            refresh_button = ui.button(
-                "Refresh models", on_click=lambda: _refresh_models(refresh_button),
-            ).props("flat dense")
-        else:
-            _bind_input("opencode_model", f"Agent model ({engine})")
-            refresh_button = ui.button(
-                "Fetch models", on_click=lambda: _refresh_models(refresh_button),
-            ).props("flat dense")
-        _bind_input("opencode_model_backup", "Agent backup model")
+    if models:
+        current = app_state.get("opencode_model") or models[0]
+        options = models + ["(custom)"]
+        if current and current not in options:
+            options = [current] + options
+        ui.select(
+            options,
+            value=current,
+            label=f"Agent model ({engine})",
+            on_change=lambda e: _set_model(e.value),
+        ).classes("w-80")
+        refresh_button = ui.button(
+            "Refresh models", on_click=lambda: _refresh_models(refresh_button),
+        ).props("flat dense")
+    else:
+        _bind_input("opencode_model", f"Agent model ({engine})")
+        refresh_button = ui.button(
+            "Fetch models", on_click=lambda: _refresh_models(refresh_button),
+        ).props("flat dense")
+
+
+def _advanced_section() -> None:
+    """The rarely-touched 20% of configuration, collapsed until asked for.
+
+    Flat group labels inside (not nested expansions): one disclosure level
+    keeps wayfinding simple.
+    """
+    from services.config.connectivity import REASONING_EFFORT_CHOICES
+
+    engine = (app_state.get("engine") or "opencode").strip().lower()
+    group = "text-xs font-bold text-[#9ecbff] mt-2"
+    with _section("Advanced settings"):
+        ui.label("Models & reasoning").classes(group)
+        with ui.row().classes("w-full gap-4 flex-wrap items-end"):
+            _bind_input("opencode_model_backup", "Agent backup model")
+            _bind_input("supervisor_model_backup", "Supervisor backup model")
+            if engine == "codex":
+                variant_label = "Codex reasoning effort"
+            elif engine == "pi":
+                variant_label = "Pi thinking level"
+            else:
+                variant_label = "Thinking variant"
+            _reasoning_select(
+                "agent_reasoning", variant_label,
+                _agent_variant_choices(
+                    engine, app_state.get("opencode_model") or "",
+                ),
+            )
+            _reasoning_select(
+                "supervisor_reasoning",
+                "Supervisor thinking effort",
+                REASONING_EFFORT_CHOICES,
+            )
         if engine == "codex":
-            variant_label = "Codex reasoning effort"
-        elif engine == "pi":
-            variant_label = "Pi thinking level"
-        else:
-            variant_label = "Thinking variant"
-        _reasoning_select(
-            "agent_reasoning", variant_label, _agent_variant_choices(
-                engine, app_state.get("opencode_model") or "",
-            ),
+            with ui.row().classes("w-full gap-4 flex-wrap"):
+                _bind_input("codex_base_url", "Codex base URL (responses API)")
+                _bind_input("codex_api_key", "Codex API key", password=True)
+
+        # Structured decision service (jev): opt-in final arbiter for the
+        # textual judgment calls. Deterministic gates stay hard.
+        ui.label("Decision arbiter (jev)").classes(group)
+        with ui.row().classes("w-full gap-4 flex-wrap items-end"):
+            _bind_switch(
+                "enable_jev_decisions",
+                "Jev decision arbiter",
+            ).tooltip(
+                "Ask the structured-decision service to arbitrate textual "
+                "judgment calls: terminal / stand-down wording, MET-claim "
+                "contradictions, stagnation, protocol flags, DONE proposals. "
+                "Falls back to the text heuristics when the service is "
+                "unavailable.",
+            )
+            _bind_input(
+                "jev_decision_url",
+                "Jev decision URL",
+                classes="flex-grow mono",
+            ).tooltip(
+                "POST target of the noul/choice decision API, e.g. "
+                "http://DECISION_HOST/systemone/api/v1/systemone.",
+            )
+            _bind_input(
+                "jev_decision_api_key",
+                "Jev API key (optional)",
+                password=True,
+            )
+            _bind_number("jev_decision_timeout", "Jev timeout (s)", min=1, max=300)
+            _bind_float(
+                "jev_decision_threshold",
+                "Jev confidence threshold",
+                min=0.50, max=0.99,
+            )
+            _bind_switch(
+                "enable_blocked_rescue",
+                "Unblock rescue plan",
+            ).tooltip(
+                "On the first BLOCKED verdict, force the judge to research the "
+                "blocker on the web and write a recovery plan; jev rules "
+                "whether it is feasible. A feasible plan cancels BLOCKED and "
+                "is sent to the executor. Any failure closes as before. "
+                "Only active when the jev arbiter is enabled."
+            )
+
+        ui.label("Run behavior").classes(group)
+        with ui.row().classes("w-full gap-6 flex-wrap"):
+            _bind_switch("enable_occam_razor", "Occam Razor")
+            _bind_switch("enable_supervisor_skills", "Supervisor skills")
+
+            def _log_detail_change(e) -> None:
+                app_state["log_detail"] = "full" if e.value else "headline"
+                _save()
+
+            ui.switch(
+                "Full job logs (debug)",
+                value=(app_state.get("log_detail") or "headline") == "full",
+                on_change=_log_detail_change,
+            ).tooltip(
+                "Off: one key line per event, full bodies kept in the job's "
+                "sidecar (errors always inline). On: verbatim events.",
+            )
+
+        ui.label("Limits").classes(group)
+        with ui.row().classes("w-full gap-6 flex-wrap"):
+            _bind_number("max_retries", "Max retries", min=1, max=10)
+            _bind_number("context_threshold", "Context threshold %", min=10, max=95)
+            _bind_number("max_tokens", "Max tokens", min=1000, max=2000000)
+            _bind_number("timeout", "Turn timeout (min)", min=1, max=120)
+            _bind_number("max_parallel_jobs", "Max parallel jobs", min=1, max=32)
+            _bind_number(
+                "max_stored_jobs", "Stored jobs (log retention)",
+                min=5, max=1000, classes="w-56",
+            )
+
+        ui.label("Maintenance").classes(group)
+        # The detail lives in the tooltips so the labels never ellipsize.
+        with ui.row().classes("w-full gap-4 flex-wrap"):
+            npm_registry = _bind_input("npm_registry", "npm registry for CLI upgrades",
+                                       classes="flex-grow mono")
+            npm_registry.tooltip("Empty = the default registry.")
+            skills_dir = _bind_input(
+                "supervisor_skills_dir",
+                "Supervisor skills extra dir (optional)",
+                classes="flex-grow mono",
+                on_change=_skills_listing.refresh,
+            )
+            skills_dir.tooltip(
+                "Beyond the built-in bank and the workspace's "
+                ".opencode/supervisor_skills directory.",
+            )
+        ui.button(
+            "Clean artifacts", on_click=lambda: _clean_artifacts(),
+        ).props("flat dense").tooltip(
+            "Delete build artifacts and caches in the configured workspace.",
         )
+        _skills_listing()
 
 
 def _set_model(value: str) -> None:
@@ -445,35 +488,108 @@ async def _refresh_models(button=None) -> None:
         )
 
 
-# ── Protected files ───────────────────────────────────────────────────────────
+# ── Access & protection ──────────────────────────────────────────────────────
+
+
+@ui.refreshable
+def _protection_section() -> None:
+    """One panel for everything that bounds what the agent may touch."""
+    with _section("Access & Protection"):
+        ui.label(
+            "What the agent may touch: read-only reference directories, files "
+            "it must never modify, and the ignore list. Everything is saved to "
+            "access_protection.json in the workspace; the saved config files "
+            "are protected automatically.",
+        ).classes("text-xs text-[#8b949e]")
+        workspace = _workspace()
+        if not workspace:
+            ui.label("Set a valid workspace path first.").classes("text-[#e3b341]")
+            return
+        _profile_sync(workspace, create=True)
+
+        status = ui.label("").classes("text-xs text-[#8b949e]")
+
+        async def _auto_generate() -> None:
+            from supervisor.security.access_profile import apply_generation
+
+            app_state.save()
+            app_state.apply_api_config()
+            notes: list[str] = []
+            paths: list[str] = []
+            async with busy_buttons(auto_button):
+                status.set_text("1/2 Suggesting read-only directories (LLM)…")
+                try:
+                    result = await nicegui_run.io_bound(
+                        _suggest_whitelist_paths,
+                        workspace,
+                        _protocol_text(workspace),
+                        _list_str("access_whitelist"),
+                    )
+                    paths = [str(item.path) for item in result.accepted]
+                    if result.rejected:
+                        notes.append(
+                            f"{len(result.rejected)} suggestion(s) rejected by validation",
+                        )
+                except Exception as exc:  # noqa: BLE001 — surfaced in the status
+                    notes.append(f"whitelist suggestion failed: {str(exc)[:120]}")
+                status.set_text("2/2 Generating ignore patterns (LLM)…")
+                patterns = ""
+                try:
+                    patterns = await nicegui_run.io_bound(
+                        _suggest_ignore_patterns, workspace,
+                    )
+                except Exception as exc:  # noqa: BLE001 — surfaced in the status
+                    notes.append(f"ignore suggestion failed: {str(exc)[:120]}")
+                summary = apply_generation(workspace, paths, patterns)
+            _profile_sync(workspace)
+            _access_section.refresh()
+            _protected_section.refresh()
+            _ignore_section.refresh()
+            status.set_text(
+                f"Auto-generated: +{len(summary['whitelist_added'])} read-only "
+                f"dir(s); ignore {'updated' if summary['ignore_written'] else 'unchanged'}; "
+                "config files protected."
+                + (f" ({'; '.join(notes)})" if notes else ""),
+            )
+
+        auto_button = ui.button(
+            "Auto-generate access & protection (LLM)", on_click=_auto_generate,
+        ).props("dense color=primary").tooltip(
+            "One LLM pass: suggests read-only reference directories from the "
+            "protocol, generates .opencodeignore patterns, validates every "
+            "entry, and saves both into the workspace.",
+        )
+
+        _access_section()
+        _protected_section()
+        _ignore_section()
 
 
 @ui.refreshable
 def _protected_section() -> None:
-    with _section("Protected Files"):
+    with ui.column().classes("w-full gap-2"):
+        ui.label("Protected files").classes(_GROUP_LABEL)
         ui.label(
-            "Files the agent may not modify or delete (selection lives for "
-            "this app session).",
+            "Files the agent may not modify or delete. Saved in "
+            "access_protection.json; its own config files are locked.",
         ).classes("text-xs text-[#8b949e]")
         workspace = _workspace()
         if not workspace:
             ui.label("Set a valid workspace path first.").classes("text-[#e3b341]")
             return
         add_select = ui.select(
-            [], multiple=True, label="Add protected files (search workspace)",
+            [], multiple=True, label="Add protected files (workspace scan)",
         ).classes("w-full")
         options_holder: dict[str, list[str]] = {}
 
         async def _load_options() -> None:
-            async with busy_buttons(scan_button):
-                entries = await nicegui_run.io_bound(_scan_workspace, workspace)
-                options_holder["all"] = entries
-                add_select.options = entries[:_DROPLIST_FILES]
-                add_select.update()
+            entries = await nicegui_run.io_bound(_scan_workspace, workspace)
+            options_holder["all"] = entries
+            add_select.options = entries[:_DROPLIST_FILES]
+            add_select.update()
 
-        scan_button = ui.button("Scan workspace", on_click=_load_options).props(
-            "flat dense",
-        )
+        # Cheap local scan: no button, populate as soon as the panel renders.
+        ui.timer(0.05, _load_options, once=True)
 
         def _add(e) -> None:
             chosen = list(e.value or [])
@@ -482,6 +598,7 @@ def _protected_section() -> None:
                 merged = sorted(set(current) | set(chosen))
                 app_state["protected_files"] = merged
                 _save()
+                _profile_save(workspace)
                 add_select.value = []
                 _refresh_chips(merged, options_holder, chips_container)
 
@@ -496,12 +613,17 @@ def _scan_workspace(workspace: Path) -> list[str]:
 
 
 def _refresh_chips(protected: list[str], options_holder: dict, container) -> None:
+    from supervisor.security.access_profile import CONFIG_FILES
+
     container.clear()
     with container:
         if not protected:
             ui.label("No protected files.").classes("text-xs text-[#8b949e]")
         for path in protected:
             with ui.row().classes("items-center gap-2"):
+                if path.lower() in {name.lower() for name in CONFIG_FILES}:
+                    ui.label(f"🔒 {path} (config, auto)").classes("text-xs mono")
+                    continue
                 ui.label(f"🔒 {path}").classes("text-xs mono")
                 ui.button(
                     icon="close",
@@ -513,6 +635,9 @@ def _remove_protected(path: str, options_holder: dict, container) -> None:
     merged = [p for p in (app_state.get("protected_files") or []) if p != path]
     app_state["protected_files"] = merged
     _save()
+    workspace = _workspace()
+    if workspace:
+        _profile_save(workspace)
     _refresh_chips(merged, options_holder, container)
 
 
@@ -523,7 +648,8 @@ def _remove_protected(path: str, options_holder: dict, container) -> None:
 def _access_section() -> None:
     from supervisor.security.access_policy import validate_whitelist_entry
 
-    with _section("Path Access Whitelist (hard rule)"):
+    with ui.column().classes("w-full gap-2"):
+        ui.label("Path access whitelist (hard rule)").classes(_GROUP_LABEL)
         ui.label(
             "The project cwd is read/write. Whitelisted directories are "
             "READ-ONLY. Everything else is denied for every backend "
@@ -531,18 +657,24 @@ def _access_section() -> None:
             "Shell commands are parsed; dynamic constructs (substitutions, "
             "unknown variables, encoded commands) are denied outright.",
         ).classes("text-xs text-[#8b949e]")
-        _bind_switch(
-            "access_policy_enabled", "Enforce the hard path policy",
-        ).props("dense")
-        _bind_switch(
-            "access_policy_strict",
-            "Strict: also deny interpreter execution (python/node/perl scripts)",
-        ).props("dense")
-
         workspace = _workspace()
         if not workspace:
             ui.label("Set a valid workspace path first.").classes("text-[#e3b341]")
             return
+
+        def _persist() -> None:
+            _profile_save(workspace)
+            _drill_verdict.refresh()
+
+        _bind_switch(
+            "access_policy_enabled", "Enforce the hard path policy",
+            on_change=_persist,
+        ).props("dense")
+        _bind_switch(
+            "access_policy_strict",
+            "Strict: also deny interpreter execution (python/node/perl scripts)",
+            on_change=_persist,
+        ).props("dense")
 
         status = ui.label("").classes("text-xs text-[#8b949e]")
 
@@ -567,9 +699,11 @@ def _access_section() -> None:
                 current.append(str(resolved))
                 app_state["access_whitelist"] = current
                 _save()
+                _profile_save(workspace)
             path_input.value = ""
             status.set_text(f"Added read-only: {resolved}")
             chips.refresh()
+            _drill_verdict.refresh()
 
         add_button.on_click(lambda: _add_path())
         path_input.on("keydown.enter", lambda _e: _add_path())
@@ -590,38 +724,10 @@ def _access_section() -> None:
 
         chips()
 
-        async def _suggest() -> None:
-            status.set_text("Asking the supervisor model for reference directories…")
-            async with busy_buttons(suggest_button):
-                app_state.save()
-                app_state.apply_api_config()
-                protocol_text = _protocol_text(workspace)
-                try:
-                    result = await nicegui_run.io_bound(
-                        _suggest_whitelist_paths,
-                        workspace,
-                        protocol_text,
-                        _list_str("access_whitelist"),
-                    )
-                except Exception as exc:  # noqa: BLE001 - surfaced in the UI
-                    status.set_text(f"Suggestion failed: {exc}")
-                    return
-            if not result.accepted:
-                reasons = "; ".join(
-                    f"{path}: {reason}" for path, reason in result.rejected[:3]
-                )
-                status.set_text(
-                    "No acceptable directories suggested."
-                    + (f" Rejected: {reasons}" if reasons else ""),
-                )
-                return
-            _show_suggestions(result, status)
-
-        suggest_button = ui.button("AI suggest whitelist", on_click=_suggest).props(
-            "dense outline color=primary",
-        )
-
-        async def _drill() -> None:
+        @ui.refreshable
+        def _drill_verdict() -> None:
+            # Deterministic and cheap: never a button, and re-run on every
+            # whitelist/policy change so the verdict is always current.
             from supervisor.security.access_policy import AccessPolicy
             from supervisor.security.preflight import run_policy_drill
 
@@ -631,20 +737,19 @@ def _access_section() -> None:
                 enabled=bool(app_state.get("access_policy_enabled", True)),
                 strict_dynamic=bool(app_state.get("access_policy_strict", False)),
             )
-            report = await nicegui_run.io_bound(run_policy_drill, workspace, policy)
-            body = "\n".join(check.line() for check in report.checks)
-            with ui.dialog() as dialog, ui.card().classes("w-full max-w-2xl"):
-                ui.label(
-                    ("Drill passed — " if report.ok else "Drill FAILED — ")
-                    + report.summary(),
-                ).classes("text-base font-bold")
-                ui.label(body).classes("text-xs mono whitespace-pre-wrap")
-                ui.button("Close", on_click=dialog.close).props("dense")
-            dialog.open()
+            report = run_policy_drill(workspace, policy)
+            ui.label(
+                ("✅ Policy drill passed — " if report.ok else "🚫 Policy drill FAILED — ")
+                + report.summary(),
+            ).classes(
+                "text-xs " + ("text-[#3fb950]" if report.ok else "text-[#f85149]"),
+            )
+            if not report.ok:
+                ui.label(report.fail_text()).classes(
+                    "text-xs mono text-[#f85149] whitespace-pre-wrap",
+                )
 
-        ui.button("Run policy drill", on_click=_drill).props(
-            "dense outline",
-        )
+        _drill_verdict()
 
 
 def _list_str(key: str) -> list[str]:
@@ -659,21 +764,16 @@ def _remove_whitelist(entry: str) -> None:
         item for item in _list_str("access_whitelist") if item != entry
     ]
     _save()
+    workspace = _workspace()
+    if workspace:
+        _profile_save(workspace)
     _access_section.refresh()
 
 
 def _protocol_text(workspace: Path) -> str:
-    text = str(app_state.get("protocol_md") or "").strip()
-    if text:
-        return text
-    for name in ("protocol.md", "PROTOCOL.md"):
-        candidate = workspace / name
-        try:
-            if candidate.is_file():
-                return candidate.read_text(encoding="utf-8", errors="ignore")[:6000]
-        except OSError:
-            continue
-    return ""
+    from supervisor.protocols.protocol import read_protocol_text, resolve_protocol_path
+
+    return read_protocol_text(resolve_protocol_path(workspace))[:6000]
 
 
 def _suggest_whitelist_paths(workspace: Path, protocol_text: str, existing: list[str]):
@@ -689,66 +789,19 @@ def _suggest_whitelist_paths(workspace: Path, protocol_text: str, existing: list
     )
 
 
-def _show_suggestions(result, status) -> None:
-    with ui.dialog() as dialog, ui.card().classes("w-full max-w-3xl"):
-        ui.label("Suggested read-only directories").classes("text-lg font-bold")
-        ui.label(
-            "Every entry was validated against the hard policy "
-            "(existing absolute directories, outside the workspace, not a "
-            "system/drive root). Uncheck anything the task does not need.",
-        ).classes("text-xs text-[#8b949e]")
-        boxes = []
-        for suggestion in result.accepted:
-            with ui.row().classes("w-full items-start gap-2"):
-                box = ui.checkbox(value=True).props("dense")
-                with ui.column().classes("gap-0"):
-                    ui.label(str(suggestion.path)).classes("text-xs mono")
-                    ui.label(
-                        suggestion.reason
-                        + f"  (confidence {suggestion.confidence:.0%})",
-                    ).classes("text-xs text-[#8b949e]")
-                boxes.append((box, suggestion))
-        if result.rejected:
-            ui.label(
-                "Rejected by validation: "
-                + "; ".join(f"{path} ({reason})" for path, reason in result.rejected[:4]),
-            ).classes("text-xs text-[#e3b341]")
-
-        def _accept() -> None:
-            current = _list_str("access_whitelist")
-            added = 0
-            for box, suggestion in boxes:
-                if not box.value:
-                    continue
-                text = str(suggestion.path)
-                if text.lower() not in {item.lower() for item in current}:
-                    current.append(text)
-                    added += 1
-            app_state["access_whitelist"] = current
-            _save()
-            status.set_text(f"Added {added} read-only director{'y' if added == 1 else 'ies'}.")
-            dialog.close()
-            _access_section.refresh()
-
-        with ui.row().classes("w-full justify-end gap-2"):
-            ui.button("Cancel", on_click=dialog.close).props("flat")
-            ui.button("Add selected", on_click=_accept).props("color=primary")
-    dialog.open()
-
-
 # ── Ignore editor ─────────────────────────────────────────────────────────────
 
 
 @ui.refreshable
 def _ignore_section() -> None:
-    from supervisor.workspace.ignore_patterns import IGNORE_FILE
+    from supervisor.workspace.ignore_patterns import IGNORE_FILE, write_ignore_file
 
-    with _section(".opencodeignore Editor"):
+    with ui.column().classes("w-full gap-2"):
+        ui.label(".opencodeignore").classes(_GROUP_LABEL)
         workspace = _workspace()
         if not workspace:
             ui.label("Set a valid workspace path first.").classes("text-[#e3b341]")
             return
-        from supervisor.workspace.ignore_patterns import write_ignore_file
 
         ignore_path = workspace / IGNORE_FILE
         current = (
@@ -759,31 +812,11 @@ def _ignore_section() -> None:
         )
         status = ui.label("").classes("text-xs text-[#8b949e]")
 
-        def _save_ignore() -> None:
-            write_ignore_file(workspace, area.value or "")
-            status.set_text("Saved .opencodeignore.")
+        def _autosave(e) -> None:
+            write_ignore_file(workspace, e.value or "")
+            status.set_text("auto-saved")
 
-        ui.button("Save ignore file", on_click=_save_ignore).props("dense")
-
-        async def _suggest() -> None:
-            status.set_text("Generating ignore patterns (LLM call)…")
-            async with busy_buttons(suggest_button):
-                app_state.save()
-                app_state.apply_api_config()
-                try:
-                    generated = await nicegui_run.io_bound(
-                        _suggest_ignore_patterns, workspace,
-                    )
-                except Exception as exc:
-                    status.set_text(f"Failed to generate ignore patterns: {exc}")
-                    return
-            area.value = generated
-            write_ignore_file(workspace, generated)
-            status.set_text("Ignore patterns generated and saved.")
-
-        suggest_button = ui.button(
-            "Suggest and Apply Ignore Patterns", on_click=_suggest,
-        ).props("dense outline")
+        area.on_value_change(_autosave)
 
 
 def _suggest_ignore_patterns(workspace: Path) -> str:
@@ -886,82 +919,22 @@ def _refresh_status(_label) -> None:
         ui.notify("Both connectivity tests passed.")
 
 
-# ── Protocol drafts + refine flow ─────────────────────────────────────────────
+# ── Protocol editor + refine flow ─────────────────────────────────────────────
 
 
-@ui.refreshable
-def _protocol_file_row() -> None:
-    """Existing-protocol indicator; refreshed on workspace switches."""
-    workspace = _workspace()
-    if workspace and (workspace / "protocol.md").exists():
-        with ui.row().classes("items-center gap-2"):
-            ui.label("✅ Existing protocol.md found in this workspace.").classes(
-                "text-xs text-[#3fb950]",
-            )
-            ui.button("Preview", on_click=_preview_protocol).props("flat dense")
+def _compose_protocol(sections: dict[str, str]) -> str:
+    return (
+        f"## INPUT\n\n{sections.get('input', '').strip()}\n\n"
+        f"## TARGET\n\n{sections.get('target', '').strip()}\n\n"
+        f"## RESTRICTIONS\n\n{sections.get('restrictions', '').strip()}\n"
+    )
 
 
-def _preview_protocol() -> None:
-    workspace = _workspace()
-    if workspace is not None:
-        _preview_file(workspace / "protocol.md")
-
-
-def _protocol_section() -> None:
-    with _section("Protocol Draft", open_=True):
-        _protocol_file_row()
-        with ui.row().classes("w-full gap-4"):
-            ui.input(
-                "INPUT (context)",
-                value=app_state.get("raw_input") or "",
-                on_change=lambda e: _set_draft("raw_input", e.value, quality_label),
-            ).classes("w-full mono").props("autogrow")
-        ui.input(
-            "TARGET (objectives)",
-            value=app_state.get("raw_target") or "",
-            on_change=lambda e: _set_draft("raw_target", e.value, quality_label),
-        ).classes("w-full mono").props("autogrow")
-        ui.input(
-            "RESTRICTIONS (boundaries)",
-            value=app_state.get("raw_restrictions") or "",
-            on_change=lambda e: _set_draft(
-                "raw_restrictions", e.value, quality_label,
-            ),
-        ).classes("w-full mono").props("autogrow")
-
-        quality_label = ui.label("").classes("text-xs text-[#8b949e]")
-        _update_quality(quality_label)
-
-        status = ui.label("").classes("text-xs")
-        cancel_button = ui.button(
-            "Cancel", on_click=lambda: _cancel_refine(status),
-        ).props("outline color=red")
-        cancel_button.set_visibility(False)
-        refine_button = ui.button(
-            "Refine with AI",
-            on_click=lambda: _refine(status, refine_button, cancel_button),
-        ).props("color=primary")
-
-        if app_state.get("protocol_md"):
-            _refined_editor()
-
-
-def _set_draft(key: str, value: str, quality_label) -> None:
-    app_state[key] = value
-    _save()
-    _update_quality(quality_label)
-
-
-def _update_quality(label) -> None:
+def _update_quality(label, sections: dict[str, str]) -> None:
     from supervisor.protocols.protocol_analyzer import ProtocolAnalyzer
 
-    text = (
-        f"## INPUT\n{app_state.get('raw_input') or ''}\n\n"
-        f"## TARGET\n{app_state.get('raw_target') or ''}\n\n"
-        f"## RESTRICTIONS\n{app_state.get('raw_restrictions') or ''}\n"
-    )
     try:
-        analysis = ProtocolAnalyzer().analyze_text(text)
+        analysis = ProtocolAnalyzer().analyze_text(_compose_protocol(sections))
         label.set_text(
             f"Quality: overall {analysis.overall_score:.0%} · "
             f"INPUT {analysis.input_score.overall:.0%} · "
@@ -973,14 +946,115 @@ def _update_quality(label) -> None:
         label.set_text("Complete all three sections to see quality scores.")
 
 
-async def _refine(status, refine_button, cancel_button) -> None:
-    if not all(
-        (app_state.get(k) or "").strip()
-        for k in ("raw_input", "raw_target", "raw_restrictions")
-    ):
+@ui.refreshable
+def _protocol_section() -> None:
+    """The workspace protocol as one field per section (loaded, never residual)."""
+    from supervisor.protocols.protocol import load_protocol, resolve_protocol_path
+
+    with _section("Protocol", open_=True):
+        workspace = _workspace()
+        if not workspace:
+            ui.label("Set a valid workspace path first.").classes("text-[#e3b341]")
+            return
+
+        path = resolve_protocol_path(workspace)
+        loaded = None
+        if path.is_file():
+            try:
+                loaded = load_protocol(path)
+            except (OSError, ValueError) as exc:
+                ui.label(f"Could not load {path.name}: {exc}").classes(
+                    "text-xs text-[#f85149]",
+                )
+            else:
+                ui.label(f"Loaded {path.name}.").classes(
+                    "text-xs text-[#3fb950]",
+                )
+        else:
+            ui.label(
+                "No protocol yet — fill the sections below, then Refine with AI.",
+            ).classes("text-xs text-[#8b949e]")
+
+        areas = {}
+        for key, label in (
+            ("input", "INPUT (context)"),
+            ("target", "TARGET (objectives)"),
+            ("restrictions", "RESTRICTIONS (boundaries)"),
+        ):
+            areas[key] = ui.textarea(
+                label,
+                value=getattr(loaded, f"{key}_section", "") if loaded else "",
+            ).classes("w-full mono").props("autogrow")
+
+        def _sections() -> dict[str, str]:
+            return {key: str(area.value or "") for key, area in areas.items()}
+
+        quality_label = ui.label("").classes("text-xs text-[#8b949e]")
+        _update_quality(quality_label, _sections())
+        for area in areas.values():
+            area.on_value_change(
+                lambda _e: _update_quality(quality_label, _sections()),
+            )
+
+        status = ui.label("").classes("text-xs")
+        cancel_button = ui.button(
+            "Cancel", on_click=lambda: _cancel_refine(status),
+        ).props("outline color=red")
+        cancel_button.set_visibility(False)
+        refine_button = ui.button(
+            "Refine with AI",
+            on_click=lambda: _refine(
+                workspace, _sections, areas, status, refine_button, cancel_button,
+            ),
+        ).props("color=primary")
+        ui.button(
+            "Accept & Save",
+            on_click=lambda: _accept_protocol(workspace, _sections),
+        ).props("color=primary")
+
+        _feasibility_section(_sections)
+
+
+def _feasibility_section(sections_getter) -> None:
+    """Acceptance gates live with the protocol; every edit auto-saves."""
+    workspace = _workspace()
+    if not workspace:
+        return
+    from services.webui.components.feasibility_panel import render as render_gates
+
+    render_gates(workspace, lambda: _compose_protocol(sections_getter()))
+
+
+def _accept_protocol(workspace: Path, sections_getter) -> None:
+    from supervisor.protocols.protocol import parse_protocol_text, save_protocol
+    from supervisor.protocols.target_audit import audit_target
+
+    try:
+        protocol = parse_protocol_text(_compose_protocol(sections_getter()))
+    except ValueError as exc:
+        ui.notify(f"Protocol invalid: {exc}")
+        return
+    audit = audit_target(protocol.target_section, protocol.restrictions_section)
+    if not audit.is_actionable:
+        ui.notify("TARGET not ready: " + " ".join(audit.issues))
+        return
+    path = save_protocol(workspace, protocol)
+    # Refresh the workspace profile so the new config file is protected too.
+    _profile_save(workspace)
+    ui.notify(f"{path.name} saved to {workspace.name}")
+    ui.navigate.to("/run")
+
+
+async def _refine(
+    workspace: Path | None, sections_getter, areas, status, refine_button, cancel_button,
+) -> None:
+    sections = sections_getter()
+    if not all(sections[key].strip() for key in ("input", "target", "restrictions")):
         ui.notify("Fill INPUT, TARGET and RESTRICTIONS first.")
         return
-    status.set_text("Refining protocol with AI… (the model reasons at length before answering)")
+    status.set_text(
+        "Refining protocol with AI… (the model reasons at length before answering)",
+    )
     stop_event = _refine_call.begin()
     cancel_button.set_visibility(True)
     async with busy_buttons(refine_button):
@@ -1023,11 +1097,11 @@ async def _refine(status, refine_button, cancel_button) -> None:
                 )
                 status.update()
 
-            markdown, _protocol = await nicegui_run.io_bound(
+            markdown, protocol = await nicegui_run.io_bound(
                 wizard.refine,
-                app_state.get("raw_input") or "",
-                app_state.get("raw_target") or "",
-                app_state.get("raw_restrictions") or "",
+                sections["input"],
+                sections["target"],
+                sections["restrictions"],
                 on_progress=_on_progress,
                 stop_event=stop_event,
                 on_round=_on_gate_round,
@@ -1044,74 +1118,32 @@ async def _refine(status, refine_button, cancel_button) -> None:
         finally:
             _refine_call.end()
             cancel_button.set_visibility(False)
-    app_state["protocol_md"] = markdown
-    app_state.save()
-    status.set_text(
-        "Refined protocol ready — target audit passed; review and accept below.",
-    )
-    ui.run_javascript("location.reload()")
 
+    # Refined sections replace the editor content in place; nothing touches
+    # the workspace until Accept & Save.
+    areas["input"].value = protocol.input_section
+    areas["target"].value = protocol.target_section
+    areas["restrictions"].value = protocol.restrictions_section
+    status.set_text("Refined — drafting feasibility gates…")
+    status.update()
+    try:
+        from services.webui.components.feasibility_panel import draft_and_save
 
-def _refined_editor() -> None:
-    with _section("Refined protocol — review and accept", open_=True):
-        area = ui.textarea(
-            "protocol.md", value=app_state.get("protocol_md") or "",
-        ).classes("w-full mono").props("autogrow")
-        quality_label = ui.label("").classes("text-xs text-[#8b949e]")
-
-        def _on_change(e) -> None:
-            app_state["protocol_md"] = e.value
-            app_state.save()
-            _update_quality(quality_label)
-
-        area.on_value_change(_on_change)
-
-        async def _accept() -> None:
-            from supervisor.protocols.protocol import parse_protocol_text
-            from supervisor.protocols.target_audit import audit_target
-
-            try:
-                protocol = parse_protocol_text(area.value or "")
-            except ValueError as exc:
-                ui.notify(f"Protocol invalid: {exc}")
-                return
-            audit = audit_target(
-                protocol.target_section, protocol.restrictions_section,
+        if workspace is None:
+            status.set_text("Refined — set a workspace to save gates.")
+        else:
+            count = await nicegui_run.io_bound(draft_and_save, workspace, markdown)
+            status.set_text(
+                f"Refined — {count} feasibility gate(s) auto-saved. "
+                "Review, then Accept & Save."
+                if count
+                else "Refined — no gates could be drafted from the TARGET.",
             )
-            if not audit.is_actionable:
-                ui.notify("TARGET not ready: " + " ".join(audit.issues))
-                return
-            # Resolve the workspace at accept time: it may have changed
-            # since this editor was rendered.
-            workspace = _workspace()
-            if workspace is None:
-                ui.notify("Set a valid workspace first.")
-                return
-            (workspace / "protocol.md").write_text(
-                area.value or "", encoding="utf-8",
-            )
-            ui.notify(f"protocol.md saved to {workspace.name}")
-            app_state["protocol_md"] = ""
-            app_state.save()
-            ui.navigate.to("/run")
-
-        with ui.row():
-            ui.button("Accept & Save", on_click=_accept).props("color=primary")
-            ui.button(
-                "Re-refine",
-                on_click=lambda: (
-                    app_state.__setitem__("protocol_md", ""),
-                    app_state.save(),
-                    ui.run_javascript("location.reload()"),
-                ),
-            ).props("outline")
-
-
-def _preview_file(path: Path) -> None:
-    with ui.dialog() as dialog, ui.card().classes("w-full"):
-        ui.code(path.read_text(encoding="utf-8")[:3000], language="markdown")
-        ui.button("Close", on_click=dialog.close).props("dense")
-    dialog.open()
+    except Exception as exc:  # noqa: BLE001 — the protocol itself is still valid
+        status.set_text(
+            "Refined — gate draft failed: "
+            f"{str(exc)[:160]} (draft them in the gates panel below).",
+        )
 
 
 # ── Page entry ────────────────────────────────────────────────────────────────
@@ -1122,7 +1154,6 @@ def render() -> None:
     _config_section()
     # Directly after the LLM configuration: the tests prove that config.
     _connectivity_section()
-    _protected_section()
-    _access_section()
-    _ignore_section()
+    _advanced_section()
+    _protection_section()
     _protocol_section()

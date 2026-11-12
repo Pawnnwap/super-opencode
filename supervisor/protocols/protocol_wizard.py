@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Callable
 
-from supervisor.protocols.protocol import Protocol, parse_protocol_text
+from supervisor.protocols.protocol import Protocol, parse_protocol_text, strip_code_fences
 from supervisor.protocols.protocol_analyzer import ProtocolAnalysis, ProtocolAnalyzer
 from supervisor.protocols.target_audit import audit_target
 from supervisor.utils.llm_stream import (
@@ -198,9 +198,9 @@ class ProtocolWizard(StreamedLLMHelper):
             f"### RESTRICTIONS (raw)\n{raw_restrictions}"
         )
 
-        refined_md = self._chat(
+        refined_md = strip_code_fences(self._chat(
             user_msg, on_progress=on_progress, stop_event=stop_event,
-        )
+        ))
 
         issues: tuple[str, ...] = ()
         for fix_round in range(max_fix_rounds + 1):
@@ -222,10 +222,10 @@ class ProtocolWizard(StreamedLLMHelper):
                 break
             if on_round is not None:
                 on_round(fix_round + 1, max_fix_rounds, issues)
-            refined_md = self._chat(
+            refined_md = strip_code_fences(self._chat(
                 _fix_prompt(candidate, issues),
                 on_progress=on_progress, stop_event=stop_event,
-            )
+            ))
         raise ProtocolGateError(issues, max_fix_rounds)
 
     def refine_section(
@@ -249,7 +249,7 @@ class ProtocolWizard(StreamedLLMHelper):
             f"Return ONLY the body text for the {section_name} section "
             "(no heading, no preamble)."
         )
-        return self._chat(user_msg)
+        return strip_code_fences(self._chat(user_msg))
 
     def analyze_sections(
         self,
