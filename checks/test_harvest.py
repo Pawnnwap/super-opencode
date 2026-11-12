@@ -21,6 +21,7 @@ from services.jobs import job_manager as jm
 from services.jobs.harvest_loop import HarvestLoop
 from services.jobs.job_manager import JobManager
 from services.jobs.state_store import JobStateStore
+from supervisor.security.access_policy import AccessPolicy
 from supervisor.utils.config import SupervisorConfig
 
 
@@ -251,6 +252,67 @@ def test_unfinished_run_is_skipped(tmp_path, monkeypatch):
     assert not any(path.is_dir() for path in batch.iterdir())
     assert any("not finished" in event.get("msg", "") for event in events)
     assert events[-1]["level"] == "error"
+
+
+def _capture_turn_configs(monkeypatch) -> list:
+    """Record the per-turn configs; skip the native gate install side effects."""
+    captured: list = []
+    monkeypatch.setattr(
+        hl, "create_runner",
+        lambda config: (captured.append(config), FakeRunner())[1],
+    )
+    monkeypatch.setattr(
+        HarvestLoop, "_install_access_guard", staticmethod(lambda *_a, **_k: None),
+    )
+    return captured
+
+
+def test_agent_turn_writes_in_the_run_folder_only(tmp_path, monkeypatch):
+    """The turn's cwd is the folder the prompt names, and the source run is
+    readable through a default read-only whitelist entry (2026-11-12: the
+    source workspace was the cwd, so every harvest.md write was denied)."""
+    workspace = tmp_path / "study"
+    workspace.mkdir()
+    (workspace / "indicator.py").write_text("# arm\n", encoding="utf-8")
+    store = _make_store(tmp_path, {"run_aaaa1111": _run_state(workspace)})
+    captured = _capture_turn_configs(monkeypatch)
+    config = _harvest_config(tmp_path, ["run_aaaa1111"])
+    batch = Path(config.harvest_dir)
+
+    list(HarvestLoop(config, store=store).run_streaming())
+
+    folder = next(path for path in batch.iterdir() if path.is_dir())
+    run_config = captured[0]
+    policy = AccessPolicy.from_config(run_config)
+    assert run_config.workspace == folder
+    assert policy.is_writable(folder / "harvest.md")
+    assert not policy.is_writable(workspace / "harvest.md")
+    assert policy.is_readable(workspace / "indicator.py")
+
+
+def test_batch_summary_turn_runs_in_the_harvest_folder(tmp_path, monkeypatch):
+    ws_a = tmp_path / "study_a"
+    ws_b = tmp_path / "study_b"
+    ws_a.mkdir()
+    ws_b.mkdir()
+    store = _make_store(
+        tmp_path,
+        {
+            "run_aaaa1111": _run_state(ws_a),
+            "run_bbbb2222": _run_state(ws_b),
+        },
+    )
+    captured = _capture_turn_configs(monkeypatch)
+    config = _harvest_config(tmp_path, ["run_aaaa1111", "run_bbbb2222"])
+    batch = Path(config.harvest_dir)
+
+    list(HarvestLoop(config, store=store).run_streaming())
+
+    assert len(captured) == 3  # two runs + the batch summary
+    assert captured[-1].workspace == batch
+    assert {str(root) for root in captured[-1].access_whitelist} >= {
+        str(ws_a), str(ws_b),
+    }
 
 
 # -------------------------------------------------------------- dispatch -- #

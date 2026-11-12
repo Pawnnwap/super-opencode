@@ -9,6 +9,12 @@ a batch-level ``HARVEST.md``.
 The baseline is written before any agent runs, and a fallback note is written
 when an agent fails or writes nothing - so the folder layout is always
 complete, even for a dead workspace or a broken agent turn.
+
+Each agent turn runs with the **output folder as its writable cwd**: the hard
+access policy allows writes only under the cwd, so the folder the prompt tells
+the agent to write is exactly the one the gate permits. Every selected run's
+source workspace is added to that turn's read-only whitelist, so the run is
+readable even when the operator's whitelist does not cover it.
 """
 
 from __future__ import annotations
@@ -117,6 +123,7 @@ class HarvestLoop:
         yield _ev("info", f"Harvest started: {len(selected)} run(s) -> {batch}")
 
         entries: list[HarvestEntry] = []
+        read_roots: list[str] = []
         for index, job_id in enumerate(selected, 1):
             if self._stop.is_set():
                 break
@@ -173,6 +180,8 @@ class HarvestLoop:
                 f"Harvesting {index}/{len(selected)}: {job_id} "
                 f"({job_state}) from {workspace}",
             )
+            if entry.workspace:
+                read_roots.append(entry.workspace)
             log_file = self.store.store_dir / f"{job_id}.logs"
             agent_prompt = run_agent_prompt(
                 prompt,
@@ -182,7 +191,12 @@ class HarvestLoop:
                 run_report(state),
                 log_path=str(log_file.resolve()) if log_file.is_file() else "",
             )
-            status, prose = yield from self._run_agent(workspace, agent_prompt)
+            status, prose = yield from self._run_agent(
+                dest,
+                agent_prompt,
+                source_workspace=workspace,
+                read_roots=tuple(read_roots),
+            )
             if status == "stopped":
                 entry.harvest = "cancelled"
                 entry.detail = "cancelled while the agent was running"
@@ -221,7 +235,9 @@ class HarvestLoop:
         cancelled = self._stop.is_set()
         has_summary = False
         if not cancelled:
-            has_summary = yield from self._synthesize(batch, prompt, entries)
+            has_summary = yield from self._synthesize(
+                batch, prompt, entries, read_roots=tuple(read_roots),
+            )
 
         index_text = index_markdown(
             batch, started, prompt, entries, has_summary=has_summary,
@@ -259,21 +275,35 @@ class HarvestLoop:
 
     # ------------------------------------------------------------------ #
 
-    def _run_agent(self, workspace: Path, prompt: str):
-        """Drive one agent turn; yields its events, returns (status, prose)."""
+    def _run_agent(
+        self,
+        cwd: Path,
+        prompt: str,
+        *,
+        source_workspace: Path | None = None,
+        read_roots: tuple[str, ...] = (),
+    ):
+        """Drive one agent turn inside *cwd*; yields its events, returns
+        ``(status, prose)``.
+
+        *cwd* is the folder the turn may write (the run folder, or the batch
+        folder for the summary turn) - the access policy makes the runner's
+        cwd the only writable root. The source workspace is read-only.
+        """
         if self._stop.is_set():
             return "stopped", ""
         runner = None
         permissions_path = None
+        engine = resolve_engine(self.config)
         try:
-            run_config = replace(
-                self.config,
-                workspace=workspace,
-                protocol_path=resolve_protocol_path(workspace),
+            run_config = self._turn_config(
+                cwd,
+                protocol_from=source_workspace or cwd,
+                read_roots=read_roots,
             )
-            permissions_path = self._prepare_agent_workspace(run_config, workspace)
+            permissions_path = self._prepare_agent_workspace(run_config, cwd)
             runner = create_runner(run_config)
-            self._install_access_guard(run_config, workspace, runner)
+            self._install_access_guard(run_config, cwd, runner)
             self.runner = runner
             for event in runner.start(prompt):
                 if self._stop.is_set():
@@ -282,15 +312,49 @@ class HarvestLoop:
                 yield event
             return "ok", runner.read_prose()
         except Exception as exc:
-            logger.exception("Harvest agent failed in %s", workspace)
+            logger.exception("Harvest agent failed in %s", cwd)
             return "error", str(exc)
         finally:
             self.runner = None
             if runner is not None:
                 self._stop_runner(runner)
             self._cleanup_permissions(permissions_path)
+            self._cleanup_guard_artifacts(cwd, engine)
 
-    def _synthesize(self, batch: Path, prompt: str, entries: list[HarvestEntry]):
+    def _turn_config(
+        self,
+        cwd: Path,
+        *,
+        protocol_from: Path,
+        read_roots: tuple[str, ...] = (),
+    ):
+        """Config for one turn: writable *cwd* plus the harvest's whitelist.
+
+        The operator's whitelist is kept verbatim and every selected run's
+        source workspace is appended as a default read-only root, so a run is
+        readable even when the operator's whitelist does not cover it.
+        :class:`AccessPolicy` resolves the entries, drops duplicates and
+        nested children, and keeps all of them read-only.
+        """
+        configured = getattr(self.config, "access_whitelist", ()) or ()
+        if isinstance(configured, str):
+            configured = [line for line in configured.splitlines() if line.strip()]
+        defaults = [str(root) for root in read_roots if str(root).strip()]
+        whitelist = tuple(dict.fromkeys([*configured, *defaults]))
+        return replace(
+            self.config,
+            workspace=cwd,
+            protocol_path=resolve_protocol_path(protocol_from),
+            access_whitelist=whitelist,
+        )
+
+    def _synthesize(
+        self,
+        batch: Path,
+        prompt: str,
+        entries: list[HarvestEntry],
+        read_roots: tuple[str, ...] = (),
+    ):
         """Write HARVEST.md from the per-run notes; yields events, returns bool."""
         usable = [
             entry
@@ -313,7 +377,7 @@ class HarvestLoop:
             "info", f"Writing batch summary from {len(usable)} harvest note(s)",
         )
         status, prose = yield from self._run_agent(
-            batch, synthesis_prompt(prompt, batch, usable),
+            batch, synthesis_prompt(prompt, batch, usable), read_roots=read_roots,
         )
         if status == "stopped":
             return False
@@ -401,6 +465,45 @@ class HarvestLoop:
                 parent.rmdir()
         except OSError:
             logger.warning("Could not clean up %s", path, exc_info=True)
+
+    @staticmethod
+    def _cleanup_guard_artifacts(cwd: Path, engine: str) -> None:
+        """Remove native-gate files an install drops inside the output folder.
+
+        The output folder is the turn's workspace, so opencode/pi write their
+        plugin, policy pointer and marker into it - derived state that must
+        not survive as a harvest artifact. codex keeps its gate in the codex
+        home, so nothing is written (or removed) there.
+        """
+        if engine not in ("opencode", "pi"):
+            return
+        from supervisor.security import engine_guards as guards
+
+        opencode_dir = cwd / guards.OPENCODE_CONFIG_REL.parent
+        paths = [
+            cwd / guards.OPENCODE_PLUGIN_REL,
+            cwd / guards.OPENCODE_POINTER_REL,
+            opencode_dir / ".supervisor_generated_permissions.json",
+            opencode_dir / "opencode.json.bak-access",
+        ]
+        if engine == "pi":
+            paths.append(cwd / guards.PI_EXTENSION_REL)
+        for path in paths:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                logger.warning("Could not clean up %s", path, exc_info=True)
+        for directory in (
+            cwd / ".opencode" / "plugin",
+            cwd / ".opencode",
+            cwd / ".supervisor",
+            cwd / ".pi" / "extensions",
+            cwd / ".pi",
+        ):
+            try:
+                directory.rmdir()
+            except OSError:
+                pass  # not empty, or never created
 
     @staticmethod
     def _write_fallback(
