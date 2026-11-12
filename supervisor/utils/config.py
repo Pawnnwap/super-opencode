@@ -20,14 +20,16 @@ class SupervisorConfig:
     opencode_executable: str = ""
     # Run opencode with --pure (no user plugins/skills). Supervised runs stay
     # isolated from global agent customization that could hijack the task;
-    # leave off to keep the user's plugin environment.
+    # leave off to keep the user's plugin environment. opencode 2.x removed
+    # the flag - the builder warns and ignores it there.
     opencode_pure: bool = False
     supervisor_model: str = "swift-1.5"
     supervisor_model_backup: str | None = None
     # Thinking/reasoning control for real runs ("" = model default).
     # supervisor_reasoning: passed to the supervisor's chat.completions calls
     # as extra_body.reasoning_effort. agent_reasoning: opencode `--variant`
-    # or codex `-c model_reasoning_effort`, depending on engine. Values must
+    # (1.x) / `--model provider/model#variant` (2.x) or codex
+    # `-c model_reasoning_effort`, depending on engine. Values must
     # come from the model's own variant names (the UI droplist aligns them);
     # connectivity probes ignore these and always probe at the lowest effort.
     supervisor_reasoning: str = ""

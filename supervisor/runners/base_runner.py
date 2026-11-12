@@ -109,7 +109,8 @@ class BaseRunner:
             "opencode_executable",
         )
         self.opencode_pure = bool(opencode_pure)
-        # Thinking variant (opencode `--variant`, pi `--thinking`, codex
+        # Thinking variant (opencode `--variant` on 1.x / folded into
+        # `--model provider/model#variant` on 2.x, pi `--thinking`, codex
         # `-c model_reasoning_effort`). "" = model default. Only values from
         # the engine's own naming should be set here.
         self.opencode_variant = coerce_str(opencode_variant, "opencode_variant")

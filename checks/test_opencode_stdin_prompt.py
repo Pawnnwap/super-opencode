@@ -12,16 +12,34 @@ provide a message or a command").
 """
 
 import io
+import subprocess
 import time
 from types import SimpleNamespace
 
+import pytest
+
+from supervisor.runners.opencode_support import command_builder as oc_command_builder
 from supervisor.runners.opencode_support import process as opencode_process
+from supervisor.runners.opencode_support.command_builder import (
+    _opencode_major as _opencode_major_impl,
+)
 from supervisor.runners.opencode_support.command_builder import build_cmd
 from supervisor.runners import process_common
 
 # ~260k chars: far past both Windows limits, routine size for a turn prompt
 # that carries roll-up / summary content.
 LONG_PROMPT = "Write DESIGN.md.\n" + "detail line with some substance\n" * 20000
+
+
+@pytest.fixture(autouse=True)
+def _pin_opencode_major_legacy(monkeypatch):
+    """Default every test here to the legacy (1.x) command shape.
+
+    build_cmd probes the installed CLI's major version (a real subprocess);
+    pinning keeps these unit tests hermetic. Version-specific tests pin 2 or
+    None themselves.
+    """
+    monkeypatch.setattr(oc_command_builder, "_opencode_major", lambda exe: 1)
 
 
 def test_build_cmd_never_puts_prompt_on_command_line():
@@ -60,6 +78,105 @@ def test_build_cmd_resume_keeps_session_flags_without_message():
     assert "--session" in cmd
     assert "ses_abc123" in cmd
     assert cmd[-2:] != ["--", LONG_PROMPT]
+
+
+def _build_kwargs(**overrides):
+    """Keyword bundle for build_cmd calls; overrides win."""
+    kwargs = dict(
+        exe="opencode",
+        prompt=LONG_PROMPT,
+        agent="build",
+        opencode_model="local-ds/swift-1.5",
+        use_continue=False,
+        session_id=None,
+    )
+    kwargs.update(overrides)
+    return kwargs
+
+
+def test_build_cmd_v2_drops_removed_flags_and_folds_variant(monkeypatch):
+    # Verified live on opencode v2.2.7: --dir and --pure hard-error with a
+    # help dump (exit 1) and --variant no longer exists - the model string
+    # carries the variant instead (`--model provider/model#variant` parses).
+    monkeypatch.setattr(oc_command_builder, "_opencode_major", lambda exe: 2)
+    cmd = build_cmd(
+        **_build_kwargs(use_pure=True, dir_="C:/tmp/ws", variant="none"),
+    )
+
+    joined = " ".join(cmd)
+    assert "--dir" not in joined
+    assert "--pure" not in joined
+    assert "--variant" not in joined
+    assert cmd[cmd.index("--model") + 1] == "local-ds/swift-1.5#none"
+    assert "--format" in cmd and cmd[cmd.index("--format") + 1] == "json"
+
+
+def test_build_cmd_v2_keeps_already_varianted_model(monkeypatch):
+    # A model ref that already carries `#variant` must not get a second one.
+    monkeypatch.setattr(oc_command_builder, "_opencode_major", lambda exe: 2)
+    cmd = build_cmd(
+        **_build_kwargs(opencode_model="local-ds/swift-1.5#low", variant="none"),
+    )
+
+    assert cmd[cmd.index("--model") + 1] == "local-ds/swift-1.5#low"
+
+
+def test_build_cmd_legacy_major_or_unknown_probe_keeps_flags(monkeypatch):
+    # 1.x (or a failed probe -> None) keeps the legacy command unchanged.
+    for pinned in (1, None):
+        monkeypatch.setattr(
+            oc_command_builder,
+            "_opencode_major",
+            lambda exe, _pinned=pinned: _pinned,
+        )
+        cmd = build_cmd(
+            **_build_kwargs(use_pure=True, dir_="C:/tmp/ws", variant="none"),
+        )
+
+        assert "--pure" in cmd
+        assert cmd[cmd.index("--dir") + 1] == "C:/tmp/ws"
+        assert cmd[cmd.index("--variant") + 1] == "none"
+
+
+def test_opencode_major_probe_parses_version_output(monkeypatch):
+    # The pristine (uncached) function: _opencode_major_impl is the
+    # lru_cache wrapper captured at import, .__wrapped__ the real body -
+    # neither is affected by the autouse fixture's monkeypatch.
+    real = _opencode_major_impl.__wrapped__
+
+    cases = [
+        ("opencode v2.2.7\n", "", 2),
+        ("", "opencode/2.2.7", 2),
+        ("opencode 1.18.29", "", 1),
+        ("something odd", "", None),
+        ("", "", None),
+    ]
+    for stdout, stderr, expected in cases:
+        monkeypatch.setattr(
+            oc_command_builder.subprocess,
+            "run",
+            lambda cmd, _out=stdout, _err=stderr, **kwargs: SimpleNamespace(
+                stdout=_out,
+                stderr=_err,
+            ),
+        )
+        assert real("opencode") == expected
+
+
+def test_opencode_major_probe_failures_return_none(monkeypatch):
+    real = _opencode_major_impl.__wrapped__
+
+    def not_found(cmd, **kwargs):
+        raise OSError("no such file")
+
+    monkeypatch.setattr(oc_command_builder.subprocess, "run", not_found)
+    assert real("opencode") is None
+
+    def too_slow(cmd, **kwargs):
+        raise subprocess.TimeoutExpired(cmd, 15)
+
+    monkeypatch.setattr(oc_command_builder.subprocess, "run", too_slow)
+    assert real("opencode") is None
 
 
 class _FakeStdin:
