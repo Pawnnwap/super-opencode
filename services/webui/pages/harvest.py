@@ -124,13 +124,24 @@ class HarvesterPanel:
                 ui.button("Clear", on_click=self._clear).props("dense flat")
             self.count_label = ui.label("").classes("text-xs text-[#8b949e]")
             if self.runs:
-                with ui.scroll_area().classes("w-full").style("height: 21rem"):
+                # The list is rebuilt whenever the query/filter changes; the
+                # scroll position is remembered so a rebuild does not throw
+                # the operator back to the top mid-selection.
+                self._scroll_pos = 0.0
+                self._scroll_guard_until = 0.0
+                self.scroll = ui.scroll_area(
+                    on_scroll=self._remember_scroll,
+                ).classes("w-full").style("height: 21rem")
+                with self.scroll:
                     self.list_col = ui.column().classes("w-full gap-0")
             else:
                 ui.label(
                     "No finished runs in the store yet — run something first.",
                 ).classes("text-sm text-[#8b949e]")
                 self.list_col = None
+                self.scroll = None
+                self._scroll_pos = 0.0
+                self._scroll_guard_until = 0.0
 
         with ui.card().classes("w-full bg-[#161b22]"):
             ui.label("Harvest output").classes("text-sm font-bold text-[#9ecbff]")
@@ -149,10 +160,13 @@ class HarvesterPanel:
                 "HARVEST.md.",
             )
             # The prompt is usually the default: collapsed, with the header
-            # saying whether a custom one is in effect.
-            prompt_exp = ui.expansion("Harvest prompt").classes("w-full").props(
-                "dense",
-            )
+            # saying whether a custom one is in effect. Stateful: this page
+            # can re-render, and the panel must not fold under the operator.
+            from services.webui.ui_state import state_expansion
+
+            prompt_exp = state_expansion(
+                "harvest.prompt", "Harvest prompt",
+            ).classes("w-full").props("dense")
 
             def _prompt_caption() -> str:
                 current = str(self.prompt_input.value or "").strip()
@@ -227,10 +241,20 @@ class HarvesterPanel:
             else "Harvest selected",
         )
 
+    def _remember_scroll(self, event) -> None:
+        # A rebuild collapses the content, and the browser then reports
+        # scrollTop=0 without the operator touching anything. Remembering
+        # that would lose the position the restore is about to use.
+        if time.monotonic() < self._scroll_guard_until:
+            return
+        self._scroll_pos = float(event.vertical_position or 0)
+
     def _rebuild(self) -> None:
         self._update_counts()
         if self.list_col is None:
             return
+        saved_position = self._scroll_pos
+        self._scroll_guard_until = time.monotonic() + 1.0
         self.list_col.clear()
         with self.list_col:
             for run in self._visible():
@@ -251,6 +275,9 @@ class HarvesterPanel:
                     )
             if not self._visible():
                 ui.label("No matching runs.").classes("text-xs text-[#8b949e]")
+        # Restore AFTER the new rows exist, so the offset is meaningful.
+        if self.scroll is not None and saved_position:
+            self.scroll.scroll_to(pixels=saved_position)
 
     # ------------------------------------------------------------- launch --
 

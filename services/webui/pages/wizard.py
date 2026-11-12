@@ -135,8 +135,18 @@ def _profile_save(workspace: Path) -> None:
 
 
 def _section(title: str, *, open_: bool = False):
-    """One collapsible panel of the wizard, visually consistent."""
-    return ui.expansion(title, value=open_).classes("w-full bg-[#161b22]")
+    """One collapsible panel of the wizard, visually consistent.
+
+    Its open state survives a ``@ui.refreshable`` rebuild: the protection and
+    protocol sections are rebuilt whenever the workspace changes, and the
+    plain ``ui.expansion`` used to come back at the constructor default,
+    folding whatever the operator had opened.
+    """
+    from services.webui.ui_state import state_expansion
+
+    return state_expansion(
+        f"wizard.{title}", title, default=open_,
+    ).classes("w-full bg-[#161b22]")
 
 
 _GROUP_LABEL = "text-xs font-bold text-[#9ecbff] mt-2"
@@ -159,9 +169,25 @@ def _list_workspace_files(workspace: Path, limit: int) -> list[str]:
     )[:limit]
 
 
+_last_refreshed_workspace: dict[str, str] = {"path": ""}
+
+
 def _on_workspace_change() -> None:
     # Workspace-dependent sections below capture the workspace at render
     # time; refresh them so they never serve (or write to) the old folder.
+    #
+    # Only when the typed value RESOLVES to a DIFFERENT workspace. This fires
+    # on every keystroke; rebuilding three panels per character (one scans the
+    # whole workspace, one reloads the protocol editor from disk, discarding
+    # unsaved text) reflowed the page under the operator's hands while they
+    # were still typing the path.
+    workspace = _workspace()
+    if workspace is None:
+        return
+    resolved = str(workspace)
+    if resolved == _last_refreshed_workspace["path"]:
+        return
+    _last_refreshed_workspace["path"] = resolved
     _protection_section.refresh()
     _skills_listing.refresh()
     _protocol_section.refresh()
@@ -1184,6 +1210,10 @@ async def _refine(
 
 def render() -> None:
     ui.label("Protocol Wizard").classes("text-2xl font-bold")
+    # The page rendered with this workspace: any later edit triggers a
+    # rebuild only when it actually resolves to a different one.
+    workspace = _workspace()
+    _last_refreshed_workspace["path"] = str(workspace) if workspace else ""
     _config_section()
     # Directly after the LLM configuration: the tests prove that config.
     _connectivity_section()

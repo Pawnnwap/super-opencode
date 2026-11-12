@@ -307,8 +307,14 @@ def render_startup_banner() -> None:
         return
     failed = any(item["state"] == "failed" for item in items)
     icons = {"running": "⏳", "done": "✅", "failed": "❌"}
-    with ui.expansion(
-        f"Startup tasks ({done}/{len(items)} done)", value=failed,
+    from services.webui.ui_state import state_expansion
+
+    with state_expansion(
+        "layout.startup_tasks",
+        f"Startup tasks ({done}/{len(items)} done)",
+        # Bad news must never be buried: force it open the first time a task
+        # fails, but never re-open (or re-close) a panel the operator set.
+        default=failed,
     ).classes("w-full").props("dense"):
         for item in items:
             icon = icons.get(item["state"], "•")

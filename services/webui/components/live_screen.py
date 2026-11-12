@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from pathlib import Path
 
 from nicegui import run as nicegui_run
 from nicegui import ui
@@ -41,6 +42,7 @@ class LiveJobScreen:
         self.show_phase = job_type != "harvest"
         self.max_tokens = int(app_state.get("max_tokens") or 150000)
         self._read_failures = 0
+        self._report_signature = None
 
     # ------------------------------------------------------------------ #
 
@@ -68,7 +70,11 @@ class LiveJobScreen:
                 )
                 ui.label("Latest").classes("text-sm font-bold text-[#9ecbff]")
                 self.tail = TailStrip(keep=5)
-                with ui.expansion("完整日志", value=False).classes("w-full"):
+                from services.webui.ui_state import state_expansion
+
+                with state_expansion(
+                    f"job.{self.job_type}.fulllog", "完整日志",
+                ).classes("w-full"):
                     self.log_panel = LogPanel(
                         detail_fetcher=self._fetch_event_detail,
                         download_fetcher=self._fetch_full_logs,
@@ -140,6 +146,19 @@ class LiveJobScreen:
         with ui.row().classes("w-full items-center gap-3"):
             ui.label(f"Job: {self.job_id}").classes("text-lg font-bold")
             self.state_pill = ui.html(format_status_pill(state))
+            workspace = str((status.get("config") or {}).get("workspace") or "")
+            if workspace and Path(workspace).is_dir():
+                # Same reveal path as the board's card: the server resolves the
+                # folder from the job record, never from the request.
+                ui.button(
+                    icon="folder_open",
+                    on_click=lambda _e, j=self.job_id: ui.run_javascript(
+                        f"fetch('/jobs/{j}/open-folder', {{method: 'POST'}})",
+                    ),
+                ).props("flat dense").tooltip(f"Open in the file manager: {workspace}")
+                ui.label(workspace).classes(
+                    "mono text-xs text-[#8b949e] truncate max-w-[45rem]",
+                )
             ui.space()
             if state in ACTIVE_JOB_STATES:
                 ui.button(
@@ -239,9 +258,19 @@ class LiveJobScreen:
             title = "Harvest Summary"
         else:
             title = "Report"
+        # Idempotent: tick() calls this whenever the state is terminal, and a
+        # blind clear+rebuild folded the report the operator had collapsed
+        # (and reset its scroll) every 2 s while the poller wound down.
+        if self._report_signature == (title, len(report)):
+            return
+        self._report_signature = (title, len(report))
+        from services.webui.ui_state import state_expansion
+
         self.report_slot.clear()
         with self.report_slot:  # noqa: SIM117 - NiceGUI element nesting
-            with ui.expansion(title, value=True).classes("w-full"):
+            with state_expansion(
+                f"job.{self.job_id}.report", title, default=True,
+            ).classes("w-full"):
                 ui.markdown(report)
                 ui.button(
                     "Download",

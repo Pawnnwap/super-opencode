@@ -132,8 +132,15 @@ def render(workspace: Path, protocol_text: str | Callable[[], str] = "") -> None
     draft_text = _current_text()
     target_gates = count_target_gates(draft_text) if draft_text else sources["target_gates"]
 
-    gate_exp = ui.expansion(
-        "Feasibility gates", value=bool(pending),
+    from services.webui.ui_state import state_expansion
+
+    gate_exp = state_expansion(
+        "feasibility.gates",
+        "Feasibility gates",
+        # Proposals need attention: open on the first render that has them.
+        # Afterwards the operator's toggle wins (the panel is inside a
+        # @ui.refreshable section, so a rebuild must not fold it).
+        default=bool(pending),
     ).classes("w-full bg-[#161b22]")
     with gate_exp:
         ui.label(

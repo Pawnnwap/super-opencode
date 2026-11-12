@@ -13,12 +13,8 @@ from services.jobs.job_states import (
     TERMINAL_JOB_STATES,
 )
 from services.webui.layout import format_status_pill
-from services.webui.log_format import (
-    last_event_line,
-    safe_logs,
-    workspace_name,
-    workspace_path,
-)
+from services.webui.log_format import workspace_name, workspace_path
+from services.webui.ui_state import state_expansion, stored_expansion
 
 
 def may_pause_autorefresh(
@@ -51,10 +47,31 @@ class JobBoard:
         self.job_manager = job_manager
         self.job_type = job_type
         self.base_path = base_path or "/run"
-        self._queue_signature = None
+        self._active_signature = None
+        self._history_signature = None
+        self._history_title = ""
+        self._history_auto_opened = False
 
         self._build_filters()
         self.queue_col = ui.column().classes("w-full")
+        with self.queue_col:
+            self._empty_label = ui.label("No matching tasks.").classes(
+                "text-[#8b949e]",
+            )
+            self.active_col = ui.column().classes("w-full")
+            # Built ONCE and never re-created: only its contents and
+            # visibility change. Re-creating the expansion per refresh (the
+            # old queue_col.clear() path) sent it back at the constructor
+            # default, so a History the operator had just opened collapsed
+            # again on the next 1.5 s tick.
+            self._history_key = f"board.{self.job_type}.history"
+            self.history_exp = state_expansion(
+                self._history_key, "History",
+            ).classes("w-full")
+            with self.history_exp:
+                self.history_grid = ui.grid(columns=4).classes("w-full gap-2")
+            self.history_exp.set_visibility(False)
+            self._empty_label.set_visibility(False)
         self.timer = ui.timer(1.5, self.refresh)
         self.refresh_sync()
 
@@ -84,9 +101,9 @@ class JobBoard:
         # Secondary controls: collapsed until asked for. The metrics line
         # below stays visible, and the header flags when a filter is active
         # so a narrowed board is never a silent surprise.
-        self.filter_exp = ui.expansion("Search & filter").classes("w-full").props(
-            "dense",
-        )
+        self.filter_exp = state_expansion(
+            f"board.{self.job_type}.filters", "Search & filter",
+        ).classes("w-full").props("dense")
         self._filter_caption = "Search & filter"
         with self.filter_exp:  # noqa: SIM117 - NiceGUI element nesting
             with ui.row().classes("w-full items-end gap-3 flex-wrap"):
@@ -187,13 +204,16 @@ class JobBoard:
 
         filtered = self._apply_filters(jobs)
         if not filtered:
-            self.queue_col.clear()
-            with self.queue_col:
-                ui.label("No matching tasks.").classes("text-[#8b949e]")
-            self._queue_signature = None
+            self._active_signature = None
+            self._history_signature = None
+            self.active_col.clear()
+            self.history_grid.clear()
+            self.history_exp.set_visibility(False)
+            self._empty_label.set_visibility(True)
             if may_pause_autorefresh(self.auto_refresh.value, active, incomplete):
                 self.timer.active = False
             return
+        self._empty_label.set_visibility(False)
 
         if not self.auto_refresh.value:
             if self.timer.active:
@@ -201,32 +221,42 @@ class JobBoard:
         elif not self.timer.active:
             self.timer.active = True
 
-        signature = tuple(
-            (
-                job["id"],
-                job["status"].get("state", ""),
-                len(safe_logs(job["status"])),
-                last_event_line(job, 40),
-            )
-            for job in filtered
-        )
-        if signature != self._queue_signature:
-            self._queue_signature = signature
-            self.queue_col.clear()
-            with self.queue_col:
-                self._render_queue(filtered)
+        active_jobs = [
+            j for j in filtered if j["status"].get("state") in ACTIVE_JOB_STATES
+        ]
+        history_jobs = [
+            j for j in filtered if j["status"].get("state") not in ACTIVE_JOB_STATES
+        ][:20]
+        self._render_active(active_jobs)
+        self._render_history(history_jobs, auto_open=not active_jobs and not filters_active)
 
     # ------------------------------------------------------------------ #
 
-    def _render_queue(self, jobs: list[dict]) -> None:
-        active = [j for j in jobs if j["status"].get("state") in ACTIVE_JOB_STATES]
-        history = [j for j in jobs if j["status"].get("state") not in ACTIVE_JOB_STATES]
-        filters_active = (
-            self.state_filter.value != "All states"
-            or self.workspace_filter.value != "All workspaces"
-            or bool((self.search_input.value or "").strip())
+    def _card_signature(self, job: dict) -> tuple:
+        """What a card actually renders: identity, state, workspace, batch.
+
+        Neither card type shows log content, so log churn must not be part of
+        the signature - a streaming run would otherwise force a full rebuild
+        of the board (History included) on every tick.
+        """
+        status = job["status"]
+        return (
+            job["id"],
+            status.get("state", ""),
+            _workspace_name(job),
+            status.get("batch_id") or "",
+            status.get("replica_index"),
         )
-        if active:
+
+    def _render_active(self, active: list[dict]) -> None:
+        signature = tuple(self._card_signature(j) for j in active)
+        if signature == self._active_signature:
+            return
+        self._active_signature = signature
+        self.active_col.clear()
+        if not active:
+            return
+        with self.active_col:
             ui.label(f"Active Queue ({len(active)})").classes(
                 "text-sm font-bold text-[#9ecbff]",
             )
@@ -246,14 +276,40 @@ class JobBoard:
                     self._render_batch_card(batch_id, members)
                 for job in standalone:
                     self._render_card(job)
-        if history:
-            expanded = not active and not filters_active
-            with ui.expansion(f"History ({len(history)})", value=expanded).classes(  # noqa: SIM117 - NiceGUI element nesting
-                "w-full",
-            ):
-                with ui.grid(columns=4).classes("w-full gap-2"):
-                    for job in history[:20]:
-                        self._render_card(job)
+
+    def _render_history(self, history: list[dict], *, auto_open: bool) -> None:
+        """Fill the persistent History panel; never touch its open state.
+
+        This expansion is created once in __init__ and only its contents and
+        visibility change here. Its open state is owned by
+        :mod:`services.webui.ui_state`: the operator's toggle wins forever,
+        so a streaming job's 1.5 s refresh can no longer fold the panel.
+        The idle default ("open when nothing is running") applies only until
+        the operator toggles it once.
+        """
+        if not history:
+            self._history_signature = None
+            self.history_grid.clear()
+            self.history_exp.set_visibility(False)
+            return
+        if not self._history_auto_opened:
+            self._history_auto_opened = True
+            if auto_open and stored_expansion(self._history_key) is None:
+                self.history_exp.value = True
+        title = f"History ({len(history)})"
+        if title != self._history_title:
+            self._history_title = title
+            self.history_exp.set_text(title)
+        self.history_exp.set_visibility(True)
+
+        signature = tuple(self._card_signature(j) for j in history)
+        if signature == self._history_signature:
+            return
+        self._history_signature = signature
+        self.history_grid.clear()
+        with self.history_grid:
+            for job in history:
+                self._render_card(job)
 
     def _render_batch_card(self, batch_id: str, members: list[dict]) -> None:
         states = [m["status"].get("state", "?") for m in members]
