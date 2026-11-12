@@ -39,7 +39,6 @@ config = SupervisorConfig(
     opencode_model_backup="openrouter/nvidia/nemotron-3.5-lightning:free",
     opencode_pure=True,
     plan_mode_rounds=0,
-    enable_python_scanner=False,
     enable_occam_razor=False,
     max_retries=1,
     timeout=120,
