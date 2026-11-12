@@ -88,6 +88,16 @@ def test_self_heal_is_task_owned_not_session_owned():
     assert "start_suprun.ps1" in watch and "-Detached" in watch
 
 
+def test_scheduled_task_actions_never_open_a_console_window():
+    # An interactive-logon scheduled task without -WindowStyle Hidden opens a
+    # console window on EVERY fire. Both task actions are registered from here,
+    # and soprun_watchdog fires every 2 minutes - the missing flag popped a
+    # PowerShell window all day (user report 2026-11-12).
+    src = _read("start_suprun.ps1")
+    assert src.count("-WindowStyle Hidden -File") == 2
+    assert "-ExecutionPolicy Bypass -File \"{0}\\watch_suprun.ps1\"" not in src
+
+
 def test_ui_arms_death_capture_and_lifecycle_logs():
     src = _read("app.py")
     assert 'death_capture.install("app.fatal.log")' in src

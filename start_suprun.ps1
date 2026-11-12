@@ -245,14 +245,18 @@ function Ensure-ScheduledTasks {
   $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew `
     -ExecutionTimeLimit (New-TimeSpan -Minutes 30) -StartWhenAvailable `
     -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+  # -WindowStyle Hidden on both actions: an interactive-logon task without it
+  # opens a console window on EVERY fire - the watchdog's 2-minute cadence
+  # flashed a PowerShell pop-up all day. Child consoles (the queue probe, the
+  # repair calls) attach to this hidden console and stay invisible too.
   $launchAction = New-ScheduledTaskAction -Execute 'powershell.exe' `
-    -Argument ('-NoProfile -ExecutionPolicy Bypass -File "{0}\start_suprun.ps1" -Detached' -f $root) `
+    -Argument ('-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "{0}\start_suprun.ps1" -Detached' -f $root) `
     -WorkingDirectory $root
   $launchTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddYears(5)
   Register-ScheduledTask -TaskName soprun_detached_launch -Action $launchAction `
     -Trigger $launchTrigger -Settings $settings -Force | Out-Null
   $watchAction = New-ScheduledTaskAction -Execute 'powershell.exe' `
-    -Argument ('-NoProfile -ExecutionPolicy Bypass -File "{0}\watch_suprun.ps1"' -f $root) `
+    -Argument ('-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "{0}\watch_suprun.ps1"' -f $root) `
     -WorkingDirectory $root
   # Repetition every 2 min for 10 years; first fire 2 min out so it cannot
   # race the very launch it guards (each delegated start re-registers and
