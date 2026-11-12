@@ -35,17 +35,7 @@ _TOKEN_RE = re.compile(r"[a-z0-9\u4e00-\u9fff]+")
 MATCH_THRESHOLD = 0.5
 
 _STOP_WORDS = frozenset(
-    """
-    a an and any are as at be been being both but by can could did do does
-    each either every for from had has have if in into is it its may might
-    more most must no nor not of off on once only or other our out over
-    same shall should so some such than that the their them then there these
-    they this those through to too under until up upon us use used was we
-    were what when where which while who will with within without would yes
-    yet you your
-    evidence clause clauses fail failed fails false pass passes passed true
-    unknown missing
-    """.split(),
+    ["a", "an", "and", "any", "are", "as", "at", "be", "been", "being", "both", "but", "by", "can", "could", "did", "do", "does", "each", "either", "every", "for", "from", "had", "has", "have", "if", "in", "into", "is", "it", "its", "may", "might", "more", "most", "must", "no", "nor", "not", "of", "off", "on", "once", "only", "or", "other", "our", "out", "over", "same", "shall", "should", "so", "some", "such", "than", "that", "the", "their", "them", "then", "there", "these", "they", "this", "those", "through", "to", "too", "under", "until", "up", "upon", "us", "use", "used", "was", "we", "were", "what", "when", "where", "which", "while", "who", "will", "with", "within", "without", "would", "yes", "yet", "you", "your", "evidence", "clause", "clauses", "fail", "failed", "fails", "false", "pass", "passes", "passed", "true", "unknown", "missing"],
 )
 
 
@@ -152,14 +142,15 @@ class GoalProgressTracker:
                 detail="baseline criteria registered",
             )
         gate_note = ""
-        if passing_gates is not None:
-            if self._best_gates is None or passing_gates > self._best_gates:
-                if self._best_gates is not None:
-                    progressed = True
-                    gate_note = (
-                        f"passing gates rose {self._best_gates} -> {passing_gates}"
-                    )
-                self._best_gates = passing_gates
+        if passing_gates is not None and (
+            self._best_gates is None or passing_gates > self._best_gates
+        ):
+            if self._best_gates is not None:
+                progressed = True
+                gate_note = (
+                    f"passing gates rose {self._best_gates} -> {passing_gates}"
+                )
+            self._best_gates = passing_gates
         self._streak = 0 if progressed else self._streak + 1
         if progressed:
             self._last_detail = gate_note or "a previously unmet obligation was satisfied"

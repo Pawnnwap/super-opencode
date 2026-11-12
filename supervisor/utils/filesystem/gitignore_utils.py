@@ -55,7 +55,7 @@ def update_gitignore_files(workspace_root: Path) -> list[Path]:
             modified_files.append(gitignore_path)
             logger.info(f"Updated .gitignore file: {gitignore_path}")
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - reading a foreign ignore file is best-effort
             logger.warning(f"Failed to update .gitignore file {gitignore_path}: {e}")
             continue
 

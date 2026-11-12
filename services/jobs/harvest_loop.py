@@ -447,12 +447,12 @@ class HarvestLoop:
                 f"access policy drill failed: {drill.fail_text()}",
             )
         if result.flags:
-            setattr(runner, "access_guard_flags", list(result.flags))
+            runner.access_guard_flags = list(result.flags)
         if result.env:
-            setattr(runner, "access_guard_env", dict(result.env))
+            runner.access_guard_env = dict(result.env)
             merged = dict(getattr(runner, "codex_extra_env", None) or {})
             merged.update(result.env)
-            setattr(runner, "codex_extra_env", merged)
+            runner.codex_extra_env = merged
 
     @staticmethod
     def _cleanup_permissions(path: Path | None) -> None:

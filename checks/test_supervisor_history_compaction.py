@@ -1,5 +1,7 @@
 """Tests for the tiered supervisor-history view (llm_support.history_compaction)."""
 
+import itertools
+
 from supervisor.core.llm_support.history_compaction import (
     build_context_messages,
     extract_output,
@@ -238,7 +240,7 @@ def test_build_context_messages_alternation_is_valid():
     )
     roles = [m["role"] for m in messages]
     # user/assistant must strictly alternate so the chat view stays well-formed.
-    for prev, cur in zip(roles, roles[1:]):
+    for prev, cur in itertools.pairwise(roles):
         assert prev != cur
 
 
@@ -286,5 +288,5 @@ def test_build_context_messages_merges_unpaired_same_role():
     ]
     messages = build_context_messages(history, max_tokens=150_000, verbatim_turns=1)
     roles = [m["role"] for m in messages]
-    for prev, cur in zip(roles, roles[1:]):
+    for prev, cur in itertools.pairwise(roles):
         assert prev != cur

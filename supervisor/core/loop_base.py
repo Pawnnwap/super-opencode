@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import os
 import re
 import time
 from collections.abc import Generator
@@ -13,8 +12,8 @@ from typing import TYPE_CHECKING
 from supervisor.core.goal_progress import GoalProgressTracker
 from supervisor.core.llm_support.models import StepContext
 from supervisor.utils.experience_tracker import (
-    EvolutionSummary,
-    log_evolution_summary,
+    RunSummary,
+    log_run_summary,
     update_experience,
 )
 from supervisor.utils.filesystem.file_ops import safe_read_text
@@ -413,15 +412,15 @@ class BaseLoop:
             for warning in result.warnings:
                 logger.warning("Access guard: %s", warning)
         if result.flags:
-            setattr(self.runner, "access_guard_flags", list(result.flags))
+            self.runner.access_guard_flags = list(result.flags)
         if result.env:
             # Every engine process layer merges this bag into the child env, so
             # the native gate can find the policy snapshot (which lives outside
             # the agent's writable cwd).
-            setattr(self.runner, "access_guard_env", dict(result.env))
+            self.runner.access_guard_env = dict(result.env)
             merged = dict(getattr(self.runner, "codex_extra_env", None) or {})
             merged.update(result.env)
-            setattr(self.runner, "codex_extra_env", merged)
+            self.runner.codex_extra_env = merged
         logger.info(
             "Access guard installed for %s: %s",
             engine,
@@ -477,30 +476,30 @@ class BaseLoop:
     ):
         from supervisor.core.llm_supervisor import LLMSupervisor
 
-        kwargs = dict(
-            protocol=self.protocol,
-            workspace=self.config.workspace,
-            model=self.config.supervisor_model,
-            extra_system=self._codebase_preamble(),
-            read_external_feedback=self.config.read_external_feedback,
-            max_tokens=self.config.max_tokens,
-            truncation_enabled=self.config.truncation_enabled,
-            max_history_turns=self.config.max_history_turns,
-            compact_intermediate_steps=self.config.compact_intermediate_steps,
-            history_verbatim_turns=getattr(
+        kwargs = {
+            "protocol": self.protocol,
+            "workspace": self.config.workspace,
+            "model": self.config.supervisor_model,
+            "extra_system": self._codebase_preamble(),
+            "read_external_feedback": self.config.read_external_feedback,
+            "max_tokens": self.config.max_tokens,
+            "truncation_enabled": self.config.truncation_enabled,
+            "max_history_turns": self.config.max_history_turns,
+            "compact_intermediate_steps": self.config.compact_intermediate_steps,
+            "history_verbatim_turns": getattr(
                 self.config, "history_verbatim_turns", 1,
             ),
-            history_budget_fraction=getattr(
+            "history_budget_fraction": getattr(
                 self.config, "history_budget_fraction", 0.35,
             ),
-            reuse_identical_verdicts=getattr(
+            "reuse_identical_verdicts": getattr(
                 self.config, "reuse_identical_verdicts", True,
             ),
-            model_backup=self.config.supervisor_model_backup,
-            api_key=getattr(self.config, "openai_api_key", "") or None,
-            base_url=getattr(self.config, "openai_base_url", "") or None,
-            reasoning=getattr(self.config, "supervisor_reasoning", "") or "",
-        )
+            "model_backup": self.config.supervisor_model_backup,
+            "api_key": getattr(self.config, "openai_api_key", "") or None,
+            "base_url": getattr(self.config, "openai_base_url", "") or None,
+            "reasoning": getattr(self.config, "supervisor_reasoning", "") or "",
+        }
         if max_protected_files_for_suggestions is not None:
             kwargs["max_protected_files_for_suggestions"] = (
                 max_protected_files_for_suggestions
@@ -519,7 +518,7 @@ class BaseLoop:
                 self.runner.stop()
             self._state = LoopState.ENDED_FAILURE
             yield _ev("warn", "Interrupted by user.")
-        except Exception:
+        except Exception:  # noqa: BLE001 - loop must survive a bookkeeping failure
             if self.runner:
                 self.runner.stop()
             self._state = LoopState.ENDED_FAILURE
@@ -2112,7 +2111,7 @@ class BaseLoop:
         cleaned = cleaned.strip()
         return cleaned
 
-    def _build_evolution_summary(
+    def _build_run_summary(
         self,
         outcome: str,
         goal: str = "",
@@ -2120,7 +2119,7 @@ class BaseLoop:
         challenges: list[str] | None = None,
         solutions: list[str] | None = None,
         violations: list[str] | None = None,
-    ) -> EvolutionSummary:
+    ) -> RunSummary:
         baseline = getattr(self, "_baseline", None)
         final = getattr(self, "_last_result", None)
         test_evidence: list[str] = []
@@ -2144,7 +2143,7 @@ class BaseLoop:
                 logger.warning("Could not capture changed files for memory summary")
 
         progress = self.runner.get_step_progress() if self.runner else None
-        return EvolutionSummary(
+        return RunSummary(
             goal=goal,
             outcome=outcome,
             key_changes=key_changes or [],
@@ -2174,14 +2173,14 @@ class BaseLoop:
         challenges: list[str] | None = None,
         solutions: list[str] | None = None,
     ) -> None:
-        summary = self._build_evolution_summary(
+        summary = self._build_run_summary(
             outcome="success",
             goal=goal,
             key_changes=key_changes,
             challenges=challenges,
             solutions=solutions,
         )
-        log_evolution_summary(self.config.workspace, summary)
+        log_run_summary(self.config.workspace, summary)
 
     def _record_structured_failure(
         self,
@@ -2189,12 +2188,12 @@ class BaseLoop:
         goal: str = "",
         challenges: list[str] | None = None,
     ) -> None:
-        summary = self._build_evolution_summary(
+        summary = self._build_run_summary(
             outcome="failure",
             goal=goal,
             challenges=challenges or [failure_reason],
         )
-        log_evolution_summary(self.config.workspace, summary)
+        log_run_summary(self.config.workspace, summary)
 
     def _extract_lesson_from_verdict(self, raw: str) -> str:
         from supervisor.utils.text_utils import head_tail_excerpt

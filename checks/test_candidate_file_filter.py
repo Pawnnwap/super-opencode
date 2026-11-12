@@ -37,7 +37,7 @@ def _candidates(root: Path) -> set[str]:
 
 
 def test_cache_and_dependency_dirs_excluded_from_candidates(tmp_path):
-    keep = _make(tmp_path / "src" / "mod.py", "x = 1\n")
+    _make(tmp_path / "src" / "mod.py", "x = 1\n")
     junk = {
         _make(tmp_path / "__pycache__" / "mod.cpython-311.pyc", b"\x00\x01"),
         _make(tmp_path / "node_modules" / "pkg" / "index.js", "ok\n"),

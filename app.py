@@ -247,18 +247,6 @@ async def harvest_page(job_id: str = "") -> None:
     await harvest.render(job_id=job_id)
 
 
-@ui.page("/evolve")
-@ui.page("/evolve/{job_id}")
-def evolve_page(job_id: str = "") -> None:
-    layout.apply_theme()
-    job_manager = get_job_manager()
-    layout.render_shell("evolve", job_manager)
-    layout.render_startup_banner()
-    from services.webui.pages import evolve
-
-    evolve.render(job_id=job_id)
-
-
 app.on_startup(startup.launch_startup_tasks)
 
 ui.run(

@@ -25,6 +25,7 @@ the heartbeat and starts the guardian if it is gone.
 from __future__ import annotations
 
 import argparse
+import ctypes
 import json
 import os
 import shlex
@@ -314,6 +315,7 @@ def kill_tree(pid: int) -> None:
             ["taskkill", "/F", "/T", "/PID", str(int(pid))],
             capture_output=True,
             creationflags=_CREATE_NO_WINDOW,
+            check=False,
         )
         return
     import signal
@@ -358,6 +360,7 @@ def find_worker_pids() -> list[int]:
                 text=True,
                 timeout=20,
                 creationflags=_CREATE_NO_WINDOW,
+                check=False,
             )
             return [
                 int(line.strip())
@@ -493,15 +496,11 @@ def probe(args, counts: tuple[int, int, int], lock_max_age: float) -> Snapshot:
     # on the stale path, where a kill decision may be needed.
     worker_alive = worker_lock_age is not None and worker_lock_age <= lock_max_age
     worker_pid = None
-    worker_age = None
-    worker_token = None
     if not worker_alive:
         pids = find_worker_pids()
         if pids:
             worker_alive = True
             worker_pid = pids[0]
-            worker_age = process_age(worker_pid)
-            worker_token = process_token(worker_pid)
 
     return Snapshot(
         app_port_up=app_port_up,

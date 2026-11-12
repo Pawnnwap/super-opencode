@@ -14,21 +14,21 @@ BACKOFF = 1800.0
 
 
 def snap(**overrides) -> Snapshot:
-    base = dict(
-        app_port_up=True,
-        app_http_ok=True,
-        app_process_alive=True,
-        app_lock_age=2.0,
-        proxy_ok=True,
-        worker_pid=1234,
-        worker_alive=True,
-        worker_token=1.0,
-        worker_age=1000.0,
-        worker_lock_age=1.0,
-        pending=0,
-        running=0,
-        max_parallel=4,
-    )
+    base = {
+        "app_port_up": True,
+        "app_http_ok": True,
+        "app_process_alive": True,
+        "app_lock_age": 2.0,
+        "proxy_ok": True,
+        "worker_pid": 1234,
+        "worker_alive": True,
+        "worker_token": 1.0,
+        "worker_age": 1000.0,
+        "worker_lock_age": 1.0,
+        "pending": 0,
+        "running": 0,
+        "max_parallel": 4,
+    }
     base.update(overrides)
     return Snapshot(**base)
 

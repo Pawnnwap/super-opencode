@@ -167,8 +167,8 @@ class SupervisorConfig:
     jev_decision_threshold: float = 0.80
 
     # Harvest jobs only: the terminal runs to collect, the operator's harvest
-    # focus, and the exact output folder (one subfolder per run). Run/evolve
-    # jobs leave these untouched.
+    # focus, and the exact output folder (one subfolder per run). Run jobs
+    # leave these untouched.
     harvest_job_ids: tuple[str, ...] = ()
     harvest_prompt: str = ""
     harvest_dir: str = ""

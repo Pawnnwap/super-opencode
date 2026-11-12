@@ -15,7 +15,6 @@ from services.jobs.job_states import (
 )
 from services.jobs.state_store import JobStateStore
 from supervisor.core.loop import SupervisorLoop
-from supervisor.core.self_evolution_loop import SelfEvolutionLoop
 from supervisor.runners.command_common import PARALLEL_RUNS_ENV
 from supervisor.utils.config import SupervisorConfig
 from supervisor.utils.text_utils import sanitize_event_message
@@ -133,7 +132,7 @@ def assert_workspace_free(store: JobStateStore, workspace: Path) -> None:
 
 
 class JobManager:
-    """Manages long-running supervisor and self-evolution jobs."""
+    """Manages long-running supervisor jobs."""
 
     TERMINAL_STATES = TERMINAL_JOB_STATES
 
@@ -494,8 +493,6 @@ class JobManager:
             # Select the appropriate loop
             if job_type == "run":
                 loop = SupervisorLoop(config)
-            elif job_type == "evolve":
-                loop = SelfEvolutionLoop(config)
             elif job_type == "harvest":
                 loop = HarvestLoop(config, store=self.store)
             else:
@@ -627,8 +624,6 @@ class JobManager:
             # A BLOCKED run writes blocked_report.md, not failure_report.md -
             # without it the job's stored report (and its preview) is empty.
             report_files = ["failure_report.md", "blocked_report.md", "summary.md"]
-        elif job_type == "evolve":
-            report_files = ["evolution_report.md"]
 
         for filename in report_files:
             p = workspace / filename

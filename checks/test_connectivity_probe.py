@@ -6,6 +6,7 @@ per-attempt budget and backup gating are verified without spawning a CLI.
 
 import subprocess
 import time
+from typing import ClassVar
 
 # NOTE: import the module, never `from ... import test_codex_connectivity` —
 # pytest would collect that imported probe function as a test and hit the
@@ -40,8 +41,8 @@ class _FakeRunner:
     post-init attributes, so created instances are kept for asserting on them.
     """
 
-    last_kwargs: dict = {}
-    instances: list = []
+    last_kwargs: ClassVar[dict] = {}
+    instances: ClassVar[list] = []
     # Per-instance probe outcome knobs (class-level defaults overridable via
     # configure()).
     prose: str = "model says hi"
@@ -174,6 +175,6 @@ def test_stop_kills_whole_process_tree(tmp_path):
     time.sleep(1.0)
 
     listing = subprocess.run(
-        ["tasklist", "/fo", "csv"], capture_output=True, timeout=10
+        ["tasklist", "/fo", "csv"], capture_output=True, timeout=10, check=False
     ).stdout.decode("mbcs", "replace")
     assert "ping.exe" not in listing.lower()

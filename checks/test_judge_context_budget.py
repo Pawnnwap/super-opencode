@@ -20,10 +20,10 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from supervisor.analyzers.codebase_analyzer import (
-    CodebaseSnapshot,
-    FileSnapshot,
     _MAX_DIGEST_CHARS,
     _MAX_TREE_ENTRIES,
+    CodebaseSnapshot,
+    FileSnapshot,
 )
 from supervisor.core.llm_support.chat import fit_request_to_budget
 from supervisor.core.llm_support.history import (

@@ -10,6 +10,7 @@ import re
 from collections.abc import Callable, Generator
 from dataclasses import dataclass, field
 from enum import Enum, auto
+from typing import ClassVar
 
 
 class StepPhase(Enum):
@@ -95,7 +96,7 @@ class StepProgress:
 
 
 class OpencodeStepDetector:
-    PLANNING_PATTERNS = [
+    PLANNING_PATTERNS: ClassVar = [
         re.compile(
             r"(?:^|\n)\s*(?:plan|thinking|analyzing|considering|let me|i'll need to)",
             re.IGNORECASE,
@@ -117,7 +118,7 @@ class OpencodeStepDetector:
         ),
     ]
 
-    CODING_PATTERNS = [
+    CODING_PATTERNS: ClassVar = [
         re.compile(
             r"(?:^|\n)\s*(?:creating|writing|modifying|editing|updating)", re.IGNORECASE,
         ),
@@ -135,7 +136,7 @@ class OpencodeStepDetector:
         re.compile(r"((?:^|\n)\s*```[\s\S]*?```)", re.IGNORECASE),
     ]
 
-    TESTING_PATTERNS = [
+    TESTING_PATTERNS: ClassVar = [
         re.compile(
             r"(?:^|\n)\s*(?:running|executing|performing)\s+(?:test)", re.IGNORECASE,
         ),
@@ -152,7 +153,7 @@ class OpencodeStepDetector:
         ),
     ]
 
-    REVIEW_PATTERNS = [
+    REVIEW_PATTERNS: ClassVar = [
         re.compile(
             r"(?:^|\n)\s*(?:review|verify|validate|check)\s+(?:the|this|my)",
             re.IGNORECASE,
@@ -164,7 +165,7 @@ class OpencodeStepDetector:
         re.compile(r"(?:^|\n)\s*(?:final|summary|conclusion)", re.IGNORECASE),
     ]
 
-    STEP_INDICATOR_PATTERNS = [
+    STEP_INDICATOR_PATTERNS: ClassVar = [
         re.compile(r"(?:^|\n)\s*(?:step|turn|iteration)\s*(\d+)", re.IGNORECASE),
         re.compile(
             r"(?:^|\n)\s*(?:moving to|now |next )?(?:step|phase)\s*(\d+)", re.IGNORECASE,

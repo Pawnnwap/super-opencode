@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from nicegui import ui, run as nicegui_run
+from nicegui import run as nicegui_run
+from nicegui import ui
 
 from services.jobs.job_states import (
     ACTIVE_JOB_STATES,
@@ -38,20 +39,18 @@ def _workspace_name(job: dict) -> str:
 
 
 class JobBoard:
-    """Self-refreshing board for one job type ("run" | "evolve")."""
+    """Self-refreshing board for one job type ("run" | "harvest")."""
 
     def __init__(
         self,
         job_manager,
         job_type: str,
         *,
-        is_evolution: bool,
         base_path: str | None = None,
     ):
         self.job_manager = job_manager
         self.job_type = job_type
-        self.is_evolution = is_evolution
-        self.base_path = base_path or ("/evolve" if is_evolution else "/run")
+        self.base_path = base_path or "/run"
         self._queue_signature = None
 
         self._build_filters()
@@ -89,7 +88,7 @@ class JobBoard:
             "dense",
         )
         self._filter_caption = "Search & filter"
-        with self.filter_exp:
+        with self.filter_exp:  # noqa: SIM117 - NiceGUI element nesting
             with ui.row().classes("w-full items-end gap-3 flex-wrap"):
                 self.state_filter = ui.select(
                     ["All states", "Active queue", "RUNNING", "PENDING", "SUCCESS",
@@ -249,7 +248,7 @@ class JobBoard:
                     self._render_card(job)
         if history:
             expanded = not active and not filters_active
-            with ui.expansion(f"History ({len(history)})", value=expanded).classes(
+            with ui.expansion(f"History ({len(history)})", value=expanded).classes(  # noqa: SIM117 - NiceGUI element nesting
                 "w-full",
             ):
                 with ui.grid(columns=4).classes("w-full gap-2"):

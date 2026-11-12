@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import re
 import subprocess
-from functools import lru_cache
+from functools import cache
 from pathlib import Path
 
 from supervisor.runners.command_common import resolve_model_arg
@@ -18,7 +18,7 @@ _DOT_MODEL_FILE = Path(__file__).resolve().parents[2] / ".opencode_model"
 _VERSION_TIMEOUT = 15.0
 
 
-@lru_cache(maxsize=None)
+@cache
 def _opencode_major(exe: str) -> int | None:
     """Major version of the installed opencode CLI, or None when unknown.
 

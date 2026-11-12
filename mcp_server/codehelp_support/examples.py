@@ -39,7 +39,7 @@ def _so_results(query: str, package_tag: str, n: int) -> list[dict[str, Any]]:
     try:
         data = _http_get(url)
         items = data.get("items", [])
-    except Exception:
+    except Exception:  # noqa: BLE001 - network/tool boundary - upstream failures degrade to a message
         items = []
 
     if not items:
@@ -47,7 +47,7 @@ def _so_results(query: str, package_tag: str, n: int) -> list[dict[str, Any]]:
         try:
             data = _http_get(url)
             items = data.get("items", [])
-        except Exception:
+        except Exception:  # noqa: BLE001 - network/tool boundary - upstream failures degrade to a message
             items = []
 
     results = []
@@ -71,7 +71,7 @@ def _realpython_results(query: str) -> list[dict[str, Any]]:
     try:
         data = _http_get(url)
         articles = data.get("results", [])
-    except Exception:
+    except Exception:  # noqa: BLE001 - network/tool boundary - upstream failures degrade to a message
         return []
 
     results = []

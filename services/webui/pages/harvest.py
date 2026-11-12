@@ -305,7 +305,6 @@ async def render(job_id: str = "") -> None:
             job_id,
             job_type=HARVEST_JOB_TYPE,
             base_path="/harvest",
-            is_evolution=False,
             running_message="Harvest is running in the background.",
             not_found_label=f"Harvest job {job_id} not found.",
         )
@@ -320,6 +319,4 @@ async def render(job_id: str = "") -> None:
     HarvesterPanel(manager, runs)
 
     ui.label("Harvest Board").classes("text-lg font-bold mt-4")
-    JobBoard(
-        manager, HARVEST_JOB_TYPE, is_evolution=False, base_path="/harvest",
-    )
+    JobBoard(manager, HARVEST_JOB_TYPE, base_path="/harvest")

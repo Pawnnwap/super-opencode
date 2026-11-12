@@ -1,33 +1,31 @@
 # opencode-supervisor
 
-> **一个自我进化的自主编码代理 —— 它监督、评判并改进自身代码。**
+> **一个自主编码代理 —— 它按你的协议监督并评判每一次迭代。**
 
 ---
 
 [English](./README.md) | 中文
 
-一个由 NiceGUI 驱动的双循环自主编码系统。`SupervisorLoop` 负责协议引导的任务执行，
-通过 LLM 评判器（`LLMSupervisor`）对每次迭代进行协议对齐评估。`SelfEvolutionLoop` 将
-同样的机制作用于代码库自身 —— 运行带测试门控的自我改进，并在回归时自动回滚。文件修改
+一个由 NiceGUI 驱动的监督式编码系统。`SupervisorLoop` 负责协议引导的任务执行，
+通过 LLM 评判器（`LLMSupervisor`）对每次迭代进行协议对齐评估。文件修改
 使用各执行后端原生的读取、编辑、补丁和写入工具。
 
 核心能力：
 
-- **双循环架构** — `SupervisorLoop` 处理外部任务，`SelfEvolutionLoop` 实现自我改进
+- **监督循环** — `SupervisorLoop` 针对一个工作区运行一份协议，每一轮都由评判器评估
 - **三执行后端** — OpenCode（默认）、Codex 或 pi，通过 `config.engine` 选择；监督循环与后端无关
 - **证据锚定评判器** — `LLMSupervisor` 在每一步评估代理输出是否符合协议目标，
   并通过 `JudgeHarness` 证据注册表锚定到确定性的工作区事实
 - **目标守卫** — 证据门控完成："all targets met" 只是一个提议，须对照确定性证据校验
 - **循环与停滞检测** — 回合内工具循环检测，加上跨回合的工作区指纹停滞提示阶梯
 - **原生文件编辑** — OpenCode、Codex 和 pi 使用各自维护的读取、编辑、补丁和写入工具
-- **Web UI** — NiceGUI 仪表盘：协议向导、实时运行、结果收割、自我演进四个页面，带持久化的后台任务看板和整页实时任务屏幕
+- **Web UI** — NiceGUI 仪表盘：协议向导、实时运行、结果收割三个页面，带持久化的后台任务看板和整页实时任务屏幕
 - **计划模式** — 可配置的执行前规划轮数，使用只读 opencode 分析
 - **奥卡姆剃刀阶段** — 可选的成功后冗余精简阶段，只在归档副本上运行，绝不触碰实时工作区
 - **任务状态日志** — 只追加的 `TASK_STATE.md` 进度日志，在上下文重置后重新注入
 - **要点式作业日志** — 每条事件只落盘一行关键行；大块内容（提示词 / 输出 / 评审结论 / 建议）全文写入每任务侧车文件 `.job_store/<job>.full`，error 事件永远全文内联
 - **同协议并行研究批次** — 在运行页把一份协议并行开 N 个隔离实例（整仓克隆或仅协议两种播种方式）；看板按批次分组、一键取消，并发上限可配置
 - **增量工作区归档** — `.archive/` 快照为 git 对象库（每快照一个无父提交）：未变更文件按哈希共享，保留策略能真正释放空间；git 不可用时自动回退全量复制
-- **漏洞扫描** — 9 工具静态分析流水线（Bandit、Semgrep、Ruff 等）
 - **上下文管理** — 基于 token 的监控，带分级警告和自动压缩
 
 ---
@@ -193,9 +191,9 @@ pip install -r requirements.txt
 ```
 
 核心依赖定义在 `pyproject.toml` 中：`openai`、`nicegui`、`tiktoken`、`pytest`、
-`rich`、`psutil` 和 `mcp`。`requirements.txt` 额外固定了扫描器工具链
+`rich`、`psutil` 和 `mcp`。`requirements.txt` 额外固定了一套静态分析工具链
 （Bandit、Pylint、pyflakes、Semgrep、pip-audit、Ruff、Vulture、deadcode、pyscn）以及
-自动修复辅助工具（autoflake、isort、autopep8、pyupgrade）。
+自动修复辅助工具（autoflake、isort、autopep8、pyupgrade），供手动使用。
 
 > **MCP 服务器：** `mcp` 包是 Codehelp MCP 服务器（`mcp_server/codehelp.py`）的必需依赖，为 OpenCode 和 Codex 提供代码辅助工具。
 
@@ -222,14 +220,12 @@ pip install -r requirements.txt
 1. **协议驱动执行** — `protocol.md` 文件定义 INPUT、TARGET 和 RESTRICTIONS 来指导代理的行为
 2. **实时监控** — 跟踪上下文窗口使用情况，并在需要时自动触发压缩
 3. **工作区安全** — 系统阻止对工作区外路径的引用，以防止意外的修改
-4. **检查点** — 每次成功的迭代都会被快照到 `.checkpoints/`
-5. **工作区归档** — 每次运行前和每次迭代后，工作区状态都会保存到 `.archive/`
-6. **自我演进** — 系统可以分析和改进其自己的代码库，在每次更改前后运行测试，并在回归时自动回滚
-7. **目标守卫** — 完成声明必须通过确定性证据校验后才能结束运行（见下文）
-8. **循环检测** — 一个回合内重复的工具调用会被检测到，运行将被终止并以固定上下文重启，
+4. **工作区归档** — 每次运行前和每次迭代后，工作区状态都会保存到 `.archive/`
+5. **目标守卫** — 完成声明必须通过确定性证据校验后才能结束运行（见下文）
+6. **循环检测** — 一个回合内重复的工具调用会被检测到，运行将被终止并以固定上下文重启，
    而不是浪费 token；跨回合的工作区停滞则通过提示阶梯逐级升级
-9. **奥卡姆剃刀阶段** — 成功后，可选阶段让代理从最终工作区的归档副本中剥离冗余代码
-10. **任务状态日志** — `TASK_STATE.md` 进度日志在上下文重置之间保留"已经尝试过什么"
+7. **奥卡姆剃刀阶段** — 成功后，可选阶段让代理从最终工作区的归档副本中剥离冗余代码
+8. **任务状态日志** — `TASK_STATE.md` 进度日志在上下文重置之间保留"已经尝试过什么"
 
 ---
 
@@ -294,10 +290,10 @@ pip install -r requirements.txt
 
 ## Web UI 页面
 
-四个 NiceGUI 页面，分别位于 `/` 与 `/wizard`（协议向导）、`/run`、`/harvest`、`/evolve`。
-启动任务或演进会通过 `JobManager` 入队一个后台作业 —— 作业状态与日志持久化在
+三个 NiceGUI 页面，分别位于 `/` 与 `/wizard`（协议向导）、`/run`、`/harvest`。
+启动任务会通过 `JobManager` 入队一个后台作业 —— 作业状态与日志持久化在
 `.job_store/` 下，运行不依赖浏览器标签页。左侧抽屉显示实时队列统计，并在连接性
-测试通过前锁定「实时运行 / 自我演进」。
+测试通过前锁定「实时运行」。
 
 作业日志默认为「要点式」：每条事件只落盘一行关键行，大块内容（提示词 / 输出 /
 评审结论 / 建议）的全文写入 `<job_id>.full` 侧车文件（实时屏幕上通过 **查看全文**
@@ -310,12 +306,13 @@ pip install -r requirements.txt
 向导功能包括：
 - **配置面板** — 执行引擎（OpenCode、Codex 或 pi）、API 密钥与基础 URL、工作区路径、
   监督与代理模型（含备用模型）、最大重试次数、上下文阈值、回合超时、最大 token 数、
-  用于 CLI 升级的 npm registry，以及 Python 扫描器、奥卡姆剃刀的开关。
+  用于 CLI 升级的 npm registry，以及奥卡姆剃刀、监督器技能、jev 评审、
+  阻塞救援的开关。
   **清理产物**按钮可移除工作区中的运行残留。
 - **受保护文件** — 标记代理无法修改或删除的文件
 - **.opencodeignore** — 配置从上下文检索中排除的文件忽略模式
 - **连接性测试** — 一键测试代理与监督模型的连通性；两项全部通过前，
-  实时运行与自我演进保持锁定
+  实时运行保持锁定
 - **实时质量分析** — 在输入时实时评分协议的清晰度、可测试性和完整性
 
 ### ② 实时运行
@@ -352,34 +349,12 @@ pip install -r requirements.txt
 未写文件时，该运行仍会留下报告、来源信息与回退说明，因此收集结果不会残缺。
 收割任务拥有独立的任务看板与实时屏幕。
 
-### ④ 自我演进
-将系统指向**自己的源代码树**。
-
-1. 描述你想调试或改进的内容
-2. 可选择添加额外的限制
-3. **生成 meta_protocol.md** — LLM 读取实时源代码并编写精确的协议，包含准确的 INPUT 和可测试的 TARGET
-4. 查看/编辑，然后**启动演进**
-
-自我演进功能：
-
-| 功能 | 详情 |
-|---------|--------|
-| 测试基线 | `pytest`（或语法检查）在 opencode 接触任何内容之前运行 |
-| 迭代测试 | 每次监督判断后重新运行测试 |
-| 回归保护 | 测试变差 → 自动回滚到上一个良好的检查点 |
-| 检查点 | 每次无回归的迭代都会被快照到 `.checkpoints/` |
-| 工作区归档 | 每次迭代都会归档到 `.archive/` 并附带元数据 |
-| TARGET 状态 | `.opencode/target_state.json` 记录证据、已尝试方向和停滞次数 |
-| 被拒绝候选 | 回滚前先归档回归候选，并追加记录到 `.opencode/staged_improvements.jsonl` |
-| 停滞控制 | 两次被拒绝或无证据迭代后要求重新诊断；禁止重复已拒绝方向 |
-| 演进报告 | `evolution_report.md` — 更改的文件、测试差异、最佳检查点 |
-
 ---
 
 ## 架构
 
 ```
-app.py                              Web UI（4 个页面：向导、实时运行、结果收割、自我演进）
+app.py                              Web UI（3 个页面：向导、实时运行、结果收割）
 supervisor/
   __init__.py                       包标记
   memory_policy_evaluator.py        持久记忆策略的固定测试套件门控
@@ -387,15 +362,18 @@ supervisor/
   core/
     loop.py                         SupervisorLoop — 主监督代理循环
     loop_base.py                    BaseLoop — 通用状态机，事件生成
-    self_evolution_loop.py          SelfEvolutionLoop — 带测试门控的自我修改
     goal_guard.py                   证据门控完成（提议 → 校验 → 执行 → 审计）
+    goal_progress.py                进度信号（通过门数、连续计数），驱动停滞提示
+    decision_service.py             可选的外部评审（jev）：DONE / 对齐 / 救援决策
+    unblock_rescue.py               运行被阻塞时的一次性救援（可选）
+    skill_bank.py                   监督器技能库（可选）
     occam_razor.py                  成功后在归档副本上运行的冗余精简阶段
     task_state.py                   只追加的 TASK_STATE.md 日志，用于重启连续性
-    target_evaluator.py             独立的测试/证据验收门控
-    target_state.py                 持久化 TARGET 证据和暂存候选
+    target_state.py                 持久化 TARGET 证据与方向追踪
     llm_supervisor.py               LLM 评判器，评估代理输出
     judge_harness.py                锚定评判器的证据注册表（自动 + NEED_EVIDENCE 资源）
-    llm_support/                    评判器内部模块：chat、context、history、judgement、models
+    llm_support/                    评判器内部模块：chat、context、history、
+                                    history_compaction、judgement、models
 
   analyzers/
     codebase_analyzer.py            为 LLM 上下文生成源代码树快照
@@ -404,13 +382,25 @@ supervisor/
     stagnation_detector.py          跨回合工作区停滞与提示阶梯
 
   protocols/
-    protocol.py                     解析/验证 protocol.md（INPUT、TARGET、RESTRICTIONS）
+    protocol.py                     解析/验证 protocol.md / protocol.jsonl
+                                    （INPUT、TARGET、RESTRICTIONS）
     protocol_wizard.py              基于 OpenAI SDK 的协议优化器
     protocol_analyzer.py            质量评分（清晰度、可测试性、完整性）
-    meta_protocol_builder.py        从演进目标和快照生成 meta_protocol.md
     target_audit.py                 TARGET 部分的确定性预检审计
+    feasibility_gate.py             feasibility_facts.json 门与状态追踪
+    feasibility_wizard.py           LLM 辅助起草可行性门
+    gate_rubric.py                  给评判器的封闭清单门记分卡
     alignment.py                    协议对齐/违规检查
     analyzer_support.py             共享分析辅助
+
+  security/
+    access_policy.py                确定性读/写路径策略（白名单）
+    access_profile.py               持久化在工作区之外的策略快照
+    engine_guards.py                各引擎原生闸门安装（opencode/pi/codex）
+    shell_scan.py                   供策略使用的保守 shell 命令解析器
+    preflight.py                    运行前策略演练（fail closed）
+    guard_cli.py                    由 codex 钩子调用的闸门 CLI
+    whitelist_advisor.py            AI 辅助白名单建议（本地重新校验）
 
   runners/
     factory.py                      根据 config.engine 构造 OpencodeRunner / CodexRunner / PiRunner
@@ -434,6 +424,7 @@ supervisor/
   utils/
     config.py                       不可变 SupervisorConfig 数据类
     experience_tracker.py           跟踪跨运行的成功模式
+    llm_stream.py                   LLM 调用的共享流式辅助
     text_utils.py                   文本处理工具
     filesystem/                     file_ops、file_permissions、gitignore_utils、path_filters
 
@@ -449,31 +440,37 @@ supervisor/
   workspace/
     workspace_guard.py              阻止对工作区外路径的引用
     workspace_archiver.py           在 .archive/ 中保留工作区版本
+    git_archiver.py                 .archive/ 快照的 git 对象库后端
     cleanup_candidates.py           建议可清理的备份/临时文件
     ignore_patterns.py              .opencodeignore 解析和模式匹配
 
-vulnerability/
-  python_scanner.py                 Python 代码漏洞扫描器（9 工具静态分析）
-
 mcp_server/
   codehelp.py                       代码辅助与依赖研究 MCP 服务器
+  web_tools.py                      MCP 网页搜索/抓取工具
   codehelp_support/                 工具实现（文档字符串、包、依赖、文档、示例、http）
 
 services/
   config/                           设置持久化、opencode/codex 配置写入器、
-                                    连接性测试、SupervisorConfig 构建器
-  jobs/                             JobManager 和 StateStore（后台作业，持久化于 .job_store/）
-  runtime/                          应用引导（自动升级）和工作区清理
+                                    代理模型列举、连接性测试、SupervisorConfig 构建器
+  jobs/                             JobManager、StateStore + 存储客户端、作业工作进程、
+                                    收割循环、hownow 扫描、事件记录器
+                                    （后台作业，持久化于 .job_store/）
+  runtime/                          应用引导（自动升级）、guardian 看门狗、
+                                    崩溃现场捕获、工作区清理
   webui/                            NiceGUI 外壳：布局/主题、持久化应用状态、作业管理器
-                                    单例、日志格式化、启动任务
-    components/                     任务看板、实时任务屏幕、日志面板、进度组件
-    pages/                          wizard、run、harvest、evolve 页面
+                                    单例、批量启动、启动/实时接线、日志格式化、启动任务
+    components/                     任务看板、实时任务屏幕、日志面板、进度组件、
+                                    可行性面板、hownow 面板、忙碌指示器
+    pages/                          wizard、run、harvest 页面
+
+codex_compat_proxy.py               面向 Codex CLI 的本地 OpenAI 兼容代理
+start_suprun.ps1                    幂等启动器（代理 + 应用 + 工作进程 + guardian）
 
 checks/                             集成与端到端检查脚本
 docs/                               研究笔记
 
 pyproject.toml                      使 `supervisor` 成为可安装包（核心依赖）
-requirements.txt                    备用依赖列表（核心 + 扫描器工具链）
+requirements.txt                    备用依赖列表（核心 + 静态分析工具链）
 ```
 
 ---
@@ -639,7 +636,7 @@ Token 估算在可用时使用 `tiktoken`（o200k_base 编码），
 Super-Opencode 使用执行后端原生的文件工具。OpenCode 提供 `read`、精确匹配
 `edit`、`apply_patch` 和 `write`；Codex 使用 `apply_patch`；pi 提供 `read`、
 精确匹配 `edit`、`write` 以及 `bash` 工具。监督器会在这些
-修改之外提供协议检查、测试门控演进、工作区归档和回滚。
+修改之外提供协议检查、工作区归档和回滚。
 
 旧版本创建的 OpenCode 配置会在启动时迁移：移除受本应用管理的 Hashline MCP
 条目，并恢复原生 `read` / `edit` 权限。自定义 MCP 服务器和用户自行设置的权限
@@ -677,32 +674,19 @@ Super-Opencode 使用执行后端原生的文件工具。OpenCode 提供 `read`�
 
 ---
 
-## 漏洞扫描
-
-`vulnerability/python_scanner.py` 模块使用 9 个集成工具对 Python 源文件
-执行全面的静态分析：**Bandit**、**Pylint**、**pyflakes**、**Semgrep**、
-**pip-audit**、**Ruff**、**Vulture**、**deadcode** 和 **pyscn**。
-它检测安全问题、代码质量缺陷、死代码、依赖 CVE 和克隆检测。
-自动修复可通过 autoflake、isort、autopep8、pyupgrade 和 ruff 实现。
-扫描器在自我演进循环中和每次监督判断后调用，在接受代码进入代码库之前
-标记危险模式。
-
----
-
 ## 安全特性
 
 1. **工作区边界强制** — 所有路径引用都针对工作区根目录进行验证
 2. **受保护路径检测** — 系统目录和用户保护文件无法修改或删除
 3. **协议对齐验证** — 每次迭代都检查是否符合协议
-4. **回归测试** — 自我演进在接受更改前将测试结果与基线进行比较
-5. **自动回滚** — 不良更改会恢复到上一个良好的检查点
-6. **心跳监控** — 检测停滞进程，并在取得进展时延长超时
-7. **归档保留** — 历史版本被保留，从不删除
+4. **自动回滚** — 不良更改会恢复到上一个良好的检查点
+5. **心跳监控** — 检测停滞进程，并在取得进展时延长超时
+6. **归档保留** — 历史版本被保留，从不删除
 
 ---
 
 ## 待办事项
 
-- [ ] 消除 `pip install -e . --force-reinstall`，以便每次自我演进都能自动应用
+- [ ] 消除 `pip install -e . --force-reinstall`
 - [ ] 添加多代理协作/竞争
 - [ ] 将基于关键词的进程清理（按进程名 taskkill/pkill）替换为基于 PID 的子进程跟踪管理

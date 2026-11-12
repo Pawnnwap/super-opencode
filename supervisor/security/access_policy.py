@@ -34,9 +34,10 @@ from __future__ import annotations
 import os
 import re
 import sys
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Literal
+from typing import Any, Literal
 
 AccessKind = Literal["read", "write"]
 
@@ -178,7 +179,7 @@ class AccessPolicy:
         entries = [Path(str(item)) for item in raw if str(item).strip()]
         entries.extend(agent_infrastructure_roots())
         return cls(
-            workspace=Path(getattr(config, "workspace")),
+            workspace=Path(config.workspace),
             whitelist=tuple(entries),
             enabled=bool(getattr(config, "access_policy_enabled", True)),
             strict_dynamic=bool(getattr(config, "access_policy_strict", False)),
@@ -377,7 +378,7 @@ def _unsafe_reason(raw: str) -> str:
     """Reject path shapes that must never reach the filesystem."""
     if "\x00" in raw:
         return "NUL byte in path"
-    if raw.startswith("\\\\?\\") or raw.startswith("\\\\.\\"):
+    if raw.startswith(("\\\\?\\", "\\\\.\\")):
         return "Windows device paths are not allowed"
     if raw.startswith("\\\\"):
         return "UNC paths are not allowed"

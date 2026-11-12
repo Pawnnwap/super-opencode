@@ -252,8 +252,10 @@ def render_scorecard(
             if isinstance(entry, dict) and entry.get("gate"):
                 prior[str(entry["gate"])] = entry
     lines = [
-        "## GATE SCORECARD (closed list — judge exactly these gates; "
-        "DONE requires every gate PASS)",
+        (
+            "## GATE SCORECARD (closed list — judge exactly these gates; "
+            "DONE requires every gate PASS)"
+        ),
     ]
     determined = [
         (g, evaluations.get(g.name)) for g in gates if g.name in evaluations
@@ -497,12 +499,12 @@ def validate_refs(
 __all__ = [
     "BLOCK_PROPOSAL_STREAK",
     "GateEvaluation",
+    "apply_harvest",
+    "build_harvest",
     "evaluate_gate",
     "evaluate_rubric",
-    "render_scorecard",
-    "verdict_violations",
-    "build_harvest",
-    "apply_harvest",
-    "validate_refs",
     "parse_gates",
+    "render_scorecard",
+    "validate_refs",
+    "verdict_violations",
 ]

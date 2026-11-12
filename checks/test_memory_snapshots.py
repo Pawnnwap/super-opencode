@@ -1,15 +1,15 @@
 from __future__ import annotations
 
 from supervisor.utils.experience_tracker import (
-    EvolutionSummary,
+    RunSummary,
+    log_run_summary,
     read_experience,
     read_memory_events,
     read_summaries,
-    retrieve_memory,
     restore_memory_snapshot,
+    retrieve_memory,
     snapshot_memory,
     update_experience,
-    log_evolution_summary,
 )
 
 
@@ -35,9 +35,9 @@ def test_memory_snapshot_restores_state_but_keeps_audit_log(tmp_path):
 
 
 def test_structured_memory_summary_persists_evidence_and_provenance(tmp_path):
-    log_evolution_summary(
+    log_run_summary(
         tmp_path,
-        EvolutionSummary(
+        RunSummary(
             goal="protect user configuration",
             outcome="success",
             changed_files=["services/runtime/app_bootstrap.py"],
@@ -56,9 +56,9 @@ def test_structured_memory_summary_persists_evidence_and_provenance(tmp_path):
 
 
 def test_memory_retrieval_ranks_goal_and_file_match_and_skips_expired(tmp_path):
-    log_evolution_summary(
+    log_run_summary(
         tmp_path,
-        EvolutionSummary(
+        RunSummary(
             goal="protect Codex configuration during upgrade",
             outcome="success",
             changed_files=["services/runtime/app_bootstrap.py"],
@@ -66,18 +66,18 @@ def test_memory_retrieval_ranks_goal_and_file_match_and_skips_expired(tmp_path):
             confidence=0.95,
         ),
     )
-    log_evolution_summary(
+    log_run_summary(
         tmp_path,
-        EvolutionSummary(
+        RunSummary(
             goal="render task board",
             outcome="success",
             changed_files=["services/ui/task_board_ui.py"],
             confidence=1.0,
         ),
     )
-    log_evolution_summary(
+    log_run_summary(
         tmp_path,
-        EvolutionSummary(
+        RunSummary(
             goal="obsolete configuration lesson",
             outcome="failure",
             expires_at="2000-01-01T00:00:00+00:00",

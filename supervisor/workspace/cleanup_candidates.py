@@ -88,9 +88,8 @@ def identify_cleanup_candidates(workspace: Path) -> list[str]:
 
 
 def _should_ignore(workspace: Path, path: Path) -> bool:
-    if not path.is_file():
-        if not (path.is_dir() and path.name == "__pycache__"):
-            return True
+    if not path.is_file() and not (path.is_dir() and path.name == "__pycache__"):
+        return True
     rel = path.relative_to(workspace)
     if ".checkpoints" in rel.parts:
         return True
@@ -109,9 +108,7 @@ def _should_ignore(workspace: Path, path: Path) -> bool:
         ".archive",
         "archive",
     }
-    if any(part in ignore_dirs for part in rel.parts):
-        return True
-    return False
+    return any(part in ignore_dirs for part in rel.parts)
 
 
 def _is_versioned_backup(name: str) -> bool:
@@ -174,7 +171,7 @@ def _identify_orphaned_files(workspace: Path) -> list[str]:
                         if not ref.endswith(".py"):
                             ref += ".py"
                     referenced_paths.add(ref)
-        except Exception:
+        except Exception:  # noqa: BLE001, S110 - unreadable file is not a reference
             pass
 
     for path in workspace.rglob("*"):

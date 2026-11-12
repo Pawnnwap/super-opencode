@@ -22,8 +22,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from services.jobs.job_manager import JobManager  # noqa: E402
-from supervisor.utils.config import SupervisorConfig  # noqa: E402
+from services.jobs.job_manager import JobManager
+from supervisor.utils.config import SupervisorConfig
 
 STORE = ROOT / ".job_store"
 # States worth a restart. CANCELLED and SUCCESS are deliberate outcomes; a

@@ -112,7 +112,11 @@ def _workspace() -> Path | None:
 
 def _profile_sync(workspace: Path, *, create: bool = False) -> dict:
     """The workspace profile is authoritative; seed it from settings if absent."""
-    from supervisor.security.access_profile import PROFILE_KEYS, load_profile, save_profile
+    from supervisor.security.access_profile import (
+        PROFILE_KEYS,
+        load_profile,
+        save_profile,
+    )
 
     if create and not load_profile(workspace):
         save_profile(workspace, {key: app_state.get(key) for key in PROFILE_KEYS})
@@ -418,7 +422,14 @@ def _advanced_section() -> None:
             _bind_number("max_retries", "Max retries", min=1, max=10)
             _bind_number("context_threshold", "Context threshold %", min=10, max=95)
             _bind_number("max_tokens", "Max tokens", min=1000, max=2000000)
-            _bind_number("timeout", "Turn timeout (min)", min=1, max=120)
+            # The cap is a ceiling, not the value: a long compute turn (MATLAB
+            # backtest, big batch) needs far more than two hours, and a 120
+            # ceiling silently clamped whatever the operator typed.
+            _bind_number("timeout", "Turn timeout (min)", min=1, max=1440).tooltip(
+                "Wall clock per turn before the agent engine is killed. "
+                "Default 120 min; raise it for long compute turns "
+                "(1440 = 24 h). Enforced as config.timeout * 60 seconds.",
+            )
             _bind_number("max_parallel_jobs", "Max parallel jobs", min=1, max=32)
             _bind_number(
                 "max_stored_jobs", "Stored jobs (log retention)",
@@ -898,7 +909,7 @@ def _connectivity_section() -> None:
                         f"supervisor: {'✅' if ok else '❌'} {message[:160]}",
                     )
                 if app_state.tests_ok():
-                    status.set_text("✅ Both connectivity tests passed — Run/Evolve unlocked.")
+                    status.set_text("✅ Both connectivity tests passed — Live Run unlocked.")
 
         with ui.row().classes("gap-3"):
             test_buttons = [
@@ -942,7 +953,7 @@ def _update_quality(label, sections: dict[str, str]) -> None:
             f"RESTRICTIONS {analysis.restrictions_score.overall:.0%}"
             + (f" · {len(analysis.issues)} issue(s)" if analysis.issues else ""),
         )
-    except Exception:
+    except Exception:  # noqa: BLE001 - UI action boundary - surface the failure, keep the page alive
         label.set_text("Complete all three sections to see quality scores.")
 
 
@@ -1112,7 +1123,7 @@ async def _refine(
         except ProtocolGateError as exc:
             status.set_text(f"Refine failed: {exc}")
             return
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - UI action boundary - surface the failure, keep the page alive
             status.set_text(f"Refine failed: {exc}")
             return
         finally:

@@ -91,9 +91,7 @@ def _looks_like_path(text: str) -> bool:
         return False
     return (
         (len(text) > 2 and text[1] == ":" and text[0].isalpha())
-        or text.startswith("\\\\")
-        or text.startswith("~/")
-        or text.startswith("%USERPROFILE%")
+        or text.startswith(("\\\\", "~/", "%USERPROFILE%"))
     )
 
 

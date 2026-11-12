@@ -33,6 +33,7 @@ def list_all_session_ids(
             errors="replace",
             cwd=str(workspace),
             timeout=10,
+            check=False,
             shell=use_shell,
         )
         ids: set[str] = set()
@@ -41,7 +42,7 @@ def list_all_session_ids(
             if stripped.startswith("ses_"):
                 ids.add(stripped.split()[0])
         return ids
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - session listing is advisory
         logger.warning("Failed to list sessions: %s", exc)
         return set()
 

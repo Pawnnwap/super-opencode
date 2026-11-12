@@ -6,8 +6,8 @@ Reads the supervisor codebase itself and produces:
   - A compact "digest" suitable for injection into an LLM system prompt
   - A code-skimmed digest (signatures + docstrings only, ~10x fewer tokens)
 
-Used by the self-evolution subsystem so the supervisor understands
-exactly what it is judging before it asks opencode to modify code.
+Used by the supervisor so it understands exactly what it is judging before
+it asks opencode to modify code.
 """
 
 from __future__ import annotations

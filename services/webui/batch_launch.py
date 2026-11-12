@@ -40,27 +40,35 @@ REPLICA_SKIP_DIRS = {
     ".venv",
     "venv",
     "node_modules",
+    # MATLAB creates runtime-state dirs inside the cwd it was launched from
+    # and keeps files in them open while it runs. Copying those throws
+    # ``shutil.Error: [WinError 32]`` (file in use) and kills the whole batch
+    # launch, so replicas never carry them.
+    "matlab",
+    "mathworks",
+    "matlab settings",
 }
 REPLICA_SKIP_FILES = {
     TASK_STATE_FILENAME,
     "summary.md",
     "failure_report.md",
-    "evolution_report.md",
 }
 
 INIT_MODES = ("copy", "protocol")
 
 
 def _replica_ignore(directory: str, names: list[str]) -> set[str]:
-    skipped: set[str] = set()
-    for name in names:
-        if name in REPLICA_SKIP_DIRS:
-            skipped.add(name)
-        elif name in REPLICA_SKIP_FILES:
-            skipped.add(name)
-        elif name.endswith(".log"):
-            skipped.add(name)
-    return skipped
+    # Dirs match case-insensitively: Windows spells the MATLAB dirs ``MATLAB`` /
+    # ``MathWorks``, and a case-sensitive match would copy exactly the locked
+    # files the skip exists to avoid (that filesystem ignores case). Skip *files*
+    # stay case-sensitive — their spellings are ours, not the OS's.
+    return {
+        name
+        for name in names
+        if name.casefold() in REPLICA_SKIP_DIRS
+        or name in REPLICA_SKIP_FILES
+        or name.endswith(".log")
+    }
 
 
 def provision_replica(

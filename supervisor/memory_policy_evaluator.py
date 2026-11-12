@@ -153,16 +153,16 @@ def load_memory_evaluation_suite(path: Path) -> tuple[MemoryEvaluationCase, ...]
     payload = json.loads(path.read_text(encoding="utf-8"))
     cases_raw = payload.get("cases") if isinstance(payload, dict) else None
     if not isinstance(cases_raw, list):
-        raise ValueError("memory evaluation suite must contain a cases list")
+        raise ValueError("memory evaluation suite must contain a cases list")  # noqa: TRY004 - file payload shape
     cases: list[MemoryEvaluationCase] = []
     for item in cases_raw:
         if not isinstance(item, dict):
-            raise ValueError("each memory evaluation case must be an object")
+            raise ValueError("each memory evaluation case must be an object")  # noqa: TRY004 - file payload shape
         task_id = item.get("task_id")
         goal = item.get("goal")
         files = item.get("files", [])
         if not isinstance(task_id, str) or not isinstance(goal, str):
-            raise ValueError("each memory evaluation case requires string task_id and goal")
+            raise ValueError("each memory evaluation case requires string task_id and goal")  # noqa: TRY004 - file payload shape
         if not isinstance(files, list) or not all(isinstance(file, str) for file in files):
             raise ValueError("memory evaluation case files must be a string list")
         cases.append(MemoryEvaluationCase(task_id=task_id, goal=goal, files=tuple(files)))

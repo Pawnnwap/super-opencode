@@ -18,13 +18,13 @@ from types import SimpleNamespace
 
 import pytest
 
+from supervisor.runners import process_common
 from supervisor.runners.opencode_support import command_builder as oc_command_builder
 from supervisor.runners.opencode_support import process as opencode_process
 from supervisor.runners.opencode_support.command_builder import (
     _opencode_major as _opencode_major_impl,
 )
 from supervisor.runners.opencode_support.command_builder import build_cmd
-from supervisor.runners import process_common
 
 # ~260k chars: far past both Windows limits, routine size for a turn prompt
 # that carries roll-up / summary content.
@@ -82,14 +82,14 @@ def test_build_cmd_resume_keeps_session_flags_without_message():
 
 def _build_kwargs(**overrides):
     """Keyword bundle for build_cmd calls; overrides win."""
-    kwargs = dict(
-        exe="opencode",
-        prompt=LONG_PROMPT,
-        agent="build",
-        opencode_model="local-ds/swift-1.5",
-        use_continue=False,
-        session_id=None,
-    )
+    kwargs = {
+        "exe": "opencode",
+        "prompt": LONG_PROMPT,
+        "agent": "build",
+        "opencode_model": "local-ds/swift-1.5",
+        "use_continue": False,
+        "session_id": None,
+    }
     kwargs.update(overrides)
     return kwargs
 

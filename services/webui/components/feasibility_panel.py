@@ -13,7 +13,8 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-from nicegui import run as nicegui_run, ui
+from nicegui import run as nicegui_run
+from nicegui import ui
 
 from services.webui.components.busy import CancellableCall, busy_buttons
 from services.webui.state import app_state

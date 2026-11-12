@@ -1,12 +1,10 @@
 """supervisor/utils/experience_tracker.py - Track build experience across iterations.
-Experience data informs future evolution decisions and step planning.
+Experience data informs future run decisions and step planning.
 
 Maintains an experience.md file in the workspace with structured sections:
 - What Worked
 - What Failed
-- Evolution Summaries (structured)
-
-Experience data informs future evolution decisions and step planning.
+- Run Summaries (structured)
 """
 
 from __future__ import annotations
@@ -24,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 _HEADER_WORKED = "## What Worked"
 _HEADER_FAILED = "## What Failed"
-_HEADER_SUMMARIES = "## Evolution Summaries"
+_HEADER_SUMMARIES = "## Run Summaries"
 _CACHE_DIR = ".opencode"
 _CACHE_FILENAME = "experience_cache.json"
 _EVENTS_FILENAME = "memory_events.jsonl"
@@ -95,7 +93,7 @@ def _save_cache_to_file(workspace: Path, cache: dict[str, Any]) -> None:
 
 
 @dataclass
-class EvolutionSummary:
+class RunSummary:
     goal: str = ""
     outcome: str = ""
     key_changes: list[str] = field(default_factory=list)
@@ -121,7 +119,7 @@ class EvolutionSummary:
 
     def to_markdown(self) -> str:
         lines = [
-            "### " + (self.goal or "Unnamed Evolution") + " [" + self.outcome + "]",
+            "### " + (self.goal or "Unnamed run") + " [" + self.outcome + "]",
             "- **Iterations:** " + str(self.iterations) + " | **Steps:** " + str(self.final_step) + "/" + str(self.total_steps) + " | **Phase:** " + self.final_phase,
         ]
         if self.test_baseline:
@@ -170,7 +168,7 @@ class EvolutionSummary:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> EvolutionSummary:
+    def from_dict(cls, data: dict[str, Any]) -> RunSummary:
         return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
 
 
@@ -204,8 +202,8 @@ def _get_cache(workspace: Path) -> dict[str, Any]:
             summaries = []
             for s in loaded.get("summaries", []):
                 if isinstance(s, dict):
-                    summaries.append(EvolutionSummary.from_dict(s))
-                elif isinstance(s, EvolutionSummary):
+                    summaries.append(RunSummary.from_dict(s))
+                elif isinstance(s, RunSummary):
                     summaries.append(s)
             loaded["summaries"] = summaries
             _EXPERIENCE_CACHE[key] = loaded
@@ -241,7 +239,7 @@ def init_experience_file(workspace: Path) -> Path:
 def _serialize_cache_for_save(cache: dict[str, Any]) -> dict[str, Any]:
     summaries = []
     for s in cache.get("summaries", []):
-        if isinstance(s, EvolutionSummary):
+        if isinstance(s, RunSummary):
             summaries.append(s.to_dict())
         elif isinstance(s, dict):
             summaries.append(s)
@@ -272,7 +270,7 @@ def update_experience(
     logger.info("Updated experience: worked=%s, failed=%s", worked, failed)
 
 
-def log_evolution_summary(workspace: Path, summary: EvolutionSummary) -> None:
+def log_run_summary(workspace: Path, summary: RunSummary) -> None:
     cache = _get_cache(workspace)
     if not summary.timestamp:
         summary.timestamp = datetime.now(UTC).isoformat()
@@ -282,11 +280,11 @@ def log_evolution_summary(workspace: Path, summary: EvolutionSummary) -> None:
     _save_cache_to_file(workspace, _serialize_cache_for_save(cache))
     _append_memory_event(
         workspace,
-        "evolution_summary_logged",
+        "run_summary_logged",
         goal=summary.goal,
         outcome=summary.outcome,
     )
-    logger.info("Logged evolution summary: %s [%s]", summary.goal or "unnamed", summary.outcome)
+    logger.info("Logged run summary: %s [%s]", summary.goal or "unnamed", summary.outcome)
 
 
 def snapshot_memory(workspace: Path, label: str = "") -> MemorySnapshot:
@@ -326,17 +324,17 @@ def restore_memory_snapshot(workspace: Path, snapshot: MemorySnapshot | Path) ->
         payload = json.loads(path.read_text(encoding="utf-8"))
         state = payload.get("state")
         if not isinstance(state, dict):
-            raise ValueError("memory snapshot has no state object")
+            raise ValueError("memory snapshot has no state object")  # noqa: TRY004 - caught by the payload reader below
     except (OSError, ValueError, json.JSONDecodeError) as e:
         logger.warning("Failed to restore memory snapshot %s: %s", path, e)
         return False
 
-    summaries: list[EvolutionSummary] = []
+    summaries: list[RunSummary] = []
     for item in state.get("summaries", []):
-        if isinstance(item, EvolutionSummary):
+        if isinstance(item, RunSummary):
             summaries.append(item)
         elif isinstance(item, dict):
-            summaries.append(EvolutionSummary.from_dict(item))
+            summaries.append(RunSummary.from_dict(item))
     restored = {
         "worked": list(state.get("worked", [])),
         "failed": list(state.get("failed", [])),
@@ -377,14 +375,14 @@ def read_memory_events(workspace: Path) -> list[dict[str, Any]]:
     return events
 
 
-def read_summaries(workspace: Path, max_count: int = 10) -> list[EvolutionSummary]:
+def read_summaries(workspace: Path, max_count: int = 10) -> list[RunSummary]:
     cache = _get_cache(workspace)
     summaries = cache["summaries"]
     return summaries[-max_count:] if len(summaries) > max_count else list(summaries)
 
 
-def _parse_summary_block(goal: str, lines: list[str]) -> EvolutionSummary:
-    summary = EvolutionSummary(goal=goal)
+def _parse_summary_block(goal: str, lines: list[str]) -> RunSummary:
+    summary = RunSummary(goal=goal)
     return summary
 
 
@@ -425,7 +423,7 @@ def extract_insights(workspace: Path) -> list[ExperienceInsight]:
                 insight_type="failure_mode",
                 description=pattern,
                 frequency=count,
-                recommendation="Avoid patterns that caused failures in prior evolutions",
+                recommendation="Avoid patterns that caused failures in prior runs",
             ))
 
     for pattern, count in success_patterns.items():
@@ -441,7 +439,7 @@ def extract_insights(workspace: Path) -> list[ExperienceInsight]:
         avg_reg = regression_sums / runs_with_regressions
         insights.append(ExperienceInsight(
             insight_type="regression_trend",
-            description="Regressions occurred in " + str(runs_with_regressions) + " evolution(s)",
+            description="Regressions occurred in " + str(runs_with_regressions) + " run(s)",
             frequency=runs_with_regressions,
             context="Average " + str(round(avg_reg, 1)) + " regressions per affected run",
             recommendation="Run tests frequently; rollback on regression detection",
@@ -476,7 +474,7 @@ def _is_expired(expires_at: str, now: datetime) -> bool:
 
 
 def _summary_score(
-    summary: EvolutionSummary,
+    summary: RunSummary,
     *,
     goal_terms: set[str],
     files: tuple[str, ...],
@@ -515,7 +513,7 @@ def retrieve_memory(
     """Return compact, task-relevant durable memory instead of raw history."""
     current_time = now or datetime.now(UTC)
     goal_terms = _term_set(goal)
-    ranked: list[tuple[float, EvolutionSummary]] = []
+    ranked: list[tuple[float, RunSummary]] = []
     for recency, summary in enumerate(read_summaries(workspace, max_count=50), start=1):
         if _is_expired(summary.expires_at, current_time):
             continue
@@ -592,7 +590,7 @@ def get_legacy_experience_context(workspace: Path) -> str:
 
     if summaries:
         lines.append("")
-        lines.append("Found " + str(len(summaries)) + " recent evolution(s):")
+        lines.append("Found " + str(len(summaries)) + " recent run(s):")
         lines.append("")
         for i, s in enumerate(summaries, 1):
             lines.append(str(i) + ". " + (s.goal or "Unnamed") + " [" + s.outcome + "] - " + str(s.iterations) + " iterations, " + str(s.final_step) + "/" + str(s.total_steps) + " steps")

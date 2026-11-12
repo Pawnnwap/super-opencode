@@ -40,8 +40,6 @@ _PERSIST_KEYS = [
     "max_stored_jobs",
     "harvest_prompt",
     "harvest_dir",
-    "evo_goal",
-    "evo_extra_restrictions",
     "enable_occam_razor",
     "access_policy_enabled",
     "access_whitelist",
@@ -96,8 +94,6 @@ DEFAULTS: dict = {
     "access_policy_enabled": True,
     "access_whitelist": [],
     "access_policy_strict": False,
-    "evo_goal": "",
-    "evo_extra_restrictions": "",
     "enable_occam_razor": False,
     "enable_supervisor_skills": True,
     "supervisor_skills_dir": "",
@@ -121,7 +117,7 @@ def load_settings() -> dict:
     try:
         if _SETTINGS_FILE.exists():
             return json.loads(_SETTINGS_FILE.read_text(encoding="utf-8-sig"))
-    except Exception:
+    except Exception:  # noqa: BLE001, S110 - corrupt settings fall back to defaults
         pass
     return {}
 
@@ -131,7 +127,7 @@ def save_settings(values: dict) -> None:
     data = {k: values.get(k, "") for k in _PERSIST_KEYS}
     try:
         _SETTINGS_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
-    except Exception:
+    except Exception:  # noqa: BLE001, S110 - persistence is best-effort (e.g. read-only home)
         pass
 
 

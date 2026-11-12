@@ -35,7 +35,7 @@ def run_with_timeout(fn, seconds: int = 30):
     def worker():
         try:
             result.append(fn())
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - connectivity probe - any backend error is a failed test
             error.append(exc)
 
     thread = threading.Thread(target=worker, daemon=True)
@@ -57,7 +57,7 @@ def run_test_with_timeout(
         return run_with_timeout(test_fn, seconds=timeout_seconds)
     except TimeoutError:
         return False, f"{test_name} timed out."
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - connectivity probe - any backend error is a failed test
         return False, f"{test_name} failed: {exc}"
 
 
@@ -179,6 +179,7 @@ def opencode_variant_choices(exe: str, model: str) -> tuple[str, ...]:
             encoding="utf-8",
             errors="replace",
             timeout=15,
+            check=False,
         )
         if proc.returncode != 0:
             return ()
@@ -254,7 +255,7 @@ def _discard_probe_home(home: Path) -> None:
                 timeout=15,
                 check=False,
             )
-        except Exception:  # noqa: BLE001 — best-effort cleanup before wipe
+        except Exception:  # noqa: BLE001, S110 - best-effort cleanup before wipe
             pass
     shutil.rmtree(home, ignore_errors=True)
 
@@ -323,7 +324,7 @@ def _execute_probe(
     finally:
         try:
             runner.stop()
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001, S110 - best-effort teardown
             pass
 
 

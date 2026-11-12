@@ -207,7 +207,7 @@ class JevDecisionClient:
         }
         try:
             return self._transport(payload)
-        except Exception as exc:  # any outage must fall back to heuristics
+        except Exception as exc:  # any outage must fall back to heuristics  # noqa: BLE001 - optional external judge - failure falls back to the local path
             logger.warning("jev decision service unavailable (%s): %s", self.url, exc)
             return None
 

@@ -66,7 +66,6 @@ def test_enqueue_triggers_prune(tmp_path, monkeypatch):
             yield {"level": "success", "msg": "ok"}
 
     monkeypatch.setattr(jm, "SupervisorLoop", QuickLoop)
-    monkeypatch.setattr(jm, "SelfEvolutionLoop", QuickLoop)
 
     manager = JobManager(
         str(tmp_path / ".job_store"), max_parallel_jobs=2, max_stored_jobs=3,

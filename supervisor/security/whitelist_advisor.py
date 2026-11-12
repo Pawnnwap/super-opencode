@@ -16,9 +16,9 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Iterable
 
 from supervisor.security.access_policy import (
     is_within,

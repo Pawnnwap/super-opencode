@@ -29,67 +29,67 @@ def build_supervisor_config(
     # access/protection settings; settings-file values are the fallback.
     workspace = Path(workspace)
     session_state = merge_profile(session_state, workspace)
-    defaults = dict(
-        protocol_path=protocol_path,
-        workspace=workspace,
-        max_retries=int(session_state["max_retries"]),
-        context_threshold=session_state["context_threshold"] / 100.0,
-        engine=session_state.get("engine", "opencode") or "opencode",
-        codex_base_url=str(session_state.get("codex_base_url", "") or "").strip(),
-        codex_api_key=str(session_state.get("codex_api_key", "") or ""),
-        opencode_model=session_state["opencode_model"] or None,
-        opencode_model_backup=session_state["opencode_model_backup"] or None,
-        opencode_executable=session_state["opencode_executable"],
-        supervisor_model=session_state["supervisor_model"] or "swift-1.5",
-        supervisor_model_backup=session_state["supervisor_model_backup"] or None,
-        supervisor_reasoning=str(session_state.get("supervisor_reasoning", "") or "").strip(),
-        agent_reasoning=str(session_state.get("agent_reasoning", "") or "").strip(),
-        timeout=int(session_state["timeout"]) * 60,
-        log_detail=_resolve_log_detail(session_state),
-        protected_files=tuple(session_state.get("protected_files", [])),
-        access_policy_enabled=bool(
+    defaults = {
+        "protocol_path": protocol_path,
+        "workspace": workspace,
+        "max_retries": int(session_state["max_retries"]),
+        "context_threshold": session_state["context_threshold"] / 100.0,
+        "engine": session_state.get("engine", "opencode") or "opencode",
+        "codex_base_url": str(session_state.get("codex_base_url", "") or "").strip(),
+        "codex_api_key": str(session_state.get("codex_api_key", "") or ""),
+        "opencode_model": session_state["opencode_model"] or None,
+        "opencode_model_backup": session_state["opencode_model_backup"] or None,
+        "opencode_executable": session_state["opencode_executable"],
+        "supervisor_model": session_state["supervisor_model"] or "swift-1.5",
+        "supervisor_model_backup": session_state["supervisor_model_backup"] or None,
+        "supervisor_reasoning": str(session_state.get("supervisor_reasoning", "") or "").strip(),
+        "agent_reasoning": str(session_state.get("agent_reasoning", "") or "").strip(),
+        "timeout": int(session_state["timeout"]) * 60,
+        "log_detail": _resolve_log_detail(session_state),
+        "protected_files": tuple(session_state.get("protected_files", [])),
+        "access_policy_enabled": bool(
             session_state.get("access_policy_enabled", True),
         ),
-        access_whitelist=tuple(
+        "access_whitelist": tuple(
             str(item).strip()
             for item in (session_state.get("access_whitelist", []) or [])
             if str(item).strip()
         ),
-        access_policy_strict=bool(
+        "access_policy_strict": bool(
             session_state.get("access_policy_strict", False),
         ),
-        max_tokens=int(session_state["max_tokens"]),
-        enable_occam_razor=bool(session_state.get("enable_occam_razor", False)),
-        enable_supervisor_skills=bool(
+        "max_tokens": int(session_state["max_tokens"]),
+        "enable_occam_razor": bool(session_state.get("enable_occam_razor", False)),
+        "enable_supervisor_skills": bool(
             session_state.get("enable_supervisor_skills", True),
         ),
-        supervisor_skills_dir=str(
+        "supervisor_skills_dir": str(
             session_state.get("supervisor_skills_dir", "") or "",
         ).strip(),
         # Snapshot credentials at enqueue. Running tasks will use their own
         # captured copy instead of whatever the live UI last wrote to env.
-        openai_api_key=str(session_state.get("openai_key", "") or ""),
-        openai_base_url=str(session_state.get("base_url", "") or "").strip(),
-        enable_jev_decisions=bool(
+        "openai_api_key": str(session_state.get("openai_key", "") or ""),
+        "openai_base_url": str(session_state.get("base_url", "") or "").strip(),
+        "enable_jev_decisions": bool(
             session_state.get("enable_jev_decisions", False),
         ),
-        jev_decision_url=str(
+        "jev_decision_url": str(
             session_state.get("jev_decision_url", "") or "",
         ).strip(),
-        jev_decision_api_key=str(
+        "jev_decision_api_key": str(
             session_state.get("jev_decision_api_key", "") or "",
         ),
-        jev_decision_timeout=float(
+        "jev_decision_timeout": float(
             session_state.get("jev_decision_timeout", 20) or 20,
         ),
-        jev_decision_threshold=float(
+        "jev_decision_threshold": float(
             session_state.get("jev_decision_threshold", 0.80) or 0.80,
         ),
-        enable_blocked_rescue=bool(
+        "enable_blocked_rescue": bool(
             session_state.get("enable_blocked_rescue", True),
         ),
         # max_blocked_rescues is backend-only: the UI never persists or binds
         # it, so the dataclass default (one rescue per run) stays authoritative.
-    )
+    }
     defaults.update(overrides)
     return SupervisorConfig(**defaults)

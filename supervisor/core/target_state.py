@@ -1,8 +1,8 @@
-"""Durable TARGET state for long self-evolution runs.
+"""Durable TARGET state for long runs.
 
 This is separate from the human-facing protocol. The protocol remains source of
-truth; this module records observed evidence, directions, stalls, and rejected
-candidate archives so rollback never erases useful temporary work.
+truth; this module records observed evidence, directions, and stalls so the
+harness can tell a stalled run from a busy one.
 """
 
 from __future__ import annotations
@@ -14,7 +14,6 @@ import tempfile
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
 
 from supervisor.utils.text_utils import head_tail_excerpt
 
@@ -45,7 +44,6 @@ _TERMINAL_EVENT_MARKERS = ("_closed", "terminal")
 _CLOSURE_DOCS = (".opencode/closure.md", "ESCALATION.md")
 _TERMINAL_RULING_RE = re.compile(r"terminal\s+ruling", re.IGNORECASE)
 _CLOSED_WORD_RE = re.compile(r"\bclosed\b", re.IGNORECASE)
-_STAGED_FILE = "staged_improvements.jsonl"
 _MAX_DIRECTIONS = 12
 _MAX_LESSONS = 8
 _STAGNATION_LIMIT = 2
@@ -69,17 +67,12 @@ class TargetState:
     rejected_directions: list[str] = field(default_factory=list)
     lessons: list[str] = field(default_factory=list)
     stagnation_count: int = 0
-    staged_improvements: int = 0
     last_reason: str = ""
     updated_at: str = ""
 
 
 def target_state_path(workspace: Path) -> Path:
     return Path(workspace) / _STATE_DIR / _STATE_FILE
-
-
-def staged_improvements_path(workspace: Path) -> Path:
-    return Path(workspace) / _STATE_DIR / _STAGED_FILE
 
 
 def initialise_target_state(
@@ -162,60 +155,6 @@ def record_target_iteration(
     state.updated_at = _now()
     _write_state(Path(workspace), state)
     return state
-
-
-def stage_temporary_improvement(
-    workspace: Path,
-    *,
-    iteration: int,
-    direction: str,
-    changed_files: list[str],
-    archive_path: Path | None,
-    test_evidence: str,
-    reason: str,
-    output_excerpt: str,
-) -> Path:
-    """Append a rejected candidate record; its archive remains recoverable."""
-    path = staged_improvements_path(Path(workspace))
-    path.parent.mkdir(parents=True, exist_ok=True)
-    record = {
-        "recorded_at": _now(),
-        "iteration": iteration,
-        "direction": direction_fingerprint(direction),
-        "changed_files": list(changed_files),
-        "archive_path": str(archive_path) if archive_path else "",
-        "test_evidence": test_evidence,
-        "reason": reason,
-        "output_excerpt": head_tail_excerpt(
-            " ".join(output_excerpt.split()), 600, end_ratio=0.5,
-        ),
-        "status": "rolled_back_but_preserved",
-    }
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(record, sort_keys=True) + "\n")
-    state = load_target_state(workspace)
-    if state is not None:
-        state.staged_improvements += 1
-        state.updated_at = _now()
-        _write_state(Path(workspace), state)
-    return path
-
-
-def read_staged_improvements(workspace: Path, max_records: int = 10) -> list[dict[str, Any]]:
-    path = staged_improvements_path(Path(workspace))
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return []
-    records: list[dict[str, Any]] = []
-    for line in lines[-max_records:]:
-        try:
-            record = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(record, dict):
-            records.append(record)
-    return records
 
 
 def similar_rejected_direction(state: TargetState, direction: str) -> str | None:
@@ -449,8 +388,6 @@ def target_state_context(workspace: Path) -> str:
             "Last evaluator reason: "
             + head_tail_excerpt(state.last_reason, 240, end_ratio=0.5),
         )
-    if state.staged_improvements:
-        lines.append(f"Preserved temporary candidates: {state.staged_improvements}")
     lines.append(
         "To end the run when the target is unreachable, append "
         '{"event": "goal_terminal", "reason": "<why>"} to '

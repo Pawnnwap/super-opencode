@@ -488,25 +488,3 @@ def test_supervisor_loop_get_verdict_combines_skills_and_evidence(tmp_path):
     assert "test report body" in supervisor.prompts[1]
     assert "SUPERVISOR SKILLS LOADED" in supervisor.prompts[1]
     assert bank.loaded_names() == ["alpha"]
-
-
-def test_evolution_loop_get_verdict_loads_and_queues_chains(tmp_path):
-    from supervisor.core.self_evolution_loop import SelfEvolutionLoop
-
-    bank_dir = tmp_path / ".opencode" / "supervisor_skills"
-    _write_skill(bank_dir, "alpha", description="First", body="Alpha body.\n")
-    bank = SkillBank(workspace_dir=bank_dir)
-    supervisor = _ScriptedSupervisor(
-        [_verdict(skills=["alpha"]), _verdict()],
-    )
-    loop = object.__new__(SelfEvolutionLoop)
-    loop._skill_bank = bank
-    loop._skill_events = []
-    loop._jev = None
-    loop.supervisor = supervisor
-
-    loop._get_verdict("agent output", _STEP_PROGRESS)
-
-    assert len(supervisor.prompts) == 2
-    assert "SUPERVISOR SKILLS LOADED" in supervisor.prompts[1]
-    assert bank.loaded_names() == ["alpha"]

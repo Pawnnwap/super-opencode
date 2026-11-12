@@ -5,15 +5,15 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-from supervisor.protocols.protocol import Protocol, parse_protocol_text
-from supervisor.protocols.target_audit import audit_target
 from supervisor.protocols.analyzer_support import (
+    _TESTABILITY_KEYWORDS,
+    _VAGUE_WORDS,
     SectionScore,
     Severity,
     ValidationIssue,
-    _TESTABILITY_KEYWORDS,
-    _VAGUE_WORDS,
 )
+from supervisor.protocols.protocol import Protocol, parse_protocol_text
+from supervisor.protocols.target_audit import audit_target
 
 
 @dataclass

@@ -17,8 +17,8 @@ import sys
 import urllib.request
 from pathlib import Path
 
-from supervisor.runners.pi_runner import find_pi
 from services.config.opencode_config import fetch_opencode_models
+from supervisor.runners.pi_runner import find_pi
 
 
 def fetch_codex_models(base_url: str, api_key: str, timeout: int = 10) -> list[str]:
@@ -67,6 +67,7 @@ def fetch_pi_models(exe: str = "", timeout: int = 15) -> list[str]:
             errors="replace",
             timeout=timeout,
             cwd=home_dir,
+            check=False,
             shell=(
                 sys.platform == "win32"
                 and resolved_exe.lower().endswith((".cmd", ".bat", ".ps1"))

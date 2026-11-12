@@ -6,6 +6,7 @@ backoff ladders — and the agent subprocess must be killed early instead of
 hanging until the turn timeout.
 """
 
+import json
 import time
 from types import SimpleNamespace
 
@@ -16,7 +17,6 @@ from openai import APIConnectionError, InternalServerError
 from supervisor.runners.command_common import provider_connection_error
 from supervisor.runners.opencode_support.stream import LineEvent
 from supervisor.runners.stream_driver import consume_process_stream
-
 
 # --------------------------------------------------------------------------- #
 # Signature matcher                                                            #
@@ -241,3 +241,49 @@ def test_stream_does_not_abort_when_agent_already_produced_output():
     proc = _FakeProc(["line1\n", "line2\n"])
     result = _consume(proc, classify, timeout=5)
     assert result.aborted is False
+
+
+def test_opencode_error_event_aborts_fast_when_provider_down():
+    """The parser now emits `kind="error"` lines; abort_on must see them.
+
+    Before, an opencode provider-down line was classified "other" and the
+    stream driver's fast-abort (which keys on raw/error kinds) never fired, so
+    a dead endpoint burned the full turn timeout.
+    """
+    from supervisor.runners.opencode_support.stream import classify_line as oc_classify
+
+    line = json.dumps(
+        {"type": "error", "error": {"type": "provider.api", "message": "502 Bad Gateway"}},
+    )
+    proc = _FakeProc([line])
+    started = time.monotonic()
+    result = _consume(proc, oc_classify)
+    assert time.monotonic() - started < 5
+    assert result.aborted is True
+    assert result.abort_reason == "bad gateway"
+    assert proc.killed is True
+    # The turn dies before the model, so there is no prose; process_common
+    # turns the abort into a "[PROVIDER UNREACHABLE] … (bad gateway)" stderr.
+    assert result.prose == ""
+
+
+def test_opencode_no_route_error_is_not_a_provider_down_abort():
+    """A bad model name is a CONFIG error, not an unreachable endpoint.
+
+    It must surface as output for the config-error wrapper, not be killed as
+    "provider unreachable" — the two have opposite fixes (fix the model vs fix
+    the network), and a backup model against the same endpoint is the right
+    retry for neither.
+    """
+    from supervisor.runners.opencode_support.stream import classify_line as oc_classify
+
+    proc = _FakeProc(
+        [json.dumps(
+            {"type": "error", "error": {"type": "provider.no-route",
+                                        "message": "Model unavailable: x/y"}},
+        )],
+    )
+    result = _consume(proc, oc_classify, timeout=5)
+    assert result.aborted is False
+    assert "Model unavailable" in result.stdout
+

@@ -36,29 +36,6 @@ the python interpreter (os.unlink / shutil.rmtree) instead. """
 Begin."""
 )
 
-SELF_EVOLUTION_INIT_PROMPT_TEMPLATE = (
-    """\
-Modify the codebase you live in. Read the protocol carefully.
-
-PROTOCOL:
-{protocol_text}
-{baseline_note}
-Your project root (cwd) is: {workspace}
-All files you create or modify MUST be inside this directory.
-Use relative paths from this directory for all file operations.
-All versions are automatically archived in the .archive/ directory.
-Do NOT delete or manually manage version files — the archive system handles this.
-Do NOT delete or modify the .opencode directory or its contents.
-SHELL POLICY: command-line force deletions (PowerShell `Remove-Item -Force`,
-`rm -f`) are rejected by the runner's exec policy. Perform file deletions via
-the python interpreter (os.unlink / shutil.rmtree) instead. """
-    + SHELL_HEREDOC_RULE
-    + """
-{protected_files_desc}
-Make your changes surgical and minimal.
-Run tests after every logical change. Begin."""
-)
-
 RESTART_PROMPT_TEMPLATE = (
     """\
 {loop_section}\

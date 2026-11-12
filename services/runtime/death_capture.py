@@ -79,7 +79,7 @@ def dump_stacks(reason: str) -> None:
         fh.flush()
         faulthandler.dump_traceback(file=fh, all_threads=True)
         fh.flush()
-    except Exception:  # noqa: BLE001 - forensics must never crash the watchdog
+    except Exception:  # noqa: BLE001, S110 - forensics must never crash the watchdog
         pass
 
 

@@ -193,35 +193,6 @@ class TestCommandScan:
         violations = policy.scan_command(f'sed -i s/a/b/ "{ref}/a.txt"')
         assert violations and violations[0].access == "write"
 
-    def test_copy_from_whitelist_to_cwd_is_allowed(self, roots):
-        ws, ref = roots
-        policy = build_policy(ws, [ref])
-        assert policy.scan_command(f'cp "{ref}/a.txt" "{ws}/a.txt"') == []
-        assert policy.scan_command(f'cp -r "{ref}/sub" ./sub') == []
-        assert policy.scan_command(f'xcopy "{ref}" dst /E') == []
-        assert policy.scan_command(f'robocopy "{ref}" dst /MIR') == []
-
-    def test_copy_to_whitelist_is_denied(self, roots):
-        ws, ref = roots
-        policy = build_policy(ws, [ref])
-        violations = policy.scan_command(f'cp "{ws}/a.txt" "{ref}/b.txt"')
-        assert violations and violations[0].access == "write"
-        assert "read-only" in violations[0].reason
-
-    def test_move_from_whitelist_is_denied(self, roots):
-        ws, ref = roots
-        policy = build_policy(ws, [ref])
-        # mv removes the source, which mutates the read-only directory.
-        violations = policy.scan_command(f'mv "{ref}/a.txt" "{ws}/a.txt"')
-        assert violations and "read-only" in violations[0].reason
-
-    def test_sed_reads_but_does_not_write_without_dash_i(self, roots):
-        ws, ref = roots
-        policy = build_policy(ws, [ref])
-        assert policy.scan_command(f'sed -n 1,5p "{ref}/a.txt"') == []
-        violations = policy.scan_command(f'sed -i s/a/b/ "{ref}/a.txt"')
-        assert violations and violations[0].access == "write"
-
     def test_quoted_paths_with_spaces_are_whole_tokens(self, tmp_path):
         ws = tmp_path / "my project"
         ws.mkdir()
@@ -269,24 +240,6 @@ class TestCommandScan:
         policy = build_policy(ws, [])
         violations = policy.scan_command("echo x > %USERPROFILE%/secret.txt")
         assert violations
-
-    def test_relative_escape_is_denied(self, roots, tmp_path):
-        ws, _ = roots
-        policy = build_policy(ws, [])
-        violations = policy.scan_command("cat ../../secret.txt")
-        assert violations and "outside workspace" in violations[0].reason
-
-    def test_relative_write_escape_is_denied(self, roots):
-        ws, _ = roots
-        policy = build_policy(ws, [])
-        violations = policy.scan_command("cp a.txt ../outside.txt")
-        assert violations and violations[0].access == "write"
-
-    def test_relative_inside_is_allowed(self, roots):
-        ws, _ = roots
-        policy = build_policy(ws, [])
-        assert policy.scan_command("cat src/main.py") == []
-        assert policy.scan_command("cp a.txt b.txt") == []
 
     def test_relative_escape_is_denied(self, roots, tmp_path):
         ws, _ = roots

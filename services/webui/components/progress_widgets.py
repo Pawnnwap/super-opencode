@@ -31,7 +31,7 @@ class ProgressWidgets:
             )
             self.token_label = ui.label("").classes("text-xs mono text-[#8b949e]")
 
-    def update(self, logs: list[dict], state: str, is_evolution: bool = False) -> None:
+    def update(self, logs: list[dict], state: str) -> None:
         logs = logs or []
         # The 2s poll rebuilds the DOM on every set_content, which restarts
         # the chip's CSS animations — push only genuine phase changes.
@@ -50,7 +50,7 @@ class ProgressWidgets:
                 if isinstance(e, dict) and e.get("level") in ("step", "phase_transition")
             )
             self.status_label.set_text(
-                f"🟢 {'Evolution' if is_evolution else 'Background'} process active"
+                "🟢 Background process active"
                 f" · 💓 {heartbeat_count} · 🧭 {step_count}",
             )
         else:

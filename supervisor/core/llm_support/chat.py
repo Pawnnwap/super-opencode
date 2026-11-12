@@ -15,8 +15,8 @@ from openai import (
 
 from supervisor.core.llm_support.history_compaction import build_context_messages
 from supervisor.core.llm_support.models import (
-    SupervisorVerdict,
     _DONE_PHRASES,
+    SupervisorVerdict,
     _check_completion_phrases,
     _is_token_limit_error,
     flag_contradicted_criteria,
@@ -54,9 +54,12 @@ def chat(
         or not supervisor._compact_intermediate_steps
         or supervisor.should_record_turn(user_content, "user")
     )
-    if should_record_user and supervisor._last_opencode_output is not None:
-        if user_content.strip() == supervisor._last_opencode_output.strip():
-            should_record_user = False
+    if (
+        should_record_user
+        and supervisor._last_opencode_output is not None
+        and user_content.strip() == supervisor._last_opencode_output.strip()
+    ):
+        should_record_user = False
 
     if (
         supervisor._reuse_identical_verdicts
@@ -174,8 +177,7 @@ def chat_with_retry(
             if not response.choices:
                 if empty_choices_retries >= max_empty_choices_retries:
                     raise OpenAIError(
-                        "LLM response returned no choices after %d retries"
-                        % max_empty_choices_retries,
+                        f"LLM response returned no choices after {max_empty_choices_retries} retries",
                     )
                 wait = 15 * (2 ** empty_choices_retries)
                 logger.warning(

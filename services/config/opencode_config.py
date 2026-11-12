@@ -154,7 +154,7 @@ def get_opencode_config_file(
     if old_file.exists() and not target_file.exists():
         try:
             old_file.rename(target_file)
-        except Exception:
+        except Exception:  # noqa: BLE001, S110 - migration is best-effort
             pass
 
     target_file.parent.mkdir(parents=True, exist_ok=True)
@@ -275,6 +275,7 @@ def fetch_opencode_models(exe: str = "") -> list[str]:
             text=True,
             timeout=15,
             cwd=home_dir,
+            check=False,
             shell=(
                 sys.platform == "win32"
                 and resolved_exe.lower().endswith((".cmd", ".bat", ".ps1"))
@@ -301,7 +302,7 @@ def fetch_opencode_models(exe: str = "") -> list[str]:
         print("[opencode-models] Request timed out after 15s.", file=sys.stderr)
     except FileNotFoundError:
         print(f"[opencode-models] Executable '{resolved_exe}' not found.", file=sys.stderr)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - config write is best-effort
         print(f"[opencode-models] Unexpected error: {exc}", file=sys.stderr)
 
     return []

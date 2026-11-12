@@ -11,30 +11,69 @@ from openai import OpenAI
 
 from supervisor.core.llm_support.chat import (
     chat as _chat_impl,
+)
+from supervisor.core.llm_support.chat import (
     chat_with_retry as _chat_with_retry_impl,
+)
+from supervisor.core.llm_support.chat import (
     fit_request_to_budget as _fit_request_to_budget_impl,
+)
+from supervisor.core.llm_support.chat import (
     truncate_messages_for_limit as _truncate_messages_for_limit_impl,
+)
+from supervisor.core.llm_support.chat import (
     truncate_older_turns as _truncate_older_turns_impl,
 )
+from supervisor.core.llm_support.context import SupervisorContextManager
 from supervisor.core.llm_support.history import (
     compact_history as _compact_history_impl,
+)
+from supervisor.core.llm_support.history import (
     estimate_current_tokens as _estimate_current_tokens_impl,
-    rollup_history as _rollup_history_impl,
+)
+from supervisor.core.llm_support.history import (
     extract_and_store_opencode_output as _extract_and_store_opencode_output_impl,
+)
+from supervisor.core.llm_support.history import (
     log_prompt as _log_prompt_impl,
+)
+from supervisor.core.llm_support.history import (
+    rollup_history as _rollup_history_impl,
+)
+from supervisor.core.llm_support.history import (
     should_omit_step_context as _should_omit_step_context_impl,
+)
+from supervisor.core.llm_support.history import (
     should_record_turn as _should_record_turn_impl,
+)
+from supervisor.core.llm_support.history import (
     update_system_prompt as _update_system_prompt_impl,
 )
 from supervisor.core.llm_support.judgement import (
     analyze_protocol as _analyze_protocol_impl,
+)
+from supervisor.core.llm_support.judgement import (
     ask_for_compaction_instructions as _ask_for_compaction_instructions_impl,
+)
+from supervisor.core.llm_support.judgement import (
     ask_for_deletion_permission as _ask_for_deletion_permission_impl,
+)
+from supervisor.core.llm_support.judgement import (
     generate_suggestions as _generate_suggestions_impl,
+)
+from supervisor.core.llm_support.judgement import (
     judge as _judge_impl,
+)
+from supervisor.core.llm_support.judgement import (
     judge_plan as _judge_plan_impl,
+)
+from supervisor.core.llm_support.judgement import (
     judge_with_step_context as _judge_with_step_context_impl,
+)
+from supervisor.core.llm_support.judgement import (
     report_final_status as _report_final_status_impl,
+)
+from supervisor.core.llm_support.judgement import (
     verify_protocol_alignment as _verify_protocol_alignment_impl,
 )
 from supervisor.core.llm_support.models import (
@@ -42,14 +81,13 @@ from supervisor.core.llm_support.models import (
     _OPENCODE_GENERATED_MD,
     _SKIP_DIR_PREFIXES,
     _SKIP_DIRS,
-    _get_model_token_limit,
-    resolve_max_tokens,
     StepContext,
     SupervisorVerdict,
+    _get_model_token_limit,
+    resolve_max_tokens,
 )
-from supervisor.core.llm_support.context import SupervisorContextManager
-from supervisor.protocols.protocol import Protocol
 from supervisor.protocols.alignment import AlignmentResult
+from supervisor.protocols.protocol import Protocol
 from supervisor.protocols.protocol_analyzer import ProtocolAnalysis
 from supervisor.workspace.ignore_patterns import IgnoreMatcher
 
@@ -417,4 +455,4 @@ class LLMSupervisor:
         return _truncate_messages_for_limit_impl(messages, model_limit)
 
 
-__all__ = ["LLMSupervisor", "StepContext", "SupervisorVerdict", "_DONE_PHRASES"]
+__all__ = ["_DONE_PHRASES", "LLMSupervisor", "StepContext", "SupervisorVerdict"]

@@ -63,7 +63,6 @@ def _make_screen(manager):
         job_type="run",
         job_id="run_x",
         base_path="/run",
-        is_evolution=False,
         running_message="running",
     )
     screen.progress = StubWidget()

@@ -44,7 +44,7 @@ def _rubric(tmp_path: Path, gates: list[dict]) -> tuple:
 def test_command_gate_pass_and_fail(tmp_path):
     (tmp_path / "pass.py").write_text("print('ok')\n", encoding="utf-8")
     (tmp_path / "fail.py").write_text("raise SystemExit(3)\n", encoding="utf-8")
-    gates, evaluations = _rubric(
+    _gates, evaluations = _rubric(
         tmp_path,
         [
             {"name": "cmd_pass", "check": {
@@ -67,7 +67,7 @@ def test_metric_gate_and_no_record_discipline(tmp_path):
     (tmp_path / "status.json").write_text(
         '{"best": {"shrp": 3.4}, "notes": "x"}', encoding="utf-8",
     )
-    gates, evaluations = _rubric(
+    _gates, evaluations = _rubric(
         tmp_path,
         [
             {"name": "shrp_ok", "check": {
@@ -93,7 +93,7 @@ def test_metric_gate_and_no_record_discipline(tmp_path):
 
 
 def test_manual_gates_are_not_machine_evaluated(tmp_path):
-    gates, evaluations = _rubric(
+    _gates, evaluations = _rubric(
         tmp_path, [{"name": "quality", "definition": "code is clean"}],
     )
     assert evaluations == {}

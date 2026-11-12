@@ -71,7 +71,7 @@ def find_executable(
             search_dirs.append(prefix_path)
             if sys.platform != "win32":
                 search_dirs.append(prefix_path / "bin")
-    except Exception:
+    except Exception:  # noqa: BLE001, S110 - npm prefix is an optional search dir
         pass
 
     for directory in search_dirs:

@@ -101,7 +101,6 @@ def _check_completion_phrases(reply: str, phrases: list[str]) -> bool:
 _OPENCODE_GENERATED_MD: set[str] = {
     "summary.md",
     "failure_report.md",
-    "evolution_report.md",
 }
 
 _SKIP_DIRS = DEFAULT_IGNORE_DIRS | {".opencode", "opencode_supervisor.egg-info"}

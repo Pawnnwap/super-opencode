@@ -16,15 +16,12 @@ monkeypatched slow step and assert the exact user-visible symptom:
   - the ABANDONED record must say where the run stopped and why.
 """
 
-import json
-import os
 import threading
 import time
 
 import pytest
 
 from services.jobs import job_manager as jm
-from services.jobs.job_manager import JobManager
 from services.jobs import worker_service as ws
 from services.jobs.state_store import JobStateStore
 
@@ -39,7 +36,6 @@ def _stub_loops(monkeypatch):
             yield {"level": "success", "msg": "ok"}
 
     monkeypatch.setattr(jm, "SupervisorLoop", Noop)
-    monkeypatch.setattr(jm, "SelfEvolutionLoop", Noop)
 
 
 def _start_worker_main(monkeypatch, tmp_path):

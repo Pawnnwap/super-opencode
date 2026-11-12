@@ -99,8 +99,7 @@ class WorkspaceGuard:
         for protected in _PROTECTED_FILES:
             if (
                 path_str == protected
-                or path_str.startswith(f"{protected}/")
-                or path_str.startswith(f"{protected}\\")
+                or path_str.startswith((f"{protected}/", f"{protected}\\"))
             ):
                 return True
             if path_obj.name == protected:
@@ -360,9 +359,8 @@ class WorkspaceGuard:
                             except ValueError:
                                 continue
                         try:
-                            if item.is_file():
-                                if item.name != ARCHIVE_COUNTER_NAME:
-                                    self._set_file_readonly(str(item))
+                            if item.is_file() and item.name != ARCHIVE_COUNTER_NAME:
+                                self._set_file_readonly(str(item))
                         except (OSError, PermissionError):
                             pass
                     protected.append(path_str)

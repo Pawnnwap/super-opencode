@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import contextlib
 import threading
-from typing import AsyncIterator
+from collections.abc import AsyncIterator
 
 from nicegui import ui
 

@@ -14,14 +14,14 @@ from services.config.opencode_config import (
     find_opencode_config_dir,
     get_opencode_config_file,
 )
+from services.jobs.job_states import ACTIVE_JOB_STATES
 from services.runtime.app_bootstrap import (
     auto_upgrade_codex,
     auto_upgrade_opencode,
     auto_upgrade_pi,
 )
-from services.jobs.job_states import ACTIVE_JOB_STATES
-from supervisor.protocols.protocol import resolve_protocol_path
 from services.runtime.workspace_cleanup import clean_workspace_artifacts
+from supervisor.protocols.protocol import resolve_protocol_path
 
 _statuses: list[dict] = []
 _lock = threading.Lock()

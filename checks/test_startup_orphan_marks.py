@@ -24,7 +24,6 @@ def _stub_loops(monkeypatch):
             yield {"level": "info", "msg": "unreachable"}
 
     monkeypatch.setattr(jm, "SupervisorLoop", Noop)
-    monkeypatch.setattr(jm, "SelfEvolutionLoop", Noop)
 
 
 def _manager(tmp_path):

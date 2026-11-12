@@ -262,7 +262,7 @@ def run_hownow_sweep(
         if on_event is not None:
             try:
                 on_event(event if isinstance(event, dict) else {"level": "info", "msg": str(event)})
-            except Exception:  # noqa: BLE001 — progress display must never kill the sweep
+            except Exception:
                 logger.debug("hownow on_event callback failed", exc_info=True)
 
     report = extract_report(runner.read_prose())

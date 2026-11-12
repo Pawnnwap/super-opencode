@@ -37,7 +37,7 @@ def _get_tiktoken_encoder():
         import tiktoken
         _tiktoken_encoder = tiktoken.get_encoding("o200k_base")
         logger.info("tiktoken encoder loaded (o200k_base)")
-    except Exception:
+    except Exception:  # noqa: BLE001 - tokenizer fallback - estimation is advisory
         _tiktoken_encoder = None
         logger.debug("tiktoken not available, using char-based estimation")
     return _tiktoken_encoder
@@ -71,7 +71,7 @@ def estimate_tokens(text: str) -> int:
     if enc is not None:
         try:
             return max(1, len(enc.encode(text)))
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - tokenizer fallback - estimation is advisory
             logger.debug("tiktoken encode failed, falling back to char estimate: %s", exc)
     return max(1, len(text) // _CHARS_PER_TOKEN)
 

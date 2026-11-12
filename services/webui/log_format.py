@@ -189,7 +189,7 @@ class PhaseState:
 
 
 _PROMPT_HEADLINE = re.compile(r"^→\s*(\w+) prompt\b")
-_TOOL_MARKER = re.compile(r"^\[(\w+)\]\s*(.*)", re.S)
+_TOOL_MARKER = re.compile(r"^\[(\w+)\]\s*(.*)", re.DOTALL)
 # File-mutating tools by name (opencode/pi edit|write|patch, codex file_change -> edit).
 _WRITE_TOOLS = frozenset(
     {"edit", "write", "patch", "multiedit", "apply_patch", "create", "file_change"},

@@ -55,12 +55,23 @@ def run_prompt(
         prepare_attempt=_prepare,
         classify_line=classify_line,
         config_error=ConfigErrorPolicy(
-            phrases=("unable to connect", "is the computer able to access"),
+            # ``provider.no-route`` / ``Model unavailable:`` is opencode 2.x
+            # saying the configured model/provider pair does not exist. Without
+            # it the run burns every retry on the same doomed model, and (before
+            # the `error` event was parsed) each turn looked like agent silence.
+            phrases=(
+                "unable to connect",
+                "is the computer able to access",
+                "provider.no-route",
+                "model unavailable",
+            ),
             header="OPENCODE CONFIG ERROR",
             hint=(
-                "opencode cannot reach the AI provider.\n"
-                "Fix: run 'opencode' interactively -> configure a working provider,\n"
-                "or set the model in UI 'opencode model' field."
+                "opencode cannot reach the AI provider, or the model is not "
+                "available on it.\n"
+                "Fix: run 'opencode' interactively -> configure a working "
+                "provider,\nor set a model that provider serves in the UI "
+                "'opencode model' field."
             ),
         ),
         tokens_from_outcome=lambda outcome: outcome.tokens_total,

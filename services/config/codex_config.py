@@ -6,8 +6,8 @@ import os
 import shutil
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 CODEHELP_SERVER_NAME = "super_opencode_codehelp"
 
@@ -36,6 +36,7 @@ def _run_codex(command: list[str]) -> subprocess.CompletedProcess[str]:
         capture_output=True,
         text=True,
         timeout=20,
+        check=False,
         shell=(sys.platform == "win32" and executable.lower().endswith((".cmd", ".bat"))),
     )
 

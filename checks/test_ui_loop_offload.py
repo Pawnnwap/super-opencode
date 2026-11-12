@@ -39,7 +39,7 @@ def test_detail_navigation_does_not_parse_whole_logs():
     launch = _read("services", "webui", "launch.py")
     assert "manager.get_job_summary(job_id)" in launch
     assert ".get_job_status(" not in launch
-    for page in ("run.py", "evolve.py"):
+    for page in ("run.py", "harvest.py"):
         src = _read("services", "webui", "pages", page)
         assert "render_live_screen(" in src
         # A mention in a comment is fine; a call is not.

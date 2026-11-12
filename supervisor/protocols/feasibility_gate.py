@@ -309,7 +309,7 @@ def check_feasibility(
         count = _as_int(ceiling_raw.get("count"))
         of = _as_int(ceiling_raw.get("of"))
         if count is not None and of is not None:
-            ceiling = of if count >= of else count
+            ceiling = min(of, count)
         elif count is not None:
             ceiling = count
         raw_blocked = ceiling_raw.get("blocked_gates")
@@ -454,19 +454,19 @@ def write_feasibility_facts(
 
 __all__ = [
     "DEFAULT_FACTS_NAME",
-    "MAX_BLOCK_CHARS",
+    "GATE_RESULTS_NAME",
     "GATE_STATUSES",
-    "Gate",
-    "parse_gates",
-    "gates_to_facts",
-    "write_feasibility_facts",
+    "MAX_BLOCK_CHARS",
     "FeasibilityAssessment",
+    "Gate",
     "check_feasibility",
     "default_facts_path",
     "default_gate_results_path",
-    "GATE_RESULTS_NAME",
+    "gates_to_facts",
     "load_feasibility_facts",
+    "parse_gates",
     "parse_llm_facts",
     "protocol_fingerprint",
     "render_feasibility_block",
+    "write_feasibility_facts",
 ]

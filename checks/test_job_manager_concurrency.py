@@ -53,7 +53,6 @@ def stub_loops(monkeypatch):
     StubLoop.release.clear()
     StubLoop.stop_flag.clear()
     monkeypatch.setattr(jm, "SupervisorLoop", StubLoop)
-    monkeypatch.setattr(jm, "SelfEvolutionLoop", StubLoop)
 
 
 def _config(ws: Path) -> SupervisorConfig:

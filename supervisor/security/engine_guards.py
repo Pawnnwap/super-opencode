@@ -78,9 +78,6 @@ class GuardInstallResult:
     # True when the engine's native gate could not be installed at all; the
     # caller must refuse to start rather than run without the policy.
     failed: bool = False
-    # True when the engine's native gate could not be installed at all; the
-    # caller must refuse to start rather than run without the policy.
-    failed: bool = False
 
     @property
     def policy_path(self) -> Path | None:
@@ -1203,9 +1200,9 @@ export default function (pi: any) {
 
 __all__ = [
     "GUARD_MARKER",
-    "GuardInstallResult",
     "POLICY_FILE_PREFIX",
     "VIOLATION_LOG_PREFIX",
+    "GuardInstallResult",
     "access_store_dir",
     "default_codex_home",
     "install_access_guard",

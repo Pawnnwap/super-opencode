@@ -10,48 +10,26 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 try:
-    from mcp_server.codehelp_support.docstrings import (
-        _codehelp_search_docstrings,
-        _get_docstring,
-        _iter_py_files,
-        _match_target,
-        _parts_match,
-    )
-    from mcp_server.codehelp_support.examples import (
-        _codehelp_search_package_examples,
-        _realpython_results,
-        _so_results,
-        _strip_html,
-    )
-    from mcp_server.codehelp_support.http import _http_get
     from mcp_server.codehelp_support.dependencies import _codehelp_analyze_dependencies
     from mcp_server.codehelp_support.docs import _codehelp_fetch_official_docs
-    from mcp_server.codehelp_support.packages import (
-        _codehelp_search_package_version,
-        _npm_version,
-        _pypi_version,
-    )
+    from mcp_server.codehelp_support.docstrings import _codehelp_search_docstrings
+    from mcp_server.codehelp_support.examples import _codehelp_search_package_examples
+    from mcp_server.codehelp_support.packages import _codehelp_search_package_version
 except ImportError:
+    from codehelp_support.dependencies import (
+        _codehelp_analyze_dependencies,  # type: ignore[no-redef]
+    )
+    from codehelp_support.docs import (
+        _codehelp_fetch_official_docs,  # type: ignore[no-redef]
+    )
     from codehelp_support.docstrings import (  # type: ignore[no-redef]
         _codehelp_search_docstrings,
-        _get_docstring,
-        _iter_py_files,
-        _match_target,
-        _parts_match,
     )
     from codehelp_support.examples import (  # type: ignore[no-redef]
         _codehelp_search_package_examples,
-        _realpython_results,
-        _so_results,
-        _strip_html,
     )
-    from codehelp_support.http import _http_get  # type: ignore[no-redef]
-    from codehelp_support.dependencies import _codehelp_analyze_dependencies  # type: ignore[no-redef]
-    from codehelp_support.docs import _codehelp_fetch_official_docs  # type: ignore[no-redef]
     from codehelp_support.packages import (  # type: ignore[no-redef]
         _codehelp_search_package_version,
-        _npm_version,
-        _pypi_version,
     )
 
 try:
@@ -268,7 +246,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             return [TextContent(type="text", text="Error: 'package_name' is required")]
         try:
             result = _codehelp_search_package_version(package_name, ecosystem)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - MCP tool boundary - a failing lookup returns text, never crashes the server
             result = {"error": str(exc), "package": package_name}
         return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
@@ -279,7 +257,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             return [TextContent(type="text", text="Error: 'query' is required")]
         try:
             result = _codehelp_search_package_examples(query, max_results)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - MCP tool boundary - a failing lookup returns text, never crashes the server
             result = {"error": str(exc), "query": query}
         return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
@@ -289,7 +267,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         include_latest = bool(arguments.get("include_latest", False))
         try:
             result = _codehelp_analyze_dependencies(codebase_path, package_name, include_latest)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - MCP tool boundary - a failing lookup returns text, never crashes the server
             result = {"status": "error", "error": str(exc), "codebase_path": codebase_path}
         return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
@@ -305,7 +283,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             return [TextContent(type="text", text="Error: 'package_name' is required")]
         try:
             result = _codehelp_fetch_official_docs(package_name, ecosystem, query, max_chars)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - MCP tool boundary - a failing lookup returns text, never crashes the server
             result = {"status": "error", "error": str(exc), "package": package_name}
         return [TextContent(type="text", text=json.dumps(result, indent=2))]
 

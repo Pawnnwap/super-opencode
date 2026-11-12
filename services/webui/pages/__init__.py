@@ -1,1 +1,1 @@
-"""NiceGUI pages: wizard, run, evolve."""
+"""NiceGUI pages: wizard, run, harvest."""

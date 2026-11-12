@@ -27,19 +27,19 @@ def _snap(rel: str, body: str = "x = 1\n") -> FileSnapshot:
 
 
 def _context(workspace, **overrides):
-    kwargs = dict(
-        workspace=workspace,
-        max_tokens=320_000,
-        max_protected_files_for_suggestions=5,
-        protocol_target="TARGET",
-        model="test",
-        client=None,
-        ignore_matcher=None,
-        log_prompt=lambda *a, **k: None,
-        skip_dirs={".git"},
-        skip_dir_prefixes=(".",),
-        generated_markdown_files={"summary.md"},
-    )
+    kwargs = {
+        "workspace": workspace,
+        "max_tokens": 320_000,
+        "max_protected_files_for_suggestions": 5,
+        "protocol_target": "TARGET",
+        "model": "test",
+        "client": None,
+        "ignore_matcher": None,
+        "log_prompt": lambda *a, **k: None,
+        "skip_dirs": {".git"},
+        "skip_dir_prefixes": (".",),
+        "generated_markdown_files": {"summary.md"},
+    }
     kwargs.update(overrides)
     return SupervisorContextManager(**kwargs)
 

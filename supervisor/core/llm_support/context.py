@@ -254,7 +254,7 @@ class SupervisorContextManager:
                     selected = _json.loads(raw)
                 if not isinstance(selected, list):
                     selected = []
-            except Exception:
+            except Exception:  # noqa: BLE001 - evidence gather is best-effort - missing evidence is not fatal
                 matches = re.findall(r'["\']([^"\']+)["\']', raw)
                 selected = [match for match in matches if match]
 
@@ -296,7 +296,7 @@ class SupervisorContextManager:
                     real_paths.append(best_match)
 
             return real_paths[:top_k]
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - evidence gather is best-effort - missing evidence is not fatal
             logger.warning(
                 "LLM file selection failed (%s); falling back to first %d files.",
                 exc,
@@ -502,6 +502,6 @@ class SupervisorContextManager:
                 )
 
             return experience_text + "\n--- end retrieved memory ---\n\n"
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - evidence gather is best-effort - missing evidence is not fatal
             logger.warning("Failed to build experience context: %s", exc)
             return ""

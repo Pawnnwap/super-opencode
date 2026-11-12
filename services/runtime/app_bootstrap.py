@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import json
 import os
-import tempfile
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 UPGRADE_SETTINGS_FILE = Path.home() / ".opencode_supervisor_settings.json"
@@ -24,7 +24,7 @@ def get_npm_registry(settings_file: Path = UPGRADE_SETTINGS_FILE) -> str:
             value = cfg.get("npm_registry")
             if value is not None:
                 return str(value).strip() or ""
-    except Exception:
+    except Exception:  # noqa: BLE001, S110 - unreadable settings fall back to default
         pass
     return DEFAULT_NPM_REGISTRY
 
@@ -44,7 +44,7 @@ def _installed_codex() -> str:
         return find_codex()
     except FileNotFoundError:
         return ""
-    except Exception:
+    except Exception:  # noqa: BLE001 - startup upgrade step must never block boot
         return ""
 
 
@@ -56,7 +56,7 @@ def should_skip_upgrade(settings_file: Path = UPGRADE_SETTINGS_FILE) -> bool:
             cfg = json.loads(settings_file.read_text(encoding="utf-8"))
             if cfg.get("skip_upgrade"):
                 return True
-    except Exception:
+    except Exception:  # noqa: BLE001, S110 - unreadable settings do not skip upgrades
         pass
     return False
 
@@ -122,7 +122,7 @@ def _auto_upgrade_npm_cli(
             f"[{label}-upgrade] npm not found — install Node.js to enable auto-upgrade. Continuing startup.",
             file=sys.stderr,
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - startup upgrade step must never block boot
         print(
             f"[{label}-upgrade] Unexpected error: {exc}. Continuing startup.",
             file=sys.stderr,
@@ -164,9 +164,10 @@ def _sudo_available_noninteractive() -> bool:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             timeout=5,
+            check=False,
         )
         return proc.returncode == 0
-    except Exception:
+    except Exception:  # noqa: BLE001 - startup upgrade step must never block boot
         return False
 
 
@@ -332,7 +333,7 @@ def auto_upgrade_codex(
             "[codex-upgrade] npm not found — install Node.js to enable auto-upgrade. Continuing startup.",
             file=sys.stderr,
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - startup upgrade step must never block boot
         print(
             f"[codex-upgrade] Unexpected error: {exc}. Continuing startup.",
             file=sys.stderr,

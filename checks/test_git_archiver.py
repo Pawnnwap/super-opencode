@@ -116,7 +116,7 @@ def test_retention_drops_oldest_and_reclaims(tmp_path):
         "count-objects", "-v",
     ).stdout
     size_kb = int(
-        [ln for ln in blob_count.splitlines() if ln.startswith("size:")][0].split()[1]
+        next(ln for ln in blob_count.splitlines() if ln.startswith("size:")).split()[1]
     )
     # 2 surviving snapshots × (changed protocol + one big blob) ≈ 400 KB;
     # all four surviving would be ≈ 800 KB.

@@ -23,15 +23,15 @@ def _clean_env(monkeypatch):
 
 
 def _cmd(**overrides):
-    kwargs = dict(
-        exe="codex",
-        prompt="do the thing",
-        agent="",
-        codex_model=None,
-        use_continue=True,
-        session_id=None,
-        use_shell=False,
-    )
+    kwargs = {
+        "exe": "codex",
+        "prompt": "do the thing",
+        "agent": "",
+        "codex_model": None,
+        "use_continue": True,
+        "session_id": None,
+        "use_shell": False,
+    }
     kwargs.update(overrides)
     return build_cmd(**kwargs)
 
@@ -78,7 +78,6 @@ def test_job_manager_sets_and_clears_parallel_flag(tmp_path, monkeypatch):
 
     monkeypatch.delenv("SOP_PARALLEL_RUNS", raising=False)
     monkeypatch.setattr(jm, "SupervisorLoop", ParkedLoop)
-    monkeypatch.setattr(jm, "SelfEvolutionLoop", ParkedLoop)
 
     manager = JobManager(str(tmp_path / ".job_store"), max_parallel_jobs=4)
 

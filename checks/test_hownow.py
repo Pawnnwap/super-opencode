@@ -115,7 +115,7 @@ def test_wakeup_text_wakes_the_agent_inline_with_the_record():
 def test_extract_report_unwraps_fence_and_keeps_bare_reply():
     bare = "| id | run |\n|---|---|\nswept 1 session"
     assert extract_report(bare) == bare
-    fenced = "Here is the report:\n```markdown\n%s\n```\ndone." % bare
+    fenced = f"Here is the report:\n```markdown\n{bare}\n```\ndone."
     assert extract_report(fenced) == bare
     assert extract_report("") == ""
 

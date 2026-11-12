@@ -9,9 +9,14 @@ Used by the web UI (services/webui/pages/wizard.py).
 from __future__ import annotations
 
 import logging
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
-from supervisor.protocols.protocol import Protocol, parse_protocol_text, strip_code_fences
+from supervisor.protocols.protocol import (
+    Protocol,
+    parse_protocol_text,
+    strip_code_fences,
+)
 from supervisor.protocols.protocol_analyzer import ProtocolAnalysis, ProtocolAnalyzer
 from supervisor.protocols.target_audit import audit_target
 from supervisor.utils.llm_stream import (
@@ -269,7 +274,7 @@ class ProtocolWizard(StreamedLLMHelper):
         )
         try:
             return analyzer.analyze_text(temp_text)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - refine request - report the failure to the caller
             logger.warning("Protocol analysis failed for raw sections: %s", exc)
             return None
 
@@ -280,6 +285,6 @@ class ProtocolWizard(StreamedLLMHelper):
         analyzer = ProtocolAnalyzer()
         try:
             return analyzer.analyze_text(refined_md)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - refine request - report the failure to the caller
             logger.warning("Protocol analysis failed for refined markdown: %s", exc)
             return None

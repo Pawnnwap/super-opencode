@@ -10,7 +10,6 @@ from supervisor.memory_policy_evaluator import (
 )
 from supervisor.runners.test_runner import RunTestResult
 
-
 CASES = (
     MemoryEvaluationCase("config", "preserve user config", ("config.toml",)),
     MemoryEvaluationCase("archive", "restore workspace archive", ("workspace_archiver.py",)),

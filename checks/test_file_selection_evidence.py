@@ -8,6 +8,7 @@ aimed blindly. The listing now leads with changed files and carries
 """
 import os
 import time
+from typing import ClassVar
 
 from supervisor.analyzers.codebase_analyzer import snapshot_codebase
 from supervisor.core.llm_support.context import SupervisorContextManager, _age_label
@@ -49,7 +50,7 @@ class _CapturingClient:
                     message = _Msg()
 
                 class _Resp:
-                    choices = [_Choice()]
+                    choices: ClassVar = [_Choice()]
 
                 return _Resp()
 
@@ -147,7 +148,7 @@ def test_listing_bounds_the_delta_vocabulary(tmp_path):
     mgr = _manager(tmp_path)
     client = _CapturingClient()
     mgr._client = client
-    mgr.set_change_providers(deltas=lambda: {}, mtimes=lambda: {"a.py": time.time()})
+    mgr.set_change_providers(deltas=dict, mtimes=lambda: {"a.py": time.time()})
     mgr.llm_select_files({"a.py": 2}, 1)
     prompt = client.prompt
     for token in ("+new", "~+12/-3", "-deleted"):

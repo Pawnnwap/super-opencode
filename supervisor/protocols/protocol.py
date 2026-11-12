@@ -139,7 +139,7 @@ def protocol_from_jsonl(raw: str) -> Protocol:
             continue
         data = json.loads(text)
         if not isinstance(data, dict):
-            raise ValueError("protocol.jsonl lines must be JSON objects")
+            raise ValueError("protocol.jsonl lines must be JSON objects")  # noqa: TRY004 - file payload shape
         name = data.get("section")
         if name:
             sections[str(name).upper()] = str(data.get("content", ""))

@@ -66,7 +66,7 @@ codex / pi 反复执行、评审、回收，并用硬性路径策略限制代理
    - 监督模型：模型名、API Base URL、API Key；
    - 执行引擎：opencode / codex / pi，以及对应模型与可执行文件路径。
 2. **Connectivity Tests**
-   - 点击 **RUN TESTS**，两项都通过后，Live Run 与 Self-Evolution 才会解锁。
+   - 点击 **RUN TESTS**，两项都通过后，Live Run 才会解锁。
    - 注意：界面重启后需要重新点一次（测试结果是本次会话的）。
 
 ---
@@ -129,7 +129,6 @@ codex / pi 反复执行、评审、回收，并用硬性路径策略限制代理
 ## 8. 查看结果与回收
 
 - **Harvester**（`/harvest`）：把完成的运行整理成一个干净目录。
-- **Self-Evolution**（`/evolve`）：用 meta 协议改进本项目源码。
 - 每个工作区里会留下：`protocol.jsonl`、`feasibility_facts.json`、
   `access_protection.json`、`.opencodeignore`、运行日志等。
 

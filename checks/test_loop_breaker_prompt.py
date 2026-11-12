@@ -10,7 +10,6 @@ from supervisor.core.loop_base import loop_breaker_section
 from supervisor.prompts import (
     INIT_PROMPT_TEMPLATE,
     RESTART_PROMPT_TEMPLATE,
-    SELF_EVOLUTION_INIT_PROMPT_TEMPLATE,
     SHELL_HEREDOC_RULE,
 )
 
@@ -18,7 +17,6 @@ from supervisor.prompts import (
 def test_heredoc_rule_in_all_standing_prompts():
     for template in (
         INIT_PROMPT_TEMPLATE,
-        SELF_EVOLUTION_INIT_PROMPT_TEMPLATE,
         RESTART_PROMPT_TEMPLATE,
     ):
         assert SHELL_HEREDOC_RULE in template
@@ -40,16 +38,6 @@ def test_init_template_still_formats():
     )
     assert SHELL_HEREDOC_RULE in out
     assert out.rstrip().endswith("Begin.")
-
-
-def test_self_evolution_template_still_formats():
-    out = SELF_EVOLUTION_INIT_PROMPT_TEMPLATE.format(
-        protocol_text="PROTO",
-        baseline_note="",
-        workspace="E:/ws",
-        protected_files_desc="",
-    )
-    assert SHELL_HEREDOC_RULE in out
 
 
 def test_restart_template_still_formats():

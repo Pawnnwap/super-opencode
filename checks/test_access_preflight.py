@@ -8,8 +8,7 @@ from pathlib import Path
 
 import pytest
 
-import supervisor.security.engine_guards as engine_guards
-import supervisor.security.preflight as preflight
+from supervisor.security import engine_guards, preflight
 from supervisor.security.access_policy import build_policy
 from supervisor.security.engine_guards import install_access_guard
 from supervisor.security.preflight import run_drill, run_policy_drill

@@ -10,8 +10,8 @@ from pathlib import Path
 
 import pytest
 
+from supervisor.security import engine_guards
 from supervisor.security.access_policy import build_policy
-import supervisor.security.engine_guards as engine_guards
 from supervisor.security.engine_guards import (
     GUARD_MARKER,
     install_access_guard,
@@ -50,7 +50,7 @@ def test_snapshot_written(layout):
 
 
 def test_opencode_rules_deny_outside_and_writes_to_whitelist(layout):
-    ws, ref, policy = layout
+    _ws, ref, policy = layout
     rules = opencode_permission_config(policy)
     assert rules["external_directory"]["*"] == "deny"
     boundary = str(ref).replace("\\", "/") + "/*"

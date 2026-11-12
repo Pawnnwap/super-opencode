@@ -299,6 +299,25 @@ def run_prompt_common(
                 )
                 stdout = ""
 
+            # Last-resort evidence floor: an engine that exits non-zero with
+            # nothing on stdout AND stderr hands the judge a bare `[exit N]`.
+            # That reads as "the agent refused to produce evidence", so gates
+            # get closed as UNMET on a harness fault. Label it for what it is.
+            if returncode not in (0, None) and not stdout.strip() and not stderr.strip():
+                stdout = (
+                    f"[{engine} produced no output at all and exited {returncode}] "
+                    "This is an engine/harness failure, not agent silence: no turn "
+                    "evidence exists, so judge any gate on this turn as UNVERIFIED "
+                    "rather than unmet, and report the engine as broken."
+                )
+                logger.error(
+                    "%s exited %d with empty stdout and stderr — the judge would "
+                    "have seen a bare '[exit %d]'",
+                    engine,
+                    returncode,
+                    returncode,
+                )
+
             runner._last_result = RunResult(
                 stdout=stdout,
                 stderr=stderr,

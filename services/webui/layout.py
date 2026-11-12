@@ -106,7 +106,6 @@ _PAGES = [
     ("wizard", "Protocol Wizard", "✍️"),
     ("run", "Live Run", "▶"),
     ("harvest", "Harvester", "🧺"),
-    ("evolve", "Self-Evolution", "🧬"),
 ]
 
 
@@ -214,9 +213,9 @@ def active_jobs(job_manager, job_type: str = "") -> list[dict]:
 
 
 def _has_active_jobs(job_manager) -> bool:
-    """Any run/evolve job queued or running right now (store read)."""
+    """Any run job queued or running right now (store read)."""
     return any(
-        state.get("type") in ("run", "evolve")
+        state.get("type") == "run"
         for state in active_jobs(job_manager)
     )
 
@@ -233,7 +232,7 @@ def render_shell(active: str, job_manager) -> None:
             # The lock gates new work only: with a live/queued job the pages
             # must stay open - that is where the run is watched and stopped.
             locked = (
-                key in {"run", "evolve"}
+                key == "run"
                 and not tests_ok
                 and not _has_active_jobs(job_manager)
             )
@@ -247,15 +246,14 @@ def render_shell(active: str, job_manager) -> None:
                 )
                 + (" opacity-50" if locked else " hover:bg-[#161b22]"),
             )
-            with nav:
-                with ui.row().classes("items-center gap-2"):
-                    ui.icon(icon)
-                    ui.label(label + (" 🔒" if locked else ""))
+            with nav, ui.row().classes("items-center gap-2"):
+                ui.icon(icon)
+                ui.label(label + (" 🔒" if locked else ""))
         ui.separator()
         with ui.column().classes("gap-1 text-xs text-[#8b949e] w-full"):
             ui.label("Queues").classes("font-bold text-[#9ecbff]")
             for queue_label, job_type in (
-                ("Run", "run"), ("Harvest", "harvest"), ("Evolution", "evolve"),
+                ("Run", "run"), ("Harvest", "harvest"),
             ):
                 with ui.row().classes("w-full justify-between items-center"):
                     ui.label(queue_label)

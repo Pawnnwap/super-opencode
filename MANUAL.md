@@ -55,7 +55,7 @@ The **Protocol Wizard** page (`/`) holds the whole setup:
 
 1. **Configuration** — workspace path, supervisor model/API key/base URL, agent
    engine + model + executable.
-2. **Connectivity Tests** — required before Run/Evolve unlock. An app restart
+2. **Connectivity Tests** — required before Live Run unlocks. An app restart
    re-locks them (flags are session-only); just run the tests again.
 3. **Advanced settings** — limits, retries, timeouts, log detail.
 4. **Access & Protection** — one panel, one *Auto-generate* button (LLM):
@@ -86,8 +86,7 @@ Files super-opencode reads/writes in a workspace (all protected from agent edits
 2. **Launch** (optionally: plan rounds, Occam Razor, supervisor skills, parallel
    replicas with copy/protocol-only seeding).
 3. Watch the task board / live screen; logs stream per job.
-4. **Harvester** (`/harvest`) turns a finished run into one clean folder;
-   **Self-Evolution** (`/evolve`) runs a meta-protocol against the source tree.
+4. **Harvester** (`/harvest`) turns a finished run into one clean folder.
 
 ## 7. Access policy (hard rule)
 
@@ -136,7 +135,7 @@ venv\Scripts\python.exe -m pytest checks\test_*.py -q
 
 | Symptom | Fix |
 |---|---|
-| Run/Evolve locked | run the connectivity tests on the wizard page |
+| Live Run locked | run the connectivity tests on the wizard page |
 | `protocol.jsonl` missing | create/refine a protocol and Accept & Save |
 | Policy drill failed | fix the whitelist/switch shown in the drill output |
 | Port already in use | `.\start_suprun.ps1 -Restart`, or wait for the guardian |

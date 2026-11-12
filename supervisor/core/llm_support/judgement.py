@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from supervisor.core.llm_support.models import StepContext, SupervisorVerdict
 from supervisor.protocols.alignment import (
     AlignmentResult,
+)
+from supervisor.protocols.alignment import (
     verify_protocol_alignment as _verify_protocol_alignment,
 )
-from supervisor.core.llm_support.models import StepContext, SupervisorVerdict
 from supervisor.protocols.protocol import Protocol
 from supervisor.protocols.protocol_analyzer import ProtocolAnalysis, ProtocolAnalyzer
 

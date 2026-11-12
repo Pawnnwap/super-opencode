@@ -14,14 +14,12 @@ from pathlib import Path
 from supervisor.prompts.templates import (
     INIT_PROMPT_TEMPLATE,
     RESTART_PROMPT_TEMPLATE,
-    SELF_EVOLUTION_INIT_PROMPT_TEMPLATE,
 )
 from supervisor.runners.codex_support.command_builder import build_cmd
 from supervisor.utils.filesystem.file_permissions import set_file_readonly
 from supervisor.workspace.cleanup_candidates import identify_cleanup_candidates
 from supervisor.workspace.workspace_archiver import WorkspaceArchiver
 from supervisor.workspace.workspace_guard import WorkspaceGuard
-
 
 # --------------------------------------------------------------------------- #
 # Prompt invariants: the agent must see the archive rule and the shell policy
@@ -37,11 +35,10 @@ def test_restart_template_carries_archive_and_shell_policy():
     assert "Remove-Item" in RESTART_PROMPT_TEMPLATE
 
 
-def test_init_templates_carry_shell_policy():
-    for template in (INIT_PROMPT_TEMPLATE, SELF_EVOLUTION_INIT_PROMPT_TEMPLATE):
-        assert ".archive/" in template
-        assert "SHELL POLICY" in template
-        assert "shutil.rmtree" in template
+def test_init_template_carries_shell_policy():
+    assert ".archive/" in INIT_PROMPT_TEMPLATE
+    assert "SHELL POLICY" in INIT_PROMPT_TEMPLATE
+    assert "shutil.rmtree" in INIT_PROMPT_TEMPLATE
 
 
 def test_codex_runner_uses_yolo_flag():

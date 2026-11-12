@@ -126,6 +126,37 @@ def _tool_marker(part: dict) -> str:
     return tool_marker_from(tool, inp)
 
 
+def _error_message(event: dict) -> str:
+    """Pull the human-readable message off an opencode ``error`` event.
+
+    Verified live on v2.2.7 for an unavailable model::
+
+        {"type":"error","sessionID":"ses_…",
+         "error":{"type":"provider.no-route","message":"Model unavailable: X"}}
+
+    Falls back through the shapes older/other builds use, and returns "" when
+    the event carries no text at all (the caller then surfaces a generic note
+    rather than nothing).
+    """
+    for key in ("message", "error"):
+        val = event.get(key)
+        if isinstance(val, str) and val.strip():
+            return val.strip()
+        if isinstance(val, dict):
+            inner = val.get("message")
+            if isinstance(inner, str) and inner.strip():
+                return inner.strip()
+            inner = val.get("type")
+            if isinstance(inner, str) and inner.strip():
+                return inner.strip()
+    props = event.get("properties")
+    if isinstance(props, dict):
+        inner = props.get("message")
+        if isinstance(inner, str) and inner.strip():
+            return inner.strip()
+    return ""
+
+
 def classify_line(line: str | None) -> LineEvent | None:
     """Classify one opencode json event line.
 
@@ -149,6 +180,17 @@ def classify_line(line: str | None) -> LineEvent | None:
 
     if etype == "tool_use":
         return LineEvent(kind="tool", marker=_tool_marker(part))
+
+    # opencode reports a turn that never reached the model (unavailable model,
+    # auth failure, provider route missing) as one `error` event and exits 1.
+    # It MUST NOT fall through to "other": a JSON-parseable line never reaches
+    # the raw fallback, so swallowing it left the supervisor with a bare
+    # `[exit 1]` and zero evidence on every turn — the judge then closed the
+    # run BLOCKED for "no evidence" (run_70c94806). `kind="error"` puts the
+    # text in the turn output while `prose` stays model-text-only, so this is
+    # never mistaken for "the agent answered".
+    if etype == "error":
+        return LineEvent(kind="error", text=_error_message(event))
 
     if etype in ("step_finish", "step-finish"):
         tokens = part.get("tokens")

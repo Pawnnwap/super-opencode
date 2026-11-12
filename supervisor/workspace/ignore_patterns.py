@@ -63,7 +63,7 @@ class IgnoreMatcher:
         except OSError as exc:
             logger.warning("Could not read ignore file %s: %s", ignore_file, exc)
             return False
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - ignore file parsing is best-effort
             logger.warning("Unexpected error loading ignore file %s: %s", ignore_file, exc)
             return False
 

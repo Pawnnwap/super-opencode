@@ -7,8 +7,9 @@ import threading
 import time
 import urllib.parse
 import urllib.request
+from collections.abc import Callable
 from datetime import UTC, datetime
-from typing import Any, Callable
+from typing import Any
 
 _DEFAULT_TIMEOUT = 10
 _UA = "codehelp-mcp/1.0 (super-opencode; +https://github.com/Pawnnwap/super-opencode)"
@@ -45,7 +46,7 @@ def _http_get_with_meta(
 ) -> tuple[dict[str, Any] | list[Any], dict[str, Any]]:
     data, metadata = _cached_request(url, "json", timeout=timeout)
     if not isinstance(data, (dict, list)):
-        raise ValueError(f"Expected JSON object or list from {url}")
+        raise ValueError(f"Expected JSON object or list from {url}")  # noqa: TRY004 - payload shape, not argument type
     return data, metadata
 
 
@@ -66,7 +67,7 @@ def _http_get_text_with_meta(
 ) -> tuple[str, dict[str, Any]]:
     data, metadata = _cached_request(url, "text", timeout=timeout, validate_url=validate_url)
     if not isinstance(data, str):
-        raise ValueError(f"Expected text response from {url}")
+        raise ValueError(f"Expected text response from {url}")  # noqa: TRY004 - payload shape, not argument type
     return data, metadata
 
 

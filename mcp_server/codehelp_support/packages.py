@@ -85,7 +85,7 @@ def _codehelp_search_package_version(package_name: str, ecosystem: str = "auto")
                 errors.append(f"PyPI: package '{package_name}' not found (404)")
             else:
                 errors.append(f"PyPI HTTP {exc.code}: {exc.reason}")
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - network/tool boundary - upstream failures degrade to a message
             errors.append(f"PyPI: {exc}")
 
     if ecosystem in ("auto", "npm", "node", "javascript", "js"):
@@ -96,7 +96,7 @@ def _codehelp_search_package_version(package_name: str, ecosystem: str = "auto")
                 errors.append(f"npm: package '{package_name}' not found (404)")
             else:
                 errors.append(f"npm HTTP {exc.code}: {exc.reason}")
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - network/tool boundary - upstream failures degrade to a message
             errors.append(f"npm: {exc}")
 
     return {

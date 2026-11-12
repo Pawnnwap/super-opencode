@@ -227,24 +227,27 @@ class GoalGuard:
             return decision
 
         evidence_files = self._evidence_files(changed_files)
-        if getattr(self._config, "goal_require_changes", True) and not evidence_files:
+        if (
+            getattr(self._config, "goal_require_changes", True)
+            and not evidence_files
             # A run that legitimately produced everything it needed earlier
             # (deliverable sealed, artifacts published) has no new file to
             # show on the DONE turn. Demanding one rewards churn: the measured
             # failure mode was an agent deleting __pycache__ and rewriting
             # summary.md to manufacture a diff. Attainment evidence recorded in
             # the gate facts is equally observable, so it satisfies the rule.
-            if not self._attainment_recorded():
-                decision = self._block(
-                    verdict,
-                    changed_files,
-                    unmet=[],
-                    reason=(
-                        "no observable workspace change since run start — "
-                        "completion without evidence is not accepted"
-                    ),
-                )
-                return decision
+            and not self._attainment_recorded()
+        ):
+            decision = self._block(
+                verdict,
+                changed_files,
+                unmet=[],
+                reason=(
+                    "no observable workspace change since run start — "
+                    "completion without evidence is not accepted"
+                ),
+            )
+            return decision
 
         if getattr(self._config, "goal_verify_tests", False):
             ok, detail = self._run_test_gate()

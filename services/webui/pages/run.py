@@ -138,8 +138,19 @@ def _render_launch_form(workspace: Path) -> None:
                             enable_occam_razor=bool(occam.value),
                             enable_supervisor_skills=bool(skills.value),
                         )
-                    except ValueError as exc:
-                        ui.notify(str(exc), type="negative")
+                    # Every failure mode here is a filesystem failure
+                    # (``shutil.Error`` from a file a running tool holds open,
+                    # disk full, path too long), not a ValueError. Catching only
+                    # ValueError let those escape into NiceGUI's async task
+                    # where they vanish; busy_buttons' finally then re-enabled
+                    # the button, so the operator saw a Launch that "did
+                    # nothing". Surface the reason instead.
+                    except Exception as exc:  # noqa: BLE001 - must never be silent
+                        ui.notify(
+                            f"Batch launch failed: {type(exc).__name__}: "
+                            f"{str(exc)[:600]}",
+                            type="negative",
+                        )
                         return
                     ui.notify(f"Batch launched: {len(job_ids)} instance(s)")
                     ui.navigate.to(f"/run/{job_ids[0]}")
@@ -181,7 +192,6 @@ def render(job_id: str = "") -> None:
             job_id,
             job_type="run",
             base_path="/run",
-            is_evolution=False,
             running_message="Task is running in the background.",
             not_found_label=f"Run job {job_id} not found.",
         )
@@ -202,4 +212,4 @@ def render(job_id: str = "") -> None:
     HowNowPanel()
 
     ui.label("Task Board").classes("text-lg font-bold mt-4")
-    JobBoard(manager, "run", is_evolution=False)
+    JobBoard(manager, "run")

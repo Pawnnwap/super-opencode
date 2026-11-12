@@ -151,6 +151,7 @@ class GitWorkspaceArchiver:
             input=input_text,
             cwd=str(self.workspace),
             env=env,
+            check=False,
         )
         if check and proc.returncode != 0:
             raise GitArchiverError(
@@ -165,7 +166,7 @@ class GitWorkspaceArchiver:
         self.repo_dir.mkdir(parents=True, exist_ok=True)
         proc = subprocess.run(
             [self._git_exe, "init", "--bare", "--quiet", str(self.repo_dir)],
-            capture_output=True, text=True,
+            capture_output=True, text=True, check=False,
         )
         if proc.returncode != 0:
             raise GitArchiverError(f"git init --bare failed: {proc.stderr.strip()[:400]}")
@@ -216,7 +217,7 @@ class GitWorkspaceArchiver:
         with self._lock:
             try:
                 return self._snapshot(label, files_to_archive, ignore_matcher)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - git probe is best-effort - callers re-check exit status
                 self._failures += 1
                 logger.warning(
                     "git archive attempt failed (%d/2): %s", self._failures, exc,

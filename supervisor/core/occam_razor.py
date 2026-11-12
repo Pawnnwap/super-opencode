@@ -87,9 +87,7 @@ _CODE_FILENAMES = {
 }
 
 _GENERATED_FILENAMES = {
-    "evolution_report.md",
     "failure_report.md",
-    "meta_protocol.md",
     "occam_manifest.json",
     "occam_report.md",
     "protocol.md",

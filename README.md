@@ -1,33 +1,31 @@
 # opencode-supervisor
 
-> **A self-evolving autonomous coding agent — it supervises, judges, and improves itself.**
+> **An autonomous coding agent — it supervises and judges every iteration against your protocol.**
 
 ---
 
 [English](./README.md) | [中文](./README_zh.md)
 
-A NiceGUI-driven, dual-loop autonomous coding system. `SupervisorLoop` drives protocol-guided
+A NiceGUI-driven supervised coding system. `SupervisorLoop` drives protocol-guided
 task execution with an LLM-based judge (`LLMSupervisor`) that evaluates every iteration for
-protocol alignment. `SelfEvolutionLoop` turns the same machinery on the codebase itself —
-running test-gated self-improvement with automatic regression rollback. File changes use each
-execution backend's native read, edit, patch, and write tools.
+protocol alignment. File changes use each execution backend's native read, edit, patch,
+and write tools.
 
 Key capabilities:
 
-- **Dual-loop architecture** — `SupervisorLoop` for external tasks, `SelfEvolutionLoop` for self-improvement
+- **Supervised loop** — `SupervisorLoop` runs one protocol against one workspace, judged every turn
 - **Triple execution backend** — OpenCode (default), Codex, or pi, selected via `config.engine`; the supervisor loop is backend-agnostic
 - **Evidence-grounded judge** — `LLMSupervisor` evaluates agent output against protocol targets at every step, grounded in deterministic workspace facts via the `JudgeHarness` evidence registry
 - **Goal guard** — Evidence-gated completion: "all targets met" is a proposal, validated against deterministic evidence
 - **Loop & stagnation detection** — Intra-turn tool-loop detection plus cross-turn workspace-fingerprint stagnation with a nudge ladder
 - **Native file editing** — OpenCode, Codex, and pi use their maintained read, edit, patch, and write tools
-- **Web UI** — NiceGUI dashboard: Protocol Wizard, Live Run, Harvester, and Self-Evolution pages, with a persisted background-job board and full-page live job screens
+- **Web UI** — NiceGUI dashboard: Protocol Wizard, Live Run, and Harvester pages, with a persisted background-job board and full-page live job screens
 - **Plan mode** — Configurable pre-execution planning rounds with read-only opencode analysis
 - **Occam's razor pass** — Optional post-success redundancy-reduction stage that runs on an archive copy, never the live workspace
 - **Task-state journal** — Append-only `TASK_STATE.md` progress journal re-injected after context resets
 - **Headline job logs** — every event persists as one key line; large blocks (prompts / outputs / verdicts / suggestions) keep their full bodies in a per-job sidecar (`.job_store/<job>.full`), and error events are always written in full
 - **Parallel study batches** — launch N isolated instances of one protocol from the Run page (workspace clones or protocol-only seeds); the board groups them into one batch card with one-click cancel, under a configurable concurrency cap
 - **Incremental workspace archiving** — `.archive/` snapshots are git object stores (one orphan commit per snapshot): unchanged files are shared by hash and retention actually frees space, with automatic full-copy fallback when git is unavailable
-- **Vulnerability scanning** — 9-tool static analysis pipeline (Bandit, Semgrep, Ruff, etc.)
 - **Context management** — Token-aware monitoring with graduated warnings and auto-compaction
 - **Feasibility gate** - optional `feasibility_facts.json` (workspace root, outside the archived `logs/`) records known gate ceilings and blocked gates; an unreachable done-condition is surfaced up front instead of being rediscovered over many pre-registered attempts. The Live Run form offers **Generate draft**: the supervisor model transcribes gates from `protocol.md` and ceilings evidenced in prior-attempt artifacts (`status.json`, `REPORT.md`, …) into the form for review — it never invents numbers
 - **Judge-context budget** - tiered history compaction plus identical-input verdict reuse: a byte-identical judge input replays the stored verdict without another LLM call
@@ -216,9 +214,9 @@ pip install -r requirements.txt
 
 Core dependencies are defined in `pyproject.toml`: `openai`, `nicegui`,
 `tiktoken`, `pytest`, `rich`, `psutil`, and `mcp`. The
-`requirements.txt` file additionally pins the scanner toolchain (Bandit,
+`requirements.txt` file additionally pins a static-analysis toolchain (Bandit,
 Pylint, pyflakes, Semgrep, pip-audit, Ruff, Vulture, deadcode, pyscn) and the
-auto-fix helpers (autoflake, isort, autopep8, pyupgrade).
+auto-fix helpers (autoflake, isort, autopep8, pyupgrade) for manual use.
 
 > **MCP server:** The `mcp` package is required for the Codehelp MCP server
 > (`mcp_server/codehelp.py`), which provides code-assistance tools to OpenCode and Codex.
@@ -255,19 +253,16 @@ The supervisor system runs the opencode agent in a controlled feedback loop:
    triggers automatically when needed
 3. **Workspace safety** — The system blocks out-of-workspace path references to
    prevent unintended modifications
-4. **Checkpointing** — Every successful iteration is snapshotted to `.checkpoints/`
-5. **Workspace archiving** — Workspace state is preserved in `.archive/` before
+4. **Workspace archiving** — Workspace state is preserved in `.archive/` before
    each run and after each iteration
-6. **Self-evolution** — The system can analyze and improve its own codebase,
-   running tests before and after each change with automatic rollback on regression
-7. **Goal guard** — Completion claims are verified against deterministic
+5. **Goal guard** — Completion claims are verified against deterministic
    evidence before the run ends (see below)
-8. **Loop detection** — Repeated tool calls within one turn are detected and
+6. **Loop detection** — Repeated tool calls within one turn are detected and
    the run is killed and restarted with fixed context instead of burning tokens;
    cross-turn workspace stagnation escalates through a nudge ladder
-9. **Occam's razor pass** — After success, an optional stage lets the agent strip
+7. **Occam's razor pass** — After success, an optional stage lets the agent strip
    redundant code from an archived copy of the final workspace
-10. **Task-state journal** — A `TASK_STATE.md` progress journal preserves
+8. **Task-state journal** — A `TASK_STATE.md` progress journal preserves
    "what was already tried" across context resets
 
 ---
@@ -446,7 +441,7 @@ judged turn, 1 = rare). The ranking is not implementation difficulty.
 | 3 | Protocol alignment | 3 | 5 | 15 | **implemented** — final yes/no on scanner flags |
 | 4 | Run closure / BLOCKED exit | 5 | 2 | 10 | **implemented** — closure/stand-down arbitration |
 | 5 | DONE proposal accept/reject | 4 | 2 | 8 | **implemented** — post-veto ambiguity only |
-| 6 | Direction novelty | 4 | 2 | 8 | not implemented — near-threshold similarity cases (evolve runs) |
+| 6 | Direction novelty | 4 | 2 | 8 | not implemented — near-threshold similarity cases |
 | 7 | Plan-mode approval | 3 | 2 | 6 | not implemented — accept plan vs another round |
 | 8 | Occam accept/rollback | 4 | 1 | 4 | not implemented — final accept/rollback |
 | 9 | Loop restart after repeated tools | 3 | 1 | 3 | not implemented — ambiguous repetition cases |
@@ -492,11 +487,11 @@ the restart prompt so the agent resumes with continuity.
 
 ## Web UI Pages
 
-Four NiceGUI pages, served at `/` and `/wizard` (Protocol Wizard), `/run`,
-`/harvest`, and `/evolve`. Launching a task or an evolution enqueues a
+Three NiceGUI pages, served at `/` and `/wizard` (Protocol Wizard), `/run`,
+and `/harvest`. Launching a task enqueues a
 background job via the `JobManager` — job state and logs persist under
 `.job_store/`, so runs continue independently of the browser. The left drawer
-shows live queue stats and locks Run/Evolve until the connectivity tests pass.
+shows live queue stats and locks Live Run until the connectivity tests pass.
 
 Job logs are headline-sized by default: each event persists as one key
 line, full bodies of large blocks go to `<job_id>.full` sidecar files
@@ -513,14 +508,15 @@ The wizard includes:
 - **Configuration panel** — Execution engine (OpenCode, Codex, or pi), API key
   and base URL, workspace path, supervisor and agent models (plus backup
   models), max retries, context threshold, turn timeout, max tokens, npm
-  registry for CLI upgrades, and switches for the Python scanner
-  and the Occam's razor pass. A **Clean artifacts** button removes run
+  registry for CLI upgrades, and switches for the Occam's razor pass,
+  supervisor skills, jev decisions, and blocked-run rescue. A
+  **Clean artifacts** button removes run
   leftovers from the workspace.
 - **Protected Files** — Mark files that the agent cannot modify or delete
 - **.opencodeignore** — Configure ignore patterns for files excluded from
   context retrieval
 - **Connectivity Tests** — One-click agent and supervisor connectivity
-  checks; Live Run and Self-Evolution stay locked until both pass
+  checks; Live Run stays locked until both pass
 - **Live quality analysis** — Real-time scoring of protocol clarity,
   testability, and completeness as you type
 
@@ -567,35 +563,12 @@ each run. A run whose agent fails or writes nothing still gets its report,
 metadata, and a fallback note, so the collection is never incomplete. Harvest
 jobs have their own board and live screen.
 
-### ④ Self-Evolution
-Point the system at **its own source tree**.
-
-1. Describe what you want debugged or improved
-2. Optionally add extra restrictions
-3. **Generate meta_protocol.md** — LLM reads the live source and writes
-   a precise protocol with accurate INPUT and testable TARGETs
-4. Review / edit, then **Launch Evolution**
-
-Self-evolution features:
-
-| Feature | Detail |
-|---------|--------|
-| Test baseline | `pytest` (or syntax check) runs before opencode touches anything |
-| Per-iteration tests | Tests re-run after every supervisor judgement |
-| Regression guard | Tests worse → auto-rollback to last good checkpoint |
-| Checkpointing | Every non-regressing iteration is snapshotted to `.checkpoints/` |
-| Workspace archiving | Every iteration is archived to `.archive/` with metadata |
-| TARGET state | `.opencode/target_state.json` records evidence, tried directions, and stagnation |
-| Rejected candidates | Regression candidates are archived before rollback and appended to `.opencode/staged_improvements.jsonl` |
-| Stagnation control | Two rejected/no-evidence iterations require a fresh diagnosis; repeated directions are blocked |
-| Evolution report | `evolution_report.md` — changed files, test delta, best checkpoint |
-
 ---
 
 ## Architecture
 
 ```
-app.py                              Web UI  (4 pages: Wizard, Live Run, Harvester, Self-Evolution)
+app.py                              Web UI  (3 pages: Wizard, Live Run, Harvester)
 supervisor/
   __init__.py                       Package marker
   memory_policy_evaluator.py        Fixed-suite gate for durable-memory policies
@@ -603,15 +576,18 @@ supervisor/
   core/
     loop.py                         SupervisorLoop — main supervised agent loop
     loop_base.py                    BaseLoop — common state machine, event yielding
-    self_evolution_loop.py          SelfEvolutionLoop — self-modification with test gating
     goal_guard.py                   Evidence-gated completion (propose → validate → execute → audit)
+    goal_progress.py                Progress signal (passing gates, streaks) feeding stagnation nudges
+    decision_service.py             Optional external judge (jev) for DONE / alignment / rescue calls
+    unblock_rescue.py               One-shot rescue when a run is blocked (optional)
+    skill_bank.py                   Supervisor skill library (optional)
     occam_razor.py                  Post-success redundancy-reduction pass on an archive copy
     task_state.py                   Append-only TASK_STATE.md journal for restart continuity
-    target_evaluator.py             Independent test/evidence acceptance gate
-    target_state.py                 Persistent TARGET evidence and staged candidates
+    target_state.py                 Persistent TARGET evidence and direction tracking
     llm_supervisor.py               LLM judge that evaluates agent output
     judge_harness.py                Evidence registry grounding the judge (auto + NEED_EVIDENCE resources)
-    llm_support/                    Judge internals: chat, context, history, judgement, models
+    llm_support/                    Judge internals: chat, context, history,
+                                    history_compaction, judgement, models
 
   analyzers/
     codebase_analyzer.py            Snapshots source tree for LLM context
@@ -620,13 +596,25 @@ supervisor/
     stagnation_detector.py          Cross-turn workspace stagnation with nudge ladder
 
   protocols/
-    protocol.py                     Parse / validate protocol.md (INPUT, TARGET, RESTRICTIONS)
+    protocol.py                     Parse / validate protocol.md / protocol.jsonl
+                                    (INPUT, TARGET, RESTRICTIONS)
     protocol_wizard.py              OpenAI-SDK protocol refiner
     protocol_analyzer.py            Quality scoring (clarity, testability, completeness)
-    meta_protocol_builder.py        Generates meta_protocol.md from evolution goal + snapshot
     target_audit.py                 Deterministic preflight audit of TARGET sections
+    feasibility_gate.py             feasibility_facts.json gates + status tracking
+    feasibility_wizard.py           LLM-assisted drafting of feasibility gates
+    gate_rubric.py                  Closed-list gate scorecard for the judge
     alignment.py                    Protocol alignment / violation checks
     analyzer_support.py             Shared analyzer helpers
+
+  security/
+    access_policy.py                Deterministic read/write path policy (whitelist)
+    access_profile.py               Policy snapshot persisted outside the workspace
+    engine_guards.py                Native gate install per engine (opencode/pi/codex)
+    shell_scan.py                   Conservative shell-command parser for the policy
+    preflight.py                    Pre-run policy drill (fail closed)
+    guard_cli.py                    Gate CLI invoked by the codex hook
+    whitelist_advisor.py            AI-assisted whitelist suggestions (re-validated)
 
   runners/
     factory.py                      Constructs OpencodeRunner / CodexRunner / PiRunner from config.engine
@@ -650,6 +638,7 @@ supervisor/
   utils/
     config.py                       Frozen SupervisorConfig dataclass
     experience_tracker.py           Tracks successful patterns across runs
+    llm_stream.py                   Shared streaming helpers for LLM calls
     text_utils.py                   Text processing utilities
     filesystem/                     file_ops, file_permissions, gitignore_utils, path_filters
 
@@ -665,32 +654,40 @@ supervisor/
   workspace/
     workspace_guard.py              Blocks out-of-workspace path references
     workspace_archiver.py           Preserves workspace versions in .archive/
+    git_archiver.py                 Git-object-store backend for .archive/ snapshots
     cleanup_candidates.py           Suggests backup/temp files for cleanup
     ignore_patterns.py              .opencodeignore parsing and pattern matching
 
-vulnerability/
-  python_scanner.py                 Python code vulnerability scanner (9-tool static analysis)
-
 mcp_server/
   codehelp.py                       MCP server for code assistance and dependency research
+  web_tools.py                      MCP web search/fetch tools
   codehelp_support/                 Tool implementations (docstrings, packages, dependencies,
                                     docs, examples, http)
 
 services/
   config/                           Settings persistence, opencode/codex config writers,
-                                    connectivity tests, SupervisorConfig builder
-  jobs/                             JobManager and StateStore (background jobs, persisted under .job_store/)
-  runtime/                          App bootstrap (auto-upgrades) and workspace cleanup
+                                    agent-model listing, connectivity tests,
+                                    SupervisorConfig builder
+  jobs/                             JobManager, StateStore + store client, job worker process,
+                                    harvest loop, hownow sweep, event recorder
+                                    (background jobs, persisted under .job_store/)
+  runtime/                          App bootstrap (auto-upgrades), guardian watchdog,
+                                    fatal-crash capture, workspace cleanup
   webui/                            NiceGUI shell: layout/theme, persisted app state, job-manager
-                                    singleton, log formatting, startup tasks
-    components/                     Task board, live job screen, log panel, progress widgets
-    pages/                          wizard, run, harvest, evolve pages
+                                    singleton, batch launch, launch/live wiring, log formatting,
+                                    startup tasks
+    components/                     Task board, live job screen, log panel, progress widgets,
+                                    feasibility panel, hownow panel, busy indicator
+    pages/                          wizard, run, harvest pages
+
+codex_compat_proxy.py               Local OpenAI-compatible proxy for the Codex CLI
+start_suprun.ps1                    Idempotent launcher (proxy + app + worker + guardian)
 
 checks/                             Integration and end-to-end check scripts
 docs/                               Research notes
 
 pyproject.toml                      Makes `supervisor` an installable package (core deps)
-requirements.txt                    Alternative dependency list (core + scanner tooling)
+requirements.txt                    Alternative dependency list (core + static-analysis toolchain)
 ```
 
 ---
@@ -869,7 +866,7 @@ version files are never deleted — only archived.
 Super-Opencode uses the execution backend's native file tools. OpenCode offers
 `read`, exact-match `edit`, `apply_patch`, and `write`; Codex uses
 `apply_patch`; pi offers `read`, exact-match `edit`, `write`, and a `bash`
-tool. The supervisor supplies protocol checks, test-gated evolution,
+tool. The supervisor supplies protocol checks,
 workspace archives, and rollback around those changes.
 
 OpenCode configurations created by earlier versions are migrated on startup:
@@ -920,177 +917,6 @@ defaults to 0).
 
 ---
 
-## Vulnerability Scanning
-
-The `vulnerability/python_scanner.py` module performs comprehensive static
-analysis on Python source files using 9 integrated tools: **Bandit**,
-**Pylint**, **pyflakes**, **Semgrep**, **pip-audit**, **Ruff**, **Vulture**,
-**deadcode**, and **pyscn**. It detects security issues, code quality problems,
-dead code, dependency CVEs, and clone detection. Auto-fix is available via
-autoflake, isort, autopep8, pyupgrade, and ruff. The scanner is invoked during
-the self-evolution loop and after each supervisor judgement to flag risky
-patterns before they are accepted into the codebase.
-
-### Per-Edit Python Gate (global Codex hook)
-
-`vulnerability/py_edit_gate.py` is a fast, standalone counterpart to that
-full scan. It is registered as a Codex `PostToolUse` lifecycle hook, so every
-Codex session on the machine checks Python the moment the agent edits it. It is
-standalone (stdlib only, imports nothing from this repo) and is installed to
-`~/.codex/scripts/py_edit_gate.py`, which is the single copy every registered
-hook runs.
-
-Per edited `.py` file, in order:
-
-1. **Safe autofix, deliberately narrow** - `ruff check --fix` on
-   `F401,F811,F841,I` (unused/duplicate imports, unused locals, import order)
-   only, and the blank-file-header left behind by a removed import block is
-   repaired. A step is reverted byte-for-byte if the result stops compiling, if
-   the file's existing CRLF endings are lost, or if it changes more than
-   `max(20 lines, 10%)` of the file.
-
-   `E`/`W`/`UP`/`COM` are advisory-only **on purpose**, and `ruff format` is
-   opt-in (`--format`, or `PY_EDIT_GATE_FORMAT=1`). They rewrite code anywhere
-   in the file, and one reformatted line inside the agent's next patch context
-   is enough to make that patch fail with `Failed to find expected lines` -
-   which is how an agent ends up resubmitting a whole file, and how a long
-   patch gets truncated with a missing `*** End Patch`. The gate must not
-   invalidate the diff the agent is about to write.
-
-   `E501` (line too long) is ignored outright, not even advised: a long line is
-   not a defect, and fixing it means reflowing code the agent did not edit.
-   Line length belongs to the project's own formatter.
-2. **Auto-import** - for an undefined name in a curated stdlib/typing map, the
-   import is inserted (after shebang/docstring/import block). Accepted only if
-   the file still compiles *and* that `F821` is gone; otherwise rolled back.
-   Names outside the map are advisory only, never guessed.
-3. **Checks** - `compile()`, then `ruff`, `pyflakes`, and `bandit` (HIGH/MEDIUM)
-   on the touched file. 6s per tool, 18s wall-clock cap.
-
-Findings come back to the agent as a short `additionalContext` advisory
-(auto-fix summary first, then missing imports, syntax errors, lint, security).
-When the gate edits a file it says so explicitly and tells the agent to re-read
-the file and **not** resubmit it whole. The gate never blocks a tool call,
-dedupes a repeated verdict for 6 hours, and **fails open**: any internal error
-means a silent exit 0.
-
-Install / refresh (idempotent; backs up and re-validates `config.toml`, and
-refuses to touch a config that does not parse):
-
-```
-python -m services.config.codex_edit_gate_install
-python -m services.config.codex_edit_gate_install --remove
-python -m services.config.codex_edit_gate_install --no-autofix   # advisory only
-python -m services.config.codex_edit_gate_install --format        # re-enable ruff format
-```
-
-Supervised runs use a separate `CODEX_HOME`, so their config gets its own
-`[[hooks.PostToolUse]]` block pointing at the same installed script, and
-`codex-suprun.cmd` passes `--dangerously-bypass-hook-trust` (per-invocation,
-vetted-source only; it does not affect approvals):
-
-```
-python -m services.config.codex_edit_gate_install --codex-home .codex_home_soprun --shared-script %USERPROFILE%\.codex\scripts\py_edit_gate.py
-```
-
-Notes:
-
-- **Trust**: interactive sessions prompt once to accept a new hook; the hash
-  lands in `[hooks.state]` keyed by that config path, so one acceptance covers
-  the CLI, `codex exec`, and the Desktop app. Until accepted, the hook is
-  skipped - `codex doctor` does not report hooks, so check the audit log.
-- **Audit log**: `~/.codex/logs/py_edit_gate.jsonl` (rotated at 1 MB) records
-  every fire: files, tool tier (`ruff+pyflakes+bandit` or degraded), duration.
-  This is how you confirm the gate is alive.
-- **Opt out**: `PY_EDIT_GATE=0` (env, off entirely); a `.edit-gate-disable`
-  file in a project root (advisory only, no in-place edits); `--no-autofix`
-  (in the hook command).
-- Checker rules run `--isolated --no-cache`, so behaviour is identical in every
-  repo and no `.ruff_cache` is littered into projects you merely open.
-- Tool discovery tries `PATH`, then known venv/conda interpreters, and degrades
-  to syntax-only if no checker is installed. Files over 400 KB, read-only
-  files, and `.venv`/`site-packages`/`node_modules`/build dirs are skipped.
-- Out of scope: shell-written `.py` files (agent writes via `python -c`),
-  argument-count/type errors (needs a type checker), and opencode runs.
-
-Tests: `checks/test_py_edit_gate.py`, `checks/test_codex_edit_gate_install.py`.
-
-#### Per-Edit Rust Gate
-
-`vulnerability/rs_edit_gate.py` is the Rust sibling, installed to
-`~/.codex/scripts/rs_edit_gate.py` and registered as a **second**
-`[[hooks.PostToolUse]]` block. Codex matches hooks on the tool name, not the
-script path, so a new language costs one extra block - no new config surface.
-
-Per edited `.rs` file: `rustfmt --edition <from Cargo.toml>` acts as the syntax
-gate (rustfmt is a rustup shim here, so its toolchain noise is classified as a
-note, never as a parse error), then `cargo check --offline
---message-format=json` supplies real type/borrow errors, mapped to
-`src/lib.rs:line`. Checks are crate-scoped and cadenced by measured crate cost:
-fast crates run on every edit (20 s floor), slow ones every 120 s, and a cold
-crate with no `target/` is skipped with a warming hint rather than costing a
-five-minute build. A `Blocking waiting for file lock` reply is swallowed.
-`--stop` (registered on `[[hooks.Stop]]`) runs `cargo clippy` once per crate per
-interval and replies with `systemMessage` only - `hookSpecificOutput` on a Stop
-event makes Codex report `hook: Stop Failed`.
-
-`rustfmt` as a formatter stays opt-in (`--format`): 29 of 51 `orderpipe` files
-are not rustfmt-clean, so formatting on edit is churn, not hygiene. Measured
-warm `cargo check`: 0.10 s (fixture crate), 2.5 s (`rust_ext`), 4.85 s
-(`orderpipe`), 11 s (`snapshotpipe`).
-
-```
-python -m services.config.codex_edit_gate_install --rust
-python -m services.config.codex_edit_gate_install --rust --codex-home .codex_home_soprun --shared-script %USERPROFILE%\.codex\scripts\rs_edit_gate.py
-```
-
-Kill switch `RS_EDIT_GATE=0`; audit log `~/.codex/logs/rs_edit_gate.jsonl`
-(records `mode: edit|stop`, per-crate `policy`, seconds, error counts).
-Tests: `checks/test_rs_edit_gate.py`.
-
-#### Per-Edit Windows Script Gate (.ps1 / .psm1 / .psd1 / .cmd / .bat)
-
-`vulnerability/win_edit_gate.py` is the third sibling on the same
-`[[hooks.PostToolUse]]` event.
-
-- **PowerShell** gets a real syntax check from PowerShell's own parser
-  (`[System.Management.Automation.Language.Parser]::ParseFile`), which parses
-  and never executes - asserted by a test that a script's side effect does not
-  happen. `pwsh` is preferred, `powershell.exe` is the fallback, and the child
-  console is forced to UTF-8 so a localized (zh-CN) parse message reaches the
-  agent as text instead of CP936 mojibake.
-- **Batch** has no parser, so the gate checks the two bugs that produce no error
-  message at all - running `helper.bat` without `call` (control never returns)
-  and `!var!` without `setlocal EnableDelayedExpansion` (expands to nothing) -
-  and encoding traps: UTF-16 (cmd cannot read it), UTF-8 BOM (cmd eats the first
-  line), LF-only endings (cmd mis-parses blocks), and BOM-less non-ASCII under
-  PowerShell 5.1 (read as ANSI, garbled). LF-only `.ps1` is *not* a finding.
-- Opt-in: `--ps-format` (`Invoke-Formatter`, churn-guarded, reverted if the
-  result stops parsing) and `--ps-lint` (`Invoke-ScriptAnalyzer`, throttled 300 s
-  per file). PSScriptAnalyzer is not installed on this box, and the gate says so
-  as a note rather than failing silently.
-
-Cost: 133 ms for a PowerShell parse, 2 ms for a batch scan.
-
-```
-python -m services.config.codex_edit_gate_install --windows
-python -m services.config.codex_edit_gate_install --windows --ps-format --ps-lint   # opt-ins
-python -m services.config.codex_edit_gate_install --windows --codex-home .codex_home_soprun --shared-script %USERPROFILE%\.codex\scripts\win_edit_gate.py
-```
-
-Kill switch `WIN_EDIT_GATE=0`; audit log `~/.codex/logs/win_edit_gate.jsonl`
-carries per-section finding counts (`syntax`, `encoding`, `batch`, `lint`).
-Out of scope: scripts the agent writes from a shell (`Set-Content`,
-`Add-Content`) - the matcher sees edit-tool calls only, which is how the gate
-missed a shell-written `.ps1` in the first live run.
-Tests: `checks/test_win_edit_gate.py`.
-
-Three gates means three advisories per edit; measured overhead is about half a
-second for a Python edit and 0.2 s for a script edit. All three are advisory,
-never block a tool call, and fail open.
-
----
-
 ## Safety Features
 
 1. **Workspace boundary enforcement** — All path references are validated
@@ -1099,18 +925,16 @@ never block a tool call, and fail open.
    files cannot be modified or deleted
 3. **Protocol alignment verification** — Each iteration is checked against
    the protocol for compliance
-4. **Regression testing** — Self-evolution compares test results against
-   the baseline before accepting changes
-5. **Automatic rollback** — Bad changes are reverted to the last good
+4. **Automatic rollback** — Bad changes are reverted to the last good
    checkpoint
-6. **Heartbeat monitoring** — Detects stalled processes and extends
+5. **Heartbeat monitoring** — Detects stalled processes and extends
    timeouts when progress is being made
-7. **Archive preservation** — Historical versions are preserved, never deleted
+6. **Archive preservation** — Historical versions are preserved, never deleted
 
 ---
 
 ## TODO
 
-- [ ] Get rid of `pip install -e . --force-reinstall` so that every self evolution will be auto applied
+- [ ] Get rid of `pip install -e . --force-reinstall`
 - [ ] Add multi agent cooperation/competition
 - [ ] Replace keyword-based process cleanup (`taskkill`/`pkill` by process name) with PID-tracked child process management

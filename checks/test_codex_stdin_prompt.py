@@ -11,9 +11,9 @@ import io
 import time
 from types import SimpleNamespace
 
+from supervisor.runners import process_common
 from supervisor.runners.codex_support import process as codex_process
 from supervisor.runners.codex_support.command_builder import build_cmd
-from supervisor.runners import process_common
 
 # ~260k chars: far past both Windows limits, routine size for a turn prompt
 # that carries roll-up / summary content.
@@ -138,15 +138,15 @@ def test_run_prompt_feeds_prompt_via_stdin(tmp_path):
 
 
 def test_build_cmd_appends_extra_config_flags_only_when_given():
-    base_kwargs = dict(
-        exe="codex.cmd",
-        prompt="hi",
-        agent="",
-        codex_model=None,
-        use_continue=False,
-        session_id=None,
-        use_shell=True,
-    )
+    base_kwargs = {
+        "exe": "codex.cmd",
+        "prompt": "hi",
+        "agent": "",
+        "codex_model": None,
+        "use_continue": False,
+        "session_id": None,
+        "use_shell": True,
+    }
 
     plain = build_cmd(**base_kwargs)
     flagged = build_cmd(**base_kwargs, extra_config_flags=["-c", "features.plugins=false"])

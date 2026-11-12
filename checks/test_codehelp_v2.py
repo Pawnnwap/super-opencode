@@ -3,7 +3,10 @@ from __future__ import annotations
 import json
 
 from mcp_server.codehelp_support.dependencies import _codehelp_analyze_dependencies
-from mcp_server.codehelp_support.docs import _codehelp_fetch_official_docs, _safe_docs_url
+from mcp_server.codehelp_support.docs import (
+    _codehelp_fetch_official_docs,
+    _safe_docs_url,
+)
 from mcp_server.codehelp_support.packages import _pypi_version
 
 

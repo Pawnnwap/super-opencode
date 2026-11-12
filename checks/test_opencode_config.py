@@ -73,11 +73,11 @@ def test_migrates_trailing_comma_config_without_losing_plugins(tmp_path):
     project_root.mkdir()
     config_path = config_dir / "opencode.json"
     config_path.write_text(
-        """{
-  "mcp": {"hashline": {"type": "local", "command": ["python", "%s"]}},
+        """{{
+  "mcp": {{"hashline": {{"type": "local", "command": ["python", "{cmd}"]}}}},
   "plugin": ["example-plugin"],
-}
-""" % str(project_root / "mcp_server" / "hashline.py").replace("\\", "\\\\"),
+}}
+""".format(cmd=str(project_root / "mcp_server" / "hashline.py").replace("\\", "\\\\")),
         encoding="utf-8",
     )
 

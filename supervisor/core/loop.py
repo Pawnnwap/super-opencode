@@ -704,7 +704,7 @@ class SupervisorLoop(BaseLoop):
                 len(harvest["results"]),
                 [p.get("gate") for p in updated.get("pending_blocked", [])],
             )
-        except Exception:  # noqa: BLE001 — harvesting must never fail the run
+        except Exception:
             logger.warning("gate harvest failed", exc_info=True)
 
     def _goal_checklist_section(self) -> str:

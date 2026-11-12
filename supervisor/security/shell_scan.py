@@ -286,11 +286,10 @@ class _Context:
 
         # Redirect targets are writes, regardless of the command verb.
         for index, token in enumerate(tokens):
-            if token.text in {">", ">>", "2>", "2>>", "&>", "1>", ">|"}:
-                if index + 1 < len(tokens):
-                    target = tokens[index + 1].text
-                    if target not in {"/dev/null", "NUL"}:
-                        self.check(target, "write")
+            if token.text in {">", ">>", "2>", "2>>", "&>", "1>", ">|"} and index + 1 < len(tokens):
+                target = tokens[index + 1].text
+                if target not in {"/dev/null", "NUL"}:
+                    self.check(target, "write")
 
         words = [token for token in tokens if token.text not in _OPERATORS]
         if not words:
@@ -348,7 +347,7 @@ class _Context:
             if lowered in _INLINE_FLAGS:
                 self.deny(name, f"{name} inline code cannot be verified")
                 return
-            if arg == "-" or arg.startswith("--eval=") or arg.startswith("-e="):
+            if arg == "-" or arg.startswith(("--eval=", "-e=")):
                 self.deny(name, f"{name} executing from stdin cannot be verified")
                 return
         # A script path is inspected like any other read; its *contents* are
@@ -450,9 +449,7 @@ def _split_segments(command: str) -> list[str]:
             continue
         buf.append(ch)
         i += 1
-    if quote:
-        segments.append("".join(buf).strip())
-    elif buf:
+    if quote or buf:
         segments.append("".join(buf).strip())
     return [segment for segment in segments if segment]
 
@@ -690,8 +687,7 @@ def _unwrap(name: str, words: list[Token]) -> str | None:
 
 def _command_name(raw: str) -> str:
     name = raw.strip("\"'`").replace("\\", "/").rsplit("/", 1)[-1].lower()
-    if name.endswith(".exe"):
-        name = name[:-4]
+    name = name.removesuffix(".exe")
     return name
 
 

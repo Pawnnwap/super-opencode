@@ -136,6 +136,55 @@ def test_jsonl_protocol_replica(tmp_path):
     assert configs[0].protocol_path.name == "protocol.jsonl"
 
 
+def test_matlab_runtime_dirs_are_never_copied(tmp_path):
+    """A MATLAB workspace dir is the batch launch's #1 copy failure.
+
+    MATLAB writes runtime state (``matlab/graphics/.../matlabsettings.xml``,
+    ``MathWorks/MATLAB Profiles/...``) into the cwd it was launched from and
+    holds files in it open while running, so ``copytree`` dies with
+    ``shutil.Error: [WinError 32]``. The names are skipped case-insensitively
+    because Windows spells them ``MATLAB`` / ``MathWorks``.
+    """
+    ws = _make_workspace(tmp_path)
+    (ws / "matlab" / "graphics").mkdir(parents=True)
+    (ws / "matlab" / "graphics" / "matlabsettings_2221d.xml").write_text(
+        "locked", encoding="utf-8",
+    )
+    (ws / "MathWorks" / "MATLAB Profiles").mkdir(parents=True)
+    (ws / "MathWorks" / "MATLAB Profiles" / "matlab.settings").write_text(
+        "x", encoding="utf-8",
+    )
+
+    replica = ws.parent / "study_ws_studies" / "batch_r1"
+    provision_replica(ws, replica, "copy")
+
+    assert not (replica / "matlab").exists()
+    assert not (replica / "MathWorks").exists()
+    # Real research data still travels.
+    assert (replica / "code.py").exists()
+    assert (replica / "sub" / "data.csv").exists()
+
+
+def test_locked_file_copy_failure_propagates(tmp_path, monkeypatch):
+    """A copy failure must reach the caller, not vanish.
+
+    The Run page surfaces it; had the copy error been swallowed the operator
+    saw a Launch button that "did nothing".
+    """
+    import shutil as _shutil
+
+    ws = _make_workspace(tmp_path)
+
+    def boom(_src, _dst, **_kw):
+        raise _shutil.Error(["[WinError 32] file in use by another process"])
+
+    monkeypatch.setattr(_shutil, "copytree", boom)
+    with pytest.raises(_shutil.Error, match="WinError 32"):
+        launch_study_batch(
+            _session_state(ws), RecordingManager(), ws, 2, init_mode="copy",
+        )
+
+
 def test_partial_failure_cleans_unenqueued_replicas(tmp_path):
     ws = _make_workspace(tmp_path)
     parent = tmp_path / "study_ws_studies"

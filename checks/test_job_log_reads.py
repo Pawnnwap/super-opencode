@@ -29,8 +29,7 @@ def _write_logs(store, job_id, n, *, bom=False, payload_bytes=200):
     with open(path, "w", encoding="utf-8") as f:
         if bom:
             f.write("\ufeff")
-        for i in range(n):
-            f.write(json.dumps({"seq": i, "level": "info", "msg": pad}) + "\n")
+        f.writelines(json.dumps({"seq": i, "level": "info", "msg": pad}) + "\n" for i in range(n))
 
 
 def test_tail_logs_returns_last_n_in_order(store):

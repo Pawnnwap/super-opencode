@@ -1,4 +1,4 @@
-"""Shared launch plumbing for the Run and Evolve pages.
+"""Shared launch plumbing for the Run and Harvester pages.
 
 Both pages do the same five things before enqueueing a job: persist the
 settings, apply the API environment, push the concurrency caps, build the
@@ -41,15 +41,14 @@ def launch_job(
         **overrides,
     )
     job_id = get_job_manager().enqueue_job(job_type, config)
-    label = "Evolution" if job_type == "evolve" else "Task"
-    ui.notify(f"{label} launched: {job_id}")
+    ui.notify(f"Task launched: {job_id}")
     return job_id
 
 
 def require_workspace() -> Path | None:
     """The configured workspace, or a rendered "go configure it first" notice.
 
-    Run and Evolve each opened with the same three-widget gate; duplicating it
+    Run and Harvester each opened with the same three-widget gate; duplicating it
     meant the wording and the button could drift apart per page.
     """
     raw = app_state.get("workspace") or ""
@@ -68,7 +67,6 @@ def render_live_screen(
     *,
     job_type: str,
     base_path: str,
-    is_evolution: bool,
     running_message: str,
     not_found_label: str,
 ) -> None:
@@ -91,7 +89,6 @@ def render_live_screen(
         job_type=job_type,
         job_id=job_id,
         base_path=base_path,
-        is_evolution=is_evolution,
         running_message=running_message,
     ).render()
 

@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import re
 import ipaddress
-from urllib.parse import urlparse
+import re
 from typing import Any
+from urllib.parse import urlparse
 
 from .http import _http_get_text_with_meta
 from .packages import _codehelp_search_package_version
@@ -48,7 +48,7 @@ def _codehelp_fetch_official_docs(
     max_chars = max(200, min(max_chars, 8_000))
     try:
         text, document_provenance = _http_get_text_with_meta(docs_url, validate_url=_safe_docs_url)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - network/tool boundary - upstream failures degrade to a message
         return {
             "status": "error",
             "error_type": "fetch_failed",

@@ -64,7 +64,6 @@ def stub_loops(monkeypatch):
         "stop_flag": threading.Event(),
     })
     monkeypatch.setattr(jm, "SupervisorLoop", loops)
-    monkeypatch.setattr(jm, "SelfEvolutionLoop", loops)
     return loops
 
 

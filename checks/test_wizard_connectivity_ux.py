@@ -4,13 +4,11 @@
   sections below the LLM configuration they prove; first-run users had to
   find and open it. They now render open, directly after the Configuration
   section.
-- The run/evolve nav lock (and the run page's lock message) gated VIEWING
+- The run nav lock (and the run page's lock message) gated VIEWING
   behind the connectivity tests; with a live or queued job present the pages
   must stay open - that is where the run is watched and stopped.
 """
 from pathlib import Path
-
-import pytest
 
 from services.webui.layout import _has_active_jobs
 
@@ -92,7 +90,7 @@ class _FakeManager:
 def test_nav_lock_helper_sees_live_and_queued_but_not_history():
     live = _FakeManager({
         "a": _job("a", "RUNNING"),
-        "b": _job("b", "PENDING", "evolve"),
+        "b": _job("b", "PENDING"),
     })
     assert _has_active_jobs(live)
 

@@ -134,7 +134,7 @@ class _LoopPulse(threading.Thread):
                         )
                 else:
                     self._stall_dumped = False
-            except Exception:  # noqa: BLE001 - the pulse must outlive any blip
+            except Exception:
                 logger.exception("lock pulse iteration failed")
 
 

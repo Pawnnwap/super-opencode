@@ -179,13 +179,13 @@ def log_prompt(supervisor, title: str, messages: list[dict]) -> None:
         with open(log_file, "a", encoding="utf-8") as f:
             f.write(f"\n{'=' * 80}\n")
             f.write(f"--- {title} ---\n")
-            f.write(f"Timestamp: {datetime.datetime.now().isoformat()}\n")
+            f.write(f"Timestamp: {datetime.datetime.now().astimezone().isoformat()}\n")
             f.write(f"{'=' * 80}\n\n")
             for msg in messages:
                 role = msg.get("role", "unknown").upper()
                 content = msg.get("content", "")
                 f.write(f"[{role}]\n{content}\n\n{'-' * 40}\n\n")
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - prompt logging is a debug aid
         logger.debug("Failed to log prompt: %s", exc)
 
 
@@ -197,8 +197,8 @@ def should_omit_step_context(
     protected_context: str,
 ) -> bool:
     """Decide whether to strip step-context from history to save tokens."""
-    history_context = "".join(
-        [experience_context, feedback_context, protected_context, opencode_output],
+    history_context = (
+        f"{experience_context}{feedback_context}{protected_context}{opencode_output}"
     )
     conv_text = "\n".join(
         m["content"] for m in supervisor._history if m.get("content")

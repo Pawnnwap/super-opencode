@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import time
-from pathlib import Path
 
-from nicegui import ui, run as nicegui_run
+from nicegui import run as nicegui_run
+from nicegui import ui
 
 from services.jobs.job_states import ACTIVE_JOB_STATES
 from services.webui.components.log_panel import LogPanel, TailStrip
@@ -30,14 +30,12 @@ class LiveJobScreen:
         job_type: str,
         job_id: str,
         base_path: str,
-        is_evolution: bool,
         running_message: str,
     ):
         self.job_manager = job_manager
         self.job_type = job_type
         self.job_id = job_id
         self.base_path = base_path
-        self.is_evolution = is_evolution
         self.running_message = running_message
         # Harvest jobs have no code/test/review pipeline to show.
         self.show_phase = job_type != "harvest"
@@ -78,7 +76,7 @@ class LiveJobScreen:
             with ui.column().classes("flex-1 gap-2"):
                 self._render_details(status)
 
-        self.progress.update(safe_logs(status), state, self.is_evolution)
+        self.progress.update(safe_logs(status), state)
         self.tail.update(safe_logs(status))
         self.log_panel.update(safe_logs(status))
 
@@ -120,7 +118,7 @@ class LiveJobScreen:
         self._read_failures = 0
         state = status.get("state", "UNKNOWN")
         logs = safe_logs(status)
-        self.progress.update(logs, state, self.is_evolution)
+        self.progress.update(logs, state)
         self.tail.update(logs)
         self.log_panel.update(logs)
         self.state_pill.set_content(format_status_pill(state))
@@ -224,11 +222,10 @@ class LiveJobScreen:
                 f"{engine.capitalize()} model: "
                 f"{app_state.get('opencode_model') or '(not set)'}",
             ).classes("text-xs")
-            if not self.is_evolution:
-                occam = config.get("enable_occam_razor", False)
-                ui.label(f"Occam Razor: {'on' if occam else 'off'}").classes(
-                    "text-xs",
-                )
+            occam = config.get("enable_occam_razor", False)
+            ui.label(f"Occam Razor: {'on' if occam else 'off'}").classes(
+                "text-xs",
+            )
 
         # No report block here on purpose: _render_report is the single
         # report surface - this column used to render the SAME report a
@@ -241,15 +238,15 @@ class LiveJobScreen:
         if self.job_type == "harvest":
             title = "Harvest Summary"
         else:
-            title = "Evolution Report" if self.is_evolution else "Report"
+            title = "Report"
         self.report_slot.clear()
-        with self.report_slot:
+        with self.report_slot:  # noqa: SIM117 - NiceGUI element nesting
             with ui.expansion(title, value=True).classes("w-full"):
                 ui.markdown(report)
                 ui.button(
                     "Download",
                     on_click=lambda: ui.download(
                         report.encode("utf-8"),
-                        f"{'evolution' if self.is_evolution else self.job_type}_report_{self.job_id}.md",
+                        f"{self.job_type}_report_{self.job_id}.md",
                     ),
                 )

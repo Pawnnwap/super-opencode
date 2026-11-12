@@ -39,7 +39,8 @@ _CONNECT_PHRASES = (
     "fetch failed",
     "connection error",
     "network error",
-    "etimed out",
+    "etimedout",
+    "timed out",
     "connect timeout",
 )
 
@@ -212,10 +213,10 @@ def feed_stdin_prompt(proc, prompt: str) -> None:
         write = prompt if prompt.endswith("\n") else prompt + "\n"
         proc.stdin.write(write)
         proc.stdin.flush()
-    except Exception:
+    except Exception:  # noqa: BLE001, S110 - the agent may have exited already
         pass
     finally:
         try:
             proc.stdin.close()
-        except Exception:
+        except Exception:  # noqa: BLE001, S110 - closing a dead pipe is best-effort
             pass

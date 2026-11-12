@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 def create_archiver(
     workspace: Path, keep_last: int = 5, backend: str = "git",
-) -> "WorkspaceArchiver":
+) -> WorkspaceArchiver:
     """Build the configured archiver backend.
 
     "git" (default): incremental snapshots via GitWorkspaceArchiver — same
@@ -96,7 +96,7 @@ def save_archive_counter(archive_root: Path, value: int) -> None:
     if counter_file.exists():
         try:
             remove_file_readonly(str(counter_file))
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - archive failure is reported, never fatal
             logger.warning("Could not remove read-only on counter file %s: %s", counter_file, exc)
     counter_file.write_text(str(value), encoding="utf-8")
 
@@ -235,7 +235,7 @@ class WorkspaceArchiver:
             )
 
         except Exception as exc:
-            logger.error("Archive failed for workspace %s: %s", self.workspace, exc, exc_info=True)
+            logger.exception("Archive failed for workspace %s", self.workspace)
             if archive_path.exists():
                 shutil.rmtree(archive_path, ignore_errors=True)
             return ArchiveResult(
