@@ -40,6 +40,15 @@ PROFILE_KEYS: tuple[str, ...] = (
     "protected_files",
 )
 
+# Wizard-owned evidence, not operator settings: never seeded from app state,
+# but preserved across every profile save.
+PROFILE_FLAGS: tuple[str, ...] = (
+    # The Access & Protection step is complete for THIS workspace - either the
+    # auto-generator finished cleanly or the operator configured it by hand.
+    # The wizard's "Ready for Live Run!" button is gated on it.
+    "access_configured",
+)
+
 
 def profile_path(workspace: Path) -> Path:
     return Path(workspace) / PROFILE_NAME
@@ -53,7 +62,11 @@ def load_profile(workspace: Path) -> dict[str, Any]:
         return {}
     if not isinstance(data, dict):
         return {}
-    return {key: data[key] for key in PROFILE_KEYS if key in data}
+    return {
+        key: data[key]
+        for key in (*PROFILE_KEYS, *PROFILE_FLAGS)
+        if key in data
+    }
 
 
 def _clean(values: Mapping[str, Any]) -> dict[str, Any]:
@@ -77,20 +90,39 @@ def _clean(values: Mapping[str, Any]) -> dict[str, Any]:
         "access_policy_enabled": bool(values.get("access_policy_enabled", True)),
         "access_policy_strict": bool(values.get("access_policy_strict", False)),
         "protected_files": protected,
+        "access_configured": bool(values.get("access_configured", False)),
     }
 
 
 def save_profile(workspace: Path, values: Mapping[str, Any]) -> Path:
-    """Write the profile; config files are always protected."""
+    """Write the profile; config files are always protected.
+
+    Wizard-owned flags (:data:`PROFILE_FLAGS`) are carried over from the file
+    on disk when the caller does not supply them: an operator-settings save
+    must not erase the evidence that the auto-generator ran.
+    """
     path = profile_path(workspace)
+    merged = dict(values)
+    missing = [flag for flag in PROFILE_FLAGS if flag not in merged]
+    if missing:
+        existing = load_profile(workspace)
+        for flag in missing:
+            merged[flag] = existing.get(flag, False)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(
-        json.dumps(_clean(values), indent=2, ensure_ascii=False) + "\n",
+        json.dumps(_clean(merged), indent=2, ensure_ascii=False) + "\n",
         encoding="utf-8",
     )
     tmp.replace(path)
     return path
+
+
+def mark_configured(workspace: Path, configured: bool = True) -> None:
+    """Record that the Access & Protection step is complete for this workspace."""
+    values = load_profile(workspace)
+    values["access_configured"] = bool(configured)
+    save_profile(workspace, values)
 
 
 def merge_profile(state: Mapping[str, Any], workspace: Path | str) -> dict[str, Any]:
@@ -144,11 +176,13 @@ __all__ = [
     "CONFIG_FILES",
     "FACTS_FILE_NAME",
     "IGNORE_FILE_NAME",
+    "PROFILE_FLAGS",
     "PROFILE_KEYS",
     "PROFILE_NAME",
     "PROTOCOL_FILE_NAME",
     "apply_generation",
     "load_profile",
+    "mark_configured",
     "merge_profile",
     "profile_path",
     "save_profile",

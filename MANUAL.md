@@ -68,6 +68,11 @@ The **Protocol Wizard** page (`/`) holds the whole setup:
    `protocol.jsonl` on **Accept & Save**.
 6. **Feasibility gates** — drafted automatically after refine or on demand;
    every edit auto-saves `feasibility_facts.json`.
+7. **Ready for Live Run!** — the button at the bottom of the page. It stays
+   greyed out until the connectivity tests pass, the protocol is saved, Access
+   & Protection is configured, and the policy drill passes; the lock lists
+   whatever is still missing. Nothing navigates on its own — this button is
+   the only hand-off to Live Run.
 
 ## 5. Workspace contract
 

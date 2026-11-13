@@ -129,10 +129,13 @@ def _bare_wizard() -> ProtocolWizard:
     wizard = ProtocolWizard.__new__(ProtocolWizard)
     wizard._client = None  # fakes never use it, but the attribute is read
     wizard._model = "test-model"
+    wizard._base_url = ""
+    # Pre-measured level: the probe itself is covered by test_thinking_probe.
+    wizard._thinking_effort = "low"
     return wizard
 
 
-def test_chat_requests_low_reasoning_effort(monkeypatch):
+def test_chat_requests_the_measured_lowest_thinking_level(monkeypatch):
     calls = []
 
     def fake_stream(client, model, messages, **kwargs):
@@ -143,6 +146,23 @@ def test_chat_requests_low_reasoning_effort(monkeypatch):
     _bare_wizard()._chat("hello")
 
     assert calls[0]["extra_body"] == {"reasoning_effort": "low"}
+
+
+def test_chat_omits_effort_when_no_level_thinks(monkeypatch):
+    """An endpoint where every rung is rejected/clamped to off gets a plain
+    call — sending a level that does nothing would only add a failure mode."""
+    calls = []
+
+    def fake_stream(client, model, messages, **kwargs):
+        calls.append(kwargs)
+        return "## INPUT\n\n## TARGET\n\n## RESTRICTIONS\n"
+
+    monkeypatch.setattr(pw_module, "stream_chat_text", fake_stream)
+    wizard = _bare_wizard()
+    wizard._thinking_effort = ""
+    wizard._chat("hello")
+
+    assert calls[0]["extra_body"] is None
 
 
 def test_chat_falls_back_to_plain_call_when_effort_rejected(monkeypatch):

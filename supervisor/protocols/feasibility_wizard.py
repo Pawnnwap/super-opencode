@@ -112,7 +112,10 @@ class FeasibilityWizard(StreamedLLMHelper):
         ]
         # Transcribing gates needs no chain-of-thought; a thinking model at
         # high effort otherwise streams minutes of reasoning before the JSON.
-        # Endpoints that reject the parameter fall back to one plain call.
+        # The level is measured against the real endpoint (see
+        # StreamedLLMHelper.thinking_body). Endpoints that reject the parameter
+        # fall back to one plain call.
+        body = self.thinking_body()
         try:
             raw = stream_chat_text(
                 self._client,
@@ -122,11 +125,13 @@ class FeasibilityWizard(StreamedLLMHelper):
                 field_name="feasibility facts draft",
                 on_progress=on_progress,
                 stop_event=stop_event,
-                extra_body={"reasoning_effort": "none"},
+                extra_body=body,
             )
         except (GenerationCancelled, TimeoutError):
             raise
-        except Exception as exc:  # noqa: BLE001 — parameter rejection
+        except Exception as exc:  # parameter rejection
+            if body is None:
+                raise
             logger.info(
                 "Feasibility draft: reasoning suppression rejected (%s); "
                 "retrying without it", exc,

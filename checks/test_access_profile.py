@@ -64,6 +64,21 @@ def test_merge_profile_noop_without_file(layout):
     assert merge_profile(state, ws) == state
 
 
+def test_configured_flag_roundtrips_and_survives_settings_saves(layout):
+    """The wizard's hand-off gate reads this flag; a settings save must keep it."""
+    from supervisor.security.access_profile import mark_configured
+
+    ws, ref = layout
+    assert load_profile(ws).get("access_configured") is None
+    mark_configured(ws)
+    assert load_profile(ws)["access_configured"] is True
+    # An operator edit saves only PROFILE_KEYS; the flag must not be erased.
+    save_profile(ws, {"access_whitelist": [str(ref)]})
+    assert load_profile(ws)["access_configured"] is True
+    mark_configured(ws, False)
+    assert load_profile(ws)["access_configured"] is False
+
+
 def test_apply_generation_validates_and_persists(layout):
     ws, ref = layout
     summary = apply_generation(

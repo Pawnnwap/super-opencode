@@ -34,9 +34,10 @@ GATE_FIX_ROUNDS = 3
 
 # Protocol drafting/editing is transcription-grade work; a thinking model at
 # the provider default streams minutes of reasoning per draft — and the gate
-# loop multiplies that by every fix round. Endpoints that reject the
-# parameter fall back to one plain call (same tolerance as feasibility_wizard).
-_REASONING_BODY = {"reasoning_effort": "low"}
+# loop multiplies that by every fix round. The level is measured against the
+# real endpoint (see StreamedLLMHelper.thinking_body) rather than hardcoded:
+# providers accept different names, and a proxy can accept one while clamping
+# it to "off". Endpoints that reject the parameter fall back to one plain call.
 
 REQUIRED_TARGET = "Construct/refactor the codebase to eliminate redundancy by implementing base classes and shared utility functions."
 
@@ -145,6 +146,7 @@ class ProtocolWizard(StreamedLLMHelper):
             {"role": "system", "content": _WIZARD_SYSTEM},
             {"role": "user", "content": user_msg},
         ]
+        body = self.thinking_body()
         try:
             return stream_chat_text(
                 self._client,
@@ -154,11 +156,13 @@ class ProtocolWizard(StreamedLLMHelper):
                 field_name="protocol wizard response",
                 on_progress=on_progress,
                 stop_event=stop_event,
-                extra_body=_REASONING_BODY,
+                extra_body=body,
             )
         except (GenerationCancelled, TimeoutError):
             raise
-        except Exception as exc:  # noqa: BLE001 — parameter rejection
+        except Exception as exc:  # parameter rejection
+            if body is None:
+                raise
             logger.info(
                 "Protocol wizard: reasoning_effort rejected (%s); retrying "
                 "without it", exc,

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -128,11 +127,22 @@ def _profile_sync(workspace: Path, *, create: bool = False) -> dict:
     return profile
 
 
-def _profile_save(workspace: Path) -> None:
-    """Persist every protection edit into the workspace immediately."""
+def _profile_save(workspace: Path, *, configured: bool = False) -> None:
+    """Persist every protection edit into the workspace immediately.
+
+    ``configured`` marks the Access & Protection step as done for this
+    workspace: a manual edit is as much a setup decision as a clean
+    auto-generate run, and both unlock the hand-off button at the page bottom.
+    """
     from supervisor.security.access_profile import PROFILE_KEYS, save_profile
 
-    save_profile(workspace, {key: app_state.get(key) for key in PROFILE_KEYS})
+    values = {key: app_state.get(key) for key in PROFILE_KEYS}
+    if configured:
+        values["access_configured"] = True
+    save_profile(workspace, values)
+    # The hand-off button at the bottom of the page is gated on the policy
+    # drill, which these edits change.
+    _ready_section.refresh()
 
 
 def _section(title: str, *, open_: bool = False):
@@ -192,6 +202,7 @@ def _on_workspace_change() -> None:
     _protection_section.refresh()
     _skills_listing.refresh()
     _protocol_section.refresh()
+    _ready_section.refresh()
 
 
 # ── Configuration section ─────────────────────────────────────────────────────
@@ -555,7 +566,10 @@ def _protection_section() -> None:
         gate_label.set_visibility(not ready)
 
         async def _auto_generate() -> None:
-            from supervisor.security.access_profile import apply_generation
+            from supervisor.security.access_profile import (
+                apply_generation,
+                mark_configured,
+            )
 
             if not ready_now():
                 return
@@ -643,6 +657,10 @@ def _protection_section() -> None:
                 try:
                     summary = apply_generation(workspace, paths, patterns)
                     _profile_sync(workspace)
+                    # The step has run: the hand-off button at the page bottom
+                    # may unlock. Warnings stay visible in the status line, and
+                    # the operator decides when to leave.
+                    mark_configured(workspace)
                 except Exception as exc:  # noqa: BLE001 — must never be silent
                     status.set_text(
                         f"Auto-generate failed while saving: "
@@ -652,20 +670,15 @@ def _protection_section() -> None:
             _access_section.refresh()
             _protected_section.refresh()
             _ignore_section.refresh()
+            _ready_section.refresh()
             status.set_text(
                 f"Auto-generated: +{len(summary['whitelist_added'])} read-only "
                 f"dir(s); ignore {'updated' if summary['ignore_written'] else 'unchanged'}; "
                 "config files protected."
                 + (f" ({'; '.join(notes)})" if notes else ""),
             )
-            # Access & Protection is the last setup step, so THIS is where the
-            # operator is sent on to Live Run. Saving the protocol used to jump
-            # instead, which abandoned the wizard halfway through setup. A run
-            # with warnings stays put so the operator can read them; the short
-            # pause lets the success line be read before the page swaps.
-            if not notes:
-                await asyncio.sleep(1.2)
-                ui.navigate.to("/run")
+            # No automatic jump: the operator reviews the result and leaves via
+            # the "Ready for Live Run!" button at the bottom of the page.
 
         def ready_now() -> bool:
             # Re-checked at click time: the protocol may have been saved (or
@@ -724,7 +737,7 @@ def _protected_section() -> None:
                 merged = sorted(set(current) | set(chosen))
                 app_state["protected_files"] = merged
                 _save()
-                _profile_save(workspace)
+                _profile_save(workspace, configured=True)
                 add_select.value = []
                 _refresh_chips(merged, options_holder, chips_container)
 
@@ -763,7 +776,7 @@ def _remove_protected(path: str, options_holder: dict, container) -> None:
     _save()
     workspace = _workspace()
     if workspace:
-        _profile_save(workspace)
+        _profile_save(workspace, configured=True)
     _refresh_chips(merged, options_holder, container)
 
 
@@ -789,7 +802,7 @@ def _access_section() -> None:
             return
 
         def _persist() -> None:
-            _profile_save(workspace)
+            _profile_save(workspace, configured=True)
             _drill_verdict.refresh()
 
         _bind_switch(
@@ -825,7 +838,7 @@ def _access_section() -> None:
                 current.append(str(resolved))
                 app_state["access_whitelist"] = current
                 _save()
-                _profile_save(workspace)
+                _profile_save(workspace, configured=True)
             path_input.value = ""
             status.set_text(f"Added read-only: {resolved}")
             chips.refresh()
@@ -892,7 +905,7 @@ def _remove_whitelist(entry: str) -> None:
     _save()
     workspace = _workspace()
     if workspace:
-        _profile_save(workspace)
+        _profile_save(workspace, configured=True)
     _access_section.refresh()
 
 
@@ -985,17 +998,23 @@ def _suggest_ignore_patterns(
     stop_event=None,
 ) -> str:
     from supervisor.utils.llm_stream import make_stream_client, stream_chat_text
+    from supervisor.utils.thinking_probe import lowest_thinking_effort
 
     if on_progress is not None:
         on_progress(0, 0, 0)
     entries = _list_workspace_files(workspace, _IGNORE_SUGGEST_FILES)
+    base_url = app_state.get("base_url") or ""
+    model = app_state.get("supervisor_model") or "swift-1.5"
     client = make_stream_client(
         api_key=app_state.get("openai_key"),
-        base_url=app_state.get("base_url") or None,
+        base_url=base_url or None,
     )
+    # Cheapest thinking level this endpoint actually honours (measured, not
+    # assumed: providers differ in accepted names and a proxy may clamp).
+    effort = lowest_thinking_effort(client, model, base_url)
     return stream_chat_text(
         client,
-        app_state.get("supervisor_model") or "swift-1.5",
+        model,
         [
             {
                 "role": "system",
@@ -1013,6 +1032,7 @@ def _suggest_ignore_patterns(
         field_name="generated ignore patterns response",
         on_progress=on_progress,
         stop_event=stop_event,
+        extra_body={"reasoning_effort": effort} if effort else None,
     )
 
 
@@ -1079,6 +1099,9 @@ def _connectivity_section() -> None:
                     return
                 if app_state.tests_ok():
                     status.set_text("✅ Both connectivity tests passed — Live Run unlocked.")
+                # The hand-off button at the page bottom is gated on these
+                # results, so it must re-evaluate as soon as they change.
+                _ready_section.refresh()
 
         with ui.row().classes("gap-3"):
             test_buttons = [
@@ -1333,6 +1356,71 @@ async def _refine(
         )
 
 
+# ── Hand-off to Live Run ──────────────────────────────────────────────────────
+
+
+def _setup_blockers(workspace: Path | None) -> list[str]:
+    """What still stands between the operator and Live Run, in setup order."""
+    from supervisor.security.access_policy import AccessPolicy
+    from supervisor.security.access_profile import load_profile
+    from supervisor.security.preflight import run_policy_drill
+
+    if workspace is None:
+        return ["Set a valid workspace path in Configuration."]
+    blockers: list[str] = []
+    if not app_state.tests_ok():
+        blockers.append("Connectivity Tests: run them above — both must pass.")
+    protocol_ok, _reason = _protocol_ready(workspace)
+    if not protocol_ok:
+        blockers.append("Protocol: fill the sections and click “Accept & Save”.")
+    profile = load_profile(workspace)
+    if not profile.get("access_configured"):
+        blockers.append(
+            "Access & Protection: auto-generate it, or edit it by hand.",
+        )
+    policy = AccessPolicy(
+        workspace=workspace,
+        whitelist=tuple(
+            Path(item) for item in (profile.get("access_whitelist") or [])
+        ),
+        enabled=bool(profile.get("access_policy_enabled", True)),
+        strict_dynamic=bool(profile.get("access_policy_strict", False)),
+    )
+    report = run_policy_drill(workspace, policy)
+    if not report.ok:
+        blockers.append(
+            f"Access & Protection: policy drill failed — {report.fail_text()}",
+        )
+    return blockers
+
+
+@ui.refreshable
+def _ready_section() -> None:
+    """The one deliberate exit to Live Run, unlocked by a complete setup.
+
+    Nothing navigates on its own: finishing a step (auto-generate, protocol
+    save, tests) leaves the operator on this page to review the result, and
+    this button is the only hand-off.
+    """
+    blockers = _setup_blockers(_workspace())
+    with ui.column().classes("w-full gap-2 mt-4"):
+        button = ui.button(
+            "Ready for Live Run!",
+            on_click=lambda: ui.navigate.to("/run"),
+        ).props("color=primary size=lg")
+        if blockers:
+            button.set_enabled(False)
+            ui.label("Locked until every setup step and test is complete:").classes(
+                "text-xs text-[#8b949e]",
+            )
+            for item in blockers:
+                ui.label(f"• {item}").classes("text-xs text-[#e3b341]")
+        else:
+            ui.label("✅ Setup complete — Live Run is unlocked.").classes(
+                "text-xs text-[#3fb950]",
+            )
+
+
 # ── Page entry ────────────────────────────────────────────────────────────────
 
 
@@ -1354,3 +1442,5 @@ def render() -> None:
     # until the protocol has been written and saved above it.
     _protocol_section()
     _protection_section()
+    # Last: the hand-off to Live Run, greyed out until every step above is done.
+    _ready_section()

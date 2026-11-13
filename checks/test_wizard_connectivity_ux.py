@@ -78,7 +78,9 @@ def test_protocol_comes_before_access_and_protection():
     assert order.index("protocol_section") < order.index("protection_section"), (
         "Access & Protection must follow the protocol editor it generates from"
     )
-    assert order[-1] == "protection_section"
+    assert order[-1] == "ready_section", (
+        "the hand-off button closes the page, after every setup step"
+    )
 
 
 def test_run_page_lock_yields_to_queued_jobs():
