@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -545,10 +546,19 @@ def _protection_section() -> None:
         _profile_sync(workspace, create=True)
 
         status = ui.label("").classes("text-xs text-[#8b949e]")
+        # Same gate as the Live Run page's connectivity lock: the generator
+        # reads the SAVED protocol, so with no protocol on disk the button is
+        # disabled and a standing notice says what to do first. A click that
+        # silently generates from an empty document is worse than a lock.
+        ready, reason = _protocol_ready(workspace)
+        gate_label = ui.label(reason).classes("text-xs text-[#e3b341]")
+        gate_label.set_visibility(not ready)
 
         async def _auto_generate() -> None:
             from supervisor.security.access_profile import apply_generation
 
+            if not ready_now():
+                return
             app_state.save()
             app_state.apply_api_config()
             notes: list[str] = []
@@ -598,14 +608,33 @@ def _protection_section() -> None:
                 "config files protected."
                 + (f" ({'; '.join(notes)})" if notes else ""),
             )
+            # Access & Protection is the last setup step, so THIS is where the
+            # operator is sent on to Live Run. Saving the protocol used to jump
+            # instead, which abandoned the wizard halfway through setup. A run
+            # with warnings stays put so the operator can read them; the short
+            # pause lets the success line be read before the page swaps.
+            if not notes:
+                await asyncio.sleep(1.2)
+                ui.navigate.to("/run")
+
+        def ready_now() -> bool:
+            # Re-checked at click time: the protocol may have been saved (or
+            # removed) since this panel rendered, and the gate must follow the
+            # file, not a stale render-time capture.
+            ok, _ = _protocol_ready(workspace)
+            gate_label.set_visibility(not ok)
+            auto_button.set_enabled(ok)
+            return ok
 
         auto_button = ui.button(
             "Auto-generate access & protection (LLM)", on_click=_auto_generate,
         ).props("dense color=primary").tooltip(
             "One LLM pass: suggests read-only reference directories from the "
-            "protocol, generates .opencodeignore patterns, validates every "
-            "entry, and saves both into the workspace.",
+            "saved protocol, generates .opencodeignore patterns, validates "
+            "every entry, and saves both into the workspace.",
         )
+        if not ready:
+            auto_button.set_enabled(False)
 
         _access_section()
         _protected_section()
@@ -821,6 +850,32 @@ def _protocol_text(workspace: Path) -> str:
     from supervisor.protocols.protocol import read_protocol_text, resolve_protocol_path
 
     return read_protocol_text(resolve_protocol_path(workspace))[:6000]
+
+
+def _protocol_ready(workspace: Path) -> tuple[bool, str]:
+    """Whether the SAVED protocol exists, and why not when it does not.
+
+    The access auto-generator reads the protocol FROM DISK: an unsaved draft
+    in the editor above is invisible to it, so generating first would propose
+    read-only directories from nothing. Same rule as the Live Run page's
+    connectivity lock: no silent no-op, and the button says why.
+    """
+    from supervisor.protocols.protocol import resolve_protocol_path
+
+    path = resolve_protocol_path(workspace)
+    if not path.is_file():
+        return False, (
+            "⚠ No saved protocol yet — write INPUT / TARGET / RESTRICTIONS in "
+            "the Protocol section above, then click “Accept & Save”. The "
+            "auto-generator reads the protocol from disk, so an unsaved draft "
+            "is not visible to it."
+        )
+    if not _protocol_text(workspace).strip():
+        return False, (
+            f"⚠ {path.name} is empty — fill in the Protocol section above and "
+            "save it before auto-generating access & protection."
+        )
+    return True, ""
 
 
 def _suggest_whitelist_paths(workspace: Path, protocol_text: str, existing: list[str]):
@@ -1100,8 +1155,15 @@ def _accept_protocol(workspace: Path, sections_getter) -> None:
     path = save_protocol(workspace, protocol)
     # Refresh the workspace profile so the new config file is protected too.
     _profile_save(workspace)
-    ui.notify(f"{path.name} saved to {workspace.name}")
-    ui.navigate.to("/run")
+    # Stay on the page: Access & Protection sits directly below and only
+    # unlocks once the protocol is on disk, so jumping to Live Run here sent
+    # the operator away mid-setup (and made them find their way back). The
+    # nav drawer still reaches Live Run whenever they are actually done.
+    _protection_section.refresh()
+    ui.notify(
+        f"{path.name} saved to {workspace.name} — Access & Protection below "
+        "is now unlocked.",
+    )
 
 
 async def _refine(
@@ -1217,6 +1279,12 @@ def render() -> None:
     _config_section()
     # Directly after the LLM configuration: the tests prove that config.
     _connectivity_section()
+    # The rarely-touched knobs (backups, reasoning, jev, limits) stay third:
+    # they are set once and then left alone.
     _advanced_section()
-    _protection_section()
+    # Protocol BEFORE Access & Protection: the auto-generator derives the
+    # read-only whitelist from the workspace protocol (and the ignore list
+    # from the files it describes), so it cannot produce anything useful
+    # until the protocol has been written and saved above it.
     _protocol_section()
+    _protection_section()

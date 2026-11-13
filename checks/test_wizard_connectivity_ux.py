@@ -55,6 +55,32 @@ def test_connectivity_section_comes_right_after_llm_configuration():
     assert order.index("connectivity_section") == order.index("config_section") + 1
 
 
+def test_protocol_comes_before_access_and_protection():
+    """The auto-generator derives the whitelist FROM the protocol.
+
+    Access & Protection's "Auto-generate" run reads the workspace protocol to
+    propose read-only reference directories, so it must sit below the protocol
+    editor - otherwise the operator is asked to generate from a document that
+    does not exist yet, and an unsaved draft is invisible to it.
+    """
+    src = _read("services", "webui", "pages", "wizard.py")
+    render_body = src.split("def render() -> None:")[1]
+    order = [
+        line.strip().removeprefix("_").removesuffix("()")
+        for line in render_body.splitlines()
+        if line.strip().startswith("_") and line.strip().endswith("()")
+    ]
+    # Advanced -> Protocol -> Access & Protection: the rarely-touched knobs
+    # stay third-from-last, then the setup flow in dependency order.
+    assert order.index("advanced_section") < order.index("protocol_section"), (
+        "Advanced settings come before the protocol they configure"
+    )
+    assert order.index("protocol_section") < order.index("protection_section"), (
+        "Access & Protection must follow the protocol editor it generates from"
+    )
+    assert order[-1] == "protection_section"
+
+
 def test_run_page_lock_yields_to_queued_jobs():
     # PENDING counts as live: a queued batch must be viewable unlocked. The
     # rule now lives in one shared helper instead of a per-page tuple.
