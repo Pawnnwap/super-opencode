@@ -18,13 +18,51 @@ def _text_excerpt(text: str, max_chars: int) -> str:
 
 def _safe_docs_url(url: str) -> bool:
     """Allow only public HTTPS documentation URLs declared by a registry."""
-    parsed = urlparse(url)
-    if parsed.scheme != "https" or not parsed.hostname:
+    return is_public_http_url(url, require_https=True)
+
+
+# Hostnames that resolve to the local machine or a private network without
+# being an IP literal. ``.internal``/``.local`` are the conventional
+# service-discovery suffixes; ``localhost`` covers the loopback alias.
+_PRIVATE_HOST_SUFFIXES = (".localhost", ".internal", ".local", ".home.arpa")
+
+
+def is_public_http_url(url: str, *, require_https: bool = True) -> bool:
+    """Whether *url* is an http(s) address on the public internet.
+
+    The MCP tools fetch agent-supplied URLs, so the check must reject anything
+    that reaches the local machine or a private network: loopback, RFC1918,
+    link-local (cloud metadata at 169.254.169.254), reserved, multicast, and
+    the localhost/internal name suffixes. Redirects are validated with the
+    same function, so a public URL cannot bounce into the private range.
+    """
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return False
+    scheme = (parsed.scheme or "").lower()
+    if scheme not in ({"https"} if require_https else {"http", "https"}):
+        return False
+    host = (parsed.hostname or "").strip().lower()
+    if not host:
+        return False
+    if host == "localhost" or host.endswith(_PRIVATE_HOST_SUFFIXES):
         return False
     try:
-        return not ipaddress.ip_address(parsed.hostname).is_private
+        address = ipaddress.ip_address(host)
     except ValueError:
-        return parsed.hostname.lower() != "localhost"
+        # A domain name: the DNS answer is not resolved here (that would make
+        # the check itself a network call), so only the literal forms and the
+        # reserved suffixes are refused.
+        return True
+    return not (
+        address.is_private
+        or address.is_loopback
+        or address.is_link_local
+        or address.is_reserved
+        or address.is_multicast
+        or address.is_unspecified
+    )
 
 
 def _codehelp_fetch_official_docs(

@@ -9,8 +9,10 @@ from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
 try:
+    from mcp_server.codehelp_support.docs import is_public_http_url
     from mcp_server.codehelp_support.http import _http_get_text
 except ImportError:
+    from codehelp_support.docs import is_public_http_url  # type: ignore[no-redef]
     from codehelp_support.http import _http_get_text  # type: ignore[no-redef]
 
 _SEARCH_ENDPOINT = (
@@ -146,8 +148,17 @@ async def call_tool(name: str, arguments: dict[str, str]) -> list[TextContent]:
         url = str(arguments.get("url", ""))
         if not url.startswith(("http://", "https://")):
             raise ValueError("url must be absolute http(s)")
+        # The URL is agent-supplied: without this, web_fetch is an SSRF
+        # primitive that can reach the supervisor's own API on 127.0.0.1,
+        # LAN services, and cloud metadata endpoints.
+        if not is_public_http_url(url, require_https=False):
+            raise ValueError("url must be a public http(s) address")
         max_chars = int(arguments.get("max_chars", _MAX_FETCH_CHARS))
-        text = _http_get_text(url, timeout=20)
+        text = _http_get_text(
+            url,
+            timeout=20,
+            validate_url=lambda target: is_public_http_url(target, require_https=False),
+        )
         text = _strip_tags(re.sub(r"<(script|style)[^>]*>.*?</\1>", " ", text, flags=re.DOTALL))
         return [TextContent(type="text", text=text[:max_chars])]
 

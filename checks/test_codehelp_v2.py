@@ -10,7 +10,10 @@ from mcp_server.codehelp_support.docs import (
 from mcp_server.codehelp_support.packages import _pypi_version
 
 
-def test_analyze_dependency_reads_python_and_node_manifests(tmp_path):
+def test_analyze_dependency_reads_python_and_node_manifests(tmp_path, monkeypatch):
+    # codebase_path is bounded to the run's workspace (SOP_WORKSPACE); the
+    # tools refuse any directory outside it.
+    monkeypatch.setenv("SOP_WORKSPACE", str(tmp_path))
     (tmp_path / "pyproject.toml").write_text(
         """[project]
 dependencies = ["requests>=2.0", "rich==13.7.0"]

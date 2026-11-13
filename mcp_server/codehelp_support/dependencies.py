@@ -127,9 +127,11 @@ def _codehelp_analyze_dependencies(
     include_latest: bool = False,
     max_latest_queries: int = 20,
 ) -> dict[str, Any]:
-    root = Path(codebase_path).resolve()
-    if not root.is_dir():
-        return {"status": "error", "error_type": "invalid_path", "error": f"codebase_path is not a directory: {root}"}
+    from .paths import resolve_codebase_path
+
+    root, error = resolve_codebase_path(codebase_path)
+    if root is None:
+        return {"status": "error", "error_type": "outside_workspace", "error": error}
 
     found: dict[tuple[str, str], dict[str, Any]] = {}
     _read_pyproject(root, found)

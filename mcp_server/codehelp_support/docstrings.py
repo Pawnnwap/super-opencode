@@ -89,9 +89,11 @@ def _match_target(target: str, filepath: Path, root: Path) -> list[dict[str, Any
 
 
 def _codehelp_search_docstrings(target: str, codebase_path: str = ".") -> dict[str, Any]:
-    root = Path(codebase_path).resolve()
-    if not root.is_dir():
-        return {"error": f"codebase_path is not a directory: {root}"}
+    from .paths import resolve_codebase_path
+
+    root, error = resolve_codebase_path(codebase_path)
+    if root is None:
+        return {"error": error, "error_type": "outside_workspace"}
 
     target = target.strip()
     if not target:
