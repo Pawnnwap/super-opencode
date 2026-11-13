@@ -142,6 +142,9 @@ class LLMSupervisor:
         )
         self._model = model
         self._model_backup = model_backup
+        # Kept for the thinking probe: it must measure the SAME endpoint the
+        # calls go to, because a proxy can accept an effort name and clamp it.
+        self._base_url = base_url or ""
         # Thinking-effort control for real runs ("" = provider default):
         # forwarded as extra_body.reasoning_effort on every judge call. Only
         # set from the UI droplist aligned with the model's variant names.
@@ -149,6 +152,8 @@ class LLMSupervisor:
         self._reasoning_body = (
             {"reasoning_effort": self._reasoning} if self._reasoning else None
         )
+        # Measured on first mechanical sub-call (see _mechanical_reasoning_body).
+        self._mechanical_effort: str | None = None
         self._workspace = workspace
         self._system_base = protocol.as_system_prompt(workspace)
         self._system = self._system_base
@@ -202,10 +207,30 @@ class LLMSupervisor:
             skip_dir_prefixes=_SKIP_DIR_PREFIXES,
             generated_markdown_files=_OPENCODE_GENERATED_MD,
             reasoning_body=self._reasoning_body,
+            mechanical_reasoning_body=self.mechanical_reasoning_body,
         )
 
     def _get_model_limit_for_model(self, model: str) -> int:
         return _get_model_token_limit(model)
+
+    def mechanical_reasoning_body(self) -> dict | None:
+        """``extra_body`` for mechanical sub-calls (file picking, format repair).
+
+        These are not judgements: they pick paths from a listing or re-emit a
+        fixed block. Inheriting the judge's configured effort made them pay
+        the full thinking cost for no benefit, so they use the cheapest level
+        this endpoint actually honours — measured, not assumed (see
+        supervisor.utils.thinking_probe).
+        """
+        if self._mechanical_effort is None:
+            from supervisor.utils.thinking_probe import lowest_thinking_effort
+
+            self._mechanical_effort = lowest_thinking_effort(
+                self._client, self._model, self._base_url,
+            )
+        if not self._mechanical_effort:
+            return None
+        return {"reasoning_effort": self._mechanical_effort}
 
     @staticmethod
     def _extract_token_limit_from_error(exc: Exception) -> int | None:

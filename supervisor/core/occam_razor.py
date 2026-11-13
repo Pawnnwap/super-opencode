@@ -425,6 +425,9 @@ class OccamRazorStage:
                 model_backup=self.config.supervisor_model_backup,
                 api_key=self.config.openai_api_key or None,
                 base_url=self.config.openai_base_url or None,
+                # Same thinking level as the main judge: without it this
+                # verification silently ran at the provider default.
+                reasoning=getattr(self.config, "supervisor_reasoning", "") or "",
             )
             verdict = supervisor.judge(opencode_output or "Occam pass produced no output.")
         except Exception as exc:

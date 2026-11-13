@@ -36,12 +36,14 @@ class _CapturingClient:
 
     def __init__(self):
         self.prompt = ""
+        self.kwargs: dict = {}
         outer = self
 
         class _Completions:
             @staticmethod
             def create(**kwargs):
                 outer.prompt = kwargs["messages"][0]["content"]
+                outer.kwargs = kwargs
 
                 class _Msg:
                     content = '["a.py"]'
@@ -186,3 +188,25 @@ def test_age_labels_are_human_scaled():
     assert _age_label(now - 10_800, now) == "3h ago"
     assert _age_label(now - 172_800, now) == "2d ago"
     assert _age_label(0.0, now) == ""
+
+
+def test_file_selection_uses_the_measured_cheapest_level(tmp_path):
+    """Picking paths from a listing is mechanical: it must not inherit the
+    judge's configured effort (which can be minutes of reasoning per turn)."""
+    (tmp_path / "a.py").write_text("x\n", encoding="utf-8")
+    mgr = _manager(tmp_path)
+    client = _CapturingClient()
+    mgr._client = client
+    mgr._mechanical_reasoning_body = lambda: {"reasoning_effort": "low"}
+    mgr.llm_select_files({"a.py": 2}, 1)
+    assert client.kwargs["extra_body"] == {"reasoning_effort": "low"}
+
+
+def test_file_selection_omits_effort_when_no_level_thinks(tmp_path):
+    (tmp_path / "a.py").write_text("x\n", encoding="utf-8")
+    mgr = _manager(tmp_path)
+    client = _CapturingClient()
+    mgr._client = client
+    mgr._mechanical_reasoning_body = lambda: None
+    mgr.llm_select_files({"a.py": 2}, 1)
+    assert "extra_body" not in client.kwargs

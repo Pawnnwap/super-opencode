@@ -305,8 +305,13 @@ def suggest_with_supervisor_llm(
     onto its own loop.
     """
     from supervisor.utils.llm_stream import make_stream_client, stream_chat_text
+    from supervisor.utils.thinking_probe import lowest_thinking_effort
 
     client = make_stream_client(api_key=api_key, base_url=base_url or None)
+    # Cheapest thinking level this endpoint actually honours (measured, not
+    # assumed: providers differ in accepted names and a proxy may clamp).
+    effort = lowest_thinking_effort(client, model, base_url or "")
+    extra_body = {"reasoning_effort": effort} if effort else None
 
     def _call(messages: list[dict[str, str]]) -> str:
         def _stream_progress(content: int, reasoning: int, _chunks: int) -> None:
@@ -321,6 +326,7 @@ def suggest_with_supervisor_llm(
             field_name="whitelist suggestions",
             on_progress=_stream_progress if on_progress is not None else None,
             stop_event=stop_event,
+            extra_body=extra_body,
         )
 
     return suggest_whitelist(

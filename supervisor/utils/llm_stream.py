@@ -114,6 +114,29 @@ class StreamedLLMHelper:
         # hour. See supervisor.utils.llm_stream.
         self._client = make_stream_client(api_key=api_key, base_url=base_url)
         self._model = model
+        self._base_url = base_url or ""
+        # Measured on first use (see thinking_probe): the cheapest effort this
+        # endpoint actually honours. None = not measured yet.
+        self._thinking_effort: str | None = None
+
+    def thinking_body(self) -> dict | None:
+        """``extra_body`` carrying the cheapest thinking level that works here.
+
+        Auto-generation is transcription-grade work: it wants the lowest rung
+        that still reasons, never the provider default (which can be minutes
+        of chain-of-thought per draft, multiplied by every gate fix round).
+        The rung is measured against the real endpoint because names differ
+        per provider and a proxy may accept a name while clamping it to off.
+        """
+        if self._thinking_effort is None:
+            from supervisor.utils.thinking_probe import lowest_thinking_effort
+
+            self._thinking_effort = lowest_thinking_effort(
+                self._client, self._model, self._base_url,
+            )
+        if not self._thinking_effort:
+            return None
+        return {"reasoning_effort": self._thinking_effort}
 
 
 def _delta_fields(delta: Any) -> tuple[str, str]:

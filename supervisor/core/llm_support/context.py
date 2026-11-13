@@ -66,6 +66,7 @@ class SupervisorContextManager:
         skip_dir_prefixes,
         generated_markdown_files: set[str],
         reasoning_body: dict | None = None,
+        mechanical_reasoning_body: Callable[[], dict | None] | None = None,
     ):
         self._workspace = workspace
         self._max_tokens = max_tokens
@@ -80,6 +81,10 @@ class SupervisorContextManager:
         self._generated_markdown_files = generated_markdown_files
         # Thinking-effort extra_body shared with the judge chat path.
         self._reasoning_body = reasoning_body
+        # Mechanical sub-calls (file picking) use the measured cheapest level
+        # instead of the judge's configured effort: picking paths from a
+        # listing gains nothing from deep reasoning.
+        self._mechanical_reasoning_body = mechanical_reasoning_body
         # Optional providers (wired by set_change_providers) that tell the
         # file-selection listing what changed since the previous turn.
         self._delta_provider: Callable[[], dict[str, str]] = dict
@@ -236,8 +241,10 @@ class SupervisorContextManager:
             else:
                 kwargs["max_tokens"] = response_budget
                 kwargs["temperature"] = 0.0
-            if getattr(self, "_reasoning_body", None):
-                kwargs["extra_body"] = self._reasoning_body
+            if getattr(self, "_mechanical_reasoning_body", None):
+                body = self._mechanical_reasoning_body()
+                if body:
+                    kwargs["extra_body"] = body
 
             self._log_prompt("LLM Select Files", kwargs["messages"])
             response = self._client.chat.completions.create(**kwargs)

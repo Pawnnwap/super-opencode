@@ -385,10 +385,19 @@ def _request_structured_verdict(
         },
     ]
     try:
-        response = supervisor._client.chat.completions.create(
-            model=supervisor._model,
-            messages=repair_messages,
-        )
+        repair_kwargs = {
+            "model": supervisor._model,
+            "messages": repair_messages,
+        }
+        # Mechanical re-emit of a fixed block: use the measured cheapest level
+        # rather than the judge's configured effort. Falling back to the
+        # provider default (the old behaviour) could mean minutes of reasoning
+        # for a one-line format fix.
+        mechanical = getattr(supervisor, "mechanical_reasoning_body", None)
+        body = mechanical() if callable(mechanical) else None
+        if body:
+            repair_kwargs["extra_body"] = body
+        response = supervisor._client.chat.completions.create(**repair_kwargs)
     except Exception as exc:  # noqa: BLE001 - a failed repair is not a verdict
         logger.warning("structured-verdict repair call failed: %s", exc)
         return None
