@@ -46,10 +46,14 @@ def freshness_action(startup: str, current: str, active_jobs: int) -> str:
     """What the worker should do when loaded code no longer matches disk.
 
     ``ok``      - nothing changed; keep running and claiming jobs.
-    ``hold``    - code changed while jobs are live: stop claiming new jobs,
-                  let the live ones finish on the code they started with.
+    ``stale``   - code changed while jobs are live: keep claiming. The
+                  concurrency cap bounds total parallelism, so parking the
+                  queue would leave free slots idle for the whole drain of
+                  whatever happens to be running. Live jobs keep the code
+                  they started with; the worker reloads at the next idle
+                  poll, which is the next job boundary.
     ``restart`` - code changed and the worker is idle: re-exec to load it.
     """
     if current == startup:
         return "ok"
-    return "restart" if active_jobs == 0 else "hold"
+    return "restart" if active_jobs == 0 else "stale"

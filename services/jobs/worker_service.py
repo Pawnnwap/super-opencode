@@ -322,7 +322,6 @@ def main() -> int:
 
     claimed: set[str] = set()
     applied_settings: dict = dict(settings)
-    allow_claims = True
     stale_logged = False
     last_code_check = time.time()
     last_prune = time.time()
@@ -333,12 +332,11 @@ def main() -> int:
 
     def check_freshness() -> str:
         """Compare loaded code with disk; re-exec when idle if it changed."""
-        nonlocal allow_claims, stale_logged
+        nonlocal stale_logged
         current = code_fingerprint()
         action = freshness_action(
             startup_fingerprint, current, manager.active_job_count(),
         )
-        allow_claims = action == "ok"
         if action == "ok":
             stale_logged = False
         elif not stale_logged:
@@ -349,7 +347,8 @@ def main() -> int:
                 current[:12],
                 "restarting the worker now (idle)"
                 if action == "restart"
-                else "holding new jobs until active jobs finish",
+                else "live jobs keep their code, the queue keeps filling, "
+                     "reloading at the next idle poll",
             )
         if action == "restart":
             logger.info(
@@ -418,13 +417,15 @@ def main() -> int:
                 state_cache.pop(dead, None)
 
             # Claim only into a FREE slot, oldest first (see _claim_pending).
+            # A stale code fingerprint does not gate this: the cap is the only
+            # limit on total parallelism, and the worker reloads at the next
+            # idle poll (see check_freshness).
             if pending:
                 pulse.note("claim")
                 if now - last_code_check >= _CODE_CHECK_SECONDS:
                     last_code_check = now
                     check_freshness()
-                if allow_claims:
-                    _claim_pending(manager, pending, claimed)
+                _claim_pending(manager, pending, claimed)
             # Retention pruning walks the store again; it does not need the
             # poll cadence, and running it every second doubled the scan.
             if now - last_prune >= _PRUNE_SECONDS:

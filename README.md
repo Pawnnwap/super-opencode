@@ -236,10 +236,10 @@ restarted so the parameter always wins. Equivalent manual start:
 `python app.py` (then the app serves `http://127.0.0.1:8501`).
 
 The job worker watches its own source tree (`supervisor/`, `services/`). When
-the tree changes, it stops claiming new jobs, lets live jobs finish on the
-code they started with, then re-execs to load the new code — so a deployed
-fix applies without a manual worker restart, and a stale daemon can never
-silently run a future job.
+the tree changes, live jobs keep the code they started with and the queue keeps
+filling up to `max_parallel_jobs`; the worker re-execs to load the new code at
+the first idle poll — so a deployed fix applies without a manual worker restart,
+and the concurrency cap stays the only limit on total parallelism.
 
 ---
 
