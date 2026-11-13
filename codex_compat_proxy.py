@@ -25,6 +25,7 @@ Handled shapes:
 Run:  set SOP_UPSTREAM=http://HOST:PORT   (or pass the upstream as argv[2])
       python codex_compat_proxy.py [port] [upstream]     # listens on 127.0.0.1:8321
       GET  /healthz        -> profile + counters
+      GET  <anything else> -> read-through to the upstream (e.g. /v1/models)
       POST /admin/reprobe  -> drop cached profile (re-probe on next request)
 Point codex at http://127.0.0.1:<port>/v1 (codex_base_url) and the supervisor
 at the same host (openai_base_url) so both engines share one negotiated profile.
@@ -383,7 +384,37 @@ class Handler(BaseHTTPRequestHandler):
                 ).encode()
             self._send(200, {"Content-Type": "application/json"}, body)
             return
-        self._send(404, {"Content-Type": "application/json"}, b'{"error":"not found"}')
+        # Read-through for everything else: the UI lists models with
+        # `GET {codex_base_url}/models`, and codex_base_url points at this
+        # proxy, so a 404 here made the model droplist permanently empty.
+        # GETs carry no request body, so no capability rewriting applies.
+        self._relay_get()
+
+    def _relay_get(self) -> None:
+        headers = {
+            k: v for k, v in self.headers.items()
+            if k.lower() not in ("host", "content-length", "connection", "accept-encoding")
+        }
+        try:
+            req = urllib.request.Request(UPSTREAM + self.path, headers=headers, method="GET")
+            resp = urllib.request.urlopen(req, timeout=60)
+        except urllib.error.HTTPError as exc:
+            detail = exc.read()
+            with _lock:
+                _stats["errors"] += 1
+            _log(f"upstream {exc.code} GET {self.path}: {detail[:220]!r}")
+            self._send(exc.code,
+                       {"Content-Type": exc.headers.get("Content-Type", "application/json")},
+                       detail)
+            return
+        except Exception as exc:  # noqa: BLE001
+            with _lock:
+                _stats["errors"] += 1
+            _log(f"upstream error GET {self.path}: {exc}")
+            self._send(502, {"Content-Type": "application/json"},
+                       json.dumps({"error": {"message": f"proxy upstream error: {exc}"}}).encode())
+            return
+        self._relay_response(resp)
 
     def do_POST(self):
         n = int(self.headers.get("Content-Length") or 0)
