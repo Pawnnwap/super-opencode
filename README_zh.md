@@ -539,7 +539,7 @@ requirements.txt                    备用依赖列表（核心 + 静态分析�
 | max_protected_files_for_suggestions | 5 | 建议中显示的最大受保护文件数 |
 | read_external_feedback | False | 允许外部反馈注入 |
 | log_level | "INFO" | 日志详细程度（DEBUG、INFO、WARNING、ERROR） |
-| plan_mode_rounds | 0 | 执行前的规划轮数（0 = 禁用） |
+| plan_mode_rounds | 1 | 执行前的规划轮数（0 = 无规划阶段，直接执行） |
 | enable_occam_razor | False | 在归档副本上运行成功后的冗余精简阶段 |
 
 ### 自定义模型与提供商
@@ -669,8 +669,8 @@ Super-Opencode 使用执行后端原生的文件工具。OpenCode 提供 `read`�
 3. 最终计划和监督器反馈被存储并前置到构建模式的初始提示中，
    在 opencode 开始编写代码之前为其提供清晰的路线图
 
-在实时运行的启动表单中配置规划轮数 —— 表单默认 1 轮，设为 0 可禁用
-（`SupervisorConfig.plan_mode_rounds` 本身默认为 0）。
+在实时运行的启动表单中配置规划轮数 —— 表单默认 1 轮，设为 0 表示无规划阶段
+（直接执行）。
 
 ---
 

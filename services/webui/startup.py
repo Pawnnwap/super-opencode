@@ -51,8 +51,9 @@ def _run_task(task: str, fn) -> None:
 
 def _launch_from_env() -> str:
     # Multi-workspace launcher: SUPERVISOR_LAUNCH_WORKSPACES="a;b;c" plus
-    # SUPERVISOR_LAUNCH_PLAN_ROUNDS (default 3) enqueue one run job per
-    # workspace inside this app process, mirroring the UI launch path.
+    # SUPERVISOR_LAUNCH_PLAN_ROUNDS (default 1; 0 = no plan phase) enqueue one
+    # run job per workspace inside this app process, mirroring the UI launch
+    # path.
     # Multiple workspaces launch as ONE study batch (grouped board card,
     # one-click batch cancel), matching the UI parallel-launch semantics.
     import os
@@ -66,11 +67,11 @@ def _launch_from_env() -> str:
     raw = os.environ.get("SUPERVISOR_LAUNCH_WORKSPACES", "").strip()
     if not raw:
         return "no launch request"
-    rounds_raw = os.environ.get("SUPERVISOR_LAUNCH_PLAN_ROUNDS", "3").strip()
+    rounds_raw = os.environ.get("SUPERVISOR_LAUNCH_PLAN_ROUNDS", "1").strip()
     try:
         rounds = int(rounds_raw)
     except ValueError:
-        rounds = 3
+        rounds = 1
     sync_max_parallel_jobs()
     manager = get_job_manager()
     batch_id = (

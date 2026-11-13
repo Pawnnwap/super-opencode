@@ -761,7 +761,7 @@ Quality ratings: `excellent` (≥90%) → `good` (≥75%) → `fair` (≥50%) �
 | log_level | "INFO" | Logging verbosity (DEBUG, INFO, WARNING, ERROR) |
 | log_detail | "headline" | Job-log detail: headline digests + `.full` sidecar, or "full" for verbatim events. Errors are always inline in full |
 | archive_backend | "git" | "git" = incremental snapshots in `.archive/snapshots.git`; "copy" = legacy full-copy snapshot dirs |
-| plan_mode_rounds | 0 | Number of planning rounds before execution (0 = disabled) |
+| plan_mode_rounds | 1 | Number of planning rounds before execution (0 = no plan phase, direct execution) |
 | enable_occam_razor | False | Run the post-success redundancy-reduction pass on an archive copy |
 
 ### Custom Models and Providers
@@ -912,8 +912,7 @@ before execution:
    starts writing code
 
 Configure planning rounds in the Live Run launch form — it defaults to
-1 round; set it to 0 to disable (`SupervisorConfig.plan_mode_rounds` itself
-defaults to 0).
+1 round; set it to 0 for no plan phase (direct execution).
 
 ---
 

@@ -82,7 +82,9 @@ class SupervisorConfig:
     # repeats byte-for-byte (typical of repeated stand-by restatements), replay
     # the stored verdict without another LLM call.
     reuse_identical_verdicts: bool = True
-    plan_mode_rounds: int = 0
+    # Pre-execution planning rounds. 0 = no plan phase (direct execution);
+    # the default is one round.
+    plan_mode_rounds: int = 1
     enable_occam_razor: bool = False
     # Goal guard (book ch.8 exit validation): treat the judge's DONE as a
     # proposal validated against deterministic evidence before the run ends.
