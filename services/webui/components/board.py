@@ -34,6 +34,14 @@ def _workspace_name(job: dict) -> str:
     return workspace_name(job)
 
 
+# History is paged. A live store holds hundreds of finished jobs (the
+# retention cap prunes LOG payloads, never the summary json), and building a
+# card per job is hundreds of elements in one round trip: the browser stalls,
+# the websocket bursts, and the panel arrives late or not at all. One page
+# renders at a time; "Show more" appends the next.
+_HISTORY_PAGE = 20
+
+
 class JobBoard:
     """Self-refreshing board for one job type ("run" | "harvest")."""
 
@@ -51,6 +59,12 @@ class JobBoard:
         self._history_signature = None
         self._history_title = ""
         self._history_auto_opened = False
+        # How many history cards the operator has asked to see. One page is
+        # built at a time; "Show more" grows this by another page.
+        self._history_limit = _HISTORY_PAGE
+        self._history_total = 0
+        # job_id -> (mtime_ns, size, record) for the store walk.
+        self._state_cache: dict[str, tuple] = {}
 
         self._build_filters()
         self.queue_col = ui.column().classes("w-full")
@@ -70,6 +84,19 @@ class JobBoard:
             ).classes("w-full")
             with self.history_exp:
                 self.history_grid = ui.grid(columns=4).classes("w-full gap-2")
+                # Footer: the one element that says how much of History is on
+                # screen and offers the next page. It lives outside the grid
+                # so appending cards never disturbs it.
+                with ui.row().classes(
+                    "w-full items-center gap-3 mt-1 flex-wrap",
+                ) as self.history_footer:
+                    self.history_count_label = ui.label("").classes(
+                        "text-xs text-[#8b949e]",
+                    )
+                    self.history_more_button = ui.button(
+                        "Show more", on_click=self._show_more_history,
+                    ).props("flat dense")
+                self.history_footer.set_visibility(False)
             self.history_exp.set_visibility(False)
             self._empty_label.set_visibility(False)
         self.timer = ui.timer(1.5, self.refresh)
@@ -83,17 +110,41 @@ class JobBoard:
         The unreadable count marks the scan incomplete: a failed state read
         is not a deleted job, and treating it as one once made the only
         active job vanish and paused the board's timer forever.
+
+        Summaries are read through a per-file (mtime, size) cache: a finished
+        job's summary never changes and the store keeps hundreds of them, so
+        re-parsing the whole set every 1.5 s was pure disk work under the
+        worker's writes (2026-11-13: the walk blocked the event loop).
         """
         jobs: list[dict] = []
         unreadable = 0
-        for job_id in self.job_manager.store.list_jobs():
+        store = self.job_manager.store
+        try:
+            job_ids = store.list_jobs()
+        except OSError:
+            return jobs, 1
+        # Older/duck-typed stores and bare test doubles may not offer the
+        # cached reader; fall back to the plain summary read then.
+        cache = getattr(self, "_state_cache", None)
+        cached_reader = (
+            store.get_job_state_cached if hasattr(store, "get_job_state_cached")
+            else None
+        )
+        for job_id in job_ids:
             # Cards never read logs, so do not pay for parsing them: on a 1.5 s
             # timer across every historical job this was the dominant cost.
-            status = self.job_manager.get_job_summary(job_id)
+            if cached_reader is not None and cache is not None:
+                status = cached_reader(job_id, cache)
+            else:
+                status = self.job_manager.get_job_summary(job_id)
             if status is None:
                 unreadable += 1
             elif status.get("type") == self.job_type:
                 jobs.append({"id": job_id, "status": status})
+        # Deleted jobs must not keep a parse-cache entry alive forever.
+        if cache is not None and cached_reader is not None:
+            for dead in set(cache) - set(job_ids):
+                cache.pop(dead, None)
         jobs.sort(key=lambda j: j["status"].get("updated_at", 0), reverse=True)
         return jobs, unreadable
 
@@ -226,7 +277,7 @@ class JobBoard:
         ]
         history_jobs = [
             j for j in filtered if j["status"].get("state") not in ACTIVE_JOB_STATES
-        ][:20]
+        ]
         self._render_active(active_jobs)
         self._render_history(history_jobs, auto_open=not active_jobs and not filters_active)
 
@@ -286,30 +337,78 @@ class JobBoard:
         so a streaming job's 1.5 s refresh can no longer fold the panel.
         The idle default ("open when nothing is running") applies only until
         the operator toggles it once.
+
+        Paged: only ``self._history_limit`` cards exist at a time. A store can
+        hold hundreds of finished jobs, and building them all in one message
+        was the "open History and the tab stalls" failure - the browser chokes
+        on the burst and the websocket drops.
         """
         if not history:
             self._history_signature = None
+            self._history_total = 0
             self.history_grid.clear()
+            self.history_footer.set_visibility(False)
             self.history_exp.set_visibility(False)
             return
         if not self._history_auto_opened:
             self._history_auto_opened = True
             if auto_open and stored_expansion(self._history_key) is None:
                 self.history_exp.value = True
+        self._history_total = len(history)
         title = f"History ({len(history)})"
         if title != self._history_title:
             self._history_title = title
             self.history_exp.set_text(title)
         self.history_exp.set_visibility(True)
 
-        signature = tuple(self._card_signature(j) for j in history)
-        if signature == self._history_signature:
+        shown = history[: self._history_limit]
+        signature = tuple(self._card_signature(j) for j in shown)
+        rendered = self._history_signature
+        if signature == rendered:
+            self._update_history_footer(shown=len(shown))
             return
+        # Append when the new page merely EXTENDS what is on screen: rebuilding
+        # the whole grid on "Show more" threw the operator back up the panel.
+        appended = (
+            rendered is not None
+            and len(signature) > len(rendered)
+            and signature[: len(rendered)] == rendered
+        )
+        if appended:
+            new_cards = shown[len(rendered):]
+            with self.history_grid:
+                for job in new_cards:
+                    self._render_card(job)
+        else:
+            self.history_grid.clear()
+            with self.history_grid:
+                for job in shown:
+                    self._render_card(job)
         self._history_signature = signature
-        self.history_grid.clear()
-        with self.history_grid:
-            for job in history:
-                self._render_card(job)
+        self._update_history_footer(shown=len(shown))
+
+    def _update_history_footer(self, *, shown: int) -> None:
+        total = self._history_total
+        more = shown < total
+        self.history_count_label.set_text(
+            f"Showing {shown} of {total} finished task(s)"
+            + ("" if more else " — all shown"),
+        )
+        self.history_more_button.set_text(
+            f"Show {min(_HISTORY_PAGE, total - shown)} more",
+        )
+        self.history_more_button.set_visibility(more)
+        self.history_footer.set_visibility(True)
+
+    def _show_more_history(self) -> None:
+        """Grow History by one page, then render the new cards.
+
+        The signature is deliberately NOT cleared: ``_render_history`` sees
+        that the wider page merely extends what is already rendered and
+        appends only the new cards, keeping the operator's scroll position.
+        """
+        self._history_limit += _HISTORY_PAGE
+        self.refresh_sync()
 
     def _render_batch_card(self, batch_id: str, members: list[dict]) -> None:
         states = [m["status"].get("state", "?") for m in members]

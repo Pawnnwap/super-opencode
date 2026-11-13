@@ -99,7 +99,10 @@ def test_list_widgets_use_the_logs_free_path():
     collect = code_of(board, "def _collect")
     switcher = code_of(screen, "def _render_switcher")
     assert "get_job_summary" in collect and "get_job_status" not in collect
-    assert "get_job_summary" in switcher and "get_job_status" not in switcher
+    # The switcher now reads the shell's shared summary snapshot instead of
+    # walking the store itself; both are log-free by construction.
+    assert "get_job_status" not in switcher
+    assert "get_job_summary" in switcher or "_store_snapshot" in switcher
 
 
 def test_board_collect_cost_scales_with_state_files_only(tmp_path):

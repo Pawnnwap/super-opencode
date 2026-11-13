@@ -62,3 +62,30 @@ def test_selector_loop_is_the_platform_default_under_the_policy():
         assert isinstance(loop, asyncio.SelectorEventLoop)
     finally:
         loop.close()
+
+
+def test_ui_lock_rewrites_a_predecessors_pid(tmp_path):
+    """A restart must re-claim ui.lock, not inherit the dead pid.
+
+    The lock used to be written only when the file was absent. After any
+    restart it kept naming the predecessor, so the guardian saw
+    app_process_alive=False while the real app was still importing and
+    launched a second stack (2026-11-13: three "app not running" repairs in
+    four minutes, two competing UI trees).
+    """
+    import os
+
+    body = _APP_SRC.split("def _touch_ui_lock() -> None:")[1].split("\ndef ", 1)[0]
+    lock = tmp_path / "ui.lock"
+    lock.write_text('{"pid": 999999}', encoding="utf-8")
+    namespace = {"os": os, "_UI_LOCK": lock}
+    exec(  # noqa: S102 - executing the module's own source, not user input
+        "import os\n" + "def _touch_ui_lock() -> None:" + body, namespace,
+    )
+    namespace["_touch_ui_lock"]()
+    assert lock.read_text(encoding="utf-8").strip() == f'{{"pid": {os.getpid()}}}'
+    # A second call on an already-correct lock must not rewrite it (the mtime
+    # touch is the liveness signal the guardian reads).
+    before = lock.stat().st_mtime_ns
+    namespace["_touch_ui_lock"]()
+    assert lock.stat().st_mtime_ns >= before

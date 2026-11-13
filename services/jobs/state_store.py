@@ -168,7 +168,41 @@ class JobStateStore:
         two-writer contention of a live job (heartbeat + cancel) three were
         still occasionally exhausted back-to-back (checks/test_state_store_race).
         """
+        return self._read_state_file(self._get_job_path(job_id))
+
+    def get_job_state_cached(
+        self, job_id: str, cache: dict[str, tuple[Any, ...]],
+    ) -> dict[str, Any] | None:
+        """Like :meth:`get_job_state`, but reusing a caller-held file cache.
+
+        Store scans (the board's 1.5 s refresh, the shell's snapshot) walk
+        every summary on every tick, and summaries are never deleted —
+        retention prunes log payloads only — so the store grows without bound
+        and a re-parse of all of it becomes seconds of disk work under the
+        worker's writes. Re-reading only the files whose (mtime, size) changed
+        turns that into a stat loop: a finished job's summary is immutable,
+        and a live one is rewritten at heartbeat cadence.
+
+        ``cache`` maps job_id -> (mtime_ns, size, record). Entries for files
+        that disappeared are dropped by the caller (it owns the job list);
+        this method only fills and updates.
+        """
         path = self._get_job_path(job_id)
+        try:
+            stat = path.stat()
+        except OSError:
+            cache.pop(job_id, None)
+            return None
+        stamp = (stat.st_mtime_ns, stat.st_size)
+        cached = cache.get(job_id)
+        if cached is not None and cached[0] == stamp:
+            return cached[1]
+        record = self._read_state_file(path)
+        cache[job_id] = (stamp, record)
+        return record
+
+    def _read_state_file(self, path: Path) -> dict[str, Any] | None:
+        """Parse one state file with the retry policy both readers share."""
         if not path.exists():
             return None
         for attempt in range(5):
@@ -176,11 +210,11 @@ class JobStateStore:
                 with open(path, encoding="utf-8-sig") as f:
                     return json.load(f)
             except json.JSONDecodeError as exc:
-                logger.warning("Corrupt job state file for %s: %s", job_id, exc)
+                logger.warning("Corrupt job state file for %s: %s", path.name, exc)
                 return None
             except OSError as exc:
                 if attempt == 4:
-                    logger.warning("Cannot read job state for %s: %s", job_id, exc)
+                    logger.warning("Cannot read job state %s: %s", path.name, exc)
                     return None
                 time.sleep(0.02 * (attempt + 1))
         return None  # unreachable; for type-checkers

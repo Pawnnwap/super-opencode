@@ -64,9 +64,13 @@ class StubExpansion:
 class StubContainer:
     def __init__(self):
         self.clears = 0
+        self.visible = True
 
     def clear(self):
         self.clears += 1
+
+    def set_visibility(self, visible):
+        self.visible = visible
 
     def __enter__(self):
         return self
@@ -75,9 +79,24 @@ class StubContainer:
         return False
 
 
+class StubText:
+    def __init__(self):
+        self.text = ""
+        self.visible = True
+
+    def set_text(self, text):
+        self.text = text
+
+    def set_visibility(self, visible):
+        self.visible = visible
+
+
 @pytest.fixture()
-def clean_expansion_state(monkeypatch):
-    monkeypatch.setattr(ui_state, "_EXPANSIONS", {})
+def clean_expansion_state(monkeypatch, tmp_path):
+    # A temp file, not the real .job_store/ui_panels.json: each test starts
+    # with no stored state and leaves none behind.
+    monkeypatch.setattr(ui_state, "_PATH", tmp_path / "ui_panels.json")
+    monkeypatch.setattr(ui_state, "_EXPANSIONS", None)
     monkeypatch.setattr(
         ui_state.ui, "expansion",
         lambda text="", *, value=False, on_value_change=None, **kw: StubExpansion(
@@ -85,6 +104,18 @@ def clean_expansion_state(monkeypatch):
         ),
     )
     yield
+
+
+def test_panel_state_survives_a_process_restart(clean_expansion_state):
+    """A restart (guardian repair, page reload) rebuilds every panel: the
+    operator's open panels must come back open, not at their defaults."""
+    opened = ui_state.state_expansion("page.panel", "Panel")
+    opened.user_toggle(True)
+
+    # Simulate the restart: in-memory state gone, file intact.
+    ui_state._EXPANSIONS = None
+
+    assert ui_state.state_expansion("page.panel", "Panel").value is True
 
 
 def test_state_expansion_reopens_at_the_remembered_state(clean_expansion_state):
@@ -115,8 +146,13 @@ def _make_board(monkeypatch) -> JobBoard:
     board._history_title = ""
     board._history_auto_opened = False
     board._history_key = "board.run.history"
+    board._history_limit = 20
+    board._history_total = 0
     board.history_exp = StubExpansion("History")
     board.history_grid = StubContainer()
+    board.history_footer = StubContainer()
+    board.history_count_label = StubText()
+    board.history_more_button = StubText()
     board._render_card = lambda job: None
     from services.webui.components import board as board_mod
 
@@ -179,6 +215,59 @@ def test_history_is_hidden_when_no_terminal_jobs_remain(monkeypatch):
     assert board.history_exp.visible is True
     board._render_history([], auto_open=False)
     assert board.history_exp.visible is False
+
+
+def test_history_renders_one_page_and_offers_the_next(monkeypatch):
+    """A 300-job store must not build 300 cards in one message."""
+    board = _make_board(monkeypatch)
+    built = []
+    board._render_card = lambda job: built.append(job["id"])
+    jobs = [_job(f"run_{i:03d}") for i in range(300)]
+
+    board._render_history(jobs, auto_open=False)
+    assert len(built) == 20, f"first render built {len(built)} cards"
+    assert "Showing 20 of 300" in board.history_count_label.text
+    assert board.history_more_button.visible is True
+    assert board.history_more_button.text == "Show 20 more"
+
+
+def test_show_more_appends_one_page_without_rebuilding(monkeypatch):
+    board = _make_board(monkeypatch)
+    built = []
+    board._render_card = lambda job: built.append(job["id"])
+    jobs = [_job(f"run_{i:03d}") for i in range(50)]
+    board._render_history(jobs, auto_open=False)
+    clears = board.history_grid.clears
+
+    board.refresh_sync = lambda: board._render_history(jobs, auto_open=False)
+    board._show_more_history()
+    # Exactly the new page is appended: the existing cards are untouched, so
+    # the operator's scroll position inside the panel survives.
+    assert len(built) == 40, built[20:]
+    assert board.history_grid.clears == clears
+    assert "Showing 40 of 50" in board.history_count_label.text
+
+    board._show_more_history()
+    assert len(built) == 50
+    assert board.history_grid.clears == clears
+    assert board.history_more_button.visible is False
+    assert "all shown" in board.history_count_label.text
+
+
+def test_open_history_keeps_its_expanded_page_count(monkeypatch):
+    """A live tick must not shrink History back to one page."""
+    board = _make_board(monkeypatch)
+    board._render_card = lambda job: None
+    jobs = [_job(f"run_{i:03d}") for i in range(60)]
+    board._render_history(jobs, auto_open=True)
+    board.refresh_sync = lambda: None
+    board._show_more_history()
+    board._show_more_history()
+    assert board._history_limit == 60
+    # The 1.5 s tick re-renders with the same signature: limit unchanged.
+    board._render_history(jobs, auto_open=True)
+    assert board._history_limit == 60
+    assert board.history_more_button.visible is False
 
 
 def test_card_signature_ignores_log_churn():

@@ -123,6 +123,10 @@ def _install_forensics() -> None:
 @app.on_startup
 async def _start_ui_watchdog() -> None:
     _watchdog["loop"] = asyncio.get_running_loop()
+    # Claim the death clock immediately: the 10 s loop below would leave a
+    # predecessor's pid in ui.lock for the whole boot window, long enough for
+    # the guardian to conclude "app not running" and launch a second stack.
+    _touch_ui_lock()
     threading.Thread(target=_ui_watchdog, name="ui-watchdog", daemon=True).start()
     # print, not logging: basicConfig only runs when the first job creates a
     # SupervisorLoop, so a lifespan-time INFO record would be dropped.
@@ -137,8 +141,20 @@ async def _start_ui_watchdog() -> None:
 def _touch_ui_lock() -> None:
     try:
         _UI_LOCK.parent.mkdir(parents=True, exist_ok=True)
-        if not _UI_LOCK.exists():
-            _UI_LOCK.write_text(f'{{"pid": {os.getpid()}}}', encoding="utf-8")
+        expected = f'{{"pid": {os.getpid()}}}'
+        # The pid must be THIS process's, not the predecessor's. It used to be
+        # written only when the file was absent, so after any restart the lock
+        # kept naming a dead pid; the guardian then read app_process_alive as
+        # False while the real app was still importing, and launched yet
+        # another stack (2026-11-13: three "app not running" repairs in four
+        # minutes, two competing UI trees). Rewrite on mismatch, keep the
+        # mtime touch otherwise.
+        try:
+            current = _UI_LOCK.read_text(encoding="utf-8").strip()
+        except OSError:
+            current = ""
+        if current != expected:
+            _UI_LOCK.write_text(expected, encoding="utf-8")
         else:
             os.utime(_UI_LOCK)
     except OSError:

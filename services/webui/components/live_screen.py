@@ -176,10 +176,13 @@ class LiveJobScreen:
     def _render_switcher(self, status: dict, state: str) -> None:
         # Summaries only (no logs) and read ONCE per job: this widget used to
         # call get_job_status in the scan, in fmt() and in the sort key, i.e.
-        # full log-file parses O(N log N) times per refresh.
+        # full log-file parses O(N log N) times per refresh. It now reads the
+        # shell's shared snapshot: the store holds hundreds of summary files
+        # and walking them here blocked the event loop on every detail page.
+        from services.webui.layout import _store_snapshot
+
         siblings: dict[str, dict] = {}
-        for job_id in self.job_manager.store.list_jobs():
-            sibling = self.job_manager.get_job_summary(job_id) or {}
+        for job_id, sibling in _store_snapshot(self.job_manager).items():
             if sibling.get("type") != self.job_type:
                 continue
             if sibling.get("state") in ACTIVE_JOB_STATES or job_id == self.job_id:

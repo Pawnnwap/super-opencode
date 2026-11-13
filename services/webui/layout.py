@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+import weakref
 from pathlib import Path
 
 from nicegui import ui
@@ -182,8 +184,7 @@ def format_status_pill(state: str) -> str:
 
 def _queue_stats_line(job_manager, job_type: str) -> str:
     running = pending = 0
-    for job_id in job_manager.store.list_jobs():
-        state_data = job_manager.store.get_job_state(job_id) or {}
+    for state_data in _store_snapshot(job_manager).values():
         if state_data.get("type") != job_type:
             continue
         state = state_data.get("state")
@@ -194,22 +195,91 @@ def _queue_stats_line(job_manager, job_type: str) -> str:
     return f"{running} running · {pending} queued"
 
 
+# One shared, briefly-cached view of the whole store.
+#
+# render_shell needs three reads of "what is active" on EVERY page render, and
+# the store's summary files are never deleted (retention prunes payloads only),
+# so a live store is hundreds of files. Walking it synchronously on the event
+# loop blocked the loop for seconds under the worker's disk pressure: on
+# 2026-11-13 the watchdog dumped a frozen loop inside
+# render_shell -> active_jobs -> json.load, the websocket dropped, the client
+# was deleted after the reconnect window, and the page reloaded with every
+# panel back at its default. A 2 s stale "is a job running" is harmless - it
+# only gates a nav lock - while a blocked loop is not.
+_SNAPSHOT_TTL = 2.0
+_snapshots: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+# Per-store parse cache: job_id -> (mtime_ns, size, record). Finished
+# summaries never change again, so a full walk after the first tick is a
+# stat loop instead of a parse of every file.
+_state_cache: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+
+
+def _store_snapshot(job_manager) -> dict[str, dict]:
+    """Job id -> state record, shared for ``_SNAPSHOT_TTL`` seconds.
+
+    Cached per store object (weakly: test doubles are recreated per test and
+    must never see a previous test's rows). Unreadable records are skipped,
+    matching the record-by-record tolerance of the old loops.
+
+    The walk itself is cached by (mtime, size) per file: the store's summaries
+    are never deleted (retention prunes log payloads only), so a live store
+    holds hundreds of immutable files and re-parsing them every tick was the
+    blocking work behind the 2026-11-13 frozen event loop.
+    """
+    store = getattr(job_manager, "store", None)
+    if store is None:
+        return {}
+    now = time.monotonic()
+    try:
+        cached = _snapshots.get(store)
+    except TypeError:  # not weak-referenceable: walk uncached
+        cached = None
+    if cached is not None and now - cached[0] < _SNAPSHOT_TTL:
+        return cached[1]
+    rows: dict[str, dict] = {}
+    try:
+        job_ids = store.list_jobs()
+    except OSError:
+        job_ids = []
+    if job_ids:
+        try:
+            parse_cache = _state_cache.setdefault(store, {})
+        except TypeError:
+            parse_cache = None
+        for job_id in job_ids:
+            if parse_cache is not None and hasattr(store, "get_job_state_cached"):
+                state = store.get_job_state_cached(job_id, parse_cache)
+            else:
+                try:
+                    state = store.get_job_state(job_id)
+                except OSError:
+                    state = None
+            if state:
+                rows[job_id] = state
+        if parse_cache is not None:
+            # Drop entries for deleted jobs so the cache cannot grow forever.
+            for dead in set(parse_cache) - set(job_ids):
+                parse_cache.pop(dead, None)
+    try:
+        _snapshots[store] = (now, rows)
+    except TypeError:
+        pass
+    return rows
+
+
 def active_jobs(job_manager, job_type: str = "") -> list[dict]:
     """Store records of queued/running jobs (optionally one job type).
 
     One helper for the three call sites that each re-walked the store with
     their own copy of the active-state tuple: the nav-shell lock, the run
-    page's lock and the board's queue.
+    page's lock and the board's queue. Reads the shared snapshot.
     """
-    out: list[dict] = []
-    for job_id in job_manager.store.list_jobs():
-        state = job_manager.store.get_job_state(job_id) or {}
-        if state.get("state") not in ACTIVE_JOB_STATES:
-            continue
-        if job_type and state.get("type") != job_type:
-            continue
-        out.append(state)
-    return out
+    return [
+        state
+        for state in _store_snapshot(job_manager).values()
+        if state.get("state") in ACTIVE_JOB_STATES
+        and (not job_type or state.get("type") == job_type)
+    ]
 
 
 def _has_active_jobs(job_manager) -> bool:
