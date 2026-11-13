@@ -102,6 +102,8 @@ PILL_MAP = {
     "CANCELLED": '<span class="pill pill-failure">CANCELLED</span>',
     # Target unreachable under recorded constraints: amber, not red.
     "BLOCKED": '<span class="pill pill-blocked">BLOCKED</span>',
+    # Killed by a worker restart, not by the run itself: amber, like BLOCKED.
+    "ABANDONED": '<span class="pill pill-blocked">ABANDONED</span>',
 }
 
 _PAGES = [

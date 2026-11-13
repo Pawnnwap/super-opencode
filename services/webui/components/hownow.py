@@ -164,6 +164,8 @@ class HowNowPanel:
         if not start_sweep():
             ui.notify("A how-now sweep is already running.", type="warning")
             return
+        # Re-arm the poller: _tick() stops it once a sweep settles.
+        self._timer.active = True
         self._tick()
 
     def _tick(self) -> None:
@@ -194,6 +196,9 @@ class HowNowPanel:
         # stamped with its time — the progress tail is gone.
         signature = (finished_at, report, error)
         if self._mode == "done" and signature == self._signature:
+            # Nothing left to watch: stop waking the event loop every second.
+            # A new sweep re-arms the timer in _start().
+            self._timer.active = False
             return
         self._mode = "done"
         self._signature = signature
@@ -201,6 +206,7 @@ class HowNowPanel:
         self._tail = None
         self._results.clear()
         if not report and not error:
+            self._timer.active = False
             return
         with self._results:
             took = (

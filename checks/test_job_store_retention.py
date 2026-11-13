@@ -1,5 +1,6 @@
 """;job_store retention: terminal payloads pruned past the cap, summaries kept."""
 
+import json
 import time
 
 from services.jobs.job_manager import JobManager
@@ -52,6 +53,57 @@ def test_prune_never_touches_active_jobs(tmp_path):
     assert len(pruned) == 2
     assert "run_active" not in pruned
     assert manager.store._get_logs_path("run_active").exists()
+
+
+def test_abandoned_jobs_are_terminal_and_prunable(tmp_path):
+    """ABANDONED is written by the worker daemon, so it must be terminal.
+
+    It used to be missing from TERMINAL_JOB_STATES: abandoned records kept
+    their multi-MB payloads forever, had no delete button on the board and
+    were counted in no metrics bucket.
+    """
+    from services.jobs.job_states import (
+        ATTENTION_JOB_STATES,
+        TERMINAL_JOB_STATES,
+    )
+
+    assert "ABANDONED" in TERMINAL_JOB_STATES
+    assert "ABANDONED" in ATTENTION_JOB_STATES
+
+    manager = JobManager(
+        str(tmp_path / ".job_store"), max_parallel_jobs=2, max_stored_jobs=1,
+    )
+    _seed(manager.store, 2)
+    manager.store.save_job_state("run_abandoned", {
+        "type": "run", "state": "ABANDONED",
+    })
+    manager.store.append_log("run_abandoned", {"level": "info", "msg": "x"})
+    # save_job_state stamps updated_at with "now"; make this the OLDEST record
+    # so the retention cap has to pick it.
+    path = manager.store._get_job_path("run_abandoned")
+    record = json.loads(path.read_text(encoding="utf-8"))
+    record["updated_at"] = 1.0
+    path.write_text(json.dumps(record), encoding="utf-8")
+
+    pruned = manager.prune_stored_jobs()
+    assert "run_abandoned" in pruned
+    assert not manager.store._get_logs_path("run_abandoned").exists()
+    # The summary survives so the record stays visible in history.
+    assert manager.store.get_job_state("run_abandoned")["state"] == "ABANDONED"
+
+
+def test_list_jobs_skips_store_control_files(tmp_path):
+    """ports.json / worker_settings.json / ui_panels.json are not jobs.
+
+    The store is also the IPC channel for ports and settings, and the UI keeps
+    its panel state there; a bare *.json glob handed all three to every scan.
+    """
+    store = JobStateStore(str(tmp_path))
+    store.save_job_state("run_real", {"type": "run", "state": "SUCCESS"})
+    for name in ("ports.json", "worker_settings.json", "ui_panels.json"):
+        (tmp_path / name).write_text("{}", encoding="utf-8")
+
+    assert store.list_jobs() == ["run_real"]
 
 
 def test_enqueue_triggers_prune(tmp_path, monkeypatch):

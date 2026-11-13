@@ -11,6 +11,7 @@ log. Serving health and revival belong to the task-owned Python guardian
 with it, never repaired anything, and each probe built a full page that
 churned one "client deleted" line into ui.lifecycle a minute later.
 """
+import os
 import sys
 from pathlib import Path
 
@@ -89,3 +90,40 @@ def test_ui_lock_rewrites_a_predecessors_pid(tmp_path):
     before = lock.stat().st_mtime_ns
     namespace["_touch_ui_lock"]()
     assert lock.stat().st_mtime_ns >= before
+
+
+def test_ui_port_follows_ports_json_and_env(tmp_path, monkeypatch):
+    """A custom -AppPort must reach the app, not just the launcher.
+
+    start_suprun.ps1 writes -AppPort to .job_store/ports.json and waits for
+    readiness on it; the guardian reads the same file. A hard-coded 8501 here
+    made the app bind the default while both waiters polled the custom port -
+    the stack never reported ready and the guardian relaunched it forever.
+    """
+    import json
+
+    body = _APP_SRC.split("def _resolve_ui_port(")[1].split("\n# Serving loop", 1)[0]
+    body = body.split(") -> int:", 1)[1]
+    namespace = {"os": os, "json": json, "Path": Path}
+    exec(  # noqa: S102 - executing the module's own source, not user input
+        "import json, os\nfrom pathlib import Path\n"
+        "def _resolve_ui_port(default: int = 8501) -> int:" + body,
+        namespace,
+    )
+    resolve = namespace["_resolve_ui_port"]
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("SOP_APP_PORT", raising=False)
+    assert resolve() == 8501  # no ports.json: the documented default
+
+    store = tmp_path / ".job_store"
+    store.mkdir()
+    (store / "ports.json").write_text('{"app": 8600, "proxy": 8321}', encoding="utf-8")
+    assert resolve() == 8600
+
+    monkeypatch.setenv("SOP_APP_PORT", "8700")
+    assert resolve() == 8700  # the env override wins
+
+    monkeypatch.delenv("SOP_APP_PORT")
+    (store / "ports.json").write_text("{not json", encoding="utf-8")
+    assert resolve() == 8501  # a corrupt file falls back, never crashes boot

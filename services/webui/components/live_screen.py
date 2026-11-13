@@ -82,7 +82,7 @@ class LiveJobScreen:
             with ui.column().classes("flex-1 gap-2"):
                 self._render_details(status)
 
-        self.progress.update(safe_logs(status), state)
+        self.progress.update(safe_logs(status), state, status.get("heartbeat_at"))
         self.tail.update(safe_logs(status))
         self.log_panel.update(safe_logs(status))
 
@@ -124,7 +124,7 @@ class LiveJobScreen:
         self._read_failures = 0
         state = status.get("state", "UNKNOWN")
         logs = safe_logs(status)
-        self.progress.update(logs, state)
+        self.progress.update(logs, state, status.get("heartbeat_at"))
         self.tail.update(logs)
         self.log_panel.update(logs)
         self.state_pill.set_content(format_status_pill(state))

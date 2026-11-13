@@ -130,3 +130,32 @@ def test_idle_farm_short_circuits_without_an_agent(tmp_path, monkeypatch):
     report = run_hownow_sweep({"workspace": str(tmp_path)}, store)
     assert report == empty_report()
     assert "swept 0 sessions" in report
+
+
+def test_session_id_scan_reads_only_the_log_tail(tmp_path, monkeypatch):
+    """A multi-MB log must not be read end to end for one capture event.
+
+    The scan used to iterate the whole file; job logs reach tens of MB and the
+    store already has a reverse-chunk tail reader.
+    """
+    from services.jobs import hownow
+
+    store = JobStateStore(str(tmp_path / ".job_store"))
+    _seed_job(store, "run_tail0001", state="RUNNING", session="ses_old")
+    # Bury the capture event under a lot of later traffic.
+    for i in range(300):
+        store.append_log("run_tail0001", {"level": "info", "msg": f"noise {i}"})
+
+    calls: list[tuple[str, int]] = []
+    real_tail = JobStateStore.tail_logs
+
+    def counting_tail(self, job_id, max_events):
+        calls.append((job_id, max_events))
+        return real_tail(self, job_id, max_events)
+
+    monkeypatch.setattr(JobStateStore, "tail_logs", counting_tail)
+    sessions = hownow.collect_live_sessions(store)
+    assert sessions[0]["session_id"] == "ses_old"
+    assert calls == [("run_tail0001", hownow._SESSION_SCAN_EVENTS)], (
+        "the session-id scan did not go through the store's tail reader"
+    )

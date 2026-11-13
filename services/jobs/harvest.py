@@ -31,7 +31,7 @@ HARVEST_JOB_TYPE = "harvest"
 # harvestable too (partial results are often the point), but the UI defaults
 # to COMPLETED_STATES so a stray CANCELLED farm run must be chosen explicitly.
 COMPLETED_STATES = frozenset({"SUCCESS", "BLOCKED"})
-HARVESTABLE_STATES = frozenset(TERMINAL_JOB_STATES | {"ABANDONED"})
+HARVESTABLE_STATES = TERMINAL_JOB_STATES
 
 DEFAULT_HARVEST_PROMPT = (
     "Extract this run's durable results: the final outcome, the main findings "

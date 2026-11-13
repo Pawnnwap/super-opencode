@@ -16,15 +16,6 @@ from supervisor.utils.text_utils import sanitize_event_message
 # Noise levels (heartbeat / step-progress / token pings) — never rendered.
 DEFAULT_HIDDEN_LEVELS = ("heartbeat", "step_progress", "tokens")
 
-# Large-block headline events. The log panel's "Agent speech" toggle governs
-# opencode_output; prompts and supervisor verdicts always render.
-VERBOSE_ONLY_LEVELS = (
-    "opencode_prompt",
-    "opencode_output",
-    "supervisor_response",
-    "supervisor_suggestions",
-)
-
 # Phase pipeline shown as a breadcrumb above the live log. Plan happens once
 # (the plan-mode stage, or the agent's first look around); then the agent's
 # code -> test turn and the judge's review repeat as rounds until the verdict
@@ -35,36 +26,6 @@ PHASE_ORDER = ("plan", *LOOP_PHASES, "done")
 
 def safe_logs(status: dict) -> list[dict]:
     return status.get("logs") or []
-
-
-def last_event_line(status_or_job: dict, limit: int = 120) -> str:
-    """First line of the newest non-heartbeat event, '' when there is none.
-
-    Shared by the board card, the board snapshot and the live screen — each
-    had its own copy of this loop, and they had already drifted apart on
-    which levels count as noise.
-    """
-    status = status_or_job.get("status", status_or_job)
-    for event in reversed(safe_logs(status)):
-        if not isinstance(event, dict) or event.get("level") in DEFAULT_HIDDEN_LEVELS:
-            continue
-        msg = (event.get("msg") or "").strip()
-        if msg:
-            return msg.splitlines()[0][:limit]
-    return ""
-
-
-def attention_count(status: dict) -> int:
-    """Number of ``error`` events in a job's log tail.
-
-    Rendered as the ❌ badge on a board card; the same count was open-coded in
-    two places.
-    """
-    return sum(
-        1
-        for event in safe_logs(status)
-        if isinstance(event, dict) and event.get("level") == "error"
-    )
 
 
 def workspace_name(status_or_job: dict) -> str:

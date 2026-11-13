@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 from nicegui import ui
 
 from services.webui.log_format import (
@@ -31,7 +33,9 @@ class ProgressWidgets:
             )
             self.token_label = ui.label("").classes("text-xs mono text-[#8b949e]")
 
-    def update(self, logs: list[dict], state: str) -> None:
+    def update(
+        self, logs: list[dict], state: str, heartbeat_at: float | None = None,
+    ) -> None:
         logs = logs or []
         # The 2s poll rebuilds the DOM on every set_content, which restarts
         # the chip's CSS animations — push only genuine phase changes.
@@ -42,16 +46,20 @@ class ProgressWidgets:
                 self._breadcrumb_html = html
 
         if state == "RUNNING":
-            heartbeat_count = sum(
-                1 for e in logs if isinstance(e, dict) and e.get("level") == "heartbeat"
-            )
+            # Liveness comes from the job state's heartbeat_at, not from
+            # counting heartbeat EVENTS: the recorder drops those in the
+            # default headline mode, so the old counter was permanently 0.
+            beat = ""
+            if isinstance(heartbeat_at, (int, float)) and heartbeat_at > 0:
+                age = max(0, int(time.time() - heartbeat_at))
+                beat = f" · 💓 {age}s ago"
             step_count = sum(
                 1 for e in logs
                 if isinstance(e, dict) and e.get("level") in ("step", "phase_transition")
             )
             self.status_label.set_text(
                 "🟢 Background process active"
-                f" · 💓 {heartbeat_count} · 🧭 {step_count}",
+                f"{beat} · 🧭 {step_count}",
             )
         else:
             self.status_label.set_text("")

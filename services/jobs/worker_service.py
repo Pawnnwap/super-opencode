@@ -40,6 +40,9 @@ logger = logging.getLogger(__name__)
 _LOADED_CODE_FINGERPRINT = code_fingerprint()
 
 _LOCK_FILE = "worker.lock"
+# Guardian repair intent: the guardian does not own this process, so it asks
+# instead of killing (see services/runtime/guardian.py).
+_STOP_FILE = "worker.stop"
 _POLL_SECONDS = 1.0
 _STALE_SECONDS = 15.0
 # Liveness pulse cadence and the silent-stall detector threshold (see
@@ -52,6 +55,9 @@ _STALL_DUMP_SECONDS = 15.0
 # Content hashing ~1.3 MB is milliseconds; a deployment must not wait for a
 # natural worker restart (one stayed stale for 20 hours).
 _CODE_CHECK_SECONDS = 10.0
+# Retention pruning walks and parses the whole store; the poll loop already
+# does that every second, so pruning runs on its own slower clock.
+_PRUNE_SECONDS = 60.0
 
 
 def _read_settings(store_dir: Path) -> dict:
@@ -60,6 +66,22 @@ def _read_settings(store_dir: Path) -> dict:
         return data if isinstance(data, dict) else {}
     except (OSError, ValueError):
         return {}
+
+
+def _running_job_count(store_dir: Path) -> int:
+    """RUNNING records in the store (the pulse thread's stop guard)."""
+    count = 0
+    try:
+        for path in store_dir.glob("*.json"):
+            try:
+                data = json.loads(path.read_text(encoding="utf-8-sig"))
+            except (OSError, ValueError):
+                continue
+            if isinstance(data, dict) and str(data.get("state", "")).upper() == "RUNNING":
+                count += 1
+    except OSError:
+        return 0
+    return count
 
 
 def _acquire_lock(store_dir: Path, now: float | None = None) -> bool:
@@ -108,12 +130,19 @@ class _LoopPulse(threading.Thread):
     log, naming the step the loop is stuck in.
     """
 
-    def __init__(self, store_dir: Path):
+    def __init__(self, store_dir: Path, active_jobs=None):
         super().__init__(name="lock-pulse", daemon=True)
         self._store_dir = store_dir
+        # In-process live-job count. The store only knows RUNNING records, and
+        # a job thread that was just claimed has not written RUNNING yet, so
+        # the disk view alone can call a busy worker idle.
+        self._active_jobs = active_jobs
         self._last_progress = time.time()
         self._last_step = "startup"
         self._stall_dumped = False
+        # Set by the pulse, consumed by the poll loop: the process exits from
+        # its own main thread so job threads keep their finally cleanup.
+        self.exit_requested = False
 
     def note(self, step: str) -> None:
         """Record poll-loop progress; cheap attribute writes only."""
@@ -125,6 +154,14 @@ class _LoopPulse(threading.Thread):
             try:
                 time.sleep(_PULSE_SECONDS)
                 _touch_lock(self._store_dir)
+                if self._stop_requested():
+                    # The guardian cannot kill a Task-Scheduler-owned process;
+                    # it writes this intent file instead. Honouring it here
+                    # keeps the decision with the process that owns its own
+                    # lifetime, and only when no job is in flight.
+                    logger.info("worker stop requested by the guardian - exiting")
+                    self.exit_requested = True
+                    return
                 gap = time.time() - self._last_progress
                 if gap >= _STALL_DUMP_SECONDS:
                     if not self._stall_dumped:
@@ -136,6 +173,21 @@ class _LoopPulse(threading.Thread):
                     self._stall_dumped = False
             except Exception:
                 logger.exception("lock pulse iteration failed")
+
+    def _stop_requested(self) -> bool:
+        """A guardian stop request, honoured only while no job is running."""
+        path = self._store_dir / _STOP_FILE
+        try:
+            if not path.exists():
+                return False
+            if _running_job_count(self._store_dir) > 0:
+                return False
+            if self._active_jobs is not None and self._active_jobs() > 0:
+                return False
+            path.unlink(missing_ok=True)
+            return True
+        except OSError:
+            return False
 
 
 def _reexec_worker() -> None:
@@ -256,7 +308,7 @@ def main() -> int:
 
     # Liveness is no longer the poll loop's job: one blocked loop step must
     # not read as a dead daemon to the watchdog (see _LoopPulse).
-    pulse = _LoopPulse(store_dir)
+    pulse = _LoopPulse(store_dir, active_jobs=manager.active_job_count)
     pulse.start()
 
     # Only RUNNING records are orphans; PENDING jobs are queued work and are
@@ -273,11 +325,15 @@ def main() -> int:
     allow_claims = True
     stale_logged = False
     last_code_check = time.time()
+    last_prune = time.time()
+    # Per-file (mtime_ns, size) parse cache for the poll scan. Summaries are
+    # never deleted (retention prunes payloads only), so re-parsing the whole
+    # store every second was pure disk work that grew with history.
+    state_cache: dict[str, tuple] = {}
 
     def check_freshness() -> str:
         """Compare loaded code with disk; re-exec when idle if it changed."""
-        nonlocal last_code_check, allow_claims, stale_logged
-        last_code_check = time.time()
+        nonlocal allow_claims, stale_logged
         current = code_fingerprint()
         action = freshness_action(
             startup_fingerprint, current, manager.active_job_count(),
@@ -305,14 +361,25 @@ def main() -> int:
 
     while True:
         time.sleep(_POLL_SECONDS)
+        if pulse.exit_requested:
+            # The pulse saw a guardian stop request and no live job. Exit from
+            # the main thread so every job thread's finally cleanup (process
+            # termination, slot release, log flush) has already run.
+            logger.info("worker exiting on the guardian's stop request")
+            return 0
         try:
             pulse.note("poll")
+            now = time.time()
 
             # Freshness gate: this process runs the modules it imported at
             # boot. If the tree changed underneath it, never start another
             # job on that stale code; wait for live jobs, then re-exec.
-            if time.time() - last_code_check >= _CODE_CHECK_SECONDS:
+            # The throttle lives HERE, not inside check_freshness: resetting
+            # the clock in the callee let the claim path below re-hash the
+            # whole tree every second whenever a PENDING job existed.
+            if now - last_code_check >= _CODE_CHECK_SECONDS:
                 pulse.note("freshness")
+                last_code_check = now
                 check_freshness()
 
             # Settings handoff: the UI writes worker_settings.json on change.
@@ -331,7 +398,8 @@ def main() -> int:
                 logger.info("applied settings: %s", applied_settings)
 
             pending: list[tuple[tuple, str]] = []
-            for job_id in manager.store.list_jobs():
+            job_ids = manager.store.list_jobs()
+            for job_id in job_ids:
                 if job_id in claimed:
                     # A cross-process cancel can arrive at any moment; the
                     # sentinel file (not the state field, which this worker's
@@ -339,21 +407,30 @@ def main() -> int:
                     if manager.cancel_sentinel_exists(job_id) and manager.cancel_if_live(job_id):
                         logger.info("honoured cancel request for %s", job_id)
                     continue
-                state = manager.store.get_job_state(job_id) or {}
+                state = manager.store.get_job_state_cached(job_id, state_cache) or {}
                 st = state.get("state")
                 if st == "PENDING":
                     pending.append((claim_order(state, job_id), job_id))
                 elif st == "CANCELLED" and manager.cancel_if_live(job_id):
                     logger.info("honoured CANCELLED request for %s", job_id)
+            # Deleted jobs must not keep a parse-cache entry alive forever.
+            for dead in set(state_cache) - set(job_ids):
+                state_cache.pop(dead, None)
 
             # Claim only into a FREE slot, oldest first (see _claim_pending).
             if pending:
                 pulse.note("claim")
-                check_freshness()
+                if now - last_code_check >= _CODE_CHECK_SECONDS:
+                    last_code_check = now
+                    check_freshness()
                 if allow_claims:
                     _claim_pending(manager, pending, claimed)
-            pulse.note("prune")
-            manager.prune_stored_jobs()
+            # Retention pruning walks the store again; it does not need the
+            # poll cadence, and running it every second doubled the scan.
+            if now - last_prune >= _PRUNE_SECONDS:
+                pulse.note("prune")
+                last_prune = now
+                manager.prune_stored_jobs()
         except Exception:
             logger.exception("worker daemon poll cycle failed")
 

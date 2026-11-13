@@ -38,29 +38,32 @@ SWEEP_TIMEOUT_SECONDS = 600
 _SESSION_ID_RE = re.compile(r"Session ID captured:\s*([A-Za-z0-9_\-]+)")
 _FENCE_RE = re.compile(r"```(?:markdown|md)?\s*\n(.*?)```", re.DOTALL)
 
+# How many trailing log events the session-id scan reads. A capture event is
+# rare (session start / restart), so this window covers a long run without
+# touching the whole multi-MB file.
+_SESSION_SCAN_EVENTS = 4000
+
 
 # ---------------------------------------------------------------- record-keeper
 
 
-def _last_session_id(job_log: Path) -> str:
-    """Newest ``Session ID captured: <id>`` event in a job's log (line scan).
+def _last_session_id(store, job_id: str) -> str:
+    """Newest ``Session ID captured: <id>`` event in a job's log (tail only).
 
-    Cheap substring filter per line — job logs reach tens of MB, and only the
-    capture events matter here (they name the session a run is currently on).
+    Job logs reach tens of MB, so only the tail is read through the store's
+    reverse-chunk reader. A capture event is written when a run starts or
+    restarts its session, and the newest one is what the sweep needs; the
+    window is generous because a long run emits many events after its last
+    capture.
     """
     session_id = ""
-    if not job_log.exists():
-        return session_id
-    try:
-        with open(job_log, encoding="utf-8-sig", errors="replace") as f:
-            for line in f:
-                if "Session ID captured:" not in line:
-                    continue
-                match = _SESSION_ID_RE.search(line)
-                if match:
-                    session_id = match.group(1)
-    except OSError as exc:
-        logger.warning("Cannot scan %s for session ids: %s", job_log, exc)
+    for event in reversed(store.tail_logs(job_id, _SESSION_SCAN_EVENTS)):
+        msg = str(event.get("msg") or "")
+        if "Session ID captured:" not in msg:
+            continue
+        match = _SESSION_ID_RE.search(msg)
+        if match:
+            return match.group(1)
     return session_id
 
 
@@ -108,7 +111,7 @@ def collect_live_sessions(store, now: float | None = None) -> list[dict]:
         workspace = Path(config.get("workspace") or ".")
         engine = str(config.get("engine") or "opencode")
         job_log = Path(store.store_dir) / f"{job_id}.logs"
-        session_id = _last_session_id(job_log)
+        session_id = _last_session_id(store, job_id)
         batch_id = str(state.get("batch_id") or "")
         replica_count = state.get("replica_count")
         sessions.append({

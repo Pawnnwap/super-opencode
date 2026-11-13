@@ -13,6 +13,15 @@ logger = logging.getLogger(__name__)
 # Full-body sidecar rotation bound (single .full.1 backup kept).
 _MAX_FULL_BYTES = 16 * 1024 * 1024
 
+# Store-directory files that are NOT job records. The store is also the IPC
+# channel for ports and worker settings, and the UI keeps its panel state
+# here; a *.json glob would otherwise hand them to every scan as job ids.
+_CONTROL_FILES = frozenset({
+    "ports.json",
+    "worker_settings.json",
+    "ui_panels.json",
+})
+
 
 class JobStateStore:
     """Handles persistence of job states and logs to disk."""
@@ -346,8 +355,17 @@ class JobStateStore:
         return removed
 
     def list_jobs(self) -> list[str]:
-        """List all tracked job IDs."""
-        return [f.stem for f in self.store_dir.glob("*.json")]
+        """List all tracked job IDs.
+
+        The store directory also holds control files (ports.json,
+        worker_settings.json, ui_panels.json). They are not job records, and
+        returning them made every scan parse them as jobs - harmless today
+        only because none carries a ``state`` field.
+        """
+        return [
+            f.stem for f in self.store_dir.glob("*.json")
+            if f.name not in _CONTROL_FILES
+        ]
 
     # ------------------------------------------------ shared read shapes -- #
     # Both job classes (the daemon's JobManager and the UI's StoreJobClient)

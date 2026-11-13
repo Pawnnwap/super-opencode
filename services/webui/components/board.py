@@ -160,7 +160,7 @@ class JobBoard:
             with ui.row().classes("w-full items-end gap-3 flex-wrap"):
                 self.state_filter = ui.select(
                     ["All states", "Active queue", "RUNNING", "PENDING", "SUCCESS",
-                     "FAILED", "CANCELLED", "BLOCKED"],
+                     "FAILED", "CANCELLED", "BLOCKED", "ABANDONED"],
                     value="All states",
                     label="State",
                     on_change=self.refresh,

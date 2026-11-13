@@ -14,7 +14,6 @@ from services.config.opencode_config import (
     find_opencode_config_dir,
     get_opencode_config_file,
 )
-from services.jobs.job_states import ACTIVE_JOB_STATES
 from services.runtime.app_bootstrap import (
     auto_upgrade_codex,
     auto_upgrade_opencode,
@@ -102,30 +101,6 @@ def _launch_from_env() -> str:
         })
         launched.append(f"{ws.name} -> {job_id}")
     return "; ".join(launched)
-
-
-def mark_abandoned_jobs(manager) -> str:
-    """Flag PENDING/RUNNING store entries as abandoned at process start.
-
-    Startup runs before any worker thread exists, so every non-terminal job
-    state in the store belongs to a dead process (a crash or an app restart
-    mid-run) — leaving them RUNNING made the board and drawer show ghost
-    queue entries forever. ``ABANDONED`` keeps them visible in history with
-    an honest label; SUPERVISOR_REPLAY_JOB can still re-enqueue them.
-    """
-    flagged: list[str] = []
-    for job_id in manager.store.list_jobs():
-        state = manager.store.get_job_state(job_id) or {}
-        if state.get("state") in ACTIVE_JOB_STATES:
-            state["state"] = "ABANDONED"
-            manager.store.save_job_state(job_id, state)
-            manager.store.append_log(job_id, {
-                "level": "warn",
-                "msg": "App restarted while this job was active — marked ABANDONED "
-                       "(re-enqueue via SUPERVISOR_REPLAY_JOB=<job_id>).",
-            })
-            flagged.append(job_id)
-    return f"marked {len(flagged)} abandoned job(s)" if flagged else "no abandoned jobs"
 
 
 def _replay_job() -> str:

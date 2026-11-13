@@ -322,6 +322,12 @@ class JobManager:
         config = self.config_from_state(job_id)
         if config is None:
             return False
+        # Ownership: every process this job starts is ledgered under the job
+        # id, so a kill can only ever reach this job's own process tree.
+        if not getattr(config, "run_id", ""):
+            from dataclasses import replace as dataclass_replace
+
+            config = dataclass_replace(config, run_id=job_id)
         if str(getattr(config, "engine", "") or "").lower() == "codex":
             ready, why = codex_engine_ready(
                 str(getattr(config, "opencode_executable", "") or ""),
@@ -460,6 +466,13 @@ class JobManager:
     ):
         """Worker thread that executes the job loop."""
         meta = dict(meta or {})
+        # Ownership id: the in-process enqueue path does not pass through
+        # run_stored_job, so stamp it here too. Every child process of this
+        # job is then ledgered under this id.
+        if not getattr(config, "run_id", ""):
+            from dataclasses import replace as dataclass_replace
+
+            config = dataclass_replace(config, run_id=job_id)
         # Only release a slot that was taken: run_stored_job reserves it
         # before the thread starts, the in-process enqueue path parks here.
         slot_held = slot_reserved
@@ -595,6 +608,16 @@ class JobManager:
             self.store.append_log(job_id, {"level": "error", "msg": error_msg})
             self._update_state(job_id, "FAILED", report=report_content if "report_content" in locals() else "")
         finally:
+            # A finished job owns nothing: whatever it left running is a
+            # stray of THIS run's tree (ledger-proved()), so it is cleaned
+            # here instead of being swept later by name/keyword. Processes of
+            # other runs are not reachable through this call by construction.
+            try:
+                from supervisor.runtime.process_control import terminate_run
+
+                terminate_run(job_id, reason="job final")
+            except Exception:
+                logger.debug("final process cleanup failed for %s", job_id, exc_info=True)
             if slot_held:
                 self._release_slot()
             with self._lock:
@@ -619,13 +642,14 @@ class JobManager:
 
     def _fetch_report(self, workspace: Path, job_type: str) -> str:
         """Try to read final report files from workspace."""
-        report_files = []
-        if job_type == "run":
-            # A BLOCKED run writes blocked_report.md, not failure_report.md -
-            # without it the job's stored report (and its preview) is empty.
-            report_files = ["failure_report.md", "blocked_report.md", "summary.md"]
+        if job_type != "run":
+            return ""
+        # One shared list with the harvester: two copies had already drifted
+        # (this one lacked report.md), so a run whose only report file was
+        # report.md stored an empty report while harvest could read it.
+        from services.jobs.harvest import REPORT_FILENAMES
 
-        for filename in report_files:
+        for filename in REPORT_FILENAMES:
             p = workspace / filename
             if p.exists():
                 try:

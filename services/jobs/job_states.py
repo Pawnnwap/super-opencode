@@ -25,11 +25,16 @@ WORKER_SETTINGS_FILE = "worker_settings.json"
 # Queued or executing: the job still owns its workspace.
 ACTIVE_JOB_STATES = frozenset({"PENDING", "RUNNING"})
 
-# Reached a final state; never resumes on its own.
-TERMINAL_JOB_STATES = frozenset({"SUCCESS", "FAILED", "CANCELLED", "BLOCKED"})
+# Reached a final state; never resumes on its own. ABANDONED belongs here: the
+# worker daemon writes it when it restarts over a RUNNING job, and a state that
+# is not terminal is never pruned, never deletable from the board and never
+# counted - so those records used to accumulate forever.
+TERMINAL_JOB_STATES = frozenset(
+    {"SUCCESS", "FAILED", "CANCELLED", "BLOCKED", "ABANDONED"},
+)
 
 # Terminal states that represent unfinished work rather than a clean outcome.
-ATTENTION_JOB_STATES = frozenset({"FAILED", "CANCELLED"})
+ATTENTION_JOB_STATES = frozenset({"FAILED", "CANCELLED", "ABANDONED"})
 
 __all__ = [
     "ACTIVE_JOB_STATES",
