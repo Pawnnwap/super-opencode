@@ -94,7 +94,12 @@ def _read_stdout(stream, out_q: queue.Queue) -> None:
 
 
 def _kill_process_tree(proc) -> None:
-    """Kill *proc* and any children (see :func:`kill_process_tree`)."""
+    """Kill *proc*'s contained tree (ownership gate inside the callee).
+
+    The run id travels on the process object (stamped at spawn by
+    ``process_common``), so this stays a one-argument call that cannot be
+    tricked into signalling a process the run never started.
+    """
     kill_process_tree(proc)
 
 

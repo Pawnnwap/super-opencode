@@ -29,7 +29,7 @@ STORE = ROOT / ".job_store"
 # States worth a restart. CANCELLED and SUCCESS are deliberate outcomes; a
 # BLOCKED run only reruns if the operator changed something (facts, protocol).
 RESTARTABLE = {"FAILED", "ABANDONED", "BLOCKED"}
-TERMINAL = JobManager.TERMINAL_STATES | {"ABANDONED"}
+TERMINAL = JobManager.TERMINAL_STATES
 
 
 def load_config(job_id: str, plan_mode_rounds: int | None) -> SupervisorConfig:

@@ -161,10 +161,13 @@ def test_reject_done_over_unadjudicated_machine_gate(tmp_path):
 
 def test_no_violations_for_clean_verdict(tmp_path):
     (tmp_path / "s.json").write_text('{"x": 2.5}', encoding="utf-8")
+    # A gate command now passes the shell policy first, so it must be a
+    # verifiable form: a script file inside the workspace, not inline code.
+    (tmp_path / "ok.py").write_text("raise SystemExit(0)\n", encoding="utf-8")
     gates, evaluations = _rubric(
         tmp_path,
         [
-            {"name": "cmd", "check": {"kind": "command", "cmd": "python -c 0"}},
+            {"name": "cmd", "check": {"kind": "command", "cmd": "python ok.py"}},
             {"name": "manual_gate"},
         ],
     )

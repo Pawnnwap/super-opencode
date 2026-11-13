@@ -5,7 +5,6 @@ import json
 import os
 import shutil
 import subprocess
-import sys
 import threading
 import time
 import uuid
@@ -233,31 +232,36 @@ def _stable_probe_home(prefix: str) -> Path:
     return home
 
 
-def _discard_probe_home(home: Path) -> None:
-    """Delete the warm probe home, first killing orphans still holding it.
+def _discard_probe_home(home: Path, run_id: str) -> None:
+    """Delete the warm probe home, first stopping orphans still holding it.
 
     A probe killed during the CLI's first-run plugin clone leaves a git.exe
     writing into ``<home>/.tmp``; rmtree alone then silently fails and the
-    next probe inherits the poisoned home. Windows-only targeted kill (the
-    path in the command line uniquely identifies our orphans); other platforms
-    just remove the tree.
+    next probe inherits the poisoned home. The probe's own containment scope
+    is terminated instead of matching process names: only processes this
+    probe started can be reached, so a user's unrelated git.exe is safe.
+
+    *run_id* must be the id the probe's runners were spawned under. It cannot
+    be derived from *home*: the probe runs in an ephemeral workspace while the
+    home is a stable shared directory, so the two names differ and a derived
+    id would match no scope and no ledger record.
     """
-    if sys.platform == "win32":
-        try:
-            ps = (
-                "Get-CimInstance Win32_Process -Filter \"Name='git.exe'\" | "
-                f"Where-Object {{ $_.CommandLine -like '*{home}*' }} | "
-                "ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"
-            )
-            subprocess.run(
-                ["powershell", "-NoProfile", "-Command", ps],
-                capture_output=True,
-                timeout=15,
-                check=False,
-            )
-        except Exception:  # noqa: BLE001, S110 - best-effort cleanup before wipe
-            pass
+    try:
+        from supervisor.runtime.process_control import terminate_run
+
+        terminate_run(run_id, reason="probe home discarded")
+    except Exception:  # noqa: BLE001, S110 - best-effort cleanup before wipe
+        pass
     shutil.rmtree(home, ignore_errors=True)
+
+
+def _probe_run_id(workspace: Path) -> str:
+    """Ownership id for one probe (its own containment scope).
+
+    Derived from the per-probe ephemeral workspace, so concurrent probes never
+    share a scope and one probe's cleanup cannot reach another's processes.
+    """
+    return f"probe_{workspace.name}"
 
 
 def _distinct_backup(primary: str | None, backup: str | None) -> str | None:
@@ -351,6 +355,9 @@ def test_opencode_connectivity(
             opencode_executable=exe,
             opencode_model_backup=backup,
             timeout=seconds,
+            # Probe children belong to the probe's own scope, so cleanup can
+            # only ever reach what this probe started.
+            run_id=_probe_run_id(workspace),
         )
         runner.opencode_variant = attempt_variant
         return _execute_probe(
@@ -425,6 +432,7 @@ def test_codex_connectivity(
             timeout=seconds,
             codex_base_url=base_url,
             codex_api_key=api_key,
+            run_id=_probe_run_id(workspace),
         )
         runner.codex_reasoning_effort = effort
         runner.codex_extra_env = extra_env
@@ -460,7 +468,7 @@ def test_codex_connectivity(
         # in the shared warm home that stall every later probe before the
         # model even answers. Wipe it: the next probe pays the one-time
         # fresh-home cost and starts clean again.
-        _discard_probe_home(_stable_probe_home("codex"))
+        _discard_probe_home(_stable_probe_home("codex"), _probe_run_id(workspace))
     shutil.rmtree(workspace, ignore_errors=True)
     return result
 
@@ -487,6 +495,7 @@ def test_pi_connectivity(
             opencode_executable=exe,
             opencode_model_backup=backup,
             timeout=seconds,
+            run_id=_probe_run_id(workspace),
         )
         runner.opencode_variant = thinking
         # pi needs no session-capture lock (the session id arrives on the

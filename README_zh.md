@@ -682,6 +682,34 @@ Super-Opencode 使用执行后端原生的文件工具。OpenCode 提供 `read`�
 4. **自动回滚** — 不良更改会恢复到上一个良好的检查点
 5. **心跳监控** — 检测停滞进程，并在取得进展时延长超时
 6. **归档保留** — 历史版本被保留，从不删除
+7. **进程归属** — 终止只能作用于本 run 自己的进程树（见下）
+
+### 进程归属硬规则
+
+每个 run 启动的进程在 spawn 时即登记到 `.job_store/<run_id>.procs.jsonl`
+（`pid` + `create_time`），并放入该 run 的 Windows Job Object（POSIX 下为
+独立 session/进程组）。所有终止统一走
+`supervisor/runtime/process_control.py`：发信号前重新校验归属，不满足即拒绝
+并写入 `<run_id>.kill_refusals.jsonl`。按名字、关键字、通配符、父进程树猜测
+的 kill 已无任何代码路径。
+
+- **MATLAB** 必须经受控入口启动（`bin\matlab.exe` 会派生 `MATLAB.exe`，
+  只有成组清理才安全）：
+
+  ```powershell
+  python -m supervisor.tools.run_child matlab --script run_factor --timeout 3600
+  ```
+
+- **Python / Rust** 子进程走同一入口（或 `PythonProcess` / `RustProcess`
+  类）：`run_child python --module pytest -- -q tests`、
+  `run_child cargo --sub test -- --release`。`rustc` 与测试可执行文件是 job
+  根的后代，自动在作用域内。
+- **agent 的 shell kill** 只允许字面 PID 且须台账证明归属
+  （`taskkill /PID <n>`、`Stop-Process -Id <n>`、`kill <n>`）；`/IM`、
+  `-Name`、`/T`、`-f` 与变量 PID 一律被 shell 门禁拒绝。
+- **崩溃恢复不杀进程**：重启只做台账 reconcile 并报告遗留；guardian 通过
+  `.job_store/worker.stop` 请求 worker 自行退出，而不是去杀一个它并不拥有的
+  进程。
 
 ---
 
@@ -689,4 +717,4 @@ Super-Opencode 使用执行后端原生的文件工具。OpenCode 提供 `read`�
 
 - [ ] 消除 `pip install -e . --force-reinstall`
 - [ ] 添加多代理协作/竞争
-- [ ] 将基于关键词的进程清理（按进程名 taskkill/pkill）替换为基于 PID 的子进程跟踪管理
+- [x] 将基于关键词的进程清理（按进程名 taskkill/pkill）替换为基于 PID 的子进程跟踪管理

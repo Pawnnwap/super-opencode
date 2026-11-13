@@ -125,6 +125,54 @@ def _patch_file_headers(patch_text: str) -> list[str]:
     return paths
 
 
+def _ownership_violations(command: str) -> list[PolicyViolation]:
+    """Deny a kill whose literal PID this run cannot prove it owns.
+
+    The static analyzer already reduced every kill to a literal PID; this is
+    the dynamic half of the hard rule. Without a run context there is no
+    ledger to prove anything against, so the gate fails closed.
+    """
+    from supervisor.security.shell_scan import kill_command_present, kill_pids
+
+    pids = kill_pids(command)
+    if not pids:
+        if not kill_command_present(command):
+            return []
+        # A kill command whose target could not be reduced to one literal pid
+        # is exactly the shape the analyzer denies; deny it here too so the
+        # gate never depends on the analyzer having run first.
+        return [
+            PolicyViolation(
+                command,
+                "write",
+                "process kill without a single literal PID cannot be proven owned",
+            ),
+        ]
+    run_id = (os.environ.get("SOP_RUN_ID") or "").strip()
+    if not run_id:
+        return [
+            PolicyViolation(
+                command,
+                "write",
+                "process kill outside a supervised run: no ownership ledger exists",
+            ),
+        ]
+    from supervisor.runtime.process_control import verify_owned
+
+    violations: list[PolicyViolation] = []
+    for pid in pids:
+        if not verify_owned(run_id, pid):
+            violations.append(
+                PolicyViolation(
+                    f"pid {pid}",
+                    "write",
+                    f"pid {pid} is not owned by run {run_id} "
+                    "(not in its process ledger and not in its job)",
+                ),
+            )
+    return violations
+
+
 def violations_for_event(policy: AccessPolicy, event: dict[str, Any]) -> list[PolicyViolation]:
     tool = str(event.get("tool_name") or event.get("tool") or "").strip().lower()
     tool_input = event.get("tool_input") or event.get("input") or {}
@@ -153,7 +201,9 @@ def violations_for_event(policy: AccessPolicy, event: dict[str, Any]) -> list[Po
     # engine-specific tool names the mapping below does not know about.
     generic_command = tool_input.get("command") or tool_input.get("cmd")
     if isinstance(generic_command, str) and generic_command.strip():
-        return policy.scan_command(generic_command, cwd=cwd)
+        return policy.scan_command(generic_command, cwd=cwd) + _ownership_violations(
+            generic_command,
+        )
 
     if tool in {
         "shell",
@@ -170,7 +220,7 @@ def violations_for_event(policy: AccessPolicy, event: dict[str, Any]) -> list[Po
             or tool_input.get("command_line")
             or "",
         )
-        return policy.scan_command(command, cwd=cwd)
+        return policy.scan_command(command, cwd=cwd) + _ownership_violations(command)
 
     write_tools = {
         "write",
@@ -190,7 +240,10 @@ def violations_for_event(policy: AccessPolicy, event: dict[str, Any]) -> list[Po
     violations = []
 
     candidates: list[str] = []
-    for key in ("path", "file_path", "filePath", "filepath", "target", "destination", "src", "dst"):
+    for key in (
+        "path", "file_path", "filePath", "filepath", "target", "destination",
+        "src", "dst", "codebase_path",
+    ):
         value = tool_input.get(key)
         if isinstance(value, str) and value.strip():
             candidates.append(value.strip())
@@ -203,6 +256,18 @@ def violations_for_event(policy: AccessPolicy, event: dict[str, Any]) -> list[Po
             violations.append(
                 PolicyViolation(candidate, access, decision.reason)
             )
+            continue
+        if access == "write":
+            # The run's own control files (feasibility_facts.json, the access
+            # profile, the protocol) live in the writable workspace root, so
+            # the path policy alone allows an agent to rewrite them. The facts
+            # file's check.cmd is executed by the harness, which makes that a
+            # propose→execute channel; refuse the write instead.
+            from supervisor.security.protected import protected_reason
+
+            reason = protected_reason(policy.workspace, candidate)
+            if reason:
+                violations.append(PolicyViolation(candidate, access, reason))
     # Unknown tools with no path-like input are left alone.
     return violations
 
@@ -268,10 +333,36 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Analyze {command,cwd} from stdin and print an allow/deny JSON",
     )
+    parser.add_argument(
+        "--check-protected",
+        action="store_true",
+        help=(
+            "Read {path,workspace} from stdin and print whether the path is a "
+            "run control file the agent may not write (used by the JS plugin "
+            "so both gates share one rule)"
+        ),
+    )
     args = parser.parse_args(argv)
 
     def _deny_check(reason: str) -> None:
         print(json.dumps({"allow": False, "reason": reason, "violations": []}))
+
+    if args.check_protected:
+        # Deliberately independent of the policy snapshot: the protected set
+        # is derived from the workspace profile, and a missing snapshot must
+        # not silently allow a control-file write.
+        try:
+            payload = json.loads(sys.stdin.read() or "{}")
+        except ValueError:
+            payload = {}
+        from supervisor.security.protected import protected_reason
+
+        reason = protected_reason(
+            str(payload.get("workspace") or ""),
+            str(payload.get("path") or ""),
+        )
+        print(json.dumps({"protected": bool(reason), "reason": reason}))
+        return 0
 
     policy_ref = args.policy
     if args.policy_env:
@@ -310,7 +401,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.check_command:
         command = str(event.get("command") or "")
         cwd = str(event.get("cwd") or policy.workspace)
-        violations = policy.scan_command(command, cwd)
+        violations = policy.scan_command(command, cwd) + _ownership_violations(command)
         reason = "; ".join(item.headline() for item in violations)
         print(
             json.dumps(

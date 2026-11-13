@@ -6,6 +6,7 @@ Run with: python app.py   (serves http://127.0.0.1:8501)
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import subprocess
@@ -26,6 +27,28 @@ from services.webui.jobs import get_job_manager
 sanitize_proxy_env()
 
 _UI_PORT = 8501
+
+
+def _resolve_ui_port(default: int = _UI_PORT) -> int:
+    """Listening port: SOP_APP_PORT, then .job_store/ports.json, then 8501.
+
+    start_suprun.ps1 accepts -AppPort, writes it to ports.json and waits for
+    readiness on THAT port; the guardian reads the same file. A hard-coded
+    constant here made a custom -AppPort bind 8501 while both waiters polled
+    the custom port - the stack never reported ready and the guardian kept
+    relaunching it.
+    """
+    env = (os.environ.get("SOP_APP_PORT") or "").strip()
+    if env.isdigit():
+        return int(env)
+    try:
+        data = json.loads(
+            (Path(".job_store") / "ports.json").read_text(encoding="utf-8-sig"),
+        )
+        port = int(data["app"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return default
+    return port if 0 < port < 65536 else default
 
 # Serving loop. uvicorn >= 0.36 forces ProactorEventLoop (IOCP) on Windows
 # through its loop factory, ignoring the policy; `loop="none"` defers to the
@@ -271,7 +294,7 @@ app.on_startup(startup.launch_startup_tasks)
 
 ui.run(
     host="127.0.0.1",
-    port=_UI_PORT,
+    port=_resolve_ui_port(),
     title="opencode Supervisor",
     reload=False,
     show=False,

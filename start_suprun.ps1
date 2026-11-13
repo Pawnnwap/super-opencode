@@ -83,16 +83,109 @@ function Get-PortOwnerPid([int]$Port) {
     Select-Object -First 1).OwningProcess
 }
 
+function Get-ProcessCreateTime([int]$ProcessId) {
+  # Unix seconds, the same unit the Python ledger writes (create_time).
+  # Get-CimInstance already hands back a System.DateTime; converting it again
+  # through ManagementDateTimeConverter (which only accepts DMTF strings)
+  # throws ArgumentOutOfRangeException and, under $ErrorActionPreference=Stop,
+  # aborted the launcher before READY.
+  $p = Get-CimInstance Win32_Process -Filter "ProcessId=$ProcessId" -ErrorAction SilentlyContinue
+  if (-not $p -or -not $p.CreationDate) { return $null }
+  $created = $p.CreationDate
+  if ($created -isnot [datetime]) {
+    try { $created = [Management.ManagementDateTimeConverter]::ToDateTime($created) }
+    catch { return $null }
+  }
+  # Ticks, not [datetime]::UnixEpoch: that property is .NET Core only and
+  # PowerShell 5.1 runs on .NET Framework.
+  $epoch = [datetime]'1970-01-01'
+  return [double](($created.ToUniversalTime().Ticks - $epoch.Ticks) / 10000000.0)
+}
+
+function Get-LauncherChain([int]$ProcessId) {
+  # The listener plus its python.exe/cmd.exe ancestors: exactly the set
+  # Stop-ListenerTree may tree-kill. Recording the whole chain keeps the
+  # ledger and the kill root in agreement (the listener alone is not the
+  # process that gets killed). The listener itself is always included, so a
+  # listener whose name is not python/cmd still gets a record.
+  $chain = @($ProcessId)
+  $cur = Get-CimInstance Win32_Process -Filter "ProcessId=$ProcessId" -ErrorAction SilentlyContinue
+  while ($cur -and $cur.Name -in @('python.exe', 'cmd.exe')) {
+    $parent = Get-CimInstance Win32_Process -Filter "ProcessId=$($cur.ParentProcessId)" -ErrorAction SilentlyContinue
+    if (-not $parent -or $parent.Name -notin @('python.exe', 'cmd.exe')) { break }
+    $chain += [int]$parent.ProcessId
+    $cur = $parent
+  }
+  return $chain
+}
+
+function Add-ServiceLedgerRecord([int]$ProcessId, [string]$Role) {
+  # Ownership ledger for the service stack: a kill may only target a pid this
+  # file records with a matching create time. Written as plain UTF-8 JSONL
+  # (no BOM) so the Python side reads it with the same parser as run ledgers.
+  # Never throws: a ledger write must not abort a launch that is otherwise
+  # ready.
+  if (-not $ProcessId) { return }
+  try {
+    $store = Join-Path $root '.job_store'
+    if (-not (Test-Path $store)) { New-Item -ItemType Directory -Path $store | Out-Null }
+    $path = Join-Path $store 'service.procs.jsonl'
+    $encoding = New-Object System.Text.UTF8Encoding($false)
+    foreach ($member in (Get-LauncherChain $ProcessId)) {
+      $created = Get-ProcessCreateTime $member
+      if ($null -eq $created) { continue }
+      $record = @{
+        run_id = 'service'; pid = $member; create_time = $created; role = $Role
+        exe = ''; cmdline = ''; parent_pid = $PID; job_id = $null
+        ts = [double][DateTimeOffset]::UtcNow.ToUnixTimeSeconds(); state = 'live'
+      } | ConvertTo-Json -Compress
+      [IO.File]::AppendAllText($path, $record + "`n", $encoding)
+    }
+  } catch {
+    Write-Output "ledger: could not record pid=$ProcessId ($($_.Exception.Message))"
+  }
+}
+
+function Test-ServiceLedgerOwns([int]$ProcessId) {
+  # True only when the ledger records this pid with the SAME create time.
+  try {
+    $path = Join-Path $root '.job_store\service.procs.jsonl'
+    if (-not (Test-Path $path)) { return $false }
+    $created = Get-ProcessCreateTime $ProcessId
+    if ($null -eq $created) { return $false }
+    $latest = $null
+    foreach ($line in [IO.File]::ReadAllLines($path)) {
+      if (-not $line.Trim()) { continue }
+      try { $rec = $line | ConvertFrom-Json } catch { continue }
+      if ([int]$rec.pid -eq $ProcessId) { $latest = $rec }
+    }
+    if (-not $latest) { return $false }
+    if ($latest.state -ne 'live') { return $false }
+    return ([Math]::Abs([double]$latest.create_time - $created) -le 0.01)
+  } catch {
+    return $false
+  }
+}
+
 function Stop-ListenerTree([int]$OwnerPid) {
   # Tree-kill the listener's launcher chain (venv python shim -> real
   # python, or cmd.exe wrapper -> python). Killing only the listening
   # process leaves ancestors holding file handles and orphaned stacks.
+  #
+  # OWNERSHIP RULE: the port is only a discovery hint. The kill is allowed
+  # only when the ledger records the kill root with a matching create time,
+  # so a port taken over by an unrelated process is never killed.
+  #
+  # The kill root is the TOP of the launcher chain, and the ledger records
+  # that same chain (Get-LauncherChain), so the pid being verified is always
+  # one the ledger knows. Verifying the listener instead would refuse every
+  # restart, because the listener is not the process that gets killed.
   if (-not $OwnerPid) { return }
-  $topPid = $OwnerPid
-  $cur = Get-CimInstance Win32_Process -Filter "ProcessId=$OwnerPid" -ErrorAction SilentlyContinue
-  while ($cur -and $cur.Name -in @('python.exe', 'cmd.exe')) {
-    $topPid = $cur.ProcessId
-    $cur = Get-CimInstance Win32_Process -Filter "ProcessId=$($cur.ParentProcessId)" -ErrorAction SilentlyContinue
+  $chain = Get-LauncherChain $OwnerPid
+  $topPid = $chain[-1]
+  if (-not (Test-ServiceLedgerOwns $topPid)) {
+    Write-Output "kill  : REFUSED pid=$topPid (not in the service ledger with a matching create time)"
+    return
   }
   taskkill /PID $topPid /T /F | Out-Null
 }
@@ -147,6 +240,7 @@ function Start-CapabilityProxy {
   while ((Get-Date) -lt $deadline) {
     Start-Sleep -Seconds 2
     if (Test-PortListening $ProxyPort) {
+      Add-ServiceLedgerRecord (Get-PortOwnerPid $ProxyPort) 'proxy'
       Write-Output "proxy : READY port=$ProxyPort upstream=$upstream"
       return
     }
@@ -195,6 +289,7 @@ function Start-SupervisorApp {
   while ((Get-Date) -lt $deadline) {
     Start-Sleep -Seconds 5
     if (Test-PortListening $AppPort) {
+      Add-ServiceLedgerRecord (Get-PortOwnerPid $AppPort) 'app'
       Write-Output "app   : READY http://127.0.0.1:$AppPort (waited $([int]($ReadyTimeoutSec - ($deadline - (Get-Date)).TotalSeconds))s)"
       return
     }
@@ -253,6 +348,11 @@ function Start-JobWorker {
   while ((Get-Date) -lt $deadline) {
     Start-Sleep -Seconds 1
     if (Test-JobWorkerAlive) {
+      $lock = Join-Path $root '.job_store\worker.lock'
+      try {
+        $workerPid = [int]((Get-Content $lock -Raw | ConvertFrom-Json).pid)
+        Add-ServiceLedgerRecord $workerPid 'worker'
+      } catch {}
       Write-Output 'worker: READY (lock acquired)'
       return
     }

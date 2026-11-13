@@ -191,7 +191,6 @@ def plan(
                     actions.append(Action("note", "queue stall - repair backoff in effect"))
                 else:
                     q["last_repair"] = now
-                    state.last_repair["queue_restart"] = now
                     actions.append(
                         Action(
                             "restart_worker",
@@ -310,23 +309,57 @@ def process_age(pid: int | None) -> float | None:
 
 
 def kill_tree(pid: int) -> None:
-    if _WINDOWS:
-        subprocess.run(
-            ["taskkill", "/F", "/T", "/PID", str(int(pid))],
-            capture_output=True,
-            creationflags=_CREATE_NO_WINDOW,
-            check=False,
-        )
-        return
-    import signal
+    """Retired: the guardian never signals a process it did not start.
 
+    The worker is owned by the Task Scheduler, not by this process, so a kill
+    here would violate the ownership rule (and did: it once took four healthy
+    runs down). Repairs now write an intent file the worker honours itself;
+    see :func:`request_worker_stop`.
+    """
+    log(f"kill_tree({pid}) refused: the guardian does not own that process")
+    raise RuntimeError("guardian must not kill processes it did not spawn")
+
+
+def request_worker_stop(reason: str) -> None:
+    """Ask the worker daemon to exit on its own (it owns its own lifetime).
+
+    The daemon's lock pulse checks this file every second and exits cleanly
+    when it is idle; with RUNNING jobs it keeps working, which is exactly the
+    conservative behaviour the old tree-kill could not express.
+    """
+    path = JOB_STORE / "worker.stop"
     try:
-        os.killpg(os.getpgid(int(pid)), signal.SIGKILL)
-    except OSError:
-        try:
-            os.kill(int(pid), signal.SIGKILL)
-        except OSError:
-            pass
+        JOB_STORE.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps({"ts": time.time(), "reason": reason}),
+            encoding="utf-8",
+        )
+        log(f"worker stop requested: {reason}")
+    except OSError as exc:
+        log(f"could not write worker stop request: {exc}")
+
+
+def wait_for_worker_exit(timeout: float = 20.0) -> bool:
+    """Wait until no worker daemon process is alive; True when it is gone.
+
+    The launcher decides "already running" from ``worker.lock`` freshness
+    (15 s), not from the process. A worker that just honoured a stop request
+    leaves a lock that is still fresh, so launching immediately would be
+    skipped and the worker would stay down until the lock aged out. Waiting
+    for the process to actually disappear — and then dropping the stale lock —
+    lets the launcher start a fresh daemon right away.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if not find_worker_pids():
+            lock = JOB_STORE / "worker.lock"
+            try:
+                lock.unlink(missing_ok=True)
+            except OSError as exc:
+                log(f"could not clear the stale worker lock: {exc}")
+            return True
+        time.sleep(1.0)
+    return False
 
 
 def _powershell() -> str:
@@ -592,21 +625,19 @@ def execute(action: Action) -> None:
         run_launcher(["-AppOnly"])
     elif action.kind == "restart_worker":
         # Defense in depth: the plan saw no RUNNING jobs, but a claim may
-        # have raced the decision. Never kill while work is in flight.
+        # have raced the decision. Never ask for a stop while work is in flight.
         if job_counts()[1] > 0:
             log("note: worker restart skipped - a RUNNING job appeared")
             return
-        pids: list[int] = []
-        if action.pid and action.token is not None:
-            if pid_alive(action.pid) and process_token(action.pid) == action.token:
-                pids = [action.pid]
-        else:
-            pids = find_worker_pids()
-        for pid in pids:
-            if pid_alive(pid):
-                kill_tree(pid)
-        if pids:
-            time.sleep(2)
+        # The worker is Task-Scheduler-owned, so the guardian cannot kill it.
+        # It writes an intent file instead; the daemon's own pulse thread
+        # exits cleanly when idle. Wait for the process to actually go away
+        # (and drop its still-fresh lock) before launching, otherwise the
+        # launcher's lock-age liveness check skips the restart.
+        request_worker_stop(action.detail or "guardian repair")
+        if not wait_for_worker_exit():
+            log("note: worker did not exit after the stop request - leaving it alone")
+            return
         run_launcher(["-AppOnly"])
 
 

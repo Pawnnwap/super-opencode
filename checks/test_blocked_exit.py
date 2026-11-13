@@ -190,8 +190,15 @@ def test_board_and_pills_know_the_blocked_state():
         encoding="utf-8",
     )
     assert "blocked" in board.split("metrics_label.set_text")[1]
-    # A blocked run's report reaches the job store via blocked_report.md.
-    assert "blocked_report.md" in manager
+    # A blocked run's report reaches the job store via blocked_report.md. The
+    # filename list is single-sourced in the harvester (the job manager used to
+    # keep a second copy that had already drifted), so assert the shared list
+    # and that the manager reads it.
+    harvest = (_REPO / "services" / "jobs" / "harvest.py").read_text(
+        encoding="utf-8",
+    )
+    assert "blocked_report.md" in harvest
+    assert "REPORT_FILENAMES" in manager
 
 
 # --------------------------------------------------------------------------- #

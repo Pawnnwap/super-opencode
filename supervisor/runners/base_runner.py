@@ -80,6 +80,7 @@ class BaseRunner:
         on_step: Callable[[Step], None] | None = None,
         on_transition: Callable[[PhaseTransition], None] | None = None,
         on_progress: Callable[[StepProgress], None] | None = None,
+        run_id: str = "",
     ):
         logger.debug(
             "__init__ raw inputs - opencode_model=%r (type=%s) opencode_executable=%r (type=%s) "
@@ -97,6 +98,10 @@ class BaseRunner:
         )
 
         self.workspace = workspace
+        # Ownership id of the run this runner serves. Empty when the caller is
+        # a bare test double; every real run passes its job id so each spawned
+        # engine tree is ledgered and contained (see supervisor.runtime).
+        self.run_id = str(run_id or "")
         self._alive = False
         # The opencode_* field names are the persisted config vocabulary,
         # reused generically by every engine as model / executable / backup.
@@ -184,6 +189,7 @@ class BaseRunner:
             opencode_model_backup=config.opencode_model_backup,
             archive_keep_last=getattr(config, "archive_keep_last", 5),
             archive_backend=getattr(config, "archive_backend", "git"),
+            run_id=str(getattr(config, "run_id", "") or ""),
         )
 
     # -- lifecycle ----------------------------------------------------- #
@@ -208,6 +214,10 @@ class BaseRunner:
             # Tree-kill: on Windows the direct child is the cmd.exe shim of a
             # `.cmd` install; killing only it orphans the real CLI process,
             # which then holds the binary lock and keeps hitting the provider.
+            # The ownership gate is inside process_control: only this run's
+            # own tree can be reached, never another run's or an unrelated one.
+            # The run id travels on the process object (stamped at spawn), so
+            # this stays a one-argument call.
             kill_process_tree(self._process)
 
     # -- engine seams (the only parts a backend must implement) --------- #

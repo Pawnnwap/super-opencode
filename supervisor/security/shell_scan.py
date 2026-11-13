@@ -94,6 +94,36 @@ _DENY_COMMANDS = frozenset(
     },
 )
 
+# Process termination. A kill is only ever legal against a literal PID that
+# the run's own ledger proves it owns (checked by guard_cli); every
+# name/keyword/wildcard form is denied here because it can reach processes
+# this run never started.
+_KILL_COMMANDS = frozenset(
+    {"taskkill", "stop-process", "kill", "killall", "pkill", "pskill", "tskill"},
+)
+# Flags that turn a PID kill into a name/tree/remote kill.
+_KILL_FORBIDDEN_FLAGS = frozenset(
+    {
+        "/im",
+        "-name",
+        "/t",
+        "-t",
+        "/fi",
+        "/s",
+        "/u",
+        "/p",
+        "-inputobject",
+        "-id?",
+        "--signal",
+        "-signal",
+    },
+)
+# MATLAB must be started through the run's owned wrapper: a bare `matlab`
+# spawns a launcher plus a MATLAB.exe engine that no ledger knows about, and
+# the only cleanup left would be a name-based kill.
+_MATLAB_COMMANDS = frozenset({"matlab", "matlab.exe"})
+_MATLAB_WRAPPER = "supervisor.tools.run_child"
+
 # Interpreters: a script file inside the cwd is allowed, inline code is not.
 _INTERPRETERS = frozenset(
     {
@@ -315,6 +345,17 @@ class _Context:
         if name in _DENY_COMMANDS:
             self.deny(name, f"'{name}' can execute or modify files outside the static model")
             return
+        if name in _KILL_COMMANDS:
+            self._kill(name, words)
+            return
+        if name in _MATLAB_COMMANDS:
+            self.deny(
+                name,
+                "MATLAB must be started through the run's owned wrapper "
+                f"(python -m {_MATLAB_WRAPPER} matlab --script ...), so its "
+                "process tree is ledgered and can be terminated precisely",
+            )
+            return
         if name in _POSIX_SHELLS and len(words) == 1:
             self.deny(name, f"{name} executing from stdin cannot be verified")
             return
@@ -339,6 +380,36 @@ class _Context:
         self._paths(name, words)
 
     # -- command families ------------------------------------------------ #
+
+    def _kill(self, name: str, words: list[Token]) -> None:
+        """Only a literal-PID kill is even considered; ownership is checked later.
+
+        The static analyzer cannot know who owns a pid, so it accepts exactly
+        one shape — ``taskkill /PID <digits>``, ``Stop-Process -Id <digits>``,
+        ``kill <digits>`` — and rejects everything else. The gate
+        (:mod:`supervisor.security.guard_cli`) then proves the pid belongs to
+        this run's ledger before the command is allowed to run.
+        """
+        args = [word.text for word in words[1:]]
+        lowered = [arg.lower() for arg in args]
+        for flag in lowered:
+            if flag in _KILL_FORBIDDEN_FLAGS:
+                self.deny(
+                    name,
+                    f"'{name} {flag}' targets processes by name/tree/remote host; "
+                    "only a literal PID owned by this run may be terminated",
+                )
+                return
+        pid = _literal_kill_pid(name, args)
+        if pid is None:
+            self.deny(
+                name,
+                f"'{name}' must name exactly one literal PID "
+                "(taskkill /PID <n>, Stop-Process -Id <n>, kill <n>); "
+                "name, keyword and wildcard kills are forbidden",
+            )
+            return
+        # The pid itself is not a path; nothing else to check here.
 
     def _interpreter(self, name: str, words: list[Token]) -> None:
         args = [word.text for word in words[1:]]
@@ -382,6 +453,14 @@ class _Context:
             if danger in joined:
                 self.deny("git", f"git {danger} can execute an arbitrary command")
                 return
+        irreversible = _irreversible_git(args)
+        if irreversible:
+            self.deny(
+                "git",
+                f"git {irreversible} is irreversible; take an archive snapshot "
+                "first (the supervisor archives before each run)",
+            )
+            return
 
     def _paths(self, name: str, words: list[Token]) -> None:
         args = [(index, word.text) for index, word in enumerate(words) if index > 0]
@@ -691,6 +770,166 @@ def _command_name(raw: str) -> str:
     return name
 
 
+def _literal_kill_pid(name: str, args: list[str]) -> int | None:
+    """The single literal PID a kill command names, or None.
+
+    Accepted shapes (nothing else):
+      taskkill [/F] /PID <digits>
+      Stop-Process [-Force] -Id <digits>
+      kill [-9|-KILL] <digits>
+    """
+    pid_flags = {"/pid", "-id"}
+    values: list[str] = []
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        lowered = arg.lower()
+        if lowered in _KILL_FORBIDDEN_FLAGS:
+            # A tree/name/remote flag makes the target set unprovable, even
+            # when a pid is also present (`taskkill /T /PID n`).
+            return None
+        if lowered in pid_flags:
+            if index + 1 >= len(args):
+                return None
+            values.append(args[index + 1])
+            index += 2
+            continue
+        if lowered.startswith(("/pid=", "-id=")):
+            values.append(arg.split("=", 1)[1])
+            index += 1
+            continue
+        index += 1
+    if values:
+        if len(values) != 1:
+            return None
+        return _as_pid(values[0])
+    if name == "kill":
+        # `kill <pid>` / `kill -9 <pid>`: the only positional form allowed.
+        positional = [
+            arg for arg in args if not arg.startswith("-") and not arg.startswith("/")
+        ]
+        if len(positional) != 1:
+            return None
+        return _as_pid(positional[0])
+    return None
+
+
+def _as_pid(text: str) -> int | None:
+    token = text.strip("\"'`")
+    if not token.isdigit():
+        return None
+    value = int(token)
+    return value if value > 4 else None
+
+
+def _kill_segments(command: str, depth: int = 0) -> list[tuple[str, list[str]]]:
+    """Every kill command reachable in *command*, wrappers included.
+
+    The static analyzer recurses through ``cmd /c``, ``powershell -Command``,
+    ``bash -c``, ``env``, ``sudo`` and friends via :func:`_unwrap`. The
+    ownership gate must see exactly the same commands, otherwise a wrapped
+    kill is allowed by the analyzer and invisible to the gate — one shell
+    layer would bypass the whole rule.
+    """
+    if depth > 4:
+        return []
+    found: list[tuple[str, list[str]]] = []
+    for segment in _split_segments(command or ""):
+        tokens = _tokenize(segment, Path.cwd())
+        words = [token for token in tokens if token.text not in _OPERATORS]
+        if not words:
+            continue
+        name = _command_name(words[0].text)
+        if not name:
+            continue
+        inner = _unwrap(name, words)
+        if inner is not None:
+            if inner:
+                found.extend(_kill_segments(inner, depth + 1))
+            continue
+        if name in _KILL_COMMANDS:
+            found.append((name, [word.text for word in words[1:]]))
+    return found
+
+
+def kill_pids(command: str) -> list[int]:
+    """Literal PIDs a command would terminate (empty when none/ambiguous).
+
+    Used by the gate to prove ownership before allowing the command: the
+    analyzer already rejected every non-literal shape, so whatever comes back
+    here is exactly what the run is asking to kill. Wrapper commands are
+    unwrapped with the analyzer's own logic, so ``cmd /c taskkill /PID n``
+    yields the same pid as the bare form.
+    """
+    pids: list[int] = []
+    for name, args in _kill_segments(command):
+        pid = _literal_kill_pid(name, args)
+        if pid is not None:
+            pids.append(pid)
+    return pids
+
+
+def kill_command_present(command: str) -> bool:
+    """Whether any kill command is reachable, wrappers included."""
+    return bool(_kill_segments(command))
+
+
+def _irreversible_git(args: list[str]) -> str:
+    """The destructive git operation *args* performs, or '' when none.
+
+    These discard work that no later command can recover: uncommitted edits
+    (``reset --hard``, ``checkout -- .``, ``restore .``), untracked files
+    (``clean -f``), commits (``push --force``), stashes and branches. The
+    supervisor archives the workspace before each run, so the refusal message
+    points at that snapshot instead of pretending the operation is safe.
+
+    ``clean -n`` / ``--dry-run`` is allowed: it reports without deleting.
+    """
+    lowered = [arg.lower() for arg in args]
+    if not lowered:
+        return ""
+    sub = lowered[0]
+    rest = lowered[1:]
+
+    def has(*flags: str) -> bool:
+        return any(flag in rest for flag in flags)
+
+    if sub == "reset" and has("--hard"):
+        return "reset --hard"
+    if sub == "clean":
+        # -n / --dry-run only lists; any force flag actually deletes.
+        if has("-n", "--dry-run"):
+            return ""
+        if has("-f", "--force") or any(
+            arg.startswith("-") and "f" in arg[1:] and not arg.startswith("--")
+            for arg in rest
+        ):
+            return "clean -f"
+        return ""
+    if sub == "checkout":
+        # `checkout -- .` / `checkout .` discard every uncommitted edit.
+        if "--" in rest and rest[-1] in {".", "./"}:
+            return "checkout -- ."
+        if rest and rest[-1] in {".", "./"} and not any(
+            arg.startswith("-") for arg in rest
+        ):
+            return "checkout ."
+        return ""
+    if sub == "restore":
+        if has("--source", "-s"):
+            return "restore --source"
+        if rest and rest[-1] in {".", "./"}:
+            return "restore ."
+        return ""
+    if sub == "stash" and rest and rest[0] in {"drop", "clear"}:
+        return f"stash {rest[0]}"
+    if sub == "branch" and has("-d", "-D", "--delete"):
+        return "branch -D"
+    if sub == "push" and has("--force", "-f", "--force-with-lease"):
+        return "push --force"
+    return ""
+
+
 def _is_flag(text: str) -> bool:
     token = text.strip("\"'`")
     if token.startswith("--"):
@@ -747,4 +986,4 @@ def _short(text: str, limit: int = 100) -> str:
     return flat if len(flat) <= limit else flat[: limit - 1] + "…"
 
 
-__all__ = ["Token", "analyze"]
+__all__ = ["Token", "analyze", "kill_command_present", "kill_pids"]

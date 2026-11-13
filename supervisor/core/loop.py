@@ -434,7 +434,10 @@ class SupervisorLoop(BaseLoop):
     def _run_test_resource(self) -> str:
         from supervisor.runners.test_runner import OcTestRunner
 
-        result = OcTestRunner(self.config.workspace).run()
+        result = OcTestRunner(
+            self.config.workspace,
+            run_id=str(getattr(self.config, "run_id", "") or ""),
+        ).run()
         return f"Test suite: {result.summary()}\n{result.output[-800:]}"
 
     def _post_judge_feedback(

@@ -172,6 +172,11 @@ class SupervisorConfig:
     harvest_job_ids: tuple[str, ...] = ()
     harvest_prompt: str = ""
     harvest_dir: str = ""
+    # Ownership id of the run (the job id, filled in at claim time). Every
+    # child process this run starts is registered in that run's ledger and
+    # contained in its job object, so a kill can only ever reach this run's
+    # own process tree. Empty for ad-hoc/legacy construction.
+    run_id: str = ""
 
     def to_state_dict(self) -> dict[str, object]:
         data = asdict(self)

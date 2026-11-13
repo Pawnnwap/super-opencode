@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import json
 import os
 import subprocess
@@ -36,16 +37,22 @@ def _npm_install_cmd(package: str, registry: str) -> str:
     return cmd
 
 
-def _installed_codex() -> str:
-    """Locate a working codex CLI exactly the way the runners do."""
+def _installed_cli(locator_name: str) -> str:
+    """Locate an engine CLI exactly the way the runners do ('' when absent)."""
     try:
-        from supervisor.runners.codex_support.locator import find_codex
-
-        return find_codex()
+        module = importlib.import_module(
+            f"supervisor.runners.{locator_name}_support.locator",
+        )
+        return getattr(module, f"find_{locator_name}")()
     except FileNotFoundError:
         return ""
     except Exception:  # noqa: BLE001 - startup upgrade step must never block boot
         return ""
+
+
+def _installed_codex() -> str:
+    """Locate a working codex CLI exactly the way the runners do."""
+    return _installed_cli("codex")
 
 
 def should_skip_upgrade(settings_file: Path = UPGRADE_SETTINGS_FILE) -> bool:
@@ -71,10 +78,25 @@ def _auto_upgrade_npm_cli(
 
     Shared by the opencode and pi CLI upgrades (plain npm packages, no config
     to protect); codex keeps its own routine because it guards ~/.codex.
+
+    Idempotent like the codex path: a CLI that already resolves is left alone.
+    Every UI restart used to run a global npm install; when the process was
+    tree-killed mid install (2026-11-06) npm left the package unpacked but
+    WITHOUT bin shims, and every queued run then failed with "not found". The
+    install is a repair path, not a startup step.
     """
     if should_skip_upgrade(settings_file):
         print(
             f"[{label}-upgrade] Skipping upgrade: disabled via config/env var",
+            file=sys.stderr,
+        )
+        return
+
+    installed = _installed_cli(label)
+    if installed:
+        print(
+            f"[{label}-upgrade] {label} already available at {installed}; "
+            "skipping auto-upgrade.",
             file=sys.stderr,
         )
         return
@@ -191,7 +213,17 @@ def _run_codex_upgrade(cmd: str, home_dir: str) -> tuple[int, str, str]:
     try:
         stdout, stderr = proc.communicate(timeout=180)
     except subprocess.TimeoutExpired:
-        proc.kill()
+        # Ownership gate: this is our own direct child, which is the one
+        # provable case without a run ledger (see process_control). A process
+        # object with no pid has no OS identity to prove, so only its own
+        # kill hook may run.
+        pid = getattr(proc, "pid", None)
+        if pid is None:
+            proc.kill()
+        else:
+            from supervisor.runtime.process_control import terminate_tree
+
+            terminate_tree(None, int(pid), reason="codex upgrade timeout")
         proc.communicate()
         raise
     if stdout:

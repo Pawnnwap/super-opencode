@@ -340,6 +340,7 @@ class BaseLoop:
             self.config,
             agent=agent,
         )
+        self._setup_process_containment()
         self.ctx_monitor = SessionTracker(
             self.config.context_threshold,
             self.config.max_tokens,
@@ -373,6 +374,33 @@ class BaseLoop:
                 [str(item) for item in policy.whitelist] or "none",
             )
         return policy
+
+    def _setup_process_containment(self) -> None:
+        """Open this run's containment scope and reconcile last boot's ledger.
+
+        The scope is the structural half of the ownership rule: every process
+        the engines start lands inside it, so a later kill can only reach this
+        run's tree. Reconcile is the crash-recovery half and deliberately only
+        classifies — a restart must never kill; leftovers are reported.
+        """
+        run_id = str(getattr(self.config, "run_id", "") or getattr(self.runner, "run_id", ""))
+        if not run_id:
+            return
+        try:
+            from supervisor.runtime.process_control import scope_for_run
+            from supervisor.runtime.process_registry import ProcessRegistry
+
+            scope_for_run(run_id)
+            live, _stale = ProcessRegistry(run_id).reconcile()
+            if live:
+                logger.warning(
+                    "run %s inherited %d live process(es) from a previous boot: %s",
+                    run_id,
+                    len(live),
+                    ", ".join(f"{item.role}:{item.pid}" for item in live[:8]),
+                )
+        except Exception:
+            logger.warning("process containment setup failed", exc_info=True)
 
     def _install_access_guard(self, engine: str) -> None:
         """Write the engine-specific gate and hand its flags to the runner."""
@@ -421,11 +449,41 @@ class BaseLoop:
             merged = dict(getattr(self.runner, "codex_extra_env", None) or {})
             merged.update(result.env)
             self.runner.codex_extra_env = merged
+        # Ownership markers for everything the agent starts: the ledger path
+        # lets the shell gate prove a kill target belongs to THIS run, and the
+        # run id makes the proof unambiguous across concurrent runs.
+        self._expose_run_env()
         logger.info(
             "Access guard installed for %s: %s",
             engine,
             [str(path) for path in result.artifacts],
         )
+
+    def _expose_run_env(self) -> None:
+        """Publish the run's ownership markers to every child environment."""
+        run_id = str(getattr(self.config, "run_id", "") or getattr(self.runner, "run_id", ""))
+        if not run_id:
+            return
+        from supervisor.runtime.process_registry import ledger_path
+
+        markers = {
+            "SOP_RUN_ID": run_id,
+            "SOP_PROC_LEDGER": str(ledger_path(run_id)),
+            # The MCP codebase tools bound their reads to this directory. The
+            # engine spawns the MCP server, so the marker reaches it through
+            # the child environment (the server registration is global and
+            # cannot carry a per-run path).
+            "SOP_WORKSPACE": str(self.config.workspace),
+        }
+        runner_env = dict(getattr(self.runner, "access_guard_env", None) or {})
+        runner_env.update(markers)
+        self.runner.access_guard_env = runner_env
+        merged = dict(getattr(self.runner, "codex_extra_env", None) or {})
+        merged.update(markers)
+        self.runner.codex_extra_env = merged
+        # pi/opencode read SOP_* through the same bag; the engine process layer
+        # also stamps them itself, so a missing guard still carries ownership.
+        self.runner.run_id = run_id
 
     def _drain_access_violations(self) -> Generator[Event]:
         """Surface policy blocks recorded by the engine gate as job events."""
@@ -1614,6 +1672,22 @@ class BaseLoop:
 
         blocked_reason = self._blocked_assessment(verdict, actual_output)
         yield from self._drain_jev_notes()
+        if getattr(verdict, "unstructured", False) and not getattr(
+            self, "_unstructured_warned", False
+        ):
+            # A reply with no DONE: line is not a completion, and the exit gate
+            # now fails closed instead of matching prose. Surface it once: the
+            # operator needs to know the judge ignored the verdict format.
+            self._unstructured_warned = True
+            logger.error(
+                "judge verdict has no structured DONE line; completion is "
+                "refused for this turn",
+            )
+            yield _ev(
+                "warn",
+                "Judge reply had no structured DONE: line — completion refused "
+                "for this turn (unstructured verdict).",
+            )
         if not (getattr(verdict, "criteria_results", None) or []) and not getattr(
             self, "_unstructured_warned", False
         ):

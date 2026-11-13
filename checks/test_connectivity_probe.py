@@ -34,6 +34,42 @@ def test_stable_probe_home_is_reused(tmp_path, monkeypatch):
     assert first.name == "codex_probe_home"
 
 
+def test_probe_cleanup_uses_the_run_id_the_probe_spawned_under(tmp_path, monkeypatch):
+    """Cleanup must terminate the probe's own scope, not a name-derived one.
+
+    The probe runs in an ephemeral workspace while its warm home is a stable
+    shared directory, so the two names differ. Deriving the run id from the
+    home produced an id that matched no scope and no ledger record, making
+    the cleanup a no-op: the orphaned git.exe kept the home locked and
+    rmtree silently failed.
+    """
+    monkeypatch.setenv("TEMP", str(tmp_path))
+    monkeypatch.delenv("TMPDIR", raising=False)
+    workspace = connectivity._ephemeral_workspace("codex")
+    home = connectivity._stable_probe_home("codex")
+    try:
+        probe_run_id = connectivity._probe_run_id(workspace)
+        assert probe_run_id != connectivity._probe_run_id(home)
+
+        terminated: list[str] = []
+        from supervisor.runtime import process_control
+
+        monkeypatch.setattr(
+            process_control, "terminate_run",
+            lambda run_id, **_kw: terminated.append(run_id) or 0,
+        )
+        connectivity._discard_probe_home(home, probe_run_id)
+
+        assert terminated == [probe_run_id], (
+            "cleanup did not terminate the scope the probe spawned under"
+        )
+        assert not home.exists()
+    finally:
+        import shutil
+
+        shutil.rmtree(workspace, ignore_errors=True)
+
+
 class _FakeRunner:
     """Minimal runner surface the probe touches; records constructor kwargs.
 

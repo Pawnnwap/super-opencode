@@ -126,6 +126,14 @@ def _evaluate_command(
         expect_code = int(expect)
     except (TypeError, ValueError):
         expect_code = 0
+    # The facts file lives in the agent-writable workspace root, so its
+    # ``check.cmd`` is agent-authored text that this harness would otherwise
+    # execute verbatim — a propose→execute channel with no validation. Run it
+    # through the same shell policy the agent's own commands face, and refuse
+    # anything the analyzer cannot verify.
+    rejection = _command_policy_rejection(cmd, workspace)
+    if rejection:
+        return _error(gate, f"gate command rejected by shell policy: {rejection}", cmd)
     argv = shlex.split(cmd, posix=sys.platform != "win32")
     try:
         proc = subprocess.run(
@@ -157,6 +165,25 @@ def _evaluate_command(
     )
 
 
+def _command_policy_rejection(cmd: str, workspace: Path) -> str:
+    """Why *cmd* may not run, or '' when the shell policy allows it.
+
+    Fails closed: an analyzer error is a rejection, because an unverifiable
+    command is exactly what the policy exists to stop.
+    """
+    try:
+        from supervisor.security.access_policy import AccessPolicy
+        from supervisor.security.shell_scan import analyze
+
+        policy = AccessPolicy(workspace=Path(workspace), whitelist=(), enabled=True)
+        violations = analyze(policy, cmd, cwd=Path(workspace))
+    except Exception as exc:  # noqa: BLE001 - unverifiable means refused
+        return f"analyzer unavailable ({exc})"
+    if not violations:
+        return ""
+    return "; ".join(item.headline() for item in violations[:3])
+
+
 def _evaluate_metric(gate: Gate, check: dict, workspace: Path) -> GateEvaluation:
     name = str(check.get("metric", "")).strip()
     op_name = str(check.get("op", "")).strip()
@@ -174,7 +201,16 @@ def _evaluate_metric(gate: Gate, check: dict, workspace: Path) -> GateEvaluation
     file_part, _, key_part = source_spec.partition(":")
     if not file_part or not key_part:
         return _error(gate, f"bad source spec {source_spec!r}", "rubric")
-    path = Path(workspace) / file_part
+    # ``source`` is agent-authored too: ``../../secret.json:key`` would read
+    # any JSON on the machine. Resolve first, then require containment.
+    try:
+        root = Path(workspace).resolve()
+        path = (root / file_part).resolve()
+        path.relative_to(root)
+    except (OSError, ValueError):
+        return _error(
+            gate, f"source escapes workspace: {file_part}", source_spec,
+        )
     if not path.is_file():
         return _error(
             gate, f"no record: {file_part} not found", source_spec, honest=True,

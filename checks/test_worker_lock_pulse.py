@@ -148,3 +148,105 @@ def test_abandoned_record_carries_stage_and_reason(tmp_path):
     assert warn and "screen" in warn[-1]["msg"], (
         "the abandon log line does not show where the run stopped"
     )
+
+
+def test_stop_request_is_ignored_while_a_job_is_claimed_but_not_yet_running(
+    tmp_path,
+):
+    """A just-claimed job must not be killed by a guardian stop request.
+
+    The store only knows RUNNING records, and a job thread writes RUNNING
+    after it starts, so the disk view alone can call a busy worker idle. The
+    pulse therefore also consults the in-process live-job count.
+    """
+    store_dir = tmp_path / ".job_store"
+    store_dir.mkdir()
+    (store_dir / ws._STOP_FILE).write_text("{}", encoding="utf-8")
+
+    pulse = ws._LoopPulse(store_dir, active_jobs=lambda: 1)
+    assert pulse._stop_requested() is False
+    assert (store_dir / ws._STOP_FILE).exists(), (
+        "the stop request was consumed while a job was in flight"
+    )
+
+    idle = ws._LoopPulse(store_dir, active_jobs=lambda: 0)
+    assert idle._stop_requested() is True
+    assert not (store_dir / ws._STOP_FILE).exists()
+
+
+def test_stop_request_exits_from_the_main_loop_not_os_exit(monkeypatch, tmp_path):
+    """The pulse must not os._exit: job threads need their finally cleanup."""
+    store_dir = tmp_path / ".job_store"
+    store_dir.mkdir()
+    (store_dir / ws._STOP_FILE).write_text("{}", encoding="utf-8")
+
+    monkeypatch.setattr(ws, "JOB_STORE_DIR", str(store_dir))
+    monkeypatch.setattr(ws, "_POLL_SECONDS", 0.02)
+    monkeypatch.setattr(ws, "_PULSE_SECONDS", 0.02)
+    monkeypatch.setattr(ws, "_CODE_CHECK_SECONDS", 3600.0)
+    monkeypatch.setattr(ws, "_PRUNE_SECONDS", 3600.0)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(ws.death_capture, "_handles", [])
+    ws._reexec_worker = lambda: None
+    monkeypatch.setattr(ws, "_read_settings", lambda _d: {})
+
+    exited = {"hard": False}
+    monkeypatch.setattr(ws.os, "_exit", lambda _code: exited.__setitem__("hard", True))
+
+    result: dict = {}
+
+    def run_main():
+        result["code"] = ws.main()
+
+    thread = threading.Thread(target=run_main, daemon=True)
+    thread.start()
+    thread.join(timeout=10)
+
+    assert not thread.is_alive(), "the worker did not exit on the stop request"
+    assert exited["hard"] is False, "the worker exited via os._exit"
+    assert result.get("code") == 0
+
+
+def test_pending_jobs_do_not_rehash_the_tree_every_poll(monkeypatch, tmp_path):
+    """The freshness throttle must hold even while a PENDING job waits.
+
+    check_freshness() used to reset the throttle clock itself, and the claim
+    path called it unconditionally - so one queued job turned the 10 s
+    throttle into a full-tree SHA-256 per poll (1 s).
+    """
+    store_dir = tmp_path / ".job_store"
+    monkeypatch.setattr(ws, "JOB_STORE_DIR", str(store_dir))
+    monkeypatch.setattr(ws, "_POLL_SECONDS", 0.02)
+    monkeypatch.setattr(ws, "_CODE_CHECK_SECONDS", 3600.0)
+    monkeypatch.setattr(ws, "_PRUNE_SECONDS", 3600.0)
+    monkeypatch.setattr(ws, "_PULSE_SECONDS", 0.05, raising=False)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(ws.death_capture, "_handles", [])
+    ws._reexec_worker = lambda: None
+
+    calls = {"n": 0}
+
+    def counting_fingerprint():
+        calls["n"] += 1
+        return "same"
+
+    monkeypatch.setattr(ws, "code_fingerprint", counting_fingerprint)
+    monkeypatch.setattr(ws, "_LOADED_CODE_FINGERPRINT", "same")
+    monkeypatch.setattr(ws, "_read_settings", lambda _d: {})
+
+    # A PENDING record that can never be claimed (no free slot is not the
+    # point here - the claim path is what used to re-hash).
+    store = JobStateStore(str(store_dir))
+    store.save_job_state("run_waiting", {
+        "type": "run", "state": "PENDING", "created_at": 1.0,
+        "config": {"workspace": str(tmp_path / "ws"), "protocol_path": "p.md"},
+    })
+
+    t = threading.Thread(target=ws.main, daemon=True)
+    t.start()
+    time.sleep(1.0)
+    # One startup check at most; the 3600 s throttle must suppress the rest.
+    assert calls["n"] <= 1, (
+        f"code_fingerprint ran {calls['n']}x in 1 s with a PENDING job - "
+        "the throttle was bypassed"
+    )

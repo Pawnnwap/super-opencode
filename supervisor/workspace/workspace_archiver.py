@@ -53,7 +53,6 @@ _ARCHIVE_DIR = ".archive"
 ARCHIVE_COUNTER_NAME = ".archive_counter"
 _ARCHIVE_EXTRA_IGNORE_DIRS = {
     "_deps",
-    ". Dune",
 }
 # Run state, not workspace content: logs/ holds the feasibility facts and the
 # last gate harvest. Archiving it swept the evidence base into the snapshot
@@ -107,9 +106,6 @@ class WorkspaceArchiver:
         self.archive_root = self.workspace / _ARCHIVE_DIR
         self.keep_last = keep_last
         self._archive_counter = load_archive_counter(self.archive_root)
-
-    def _load_counter(self) -> int:
-        return load_archive_counter(self.archive_root)
 
     def _save_counter(self) -> None:
         save_archive_counter(self.archive_root, self._archive_counter)

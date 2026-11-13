@@ -12,13 +12,13 @@ Used by the self-evolution loop to:
 
 from __future__ import annotations
 
-import subprocess
 import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from supervisor.runners.base_runner import BaseRunner
+from supervisor.runtime.processes import PythonProcess
 
 
 @dataclass
@@ -83,8 +83,8 @@ class OcTestRunner(BaseRunner):
     Falls back to a per-file syntax check if pytest is not installed.
     """
 
-    def __init__(self, workspace: Path, test_dir: str = "tests"):
-        super().__init__(workspace)
+    def __init__(self, workspace: Path, test_dir: str = "tests", run_id: str = ""):
+        super().__init__(workspace, run_id=run_id)
         self.test_dir = workspace / test_dir
 
     # ------------------------------------------------------------------ #
@@ -108,39 +108,27 @@ class OcTestRunner(BaseRunner):
 
     def _pytest_available(self) -> bool:
         try:
-            subprocess.run(
-                [sys.executable, "-m", "pytest", "--version"],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
+            result = PythonProcess(
+                run_id=self.run_id,
+                module="pytest",
+                args=["--version"],
+                cwd=self.workspace,
                 timeout=10,
-            )
-            return True
-        except (subprocess.TimeoutExpired, FileNotFoundError):
+            ).run()
+            return result.returncode == 0
+        except (FileNotFoundError, OSError):
             return False
 
     def _run_pytest(self, t0: float) -> RunTestResult:
-        cmd = [
-            sys.executable,
-            "-m",
-            "pytest",
-            str(self.test_dir) if self.test_dir.exists() else str(self.workspace),
-            "-v",
-            "--tb=short",
-            "--no-header",
-            "-q",
-        ]
-        proc = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            cwd=str(self.workspace),
+        target = str(self.test_dir) if self.test_dir.exists() else str(self.workspace)
+        result = PythonProcess(
+            run_id=self.run_id,
+            module="pytest",
+            args=[target, "-v", "--tb=short", "--no-header", "-q"],
+            cwd=self.workspace,
             timeout=300,
-        )
-        output = proc.stdout + proc.stderr
+        ).run()
+        output = result.stdout + result.stderr
         passed, failed, errors = _parse_pytest_summary(output)
         return RunTestResult(
             passed=passed,
@@ -148,7 +136,7 @@ class OcTestRunner(BaseRunner):
             errors=errors,
             duration_s=time.monotonic() - t0,
             output=output,
-            exit_code=proc.returncode,
+            exit_code=result.returncode,
         )
 
     def _run_syntax_check(self, t0: float) -> RunTestResult:
@@ -157,15 +145,15 @@ class OcTestRunner(BaseRunner):
         output_lines: list[str] = ["[syntax check mode — pytest not found]\n"]
 
         for py_file in sorted(self.workspace.rglob("*.py")):
-            proc = subprocess.run(
-                [sys.executable, "-m", "py_compile", str(py_file)],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-            )
-            if proc.returncode != 0:
-                msg = f"{py_file.relative_to(self.workspace)}: {proc.stderr.strip()}"
+            result = PythonProcess(
+                run_id=self.run_id,
+                module="py_compile",
+                args=[str(py_file)],
+                cwd=self.workspace,
+                timeout=120,
+            ).run()
+            if result.returncode != 0:
+                msg = f"{py_file.relative_to(self.workspace)}: {result.stderr.strip()}"
                 errors.append(msg)
                 output_lines.append(f"  SYNTAX ERROR: {msg}")
             else:

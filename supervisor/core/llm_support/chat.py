@@ -15,13 +15,11 @@ from openai import (
 
 from supervisor.core.llm_support.history_compaction import build_context_messages
 from supervisor.core.llm_support.models import (
-    _DONE_PHRASES,
     SupervisorVerdict,
-    _check_completion_phrases,
     _is_token_limit_error,
     flag_contradicted_criteria,
     parse_skill_requests,
-    parse_verdict_structure,
+    parse_verdict_structure_ex,
 )
 from supervisor.monitoring.session_tracker import (
     estimate_request_tokens,
@@ -326,15 +324,28 @@ def chat_with_retry(
         else:
             supervisor._history = supervisor._history[:2] + supervisor._history[4:]
 
-    structured_done, criteria, next_action, evidence_requests = parse_verdict_structure(
-        reply,
+    structured_done, criteria, next_action, evidence_requests, structured = (
+        parse_verdict_structure_ex(reply)
     )
     skill_requests = parse_skill_requests(reply)
     criteria, validation_notes = flag_contradicted_criteria(criteria)
     if structured_done is not None:
         all_met = structured_done and not validation_notes
     else:
-        all_met = _check_completion_phrases(reply, _DONE_PHRASES)
+        # No structured block: fail closed. The old fallback matched phrases
+        # like "task complete" in free text, so a judge that ignored the
+        # verdict format could end a run on prose alone. One repair attempt
+        # asks for the block again; if that also fails, the verdict stays
+        # "not done" and the caller sees unstructured=True.
+        repaired = _request_structured_verdict(supervisor, working_messages, reply)
+        if repaired is not None:
+            reply = repaired
+            structured_done, criteria, next_action, evidence_requests, structured = (
+                parse_verdict_structure_ex(reply)
+            )
+            skill_requests = parse_skill_requests(reply)
+            criteria, validation_notes = flag_contradicted_criteria(criteria)
+        all_met = bool(structured_done) and not validation_notes
     return SupervisorVerdict(
         raw=reply,
         all_targets_met=all_met,
@@ -344,7 +355,59 @@ def chat_with_retry(
         evidence_requests=evidence_requests,
         skill_requests=skill_requests,
         validation_notes=validation_notes,
+        unstructured=not structured,
     )
+
+
+def _request_structured_verdict(
+    supervisor,
+    messages: list[dict],
+    reply: str,
+) -> str | None:
+    """Ask once for the structured verdict block; None when it still fails.
+
+    The judge is told exactly what was missing, so a model that simply forgot
+    the format recovers. A model that cannot produce it is not trusted to
+    declare completion, which is why the caller keeps ``all_met=False``.
+    """
+    from supervisor.prompts import VERDICT_FORMAT
+
+    repair_messages = [
+        *messages,
+        {"role": "assistant", "content": reply},
+        {
+            "role": "user",
+            "content": (
+                "Your reply had no DONE: line, so it cannot be parsed as a "
+                "verdict. Re-emit ONLY the structured block, exactly in this "
+                "format:\n\n" + VERDICT_FORMAT
+            ),
+        },
+    ]
+    try:
+        response = supervisor._client.chat.completions.create(
+            model=supervisor._model,
+            messages=repair_messages,
+        )
+    except Exception as exc:  # noqa: BLE001 - a failed repair is not a verdict
+        logger.warning("structured-verdict repair call failed: %s", exc)
+        return None
+    if not response.choices:
+        return None
+    repaired = normalize_model_response(
+        response.choices[0].message.content,
+        "supervisor response",
+    )
+    _done, _criteria, _next, _requests, structured = parse_verdict_structure_ex(
+        repaired,
+    )
+    if not structured:
+        logger.warning(
+            "judge reply still has no structured DONE line after one repair "
+            "attempt; treating the verdict as not done",
+        )
+        return None
+    return repaired
 
 
 def fit_request_to_budget(supervisor, user_content: str) -> str:

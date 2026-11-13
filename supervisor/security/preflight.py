@@ -261,6 +261,20 @@ def _static_gate_checks(
             str(snapshot or "missing"),
         ),
     )
+    # The gate artifacts live in agent-writable directories, so "the file
+    # exists and carries the marker" is not proof the gate still works: an
+    # agent can rewrite the plugin and keep the marker. Compare against the
+    # hashes recorded at install time.
+    from supervisor.security.engine_guards import verify_guard_integrity
+
+    integrity_problems = verify_guard_integrity(Path(workspace))
+    checks.append(
+        DrillCheck(
+            "gate artifacts unchanged since install",
+            not integrity_problems,
+            "; ".join(integrity_problems[:3]) or "hashes match",
+        ),
+    )
     if snapshot and snapshot.is_file():
         try:
             payload = json.loads(snapshot.read_text(encoding="utf-8"))

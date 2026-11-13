@@ -205,23 +205,43 @@ def parse_verdict_structure(
     """Extract the structured verdict block from a judge reply.
 
     Returns ``(done, criteria, next_action, evidence_requests)`` where ``done``
-    is ``None`` when the reply carries no structured DONE marker (caller falls
-    back to done-phrase matching), otherwise True/False. ``evidence_requests``
-    are the judge's NEED_EVIDENCE asks, preserving the resource name *and* its
-    optional argument (``read_file path/to/file.py``). The harness needs the
-    argument: dropping it made every ``read_file`` request resolve to the
-    workspace root, which is a directory and produced repeated permission
-    warnings instead of evidence.
+    is ``None`` when the reply carries no structured DONE marker. Callers that
+    must distinguish "no marker" from "marker says no" use
+    :func:`parse_verdict_structure_ex`, which also reports whether the block
+    was found at all.
+
+    ``evidence_requests`` are the judge's NEED_EVIDENCE asks, preserving the
+    resource name *and* its optional argument (``read_file path/to/file.py``).
+    The harness needs the argument: dropping it made every ``read_file``
+    request resolve to the workspace root, which is a directory and produced
+    repeated permission warnings instead of evidence.
+    """
+    done, criteria, next_action, evidence_requests, _structured = (
+        parse_verdict_structure_ex(reply)
+    )
+    return done, criteria, next_action, evidence_requests
+
+
+def parse_verdict_structure_ex(
+    reply: str,
+) -> tuple[bool | None, list[CriterionResult], str, list[str], bool]:
+    """Like :func:`parse_verdict_structure`, plus "was a DONE line present".
+
+    The fifth element is what makes the exit gate fail closed: a reply with no
+    structured block must not be read as a completion just because it happens
+    to contain a phrase like "task complete".
     """
     done: bool | None = None
     criteria: list[CriterionResult] = []
     next_action = ""
     evidence_requests: list[str] = []
+    structured = False
 
     for line in (reply or "").splitlines():
         done_match = _DONE_LINE_RE.match(line)
         if done_match:
             done = done_match.group("flag").lower() in ("yes", "true")
+            structured = True
             continue
         criteria_match = _CRITERIA_LINE_RE.match(line)
         if criteria_match:
@@ -248,7 +268,7 @@ def parse_verdict_structure(
         if action_match and not next_action:
             next_action = action_match.group("action").strip()
 
-    return done, criteria, next_action, evidence_requests
+    return done, criteria, next_action, evidence_requests, structured
 
 
 def parse_skill_requests(reply: str) -> list[str]:
@@ -279,6 +299,10 @@ class SupervisorVerdict:
     evidence_requests: list[str] = field(default_factory=list)
     skill_requests: list[str] = field(default_factory=list)
     validation_notes: list[str] = field(default_factory=list)
+    # True when the judge reply carried no structured DONE line. Such a verdict
+    # is never treated as a completion: the exit gate fails closed instead of
+    # matching a phrase like "task complete" in free text.
+    unstructured: bool = False
 
     @property
     def unmet_criteria(self) -> list[CriterionResult]:

@@ -183,5 +183,32 @@ def test_job_counts_reads_recent_records_only(tmp_path, monkeypatch):
     assert guardian.job_counts() == (1, 1, 2)
 
 
+def test_wait_for_worker_exit_clears_the_still_fresh_lock(tmp_path, monkeypatch):
+    """A stopped worker leaves a fresh lock; the launcher would skip the start.
+
+    ``Test-JobWorkerAlive`` judges liveness from ``worker.lock`` mtime (15 s),
+    not from the process. Waiting for the process to disappear and then
+    dropping the lock is what lets the launcher start a fresh daemon at once
+    instead of leaving the queue unclaimed for ~40 s.
+    """
+    monkeypatch.setattr(guardian, "JOB_STORE", tmp_path)
+    lock = tmp_path / "worker.lock"
+    lock.write_text('{"pid": 1234}', encoding="utf-8")
+
+    monkeypatch.setattr(guardian, "find_worker_pids", list)
+    assert guardian.wait_for_worker_exit(timeout=2.0) is True
+    assert not lock.exists(), "the stale lock was left behind"
+
+
+def test_wait_for_worker_exit_reports_a_worker_that_never_stops(tmp_path, monkeypatch):
+    monkeypatch.setattr(guardian, "JOB_STORE", tmp_path)
+    lock = tmp_path / "worker.lock"
+    lock.write_text('{"pid": 1234}', encoding="utf-8")
+
+    monkeypatch.setattr(guardian, "find_worker_pids", lambda: [1234])
+    assert guardian.wait_for_worker_exit(timeout=0.2) is False
+    assert lock.exists(), "the lock of a live worker must not be removed"
+
+
 if __name__ == "__main__":
     sys.exit(__import__("pytest").main([__file__, "-q"]))

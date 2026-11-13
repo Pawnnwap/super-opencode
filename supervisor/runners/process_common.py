@@ -39,9 +39,16 @@ from supervisor.runners.opencode_support.result import RunResult
 from supervisor.runners.opencode_support.stream import LineEvent
 from supervisor.runners.process_utils import remember_process_identity
 from supervisor.runners.stream_driver import StreamOutcome, consume_process_stream
+from supervisor.runtime.processes import EngineProcess
 from supervisor.utils.text_utils import coerce_str
 
 logger = logging.getLogger(__name__)
+
+
+def _runner_run_id(runner) -> str:
+    """The run that owns this engine process (test doubles may not carry one)."""
+    run_id = str(getattr(runner, "run_id", "") or "").strip()
+    return run_id
 
 
 def _cancel_event(runner):
@@ -165,8 +172,15 @@ def run_prompt_common(
         }
 
         try:
-            runner._process = subprocess.Popen(
-                cmd,
+            run_id = _runner_run_id(runner)
+            engine_proc = EngineProcess(
+                run_id=run_id,
+                argv=cmd,
+                cwd=str(runner.workspace),
+                env=child_env,
+                shell=use_shell,
+            )
+            spawned = engine_proc.open(
                 # stdin carries the prompt (engines never place it in argv):
                 # Windows command-line limits (8191 via cmd.exe shims, 32767
                 # via CreateProcess) make argv prompts fail silently with
@@ -177,13 +191,11 @@ def run_prompt_common(
                 text=True,
                 encoding="utf-8",
                 errors="replace",
-                cwd=str(runner.workspace),
-                env=child_env,
-                shell=use_shell,
             )
+            runner._process = spawned.popen
             # Record the OS identity at spawn so a later tree-kill can never
             # signal a reused PID (see process_utils.remember_process_identity).
-            remember_process_identity(runner._process)
+            remember_process_identity(spawned.popen, run_id)
             threading.Thread(
                 target=feed_stdin_prompt,
                 args=(runner._process, prompt),

@@ -930,6 +930,37 @@ defaults to 0).
 5. **Heartbeat monitoring** — Detects stalled processes and extends
    timeouts when progress is being made
 6. **Archive preservation** — Historical versions are preserved, never deleted
+7. **Process ownership** — A kill can only reach the run's own process tree
+   (see below)
+
+### Process ownership (hard rule)
+
+Every process a run starts is registered at spawn in
+`.job_store/<run_id>.procs.jsonl` as `(pid, create_time)` and contained in
+that run's Windows Job Object (POSIX: its own session/process group). All
+termination goes through `supervisor/runtime/process_control.py`, which
+re-proves ownership immediately before signalling and refuses (with a line in
+`<run_id>.kill_refusals.jsonl`) anything else. Name, keyword, wildcard and
+parent-tree kills have no code path left.
+
+- **MATLAB** must be started through the owned wrapper, because
+  `bin\matlab.exe` forks `MATLAB.exe` and only the pair can be cleaned up
+  safely:
+
+  ```powershell
+  python -m supervisor.tools.run_child matlab --script run_factor --timeout 3600
+  ```
+
+- **Python / Rust** children use the same wrapper (or the `PythonProcess` /
+  `RustProcess` classes): `run_child python --module pytest -- -q tests`,
+  `run_child cargo --sub test -- --release`. `rustc` and test binaries are
+  descendants of the job root, so they are in scope automatically.
+- **Agent shell kills** are limited to a literal PID the run's ledger proves
+  it owns (`taskkill /PID <n>`, `Stop-Process -Id <n>`, `kill <n>`); `/IM`,
+  `-Name`, `/T`, `-f` and variable PIDs are denied by the shell gate.
+- **Crash recovery never kills**: a restart reconciles the ledger and reports
+  leftovers; the guardian asks the worker to exit via `.job_store/worker.stop`
+  instead of tree-killing a process it does not own.
 
 ---
 
@@ -937,4 +968,4 @@ defaults to 0).
 
 - [ ] Get rid of `pip install -e . --force-reinstall`
 - [ ] Add multi agent cooperation/competition
-- [ ] Replace keyword-based process cleanup (`taskkill`/`pkill` by process name) with PID-tracked child process management
+- [x] Replace keyword-based process cleanup (`taskkill`/`pkill` by process name) with PID-tracked child process management

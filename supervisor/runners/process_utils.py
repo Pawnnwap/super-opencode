@@ -1,8 +1,18 @@
+"""Process identity + the runner-facing kill entry point.
+
+The actual signalling lives in :mod:`supervisor.runtime.process_control`; this
+module keeps the runner-facing names (``remember_process_identity`` /
+``kill_process_tree``) and nothing else. There is deliberately no
+keyword/name based cleanup here: killing by process name or command-line
+substring can reach processes this run never started, which the ownership
+rule forbids outright.
+"""
+
 from __future__ import annotations
 
 import logging
-import platform
-import subprocess
+
+from supervisor.runtime.process_control import terminate_tree
 
 logger = logging.getLogger(__name__)
 
@@ -10,13 +20,13 @@ logger = logging.getLogger(__name__)
 _CREATE_TIME_TOLERANCE = 0.01
 
 
-def remember_process_identity(proc) -> None:
-    """Record the spawned child's create time on *proc*.
+def remember_process_identity(proc, run_id: str | None = None) -> None:
+    """Record the spawned child's create time (and run id) on *proc*.
 
     A later tree-kill verifies this before signalling, so a PID that exited
-    and was reused by an unrelated process is never killed. Best effort: when
-    psutil is unavailable the attribute stays None and the fallback checks
-    liveness immediately before the kill.
+    and was reused by an unrelated process is never killed. The run id is
+    stashed on the process object too, so callers that only hold the ``proc``
+    (stream driver, base runner) still reach the ownership gate.
     """
     try:
         import psutil
@@ -27,46 +37,25 @@ def remember_process_identity(proc) -> None:
             proc._suprun_create_time = None
         except Exception:  # noqa: BLE001, S110 - unknown proc object
             pass
+    if run_id is not None:
+        try:
+            proc._suprun_run_id = str(run_id)
+        except Exception:  # noqa: BLE001, S110 - unknown proc object
+            pass
 
 
-def _psutil_module():
-    try:
-        import psutil
+def kill_process_tree(proc, run_id: str | None = None) -> None:
+    """Kill *proc* and its contained tree — never anything else.
 
-        return psutil
-    except Exception:  # noqa: BLE001 - optional dependency at call time
-        return None
+    Scope rules (enforced in :func:`process_control.terminate_tree`):
 
-
-def _kill_verified(psutil, pid: int, created: float | None) -> bool:
-    """Kill *pid* only when it is still the process *created* identifies."""
-    try:
-        target = psutil.Process(pid)
-        if (
-            created is not None
-            and abs(target.create_time() - created) > _CREATE_TIME_TOLERANCE
-        ):
-            logger.debug("PID %s was reused; not killing it", pid)
-            return False
-        target.kill()
-        return True
-    except Exception:  # noqa: BLE001 - already gone/denied is a no-op
-        return False
-
-
-def kill_process_tree(proc) -> None:
-    """Kill *proc* and its CURRENT descendants, without touching anything else.
-
-    Precision rules:
-    - an already-exited direct child is never signalled (its PID may belong
-      to an unrelated process now);
-    - every kill is validated against the create time recorded at spawn
-      (:func:`remember_process_identity`) or captured just before killing a
-      descendant;
-    - only the direct child's current descendant tree is in scope. A process
-      that was detached and reparented (a study script started with
-      ``Start-Process`` and still running) is no longer in that tree and is
-      left untouched.
+    - an exited direct child is never signalled (its PID may belong to an
+      unrelated process now);
+    - the target must be a ledgered member of the run, a member of the run's
+      job, or a direct child whose create time still matches — otherwise the
+      kill is refused and logged;
+    - only the run's own containment scope is in scope. A process that was
+      detached and reparented is outside it and is left untouched.
 
     The tree-kill exists because on Windows the direct child is often a
     cmd.exe shim: killing only it orphans the real CLI grandchild, which keeps
@@ -84,149 +73,20 @@ def kill_process_tree(proc) -> None:
 
     pid = getattr(proc, "pid", None)
     if pid is None:
+        # A fake/partial process object: it has no OS identity to prove, so
+        # only its own no-op kill hook may run.
         try:
             proc.kill()
         except Exception:  # noqa: BLE001, S110 - best effort on a fake proc
             pass
         return
 
-    psutil = _psutil_module()
-    if psutil is not None:
-        try:
-            root = psutil.Process(pid)
-            actual = root.create_time()
-            expected = getattr(proc, "_suprun_create_time", None)
-            if (
-                expected is not None
-                and abs(actual - expected) > _CREATE_TIME_TOLERANCE
-            ):
-                logger.warning("PID %s was reused; skipping tree kill", pid)
-                return
-            descendants = root.children(recursive=True)
-        except Exception:  # noqa: BLE001 - gone or denied; try the fallback
-            root = None
-            descendants = []
-        if root is not None:
-            targets: list[tuple[int, float]] = []
-            for child in descendants:
-                try:
-                    targets.append((child.pid, child.create_time()))
-                except Exception:  # noqa: BLE001, S112 - child vanished mid-snapshot
-                    continue
-            for child_pid, created in targets:
-                _kill_verified(psutil, child_pid, created)
-            if _kill_verified(psutil, root.pid, actual):
-                return
-            try:
-                if proc.poll() is not None:
-                    return
-            except Exception:  # noqa: BLE001, S110 - fake/partial process objects
-                pass
+    owner = run_id if run_id is not None else getattr(proc, "_suprun_run_id", None)
+    expected = getattr(proc, "_suprun_create_time", None)
+    terminate_tree(
+        owner,
+        int(pid),
+        reason="runner tree cleanup",
+        expected_create_time=expected,
+    )
 
-    # Fallback without psutil: only while the direct child is still alive.
-    if platform.system() == "Windows":
-        try:
-            subprocess.run(
-                ["taskkill", "/F", "/T", "/PID", str(pid)],
-                capture_output=True,
-                check=False,
-            )
-            return
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Error killing process tree: %s", exc)
-    try:
-        proc.kill()
-    except Exception:  # noqa: BLE001, S110 - fallback on an already-dead child
-        pass
-
-
-def kill_processes_by_keywords(keywords: list[str]) -> None:
-    try:
-        system = platform.system()
-        if system == "Windows":
-            try:
-                result = subprocess.run(
-                    ["tasklist", "/fo", "csv"],
-                    capture_output=True,
-                    text=True,
-                    timeout=2,
-                    check=False,
-                )
-                found_processes = False
-                for line in result.stdout.splitlines()[1:]:
-                    if not line.strip():
-                        continue
-                    parts = line.split('","')
-                    if len(parts) < 2:
-                        continue
-                    process_name = parts[0].strip('"').lower()
-                    if any(keyword in process_name for keyword in keywords):
-                        pid = parts[1].strip('"')
-                        try:
-                            subprocess.run(
-                                ["taskkill", "/PID", pid, "/F"],
-                                capture_output=True,
-                                text=True,
-                                timeout=2,
-                                check=False,
-                            )
-                            found_processes = True
-                        except Exception as exc:  # noqa: BLE001 - best effort
-                            logger.warning("Error killing process %s: %s", pid, exc)
-                if not found_processes:
-                    logger.debug("No matching processes found to kill")
-                return
-            except subprocess.TimeoutExpired:
-                logger.debug("Primary process scan timed out, using fallback method")
-            except Exception as exc:  # noqa: BLE001 - fallback follows
-                logger.warning("Primary process scan failed: %s", exc)
-
-            try:
-                result = subprocess.run(
-                    ["tasklist"],
-                    capture_output=True,
-                    text=True,
-                    timeout=2,
-                    check=False,
-                )
-                found_processes = False
-                for line in result.stdout.splitlines()[3:]:
-                    parts = line.split()
-                    if len(parts) < 2:
-                        continue
-                    process_name = parts[0].lower()
-                    if any(keyword in process_name for keyword in keywords):
-                        pid = parts[1]
-                        try:
-                            subprocess.run(
-                                ["taskkill", "/PID", pid, "/F"],
-                                capture_output=True,
-                                text=True,
-                                timeout=2,
-                                check=False,
-                            )
-                            found_processes = True
-                        except Exception as exc:  # noqa: BLE001 - best effort
-                            logger.warning("Error killing process %s: %s", pid, exc)
-                if not found_processes:
-                    logger.debug("No matching processes found to kill (fallback)")
-            except Exception as exc:  # noqa: BLE001 - best effort
-                logger.warning("Fallback process scan failed: %s", exc)
-            return
-
-        try:
-            subprocess.run(
-                ["pkill", "-f", "|".join(keywords)],
-                capture_output=True,
-                text=True,
-                timeout=2,
-                check=False,
-            )
-        except FileNotFoundError:
-            logger.debug("pkill not available on this system")
-        except subprocess.TimeoutExpired:
-            logger.debug("Unix pkill command timed out")
-        except Exception as exc:  # noqa: BLE001 - best effort
-            logger.warning("Unix pkill failed: %s", exc)
-    except Exception as exc:  # noqa: BLE001 - never raise from cleanup
-        logger.warning("Error while killing processes: %s", exc)

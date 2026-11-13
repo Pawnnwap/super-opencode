@@ -114,6 +114,66 @@ def violation_log_for(workspace: Path, policy: AccessPolicy | None = None) -> Pa
     return directory / f"{VIOLATION_LOG_PREFIX}{_policy_digest(policy)}.jsonl"
 
 
+def integrity_path_for(workspace: Path) -> Path:
+    """Where the installed-artifact hashes live (outside the workspace)."""
+    return access_store_dir(workspace) / "guard_integrity.json"
+
+
+def _artifact_digest(path: Path) -> str:
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return ""
+
+
+def record_guard_integrity(workspace: Path, artifacts: list[Path]) -> Path:
+    """Snapshot the sha256 of every installed gate artifact.
+
+    The gate artifacts (the opencode plugin, ``opencode.json``, the pi
+    extension, the codex hook) live in agent-writable directories. Without a
+    recorded hash, an agent that rewrites one of them disables the native gate
+    while ``preflight`` still sees "file exists and carries the marker".
+    """
+    path = integrity_path_for(workspace)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    digests = {
+        str(Path(item).resolve()): _artifact_digest(Path(item))
+        for item in artifacts
+        if Path(item).is_file()
+    }
+    path.write_text(
+        json.dumps({"artifacts": digests}, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+def verify_guard_integrity(workspace: Path) -> list[str]:
+    """Differences between the recorded artifact hashes and the files now.
+
+    Returns one human-readable line per problem; empty means intact. A missing
+    record is itself a problem: an unverifiable gate is not a verified gate.
+    """
+    path = integrity_path_for(workspace)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return [f"no integrity record at {path}"]
+    recorded = data.get("artifacts") if isinstance(data, dict) else None
+    if not isinstance(recorded, dict) or not recorded:
+        return [f"integrity record at {path} lists no artifacts"]
+    problems: list[str] = []
+    for raw_path, expected in sorted(recorded.items()):
+        artifact = Path(raw_path)
+        if not artifact.is_file():
+            problems.append(f"{artifact.name}: missing")
+            continue
+        actual = _artifact_digest(artifact)
+        if actual != expected:
+            problems.append(f"{artifact.name}: content changed since install")
+    return problems
+
+
 def install_access_guard(
     workspace: Path,
     policy: AccessPolicy,
@@ -156,6 +216,9 @@ def install_access_guard(
     result.env["PYTHONPATH"] = (
         str(package_root) + (os.pathsep + inherited if inherited else "")
     )
+    # Record what was installed so a later drill can prove the artifacts were
+    # not rewritten by the agent (they live in writable directories).
+    record_guard_integrity(workspace, list(result.artifacts))
     return result
 
 
@@ -956,11 +1019,44 @@ function scanCommand(command, base, resolved) {
 function toolPaths(args) {
   const paths = [];
   if (!args || typeof args !== "object") return paths;
-  for (const key of ["filePath", "file_path", "filepath", "path", "target", "destination"]) {
+  for (const key of ["filePath", "file_path", "filepath", "path", "target", "destination", "codebase_path"]) {
     if (typeof args[key] === "string") paths.push(args[key]);
   }
   if (Array.isArray(args.paths)) paths.push(...args.paths.filter((p) => typeof p === "string"));
   return paths;
+}
+
+/**
+ * Run control files (feasibility_facts.json, access_protection.json, ...) sit
+ * in the writable workspace root, so the path policy alone lets an agent
+ * rewrite them. The facts file's check.cmd is executed by the harness, which
+ * makes such a write a propose→execute channel. Delegate to the Python gate so
+ * both native gates share one rule instead of re-implementing it here.
+ */
+function protectedReason(candidate, base) {
+  const python = process.env.SOP_GUARD_PYTHON || DEFAULT_GUARD_PYTHON;
+  const childEnv = { ...process.env };
+  if (!childEnv.PYTHONPATH || !childEnv.PYTHONPATH.includes(DEFAULT_REPO_ROOT)) {
+    childEnv.PYTHONPATH = DEFAULT_REPO_ROOT
+      + (childEnv.PYTHONPATH ? path.delimiter + childEnv.PYTHONPATH : "");
+  }
+  try {
+    const output = execFileSync(
+      python,
+      ["-m", "supervisor.security.guard_cli", "--check-protected"],
+      {
+        input: JSON.stringify({ path: String(candidate), workspace: String(base || "") }),
+        encoding: "utf8",
+        timeout: 8000,
+        env: childEnv,
+        windowsHide: true,
+      },
+    );
+    const result = JSON.parse(output);
+    return result.protected ? (result.reason || "run control file") : null;
+  } catch (err) {
+    return "protected-file check unavailable (failing closed): " + String(err).slice(0, 160);
+  }
 }
 
 function gateToolCall(tool, args, resolved, base) {
@@ -981,6 +1077,14 @@ function gateToolCall(tool, args, resolved, base) {
       throw new Error(
         "Blocked by supervisor access policy: " + candidate + " (" + reason + ")",
       );
+    }
+    if (access === "write") {
+      const guarded = protectedReason(candidate, base);
+      if (guarded) {
+        throw new Error(
+          "Blocked by supervisor access policy: " + candidate + " (" + guarded + ")",
+        );
+      }
     }
   }
   if (tool === "patch" && typeof args.patchText === "string") {
