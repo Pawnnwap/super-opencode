@@ -305,25 +305,27 @@ def _set_reasoning(key: str, value: str) -> None:
 def _agent_variant_choices(engine: str, model: str) -> list[str]:
     """Variant names for the selected agent model, cheapest first.
 
-    opencode: exact per-model variants from its own model metadata (the same
-    names `--variant` accepts). codex: the standard reasoning-effort ladder
-    (codex exposes no per-model enumeration; providers accept their subset).
-    pi: its own `--thinking` ladder. Detection failures degrade to the plain
-    effort ladder.
+    opencode: exact per-model variants from the CLI's own resolved config (the
+    same names `--model provider/model#variant` accepts). A model that
+    declares NO variants yields an empty list — offering the generic ladder
+    there is what persisted ``xhigh`` for a model that has none, and opencode
+    2.x then exited 1 with "Variant unavailable" before every model call.
+    codex: the standard reasoning-effort ladder (codex exposes no per-model
+    enumeration; providers accept their subset). pi: its own `--thinking`
+    ladder. Detection failures degrade to the plain effort ladder.
     """
     from services.config.connectivity import (
         PI_THINKING_CHOICES,
         REASONING_EFFORT_CHOICES,
+        opencode_variant_choices,
     )
 
     if engine == "opencode":
-        from services.config.connectivity import opencode_variant_choices
-
-        found = opencode_variant_choices(
-            app_state.get("opencode_executable") or "opencode", model or "",
+        return list(
+            opencode_variant_choices(
+                app_state.get("opencode_executable") or "opencode", model or "",
+            )
         )
-        if found:
-            return list(found)
     if engine == "pi":
         return list(PI_THINKING_CHOICES)
     return list(REASONING_EFFORT_CHOICES)

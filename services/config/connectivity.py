@@ -24,6 +24,7 @@ from supervisor.runners.opencode_runner import (
     OpencodeRunner,
     find_opencode,
 )
+from supervisor.runners.opencode_support import catalog
 from supervisor.runners.pi_runner import PiRunner, find_pi
 from supervisor.utils.text_utils import normalize_model_response
 
@@ -161,13 +162,38 @@ def _variant_entries(doc: dict) -> list[tuple[str, int]]:
 def opencode_variant_choices(exe: str, model: str) -> tuple[str, ...]:
     """All thinking variants for `provider/model`, cheapest first (may be ()).
 
-    Read from opencode's local model cache (`opencode models <provider>
-    --verbose`, no network refresh) — the authoritative per-model variant
-    names, so the UI droplist always matches what `--variant` accepts. Any
-    listing/parse problem returns () and the caller falls back to Default.
+    Read from the CLI's own resolved configuration (`opencode debug config`),
+    which is the authoritative per-model variant list — the same names
+    `--model provider/model#variant` accepts. opencode 2.x removed
+    `models --verbose`, so the older listing path is only a fallback for 1.x.
+
+    ``()`` means "the model declares no variants" and the UI must offer none:
+    offering one makes opencode 2.x exit 1 with "Variant unavailable" before
+    the model is ever called (that is how a persisted ``xhigh`` killed every
+    run on 2026-11-13). Any listing/parse problem also returns ().
     """
-    model = (model or "").strip()
-    if not model or "/" not in model:
+    model = (model or "").strip().split("#", 1)[0]
+    if not model:
+        return ()
+    if "/" not in model:
+        # The UI may hold a bare name; the builder qualifies it the same way,
+        # so the droplist must look at the qualified model or it would offer
+        # nothing for a model that does declare variants.
+        model = catalog.resolve_model(exe, model)[0] or ""
+        if "/" not in model:
+            return ()
+    declared = catalog.declared_variants(exe, model)
+    if declared is not None:
+        return tuple(
+            key for key, _rank in sorted(
+                ((name, _effort_rank(name)) for name in declared),
+                key=lambda kv: (kv[1], kv[0]),
+            )
+        )
+    # opencode 2.x removed `models <provider> --verbose` (it hard-errors with
+    # "Unrecognized flag"), so the legacy listing is only worth trying on 1.x.
+    major = catalog.cli_major(exe)
+    if major is not None and major >= 2:
         return ()
     provider = model.split("/", 1)[0]
     try:

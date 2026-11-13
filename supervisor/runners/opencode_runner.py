@@ -9,11 +9,12 @@ lifecycle, session pinning, step detection, archiving) lives there. Only the
 opencode-specific seams remain:
 
   * executable location  -> opencode_support.locator.find_opencode
-  * workspace marker     -> .opencode/config.json (auto-approve permissions)
-  * session capture      -> out-of-band `opencode session list` diffing.
-                            opencode does NOT report its session id on the
-                            event stream (unlike codex/pi), so start() is
-                            overridden and the enumeration hooks are real.
+  * workspace marker     -> .opencode/opencode.json (auto-approve permissions)
+  * session capture      -> a supervisor-generated session id on opencode 2.x
+                            (`--session <id>` creates the session when it does
+                            not exist), or out-of-band `opencode session list`
+                            diffing on 1.x. opencode does NOT report its
+                            session id on the event stream (unlike codex/pi).
   * subprocess driving   -> opencode_support.process.run_prompt
 
 - stdin=DEVNULL-equivalent: the prompt is piped, guaranteeing no TTY
@@ -23,10 +24,12 @@ opencode-specific seams remain:
 from __future__ import annotations
 
 import logging
+import secrets
 from collections.abc import Generator
 
 from supervisor.runners.base_runner import BaseRunner
 from supervisor.runners.command_common import validate_message
+from supervisor.runners.opencode_support import catalog
 from supervisor.runners.opencode_support.locator import find_opencode as _find_opencode
 from supervisor.runners.opencode_support.process import run_prompt as _run_prompt_impl
 from supervisor.runners.opencode_support.result import RunResult
@@ -47,6 +50,19 @@ def find_opencode(explicit: str = "") -> str:
     return _find_opencode(explicit)
 
 
+def new_session_id() -> str:
+    """A fresh opencode session id in the CLI's own ``ses_<token>`` shape.
+
+    opencode 2.x accepts any ``ses_…`` id on ``--session`` and creates the
+    session when it does not exist (verified on v2.2.7), so the supervisor can
+    name its own session instead of diffing ``session list`` before/after a
+    turn. That diff is what failed on every 2.x run ("Session ID capture
+    failed; continuing session-less"), leaving each turn without conversation
+    memory.
+    """
+    return "ses_" + secrets.token_urlsafe(18).replace("-", "").replace("_", "")
+
+
 class OpencodeRunner(BaseRunner):
     """One send()/start() call = one `opencode run "<prompt>"` subprocess."""
 
@@ -57,20 +73,28 @@ class OpencodeRunner(BaseRunner):
         self.workspace.mkdir(parents=True, exist_ok=True)
         oc_dir = self.workspace / ".opencode"
         oc_dir.mkdir(exist_ok=True)
-        config_path = oc_dir / "config.json"
+        config_path = oc_dir / "opencode.json"
         if not config_path.exists():
             import json
 
             config_path.write_text(
-                json.dumps({"autoapprove": True}, indent=2),
+                json.dumps(
+                    {
+                        "$schema": "https://opencode.ai/config.json",
+                        "permission": {
+                            "read": "allow",
+                            "edit": "allow",
+                            "write": "allow",
+                            "bash": "allow",
+                        },
+                    },
+                    indent=2,
+                ),
                 encoding="utf-8",
             )
-            logger.info("Created .opencode/config.json in workspace")
+            logger.info("Created .opencode/opencode.json in workspace")
 
     def start(self, initial_prompt: str) -> Generator[dict]:
-        # opencode does not report its session id on the event stream, so the
-        # first turn runs under the session-capture lock and the new session
-        # is found by diffing `opencode session list` before/after.
         if self.cancel_event.is_set():
             yield {
                 "level": "warn",
@@ -91,6 +115,24 @@ class OpencodeRunner(BaseRunner):
             yield from self._run_prompt(validated)
             return
 
+        # opencode 2.x: name the session ourselves. `--session <id>` creates it
+        # when missing, so the id is known BEFORE the first turn and every
+        # later turn resumes it deterministically — no session-list diff, no
+        # "capture failed, continuing session-less" degradation.
+        major = catalog.cli_major(self._resolved_exe())
+        if major is not None and major >= 2:
+            self._session_id = new_session_id()
+            self._session_active = True
+            self.enable_continuation(True)
+            logger.info("Session ID assigned: %s", self._session_id)
+            yield {"level": "info", "msg": f"Session ID captured: {self._session_id}"}
+            yield from self._run_prompt(validated)
+            return
+
+        # opencode 1.x does not report its session id on the event stream, so
+        # the first turn runs under the session-capture lock and the new
+        # session is found by diffing `opencode session list` before/after.
+        #
         # Bootstrap + work in ONE turn: the first real prompt creates the
         # session, and the capture diff pins its ID. A standalone bootstrap
         # turn wastes a full model call and, with slow models, times out
@@ -122,6 +164,12 @@ class OpencodeRunner(BaseRunner):
                 "msg": "Session ID capture failed; continuing session-less.",
             }
             self.enable_continuation(False)
+
+    def _resolved_exe(self) -> str:
+        try:
+            return find_opencode(self.opencode_executable)
+        except FileNotFoundError:
+            return self.opencode_executable or "opencode"
 
     def _run_prompt(self, prompt: str) -> Generator[dict]:
         yield from _run_prompt_impl(self, prompt, find_opencode_fn=find_opencode)

@@ -42,6 +42,25 @@ def _pin_opencode_major_legacy(monkeypatch):
     monkeypatch.setattr(oc_command_builder, "_opencode_major", lambda exe: 1)
 
 
+@pytest.fixture(autouse=True)
+def _pin_catalog_unknown(monkeypatch):
+    """Keep the 2.x catalog probes offline: "unknown" keeps configured values.
+
+    The catalog reads the installed CLI's resolved config; answering "unknown"
+    here means these tests assert the command SHAPE, not the local install's
+    model/agent/variant list (``test_opencode_v2_args.py`` covers validation
+    against a fixture catalog).
+    """
+    from supervisor.runners.opencode_support import catalog
+
+    catalog.clear_cache()
+    monkeypatch.setattr(catalog, "declared_agents", lambda exe, cwd="": None)
+    monkeypatch.setattr(catalog, "declared_variants", lambda exe, model, cwd="": None)
+    monkeypatch.setattr(catalog, "resolve_model", lambda exe, model, cwd="": (model, ""))
+    yield
+    catalog.clear_cache()
+
+
 def test_build_cmd_never_puts_prompt_on_command_line():
     cmd = build_cmd(
         exe="opencode.cmd",

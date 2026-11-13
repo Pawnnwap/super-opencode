@@ -7,6 +7,7 @@ from functools import cache
 from pathlib import Path
 
 from supervisor.runners.command_common import resolve_model_arg
+from supervisor.runners.opencode_support import catalog
 from supervisor.utils.text_utils import coerce_str
 
 logger = logging.getLogger(__name__)
@@ -27,10 +28,14 @@ def _opencode_major(exe: str) -> int | None:
     ``--pure`` / ``--variant`` from ``run`` (unknown run flags hard-error
     with a help dump, exit 1). A probe that cannot run or parse returns
     None and the caller keeps the legacy 1.x flags.
+
+    The executable is resolved through the locator first: ``CreateProcess``
+    does not apply PATHEXT, so a bare ``opencode`` would spawn the
+    extension-less shell script (or nothing) instead of ``opencode.cmd``.
     """
     try:
         proc = subprocess.run(
-            [exe, "--version"],
+            [catalog.resolve_exe(exe), "--version"],
             capture_output=True,
             text=True,
             timeout=_VERSION_TIMEOUT,
@@ -44,6 +49,65 @@ def _opencode_major(exe: str) -> int | None:
         if match:
             return int(match.group(1))
     return None
+
+
+def _validated_agent(exe: str, agent: str, cwd: str) -> str:
+    """Agent id this build ships; falls back to ``build`` when unknown.
+
+    opencode 2.x exits 1 with ``Agent not found: "<name>"`` before any model
+    call, so a stale persisted agent (1.x's ``coder``) would kill every turn.
+    An unanswerable probe keeps the configured value untouched.
+    """
+    declared = catalog.declared_agents(exe, cwd)
+    if declared is None:
+        return agent
+    if agent in declared:
+        return agent
+    fallback = "build" if "build" in declared else min(declared)
+    logger.warning(
+        "opencode agent %r is not shipped by this build (%s); using %r",
+        agent,
+        ", ".join(sorted(declared)),
+        fallback,
+    )
+    return fallback
+
+
+def _validated_model(exe: str, model: str, cwd: str) -> str:
+    """``provider/model`` the CLI accepts, or "" to let its default apply.
+
+    opencode 2.x rejects a bare model name outright ("Invalid model
+    reference"), so a persisted ``swift-1.5`` must be qualified or dropped.
+    """
+    resolved, note = catalog.resolve_model(exe, model, cwd)
+    if note:
+        logger.warning("opencode model: %s", note)
+    return resolved or ""
+
+
+def _validated_variant(exe: str, model: str, variant: str, cwd: str) -> str:
+    """Variant the model declares, or "" when it declares none.
+
+    opencode 2.x exits 1 with ``Variant unavailable for <model>: <variant>``
+    before the model is called. A model that is configured but declares no
+    variants therefore must not receive one; an unanswerable probe keeps the
+    configured value (the runtime retry in ``opencode_support.process`` is the
+    safety net).
+    """
+    if not variant:
+        return ""
+    declared = catalog.declared_variants(exe, model, cwd)
+    if declared is None:
+        return variant
+    if variant in declared:
+        return variant
+    logger.warning(
+        "opencode variant %r is not declared by %s (declared: %s); dropping it",
+        variant,
+        model or "(CLI default model)",
+        ", ".join(declared) or "none",
+    )
+    return ""
 
 
 def build_cmd(
@@ -79,6 +143,15 @@ def build_cmd(
     flags are dropped and the variant folds into
     ``--model provider/model#variant`` (which 2.x parses), while 1.x — or a
     failed probe (None) — keeps the legacy flags unchanged.
+
+    On 2.x every value is additionally checked against the CLI's own resolved
+    configuration (``opencode debug config`` / ``debug agents``): an agent the
+    build does not ship, a bare model name, or a variant the model does not
+    declare each make ``run`` exit 1 before the model is called, which the
+    supervisor can only read as an empty turn. Values that cannot be honoured
+    are replaced (agent -> ``build``) or dropped (model -> CLI default,
+    variant -> model default) with a warning, so a stale persisted setting can
+    no longer kill every turn of a run.
     """
     exe = coerce_str(exe, "exe (_build_cmd)")
     prompt = coerce_str(prompt, "prompt (_build_cmd)")
@@ -104,15 +177,21 @@ def build_cmd(
 
     # Shape the command for the installed CLI: opencode 2.x removed the run
     # flags --dir/--pure/--variant, so the flags below branch on the major.
+    # `>= 2` (not `== 2`) so a future 3.x keeps the 2.x shape instead of
+    # silently reverting to flags that no longer exist.
     major = _opencode_major(exe)
-    is_v2 = major == 2
+    is_v2 = major is not None and major >= 2
     logger.debug("opencode major probe: %r (exe=%r)", major, exe)
 
+    cwd = dir_ or ""
     cmd: list[str] = [exe, "run"]
 
     # opencode 2.x removed the built-in "coder" agent; default to "build" when
     # no agent is explicitly specified to avoid "agent coder not found" errors.
-    cmd += ["--agent", agent if agent else "build"]
+    chosen_agent = agent if agent else "build"
+    if is_v2:
+        chosen_agent = _validated_agent(exe, chosen_agent, cwd)
+    cmd += ["--agent", chosen_agent]
 
     # --pure skips user plugins/skills so supervised runs are not hijacked by
     # global agent customization. Tested working alongside --format json on
@@ -157,12 +236,18 @@ def build_cmd(
 
     if resolved_model:
         model_ref = resolved_model
-        if is_v2 and variant and "#" not in model_ref:
-            # opencode 2.x removed --variant; the model string carries the
-            # variant instead (verified: `--model provider/model#variant`
-            # parses on v2.2.7). A ref that already names a variant is kept.
-            model_ref = f"{resolved_model}#{variant}"
-        cmd += ["--model", model_ref]
+        if is_v2:
+            # A persisted ref may already carry `#variant`; validate the base
+            # model and whichever variant the ref names, then rebuild the ref.
+            base, _, embedded = model_ref.partition("#")
+            base = _validated_model(exe, base, cwd)
+            if base:
+                variant = _validated_variant(exe, base, embedded or variant, cwd)
+                model_ref = f"{base}#{variant}" if variant else base
+            else:
+                model_ref = ""
+        if model_ref:
+            cmd += ["--model", model_ref]
 
     # Model variant (provider-specific reasoning effort, e.g. none/minimal/
     # low). Only set deliberately (connectivity probes); empty = model
@@ -170,6 +255,17 @@ def build_cmd(
     # model string above.
     if variant and not is_v2:
         cmd += ["--variant", variant]
+
+    # Auto-approve every permission the configuration does not explicitly
+    # deny. This is the 2.x replacement for the `autoapprove: true` config key
+    # the supervisor writes for 1.x — v2 silently drops that key (verified:
+    # `debug config` no longer shows it), and a non-interactive run then
+    # auto-REJECTS every `ask` rule ("permission requested: read (.env);
+    # auto-rejecting"), so a user's global `ask` entry disables a tool for the
+    # whole run. Explicit `deny` rules still deny, so the supervisor's access
+    # guard (external_directory deny + plugin) is unaffected.
+    if is_v2:
+        cmd.append("--auto")
 
     # Stream raw JSON events (one per line) instead of the formatted TUI
     # output. The process layer parses these to keep the model's prose, drop
@@ -181,4 +277,3 @@ def build_cmd(
     # the npm .cmd shim's cmd.exe, 32767 via CreateProcess). The process
     # layer feeds the prompt through the stdin pipe.
     return cmd
-

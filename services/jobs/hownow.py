@@ -73,6 +73,11 @@ def _resolve_transcript(engine: str, session_id: str, workspace: Path) -> str:
     Precise when the session id is known (the file is named after it);
     otherwise the engine's session store directory so the sweep can locate
     the live file by time itself.
+
+    opencode 2.x moved sessions into a sqlite database (``opencode.db``), so
+    the per-session JSON files the 1.x layout had are gone. The sweep is told
+    the database plus the exact read command instead of a glob that matches
+    nothing.
     """
     if engine == "codex":
         home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
@@ -82,7 +87,15 @@ def _resolve_transcript(engine: str, session_id: str, workspace: Path) -> str:
         store = Path(workspace) / ".pi-sessions"
         pattern = f"*{session_id}*" if session_id else ""
     else:  # opencode
-        store = Path.home() / ".local" / "share" / "opencode" / "storage"
+        data_dir = Path.home() / ".local" / "share" / "opencode"
+        if (data_dir / "opencode.db").is_file():
+            if session_id:
+                return (
+                    f"{data_dir / 'opencode.db'} (sqlite; read this session with "
+                    f"`opencode session export {session_id}`)"
+                )
+            return f"{data_dir / 'opencode.db'} (sqlite; sessions table)"
+        store = data_dir / "storage"
         pattern = f"*{session_id}*" if session_id else ""
     if pattern:
         try:
