@@ -240,6 +240,9 @@ experience.md
 # ZCode agent session directory
 .zcode/
 
+# Trae IDE planning/plan docs: local-path-heavy scratch, not repo content
+.trae/
+
 # Capability-proxy runtime artifacts + one-off local probes/launchers
 /.codex_home_soprun/*
 !/.codex_home_soprun/config.toml
