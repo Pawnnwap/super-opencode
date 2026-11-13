@@ -15,15 +15,19 @@ directories a protocol refers to.
 from __future__ import annotations
 
 import json
+import logging
 import re
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from supervisor.security.access_policy import (
     is_within,
     validate_whitelist_entry,
 )
+
+logger = logging.getLogger(__name__)
 
 _ABS_PATH_RE = re.compile(
     r"""(?:[A-Za-z]:[\\/][^\s"'`|;&<>()\[\]{},]+|\\\\[^\s"'`|;&<>()\[\]{},]+|/[A-Za-z0-9_.\-]+/[^\s"'`|;&<>()\[\]{},]+)""",
@@ -81,9 +85,25 @@ def collect_context(
     workspace: Path,
     protocol_text: str = "",
     existing: Iterable[str] = (),
+    on_progress: Callable[[str], None] | None = None,
 ) -> str:
-    """Build a compact, path-only view of the run for the advisor prompt."""
+    """Build a compact, path-only view of the run for the advisor prompt.
+
+    ``on_progress(note)`` reports the pre-LLM phases. They scan the workspace
+    (up to 40 files, 96 kB each) and used to be invisible: on a workspace whose
+    tree sits on a slow disk the advisor looked identical whether it was
+    scanning, waiting on the model, or hung.
+    """
     workspace = Path(workspace)
+
+    def _note(text: str) -> None:
+        if on_progress is not None:
+            try:
+                on_progress(text)
+            except Exception:
+                logger.debug("context progress callback failed", exc_info=True)
+
+    _note("Collecting context (protocol excerpt, top-level entries)…")
     lines: list[str] = [f"Workspace (cwd, full access): {workspace}"]
 
     existing_list = [str(item) for item in existing if str(item).strip()]
@@ -103,6 +123,7 @@ def collect_context(
     if top:
         lines.append("\nWorkspace top level: " + ", ".join(top))
 
+    _note(f"Scanning workspace files for referenced paths (up to {_MAX_SCANNED_FILES})…")
     referenced = _referenced_paths(workspace)
     if referenced:
         lines.append("\nAbsolute paths already referenced by workspace files:")
@@ -124,11 +145,12 @@ def suggest_whitelist(
     *,
     existing: Iterable[str] = (),
     max_suggestions: int = 6,
+    on_progress: Callable[[str], None] | None = None,
 ) -> AdvisorResult:
     """Ask the model for reference directories and validate every answer."""
     workspace = Path(workspace)
     existing_resolved = [Path(item) for item in existing if str(item).strip()]
-    context = collect_context(workspace, protocol_text, existing)
+    context = collect_context(workspace, protocol_text, existing, on_progress)
 
     messages = [
         {
@@ -271,19 +293,34 @@ def suggest_with_supervisor_llm(
     model: str,
     existing: Iterable[str] = (),
     max_suggestions: int = 6,
+    on_progress: Callable[[int, int], None] | None = None,
+    on_phase: Callable[[str], None] | None = None,
+    stop_event: Any = None,
 ) -> AdvisorResult:
-    """Convenience wrapper over the supervisor's OpenAI-compatible client."""
+    """Convenience wrapper over the supervisor's OpenAI-compatible client.
+
+    ``on_progress(answer_chars, reasoning_chars)`` streams the model's live
+    counters; ``on_phase(note)`` covers the pre-LLM workspace scan. Both are
+    optional and run on the calling (worker) thread: the UI marshals them
+    onto its own loop.
+    """
     from supervisor.utils.llm_stream import make_stream_client, stream_chat_text
 
     client = make_stream_client(api_key=api_key, base_url=base_url or None)
 
     def _call(messages: list[dict[str, str]]) -> str:
+        def _stream_progress(content: int, reasoning: int, _chunks: int) -> None:
+            if on_progress is not None:
+                on_progress(content, reasoning)
+
         return stream_chat_text(
             client,
             model,
             messages,
             temperature=0.2,
             field_name="whitelist suggestions",
+            on_progress=_stream_progress if on_progress is not None else None,
+            stop_event=stop_event,
         )
 
     return suggest_whitelist(
@@ -292,6 +329,7 @@ def suggest_with_supervisor_llm(
         _call,
         existing=existing,
         max_suggestions=max_suggestions,
+        on_progress=on_phase,
     )
 
 

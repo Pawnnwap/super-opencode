@@ -563,14 +563,48 @@ def _protection_section() -> None:
             app_state.apply_api_config()
             notes: list[str] = []
             paths: list[str] = []
+            status.set_text("Starting…")
+            status.update()
             async with busy_buttons(auto_button):
-                status.set_text("1/2 Suggesting read-only directories (LLM)…")
+                step = {"n": 1}
+                started = time.monotonic()
+
+                def _elapsed() -> str:
+                    return f"{time.monotonic() - started:.0f}s"
+
+                def _live(phase: str, content: int, reasoning: int) -> None:
+                    # Called from the io_bound worker thread; NiceGUI queues
+                    # the update onto this client's loop.
+                    detail = (
+                        f"{phase} — {reasoning:,} reasoning chars · "
+                        f"{content:,} answer chars · {_elapsed()}"
+                    )
+                    status.set_text(detail)
+                    status.update()
+
+                def _on_phase(note: str) -> None:
+                    _live(f"{step['n']}/2 {note}", 0, 0)
+
+                def _on_stream(content: int, reasoning: int) -> None:
+                    phase = "waiting for the model" if not (content or reasoning) else (
+                        "reasoning" if not content else "writing answer"
+                    )
+                    _live(f"{step['n']}/2 {phase}", content, reasoning)
+
+                step["n"] = 1
+                _live(
+                    "1/2 suggesting read-only directories (LLM) — waiting for the "
+                    "model",
+                    0, 0,
+                )
                 try:
                     result = await nicegui_run.io_bound(
                         _suggest_whitelist_paths,
                         workspace,
                         _protocol_text(workspace),
                         _list_str("access_whitelist"),
+                        _on_phase,
+                        _on_stream,
                     )
                     paths = [str(item.path) for item in result.accepted]
                     if result.rejected:
@@ -578,15 +612,30 @@ def _protection_section() -> None:
                             f"{len(result.rejected)} suggestion(s) rejected by validation",
                         )
                 except Exception as exc:  # noqa: BLE001 — surfaced in the status
-                    notes.append(f"whitelist suggestion failed: {str(exc)[:120]}")
-                status.set_text("2/2 Generating ignore patterns (LLM)…")
+                    notes.append(
+                        f"whitelist suggestion failed: "
+                        f"{type(exc).__name__}: {str(exc)[:200]}",
+                    )
+                    _live(f"1/2 FAILED after {_elapsed()}", 0, 0)
+                step["n"] = 2
+                _live(
+                    "2/2 generating ignore patterns (LLM) — waiting for the model",
+                    0, 0,
+                )
                 patterns = ""
                 try:
                     patterns = await nicegui_run.io_bound(
-                        _suggest_ignore_patterns, workspace,
+                        _suggest_ignore_patterns,
+                        workspace,
+                        lambda c, r, _k: _on_stream(c, r),
+                        None,
                     )
                 except Exception as exc:  # noqa: BLE001 — surfaced in the status
-                    notes.append(f"ignore suggestion failed: {str(exc)[:120]}")
+                    notes.append(
+                        f"ignore suggestion failed: "
+                        f"{type(exc).__name__}: {str(exc)[:200]}",
+                    )
+                    _live(f"2/2 FAILED after {_elapsed()}", 0, 0)
                 # apply_generation + _profile_sync WRITE profile/ignore files;
                 # an OSError there escaped into NiceGUI's async task, which only
                 # logs to stderr, so the button looked dead while nothing was
@@ -596,7 +645,8 @@ def _protection_section() -> None:
                     _profile_sync(workspace)
                 except Exception as exc:  # noqa: BLE001 — must never be silent
                     status.set_text(
-                        f"Auto-generate failed: {type(exc).__name__}: {str(exc)[:200]}",
+                        f"Auto-generate failed while saving: "
+                        f"{type(exc).__name__}: {str(exc)[:200]}",
                     )
                     return
             _access_section.refresh()
@@ -878,7 +928,13 @@ def _protocol_ready(workspace: Path) -> tuple[bool, str]:
     return True, ""
 
 
-def _suggest_whitelist_paths(workspace: Path, protocol_text: str, existing: list[str]):
+def _suggest_whitelist_paths(
+    workspace: Path,
+    protocol_text: str,
+    existing: list[str],
+    on_phase=None,
+    on_stream=None,
+):
     from supervisor.security.whitelist_advisor import suggest_with_supervisor_llm
 
     return suggest_with_supervisor_llm(
@@ -888,6 +944,8 @@ def _suggest_whitelist_paths(workspace: Path, protocol_text: str, existing: list
         base_url=str(app_state.get("base_url") or ""),
         model=str(app_state.get("supervisor_model") or "swift-1.5"),
         existing=existing,
+        on_progress=on_stream,
+        on_phase=on_phase,
     )
 
 
@@ -921,9 +979,15 @@ def _ignore_section() -> None:
         area.on_value_change(_autosave)
 
 
-def _suggest_ignore_patterns(workspace: Path) -> str:
+def _suggest_ignore_patterns(
+    workspace: Path,
+    on_progress=None,
+    stop_event=None,
+) -> str:
     from supervisor.utils.llm_stream import make_stream_client, stream_chat_text
 
+    if on_progress is not None:
+        on_progress(0, 0, 0)
     entries = _list_workspace_files(workspace, _IGNORE_SUGGEST_FILES)
     client = make_stream_client(
         api_key=app_state.get("openai_key"),
@@ -947,6 +1011,8 @@ def _suggest_ignore_patterns(workspace: Path) -> str:
         ],
         temperature=0.3,
         field_name="generated ignore patterns response",
+        on_progress=on_progress,
+        stop_event=stop_event,
     )
 
 

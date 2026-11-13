@@ -25,6 +25,7 @@ resort.
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from collections.abc import Callable
 from typing import Any
@@ -57,6 +58,12 @@ STREAM_DEADLINE_SECONDS = 30 * 60
 # reasoning — before it is declared stalled. Real thinking streams reasoning
 # continuously, so this is a stall detector, not a patience limit.
 STREAM_IDLE_SECONDS = 120
+
+# Silence longer than this is worth re-reporting to the UI even without new
+# activity, so a live stall shows a ticking "still waiting" line rather than a
+# frozen counter. Well under STREAM_IDLE_SECONDS: the point is visible
+# feedback long before the stall verdict.
+_STALL_QUIET = 10.0
 
 ProgressFn = Callable[[int, int, int], None]
 
@@ -162,17 +169,95 @@ def stream_chat_text(
     reasoning_chars = 0
     chunks = 0
     stream = client.chat.completions.create(**kwargs)
+
+    # The deadline and idle guards used to live ONLY inside the loop body, so
+    # they required a chunk to arrive before they could fire. An endpoint that
+    # holds the connection open and sends SSE keep-alive comments (bytes DO
+    # arrive, so httpx's read timeout never trips) while never emitting a
+    # choice hung the call forever, with no log line at all - the "generation
+    # silently sticks" symptom. The watchdog below owns those two limits on
+    # its own clock and closes the stream to break the blocked iterator.
+    activity = {"last": last_activity, "content": 0, "reasoning": 0, "chunks": 0}
+    watchdog_stop = threading.Event()
+    timed_out: list[str] = []
+    close_lock = threading.Lock()
+
+    def _close_stream() -> None:
+        # Idempotent: the loop's finally block also closes it.
+        with close_lock:
+            close = getattr(stream, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    logger.debug("closing the stream failed", exc_info=True)
+
+    def _report(content: int, reasoning: int, chunk_count: int) -> None:
+        # ONE throttle shared by the loop: the watchdog has its own (unthrottled
+        # but slower) cadence for the stall case.
+        nonlocal last_progress
+        now = time.monotonic()
+        if on_progress is None or now - last_progress <= 1.0:
+            return
+        last_progress = now
+        try:
+            on_progress(content, reasoning, chunk_count)
+        except Exception:
+            logger.debug("progress callback failed", exc_info=True)
+
+    def _watch() -> None:
+        while not watchdog_stop.wait(0.5):
+            now = time.monotonic()
+            if now - started > deadline_seconds:
+                timed_out.append(
+                    f"Model response exceeded {deadline_seconds / 60:.0f} min "
+                    f"({activity['reasoning']} reasoning chars, "
+                    f"{activity['content']} answer chars, {activity['chunks']} "
+                    "chunks); the endpoint appears stuck. Retry, or shorten the "
+                    "input sections.",
+                )
+                _close_stream()
+                return
+            if now - activity["last"] > idle_seconds:
+                timed_out.append(
+                    f"No activity from the endpoint for {idle_seconds:.0f}s "
+                    f"(neither reasoning nor answer; {activity['chunks']} empty "
+                    "chunks received); it appears stalled. Retry, or shorten the "
+                    "input sections.",
+                )
+                _close_stream()
+                return
+            # ONLY while actually stalled: a stream that is making progress is
+            # already reported from the loop, and reporting from both places
+            # tripled the UI update rate. A live stall is exactly when the
+            # operator needs a ticking "still waiting" line instead of a dead
+            # page, so this path bypasses the loop's 1 s throttle.
+            if on_progress is not None and now - activity["last"] > _STALL_QUIET:
+                try:
+                    on_progress(
+                        activity["content"], activity["reasoning"],
+                        activity["chunks"],
+                    )
+                except Exception:
+                    logger.debug("stall progress callback failed", exc_info=True)
+
+    watcher = threading.Thread(
+        target=_watch, name="llm-stream-watchdog", daemon=True,
+    )
+    watcher.start()
     parts: list[str] = []
     try:
         for chunk in stream:
             now = time.monotonic()
             if stop_event is not None and stop_event.is_set():
                 raise GenerationCancelled("Generation cancelled by the user.")
+            # Kept in the loop as well: a deadline that has ALREADY passed must
+            # fail on the first chunk, not 0.5 s later when the watchdog ticks.
             if now - started > deadline_seconds:
                 raise TimeoutError(
                     f"Model response exceeded {deadline_seconds / 60:.0f} min "
                     f"({reasoning_chars} reasoning chars, {content_chars} "
-                    "answer chars); the endpoint may be stuck. Retry, or "
+                    "answer chars); the endpoint appears stuck. Retry, or "
                     "shorten the input sections.",
                 )
             chunks += 1
@@ -187,19 +272,24 @@ def stream_chat_text(
                 # total silence counts as a stall.
                 reasoning_chars += len(reasoning)
                 last_activity = now
-            elif now - last_activity > idle_seconds:
-                raise TimeoutError(
-                    f"No activity from the endpoint for {idle_seconds:.0f}s "
-                    "(neither reasoning nor answer); it appears stalled. "
-                    "Retry, or shorten the input sections.",
-                )
-            if on_progress is not None and now - last_progress > 1.0:
-                last_progress = now
-                on_progress(content_chars, reasoning_chars, chunks)
+                activity["last"] = now
+            activity["content"] = content_chars
+            activity["reasoning"] = reasoning_chars
+            activity["chunks"] = chunks
+            _report(content_chars, reasoning_chars, chunks)
+    except Exception as exc:
+        # A stream closed by the watchdog surfaces here as whatever the SDK
+        # raises on a closed response; the recorded reason is the real story.
+        if timed_out:
+            raise TimeoutError(timed_out[0]) from exc
+        raise
     finally:
-        close = getattr(stream, "close", None)
-        if callable(close):
-            close()
+        watchdog_stop.set()
+        _close_stream()
+    if timed_out:
+        # The stream ended cleanly right as the watchdog fired: report the
+        # stall rather than returning a silently truncated answer.
+        raise TimeoutError(timed_out[0])
     logger.debug(
         "stream_chat_text done: %d answer chars / %d reasoning chars in %.1fs (model=%s)",
         content_chars, reasoning_chars, time.monotonic() - started, model,
