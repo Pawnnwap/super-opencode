@@ -159,15 +159,6 @@ class HarvesterPanel:
                 "run.json and harvest.md; the root gets INDEX.md and a batch "
                 "HARVEST.md.",
             )
-            # The prompt is usually the default: collapsed, with the header
-            # saying whether a custom one is in effect. Stateful: this page
-            # can re-render, and the panel must not fold under the operator.
-            from services.webui.ui_state import state_expansion
-
-            prompt_exp = state_expansion(
-                "harvest.prompt", "Harvest prompt",
-            ).classes("w-full").props("dense")
-
             def _prompt_caption() -> str:
                 current = str(self.prompt_input.value or "").strip()
                 custom = current and current != DEFAULT_HARVEST_PROMPT
@@ -176,12 +167,14 @@ class HarvesterPanel:
                     else "Harvest prompt · default"
                 )
 
-            with prompt_exp:
-                self.prompt_input = ui.textarea(
-                    "Applied to each run", value=_default_prompt(),
-                    on_change=lambda _e: prompt_exp.set_text(_prompt_caption()),
-                ).classes("w-full mono").props("autogrow").style("min-height: 5rem")
-            prompt_exp.set_text(_prompt_caption())
+            self.prompt_caption = ui.label("").classes(
+                "text-sm font-bold text-[#9ecbff] mt-2",
+            )
+            self.prompt_input = ui.textarea(
+                "Applied to each run", value=_default_prompt(),
+                on_change=lambda _e: self.prompt_caption.set_text(_prompt_caption()),
+            ).classes("w-full mono").props("autogrow").style("min-height: 5rem")
+            self.prompt_caption.set_text(_prompt_caption())
             with ui.row().classes("items-center gap-3"):
                 self.launch_button = ui.button(
                     "Harvest selected", on_click=self._launch,
