@@ -218,6 +218,7 @@ def _config_section() -> None:
         with ui.row().classes("w-full gap-4 flex-wrap"):
             _bind_input("openai_key", "API key", password=True)
             _bind_input("base_url", "API base URL (optional)")
+            _bind_input("supervisor_model", "Supervisor (judge) model")
         _bind_input(
             "workspace",
             "Workspace path",
@@ -232,7 +233,6 @@ def _config_section() -> None:
                 on_change=lambda e: _set_engine(e.value),
             ).classes("w-48")
             _agent_model_field()
-            _bind_input("supervisor_model", "Supervisor (judge) model")
 
 
 @ui.refreshable
@@ -423,20 +423,19 @@ def _advanced_section() -> None:
                 password=True,
             )
             _bind_number("jev_decision_timeout", "Jev timeout (s)", min=1, max=300)
+        with ui.row().classes("w-full gap-4 flex-wrap items-end"):
             _bind_float(
                 "jev_decision_threshold",
                 "Jev confidence threshold",
                 min=0.50, max=0.99,
             )
-            _bind_switch(
-                "enable_blocked_rescue",
-                "Unblock rescue plan",
+            _bind_float(
+                "jev_choice_threshold",
+                "Jev choice threshold",
+                min=0.50, max=0.99,
             ).tooltip(
-                "On the first BLOCKED verdict, force the judge to research the "
-                "blocker on the web and write a recovery plan; jev rules "
-                "whether it is feasible. A feasible plan cancels BLOCKED and "
-                "is sent to the executor. Any failure closes as before. "
-                "Only active when the jev arbiter is enabled."
+                "Minimum probability for a multi-way jev ruling (DONE, "
+                "stagnation, protocol review, unblock plan) to take effect.",
             )
 
         ui.label("Run behavior").classes(group)

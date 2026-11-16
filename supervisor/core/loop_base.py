@@ -207,6 +207,9 @@ class BaseLoop:
                     threshold=float(
                         getattr(config, "jev_decision_threshold", 0.80) or 0.80,
                     ),
+                    choice_threshold=float(
+                        getattr(config, "jev_choice_threshold", 0.50) or 0.50,
+                    ),
                     api_key=str(
                         getattr(config, "jev_decision_api_key", "") or "",
                     ),
@@ -249,11 +252,6 @@ class BaseLoop:
         # Why the run is closing as BLOCKED; also set by the agent-asserted
         # terminal-closure trigger.
         self._blocked_reason: str = ""
-        # First-blocked rescue attempts consumed (config.max_blocked_rescues).
-        # When jev is enabled the first blocked verdict is held while the judge
-        # researches a recovery plan; jev rules on it. Any later blocked verdict
-        # (or any failure in the rescue path) closes the run.
-        self._blocked_rescues_used: int = 0
         # Why the run is aborting, when it is NOT the normal max-retries path
         # (e.g. loop-persists abort). Drives the final failure report wording;
         # empty = retries exhausted.
@@ -934,7 +932,6 @@ class BaseLoop:
         """
         if self._jev is None:
             return False, ""
-        from supervisor.core.decision_service import CHOICE_MIN_CONFIDENCE
 
         protocol = getattr(self, "protocol", None)
         try:
@@ -952,10 +949,7 @@ class BaseLoop:
         if decision is None:
             return False, ""
         note = f"Jev protocol review: {decision.summary}"
-        suppress = (
-            decision.action == "no_violation"
-            and decision.probability >= CHOICE_MIN_CONFIDENCE
-        )
+        suppress = decision.action == "no_violation" and decision.confident
         return suppress, note
 
     def _record_jev_note(self, note: str) -> None:
@@ -1183,8 +1177,8 @@ class BaseLoop:
 
         Clearing the streaks buys the executor a full stagnation window before
         the next blocked verdict, instead of re-closing on the counters that
-        had already matured. The rescue itself is consumed, so a later blocked
-        verdict still closes the run.
+        had already matured. A later blocked verdict starts a new rescue, so
+        only jev's rejection ends the run.
         """
         self._progress.reset()
         self._unmet_streak, self._unmet_streak_sig = 0, ""
@@ -1201,24 +1195,19 @@ class BaseLoop:
         reason: str,
         output: str,
     ) -> Generator[Event, None, bool]:
-        """One web-researched recovery plan before the first BLOCKED exit.
+        """A web-researched recovery plan before each BLOCKED exit.
 
         Returns True only when jev confidently rules the plan feasible and the
         plan has been sent to the executor. Every other outcome - feature off,
-        no arbiter, budget spent, judge outage, no usable plan, jev rejection -
-        returns False so the caller closes the run exactly as before.
+        no arbiter, judge outage, no usable plan, jev rejection - returns False
+        so the caller closes the run exactly as before.
         """
         if not getattr(self.config, "enable_blocked_rescue", True):
             return False
         if self._jev is None or self.supervisor is None:
             return False
-        limit = max(0, int(getattr(self.config, "max_blocked_rescues", 1) or 0))
-        if self._blocked_rescues_used >= limit:
-            return False
-        self._blocked_rescues_used += 1
 
         from supervisor.core import unblock_rescue
-        from supervisor.core.decision_service import CHOICE_MIN_CONFIDENCE
 
         protocol = getattr(self, "protocol", None)
         target = str(getattr(protocol, "target_section", "") or "")
@@ -1237,7 +1226,7 @@ class BaseLoop:
         yield _ev(
             "warn",
             "Blocked exit held: forcing a supervisor recovery plan before "
-            f"closing ({self._blocked_rescues_used}/{limit}).",
+            "closing.",
         )
 
         query_prompt = unblock_rescue.build_query_prompt(
@@ -1345,10 +1334,7 @@ class BaseLoop:
         note = f"Jev unblock review: {decision.summary}"
         self._record_jev_note(note)
         yield from self._drain_jev_notes()
-        feasible = (
-            decision.action == "feasible"
-            and decision.probability >= CHOICE_MIN_CONFIDENCE
-        )
+        feasible = decision.action == "feasible" and decision.confident
         if not feasible:
             yield _ev(
                 "warn",

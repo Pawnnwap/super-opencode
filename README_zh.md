@@ -306,8 +306,8 @@ pip install -r requirements.txt
 向导功能包括：
 - **配置面板** — 执行引擎（OpenCode、Codex 或 pi）、API 密钥与基础 URL、工作区路径、
   监督与代理模型（含备用模型）、最大重试次数、上下文阈值、回合超时、最大 token 数、
-  用于 CLI 升级的 npm registry，以及奥卡姆剃刀、监督器技能、jev 评审、
-  阻塞救援的开关。
+  用于 CLI 升级的 npm registry，以及奥卡姆剃刀、监督器技能与 jev 评审的开关。
+  阻塞救援不设开关：jev 启用时始终生效。
   **清理产物**按钮可移除工作区中的运行残留。
 - **受保护文件** — 标记代理无法修改或删除的文件
 - **.opencodeignore** — 配置从上下文检索中排除的文件忽略模式
@@ -365,7 +365,7 @@ supervisor/
     goal_guard.py                   证据门控完成（提议 → 校验 → 执行 → 审计）
     goal_progress.py                进度信号（通过门数、连续计数），驱动停滞提示
     decision_service.py             可选的外部评审（jev）：DONE / 对齐 / 救援决策
-    unblock_rescue.py               运行被阻塞时的一次性救援（可选）
+    unblock_rescue.py               运行被阻塞时的救援流程（可选）
     skill_bank.py                   监督器技能库（可选）
     occam_razor.py                  成功后在归档副本上运行的冗余精简阶段
     task_state.py                   只追加的 TASK_STATE.md 日志，用于重启连续性

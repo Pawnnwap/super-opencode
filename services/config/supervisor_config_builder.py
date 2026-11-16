@@ -85,11 +85,11 @@ def build_supervisor_config(
         "jev_decision_threshold": float(
             session_state.get("jev_decision_threshold", 0.80) or 0.80,
         ),
-        "enable_blocked_rescue": bool(
-            session_state.get("enable_blocked_rescue", True),
+        "jev_choice_threshold": float(
+            session_state.get("jev_choice_threshold", 0.50) or 0.50,
         ),
-        # max_blocked_rescues is backend-only: the UI never persists or binds
-        # it, so the dataclass default (one rescue per run) stays authoritative.
+        # Blocked rescue is on by design when jev is enabled: the UI neither
+        # binds nor persists it, so the dataclass default stays authoritative.
     }
     defaults.update(overrides)
     return SupervisorConfig(**defaults)

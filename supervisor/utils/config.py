@@ -108,14 +108,13 @@ class SupervisorConfig:
     # many consecutive judged turns with no passing-gate improvement is enough
     # on its own (deterministic path, no judge involvement).
     blocked_after_unreachable_turns: int = 4
-    # First-blocked rescue: when jev is enabled, the first blocked verdict is
-    # not final. The judge must research the blocker on the web and write a
-    # concrete recovery plan; jev rules whether it is feasible. A feasible plan
-    # cancels the blocked exit and becomes the executor's next prompt. Any
-    # failure (judge call, web search, jev outage) falls through to BLOCKED.
-    # max_blocked_rescues=0 disables the second chance.
+    # Blocked rescue: when jev is enabled, every blocked verdict is held while
+    # the judge researches the blocker on the web and writes a concrete
+    # recovery plan; jev rules whether it is feasible. A feasible plan cancels
+    # the blocked exit and becomes the executor's next prompt. There is no
+    # attempt budget: only jev's rejection (or an unusable plan, judge outage,
+    # or jev outage) closes the run as BLOCKED.
     enable_blocked_rescue: bool = True
-    max_blocked_rescues: int = 1
     # Require observable workspace file changes before accepting completion
     # (disable for pure-analysis goals that legitimately change no files).
     goal_require_changes: bool = True
@@ -167,6 +166,9 @@ class SupervisorConfig:
     jev_decision_timeout: float = 20.0
     # P(close) at or above this is required before the arbiter may close.
     jev_decision_threshold: float = 0.80
+    # A multi-way (choice) ruling - DONE, stagnation, protocol review, unblock
+    # plan - takes effect only at or above this probability.
+    jev_choice_threshold: float = 0.50
 
     # Harvest jobs only: the terminal runs to collect, the operator's harvest
     # focus, and the exact output folder (one subfolder per run). Run jobs

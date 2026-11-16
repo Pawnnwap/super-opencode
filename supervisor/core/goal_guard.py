@@ -280,7 +280,7 @@ class GoalGuard:
             if jev_decision is not None:
                 jev_note = f"Jev DONE review: {jev_decision.summary}"
                 if (
-                    jev_decision.probability >= 0.5
+                    jev_decision.confident
                     and jev_decision.action in ("reject", "need_evidence")
                 ):
                     blocked = self._block(
@@ -480,7 +480,7 @@ class GoalGuard:
                     all_targets_met=False,
                     changed_files=[],
                 )
-                if decision.probability >= 0.5:
+                if decision.confident:
                     if decision.action == "continue":
                         stagnation = None
                     elif decision.action == "nudge":

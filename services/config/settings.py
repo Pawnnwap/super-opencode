@@ -52,7 +52,7 @@ _PERSIST_KEYS = [
     "jev_decision_api_key",
     "jev_decision_timeout",
     "jev_decision_threshold",
-    "enable_blocked_rescue",
+    "jev_choice_threshold",
 ]
 
 # Default values for every setting the UI binds to (persisted keys above plus
@@ -106,9 +106,7 @@ DEFAULTS: dict = {
     "jev_decision_api_key": "",
     "jev_decision_timeout": 20,
     "jev_decision_threshold": 0.80,
-    # First blocked verdict: force a web-researched recovery plan and let jev
-    # rule on it before closing. Only active when the jev arbiter is enabled.
-    "enable_blocked_rescue": True,
+    "jev_choice_threshold": 0.50,
 }
 
 

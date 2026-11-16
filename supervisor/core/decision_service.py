@@ -14,7 +14,7 @@ candidates for the same client (see README "Bounded-decision audit"):
 3. protocol alignment (3×5);
 4. run closure / BLOCKED exit (5×2);
 5. DONE-proposal ambiguity (4×2; deterministic gates remain hard vetoes);
-6. the first blocked verdict's recovery-plan feasibility (4×2; the plan is
+6. each blocked verdict's recovery-plan feasibility (4×2; the plan is
    produced by the judge from fresh web research, and a feasible ruling
    cancels the BLOCKED exit).
 
@@ -136,6 +136,12 @@ class CloseDecision:
         )
 
 
+# Default minimum probability for a multi-way (choice) ruling to take effect.
+# The live value is configurable per run (jev_choice_threshold) and travels on
+# each ChoiceDecision. Binary (noul) decisions use jev_decision_threshold.
+CHOICE_MIN_CONFIDENCE = 0.5
+
+
 @dataclass(frozen=True)
 class ChoiceDecision:
     """Arbitrated choice from a bounded action space."""
@@ -143,15 +149,15 @@ class ChoiceDecision:
     action: str
     probability: float
     probabilities: dict[str, float] = field(default_factory=dict)
+    threshold: float = CHOICE_MIN_CONFIDENCE
+
+    @property
+    def confident(self) -> bool:
+        return self.probability >= self.threshold
 
     @property
     def summary(self) -> str:
         return f"action={self.action} (p={self.probability:.3f})"
-
-
-# A choice is acted on only when the winning label clears this probability.
-# Binary (noul) decisions use the configured threshold instead.
-CHOICE_MIN_CONFIDENCE = 0.5
 
 
 def _clip(text: Any, limit: int) -> str:
@@ -181,12 +187,14 @@ class JevDecisionClient:
         *,
         timeout: float = 20.0,
         threshold: float = 0.85,
+        choice_threshold: float = CHOICE_MIN_CONFIDENCE,
         api_key: str = "",
         transport: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
     ) -> None:
         self.url = url
         self.timeout = timeout
         self.threshold = threshold
+        self.choice_threshold = choice_threshold
         self.api_key = api_key
         self._transport = transport or self._post
 
@@ -253,6 +261,7 @@ class JevDecisionClient:
             action=action,
             probability=probabilities[action],
             probabilities=probabilities,
+            threshold=self.choice_threshold,
         )
 
     def decide_contradictions(

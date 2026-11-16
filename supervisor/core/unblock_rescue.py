@@ -1,8 +1,8 @@
-"""One supervised recovery plan before the first BLOCKED exit.
+"""A supervised recovery plan before each BLOCKED exit.
 
 The blocked exit is terminal by design: the operator, not the loop, chooses
-what happens after an unreachable target. With jev enabled the first blocked
-verdict now buys exactly one bounded second chance:
+what happens after an unreachable target. With jev enabled every blocked
+verdict buys a bounded second chance:
 
 1. the judge is forced to translate the blocker into 2-3 web search queries;
 2. the harness runs those queries in-process (Bing + Marginalia, the same
@@ -12,7 +12,7 @@ verdict now buys exactly one bounded second chance:
    blocked exit and the plan becomes the executor's next prompt; every other
    outcome closes the run exactly as before.
 
-Guard rails: one rescue per run by default, bounded queries/results, empty or
+Guard rails: bounded queries/results, empty or
 refusal-length plans are rejected before jev sees them, and any import,
 transport, or parsing failure falls through to BLOCKED (fail-safe). Search
 results are untrusted text and are labelled as evidence, never as instructions.

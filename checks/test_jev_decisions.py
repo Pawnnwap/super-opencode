@@ -171,6 +171,19 @@ def test_decide_done_parses_the_accept_choice():
     assert decision.probability == pytest.approx(0.7)
 
 
+def test_choice_threshold_travels_on_the_decision():
+    client = _client(
+        _choice_answer("verdict", accept=0.6, reject=0.3, need_evidence=0.1),
+        choice_threshold=0.7,
+    )
+    decision = client.decide_done(
+        mandate="m", criteria=[], changed_files=[], output="o",
+    )
+    assert decision is not None
+    assert decision.threshold == pytest.approx(0.7)
+    assert decision.confident is False
+
+
 def test_malformed_choice_response_returns_none():
     assert _client({"answers": {"action": {}}}).decide_stagnation(
         stage=1, stagnant_turns=2, reason="r", output="o", state="s",
@@ -571,18 +584,18 @@ def test_jev_settings_reach_the_supervisor_config(tmp_path):
         "jev_decision_api_key": "k",
         "jev_decision_timeout": 15,
         "jev_decision_threshold": 0.91,
-        "enable_blocked_rescue": False,
+        "jev_choice_threshold": 0.65,
     })
     cfg = build_supervisor_config(
         state, protocol_path=tmp_path / "protocol.md", workspace=tmp_path,
     )
     assert cfg.enable_jev_decisions is True
-    assert cfg.enable_blocked_rescue is False
-    assert cfg.max_blocked_rescues == 1
+    assert cfg.enable_blocked_rescue is True
     assert cfg.jev_decision_url.endswith("/systemone/api/v1/systemone")
     assert cfg.jev_decision_api_key == "k"
     assert cfg.jev_decision_timeout == 15
     assert cfg.jev_decision_threshold == 0.91
+    assert cfg.jev_choice_threshold == 0.65
 
 
 def test_wizard_exposes_the_jev_controls():
@@ -595,9 +608,10 @@ def test_wizard_exposes_the_jev_controls():
         "jev_decision_api_key",
         "jev_decision_timeout",
         "jev_decision_threshold",
-        "enable_blocked_rescue",
+        "jev_choice_threshold",
     ):
         assert f'"{key}"' in source
+    assert "enable_blocked_rescue" not in source
     settings = (_REPO / "services" / "config" / "settings.py").read_text(
         encoding="utf-8",
     )
@@ -607,13 +621,14 @@ def test_wizard_exposes_the_jev_controls():
         "jev_decision_api_key",
         "jev_decision_timeout",
         "jev_decision_threshold",
-        "enable_blocked_rescue",
+        "jev_choice_threshold",
     ):
         assert f'"{key}"' in settings
+    assert "enable_blocked_rescue" not in settings
 
 
 # --------------------------------------------------------------------------- #
-# First-blocked rescue: web-researched plan + jev feasibility ruling            #
+# Blocked rescue: web-researched plan + jev feasibility ruling                  #
 # --------------------------------------------------------------------------- #
 
 
@@ -774,21 +789,20 @@ def test_executor_prompt_blocks_arbitrary_scope_change():
     assert "do not assert it" in prompt
 
 
-def test_max_blocked_rescues_is_backend_only():
+def test_rescue_is_on_by_design_without_a_budget():
+    config = (
+        _REPO / "supervisor" / "utils" / "config.py"
+    ).read_text(encoding="utf-8")
+    loop = (
+        _REPO / "supervisor" / "core" / "loop_base.py"
+    ).read_text(encoding="utf-8")
     builder = (
         _REPO / "services" / "config" / "supervisor_config_builder.py"
     ).read_text(encoding="utf-8")
-    settings = (_REPO / "services" / "config" / "settings.py").read_text(
-        encoding="utf-8",
-    )
-    wizard = (_REPO / "services" / "webui" / "pages" / "wizard.py").read_text(
-        encoding="utf-8",
-    )
 
-    assert 'session_state.get("max_blocked_rescues"' not in builder
-    assert "max_blocked_rescues=int(" not in builder
-    assert "max_blocked_rescues" not in settings
-    assert "max_blocked_rescues" not in wizard
+    assert "max_blocked_rescues" not in config
+    assert "_blocked_rescues_used" not in loop
+    assert 'session_state.get("enable_blocked_rescue"' not in builder
 
 
 _PLAN = (
@@ -844,14 +858,24 @@ class _RescueRunner:
 
 
 class _RescueJev:
-    def __init__(self, action: str, probability: float = 0.9):
+    def __init__(
+        self,
+        action: str,
+        probability: float = 0.9,
+        threshold: float = CHOICE_MIN_CONFIDENCE,
+    ):
         self.action = action
         self.probability = probability
+        self.threshold = threshold
         self.calls: list[dict] = []
 
     def decide_unblock_plan(self, *, plan, evidence):
         self.calls.append({"plan": plan, "evidence": evidence})
-        return ChoiceDecision(action=self.action, probability=self.probability)
+        return ChoiceDecision(
+            action=self.action,
+            probability=self.probability,
+            threshold=self.threshold,
+        )
 
 
 def _blocked_verdict() -> SupervisorVerdict:
@@ -923,7 +947,6 @@ def test_first_blocked_rescue_sends_the_approved_plan(tmp_path, monkeypatch):
     assert loop._state is LoopState.RUNNING
     assert loop.runner.sent
     assert "UNBLOCK DIRECTIVE" in loop.runner.sent[0]
-    assert loop._blocked_rescues_used == 1
     assert loop._progress.streak == 0
     assert (tmp_path / ".opencode" / "unblock_plan.md").exists()
     assert not (tmp_path / "blocked_report.md").exists()
@@ -955,6 +978,16 @@ def test_low_confidence_feasible_does_not_cancel_the_block(tmp_path, monkeypatch
     assert not loop.runner.sent
 
 
+def test_configured_choice_threshold_gates_the_rescue(tmp_path, monkeypatch):
+    loop = _rescue_loop(tmp_path)
+    loop._jev = _RescueJev("feasible", probability=0.9, threshold=0.95)
+
+    _run_rescue_judgement(loop, monkeypatch)
+
+    assert loop._state is LoopState.ENDED_BLOCKED
+    assert not loop.runner.sent
+
+
 def test_jev_outage_during_rescue_fails_safe_to_blocked(tmp_path, monkeypatch):
     class _BoomJev:
         def decide_unblock_plan(self, **_kwargs):
@@ -970,17 +1003,28 @@ def test_jev_outage_during_rescue_fails_safe_to_blocked(tmp_path, monkeypatch):
     assert any("unavailable" in event["msg"] for event in events)
 
 
-def test_rescue_budget_is_a_single_attempt(tmp_path, monkeypatch):
+def test_every_blocked_verdict_gets_a_fresh_rescue(tmp_path, monkeypatch):
     loop = _rescue_loop(tmp_path)
-    loop._blocked_rescues_used = 1
 
     _run_rescue_judgement(loop, monkeypatch)
+    _run_rescue_judgement(loop, monkeypatch)
+
+    assert loop._state is LoopState.RUNNING
+    assert len(loop.runner.sent) == 2
+    assert len(loop._jev.calls) == 2
+
+
+def test_jev_rejection_on_a_later_block_closes_the_run(tmp_path, monkeypatch):
+    loop = _rescue_loop(tmp_path)
+    _run_rescue_judgement(loop, monkeypatch)
+
+    loop._jev = _RescueJev("not_feasible", 0.95)
+    events = _run_rescue_judgement(loop, monkeypatch)
 
     assert loop._state is LoopState.ENDED_BLOCKED
-    assert not loop.runner.sent
-    assert not any(
-        "RECOVERY PLAN REQUIRED" in prompt for prompt in loop.supervisor.prompts
-    )
+    assert len(loop.runner.sent) == 1
+    assert (tmp_path / "blocked_report.md").exists()
+    assert any("Unblock plan rejected" in event["msg"] for event in events)
 
 
 def test_rescue_without_jev_is_inert(tmp_path, monkeypatch):

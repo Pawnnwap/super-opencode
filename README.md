@@ -401,11 +401,12 @@ same outage rule (any failure falls back to the deterministic path):
   `no_violation` suppresses the reinforcement warning; anything else keeps it.
 - **DONE proposal** — after every deterministic veto passes, a confident
   `reject`/`need_evidence` blocks the proposal; `accept` passes with a note.
-  Choice decisions act at `P ≥ 0.5`; binary ones use the configured threshold.
+  Choice decisions use the configured *choice threshold* (default 0.5); binary
+  ones use the configured confidence threshold.
 
-**First-blocked rescue.** Jev also arbitrates a sixth decision, but only after
-the deterministic blocked assessment has already fired. On the first blocked
-verdict (`enable_blocked_rescue`, default on; only active with jev), the loop
+**Blocked rescue.** Jev also arbitrates a sixth decision, but only after
+the deterministic blocked assessment has already fired. On every blocked
+verdict (on by design; active only with jev), the loop
 holds the close and forces the judge to:
 
 1. translate the blocker into up to 2 English web queries;
@@ -423,10 +424,9 @@ holds the close and forces the judge to:
 Jev then rules `feasible` or `not_feasible` on that plan. A confident
 `feasible` cancels the blocked exit, resets the attainment/stagnation
 counters, saves the plan to `.opencode/unblock_plan.md`, and sends it to the
-executor as the next prompt. Any rejection, judge outage, empty plan, or jev
-outage closes the run exactly as before; `max_blocked_rescues` defaults to 1
-(backend-only — the UI neither binds nor persists it), so later blocked
-verdicts are final.
+executor as the next prompt. There is no rescue budget: every later blocked
+verdict starts the same process again, and only a jev rejection (or an
+unusable plan, judge outage, or jev outage) closes the run as BLOCKED.
 
 **Bounded-decision audit.** Same client (`noul`/`choice`/`score`) can arbitrate.
 Ranked by **sureness × frequency**, where sureness (1–5) is how completely the
@@ -459,7 +459,7 @@ Never delegated to jev: gate counts, test results, file existence, context
 thresholds, worker code freshness, retry counts, protected paths, and cleanup
 deletion safety. These are measurements or safety rules, not judgments.
 
-The first-blocked rescue above is the sixth implemented decision; it is
+The blocked rescue above is the sixth implemented decision; it is
 derived from the blocked-exit judgment rather than a separate audited
 candidate, so it has no row in the original ranking table.
 
