@@ -182,14 +182,26 @@ def test_board_and_pills_know_the_blocked_state():
         encoding="utf-8",
     )
     assert '"BLOCKED"' in board
-    assert "pill-blocked" in layout
+    # The pill class is no longer spelled in layout.py: state -> tone -> class
+    # is one contract (job_states.STATE_CONTRACT / PILL_TONE_CLASS) and the
+    # stylesheet owns the colour. Assert the blocked state reaches the amber
+    # pill through that contract instead of through a literal.
+    states = (_REPO / "services" / "jobs" / "job_states.py").read_text(
+        encoding="utf-8",
+    )
+    assert '"BLOCKED": StateStyle("warn", "BLOCKED", True)' in states
+    assert '"warn": "pill-blocked"' in states
+    assert "PILL_TONE_CLASS" in layout
     # The board metrics line counts blocked jobs instead of dropping them; the
     # keys now come from the shared vocabulary rather than a literal table.
     assert "ACTIVE_JOB_STATES | TERMINAL_JOB_STATES" in board
     assert '"BLOCKED"' in (_REPO / "services" / "jobs" / "job_states.py").read_text(
         encoding="utf-8",
     )
-    assert "blocked" in board.split("metrics_label.set_text")[1]
+    # The metrics strip is built from chip spans now (one html element, one
+    # write per tick), so assert the count and its label are both present.
+    assert 'counts["BLOCKED"]' in board
+    assert '"blocked"' in board
     # A blocked run's report reaches the job store via blocked_report.md. The
     # filename list is single-sourced in the harvester (the job manager used to
     # keep a second copy that had already drifted), so assert the shared list

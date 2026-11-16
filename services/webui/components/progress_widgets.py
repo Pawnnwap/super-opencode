@@ -24,14 +24,18 @@ class ProgressWidgets:
         # code/test/review pipeline, so they render without it.
         self.breadcrumb_label = None
         if show_phase:
-            self.breadcrumb_label = ui.html("").classes("text-xs text-[#8b949e]")
+            self.breadcrumb_label = ui.html("").classes("sop-meta")
         self._breadcrumb_html = ""
-        self.status_label = ui.label("").classes("text-sm")
-        with ui.row().classes("w-full items-center gap-2"):
+        with ui.row().classes("w-full items-center gap-3 flex-wrap"):
+            self.status_label = ui.label("").classes("sop-value mono")
+        with ui.row().classes("w-full items-center gap-2") as self.token_row:
             self.token_bar = ui.linear_progress(value=0, show_value=False).classes(
-                "flex-grow",
+                "grow",
             )
-            self.token_label = ui.label("").classes("text-xs mono text-[#8b949e]")
+            self.token_label = ui.label("").classes("sop-hint mono")
+        # Nothing measured yet: an empty rail across the panel says nothing,
+        # so the row appears with the first token figure.
+        self.token_row.set_visibility(False)
 
     def update(
         self, logs: list[dict], state: str, heartbeat_at: float | None = None,
@@ -62,7 +66,7 @@ class ProgressWidgets:
                 f"{beat} · 🧭 {step_count}",
             )
         else:
-            self.status_label.set_text("")
+            self.status_label.set_text(f"ended · {(state or 'unknown').lower()}")
 
         current = latest_token_current(logs)
         fraction = None
@@ -75,5 +79,6 @@ class ProgressWidgets:
 
         if current is not None and fraction is not None:
             color = "🔴" if fraction > 0.9 else "🟡" if fraction > 0.7 else "🟢"
+            self.token_row.set_visibility(True)
             self.token_bar.set_value(min(fraction, 1.0))
             self.token_label.set_text(f"{color} {current:,} / {self.max_tokens:,} tokens")

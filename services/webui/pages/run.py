@@ -6,6 +6,7 @@ from pathlib import Path
 
 from nicegui import ui
 
+from services.webui import theme
 from services.webui.components.board import JobBoard
 from services.webui.components.busy import busy_buttons
 from services.webui.components.hownow import HowNowPanel
@@ -17,25 +18,44 @@ from services.webui.launch import (
     save_and_apply_settings,
 )
 from services.webui.layout import active_jobs
+from services.webui.preflight import hard_blockers
 from services.webui.state import app_state
 
 
-def _render_readiness(workspace: Path) -> bool:
-    """Protocol readiness banner; returns True when a protocol file exists."""
+def _has_protocol(workspace: Path) -> bool:
+    """True when a protocol file actually resolves in this workspace."""
     from supervisor.protocols.protocol import resolve_protocol_path
 
+    return resolve_protocol_path(workspace).is_file()
+
+
+def _render_readiness(workspace: Path, *, ready: bool | None = None) -> bool:
+    """Protocol readiness strip; returns True when a protocol file exists.
+
+    ``ready`` is passed in when the caller already resolved it, so the page
+    and the launch gate can never disagree about the same filesystem fact.
+    """
+    from supervisor.protocols.protocol import resolve_protocol_path
+
+    if ready is None:
+        ready = _has_protocol(workspace)
     proto_path = resolve_protocol_path(workspace)
-    if proto_path.is_file():
-        ui.label(f"✅ {proto_path.name} ready in {workspace.name}").classes(
-            "text-sm text-[#3fb950]",
+    if ready:
+        theme.notice(
+            "ok",
+            f"{proto_path.name} ready in {workspace.name} — this launch reads it.",
         )
         return True
 
-    ui.label(
-        "No protocol found for this workspace — create one in the Wizard.",
-    ).classes("text-sm text-[#f85149]")
-    ui.button("Open Protocol Wizard", on_click=lambda: ui.navigate.to("/")).props(
-        "dense",
+    def _go() -> None:
+        ui.button(
+            "Open Protocol Wizard", on_click=lambda: ui.navigate.to("/"),
+        ).props("outline color=none dense")
+
+    theme.notice(
+        "bad",
+        "No protocol in this workspace — Live Run would have nothing to execute.",
+        action=_go,
     )
     return False
 
@@ -55,21 +75,44 @@ def _launch_run(
     )
 
 
-def _render_launch_form(workspace: Path) -> None:
-    with ui.card().classes("w-full bg-[#161b22]"):
-        ui.label("Start New Task").classes("text-sm font-bold text-[#9ecbff]")
-        ui.label(f"Primary workspace: {workspace}").classes("text-xs text-[#8b949e]")
+def _render_launch_form(
+    workspace: Path,
+    *,
+    locked: bool = False,
+    missing: list[str] | None = None,
+) -> None:
+    """Launch controls: parameters left, the single action right."""
+    missing = list(missing or [])
+    with theme.panel(
+        "Start a task",
+        icon="play_arrow",
+        subtitle=f"Protocol: {workspace.name} · one job per launch",
+    ):
+        if locked:
+            # The lock covers LAUNCHING only. The rest of the page (board,
+            # history, live screens) stays usable: a locked user still needs
+            # to reopen yesterday's run and read what happened.
+            #
+            # No CTA here on purpose: the readiness strip above already owns
+            # the one "Open Protocol Wizard" button. Two identical CTAs for two
+            # different causes was the thing that made this screen unreadable.
+            theme.notice(
+                "warn",
+                "Launch is locked: "
+                + " and ".join(missing or ["requirements are not met"])
+                + ". Browsing and opening finished tasks below is unaffected.",
+            )
         # Laid out flat on purpose: these are the settings a launch depends on,
         # and hiding them behind a disclosure made the effective options easy
         # to miss. The live summary keeps the values visible even so.
-        with ui.row().classes("items-end gap-4 flex-wrap"):
+        with ui.row().classes("sop-row"):
             plan_rounds = ui.number(
                 "Plan mode rounds",
                 value=int(app_state.get("plan_mode_rounds", 1)),
                 min=0,
                 max=10,
                 on_change=lambda _e: _update_summary(),
-            )
+            ).classes("w-44")
             occam = ui.switch(
                 "Occam Razor",
                 value=bool(app_state.get("enable_occam_razor")),
@@ -83,26 +126,26 @@ def _render_launch_form(workspace: Path) -> None:
                 "Show the supervisor a skill catalog it may load on demand "
                 "(LOAD_SKILL); judge-context only.",
             )
-        with ui.row().classes("items-end gap-4 flex-wrap"):
+        with ui.row().classes("sop-row"):
             replicas = ui.number(
                 "Parallel instances",
                 value=1,
                 min=1,
                 max=16,
                 on_change=lambda _e: _update_summary(),
-            ).tooltip(
+            ).classes("w-44").tooltip(
                 ">1 clones this workspace N times (one isolated study per "
                 "copy) and launches them as one batch.",
             )
             init_mode = ui.select(
-                {"copy": "复制工作区（排除产物）", "protocol": "仅 protocol.md"},
+                {"copy": "Copy workspace (artifacts excluded)",
+                 "protocol": "protocol.md only"},
                 value="copy",
                 label="Replica init",
                 on_change=lambda _e: _update_summary(),
             ).tooltip(
                 "How each parallel instance's workspace is seeded.",
-            )
-        summary = ui.label("").classes("text-xs text-[#8b949e] mono")
+            ).classes("w-72")
 
         def _update_summary() -> None:
             count = int(replicas.value or 1)
@@ -164,12 +207,19 @@ def _render_launch_form(workspace: Path) -> None:
                     return
                 ui.navigate.to(target)
 
-        with ui.row().classes("items-center gap-3"):
-            launch_button = ui.button("Launch", on_click=_launch).props(
-                "color=primary",
-            )
+        with ui.row().classes("w-full items-end gap-4 flex-wrap"):
+            summary = ui.label("").classes("sop-meta mono grow")
+            with ui.column().classes("items-end gap-1"):
+                launch_button = ui.button("Launch", on_click=_launch).props(
+                    "color=primary",
+                ).classes("px-6")
+                if locked:
+                    launch_button.set_enabled(False)
+                    ui.label(
+                        "disabled: "
+                        + " and ".join(missing or ["requirements are not met"]),
+                    ).classes("sop-hint")
         _update_summary()
-
 
 
 def _has_running_job() -> bool:
@@ -178,16 +228,11 @@ def _has_running_job() -> bool:
 
 
 def render(job_id: str = "") -> None:
-    workspace = require_workspace()
-    if workspace is None:
-        return
-
     manager = get_job_manager()
     if job_id:
-        # Summary only: this check used get_job_status, which parses the job's
-        # WHOLE log file just to read type/state - a multi-MB parse on the
-        # event loop per detail-page navigation. LiveJobScreen re-fetches the
-        # capped tail it actually renders.
+        # Viewing an existing job must never depend on the CURRENT workspace
+        # resolving: history is history. (The live screen reads the folder
+        # from the job record, not from the settings.)
         render_live_screen(
             manager,
             job_id,
@@ -198,19 +243,43 @@ def render(job_id: str = "") -> None:
         )
         return
 
-    if not app_state.tests_ok() and not _has_running_job():
-        ui.label(
-            "🔒 Live Run is locked — pass the connectivity tests on the "
-            "Protocol Wizard page first.",
-        ).classes("text-sm text-[#e3b341]")
-        ui.button("Open Wizard", on_click=lambda: ui.navigate.to("/")).props("dense")
+    workspace = require_workspace()
+    if workspace is None:
+        # No workspace means no launch — but the board is still the record of
+        # what already ran, so it stays on the page instead of a dead end.
+        with ui.row().classes("sop-section-head"):
+            ui.icon("view_kanban")
+            ui.label("Task Board").classes("sop-h2")
+        JobBoard(manager, "run")
         return
 
-    ui.label("Live Run").classes("text-2xl font-bold")
-    _render_readiness(workspace)
+    # The lock gates LAUNCHING, never VIEWING: the board and every live screen
+    # stay reachable so a half-configured machine can still read its own
+    # history.
+    #
+    # One source of truth (preflight) instead of a hand-rolled flag: the old
+    # `locked = not tests_ok()` ignored a missing protocol entirely, so the
+    # button stayed bright and the job failed on the worker side.
+    has_running = _has_running_job()
+    proto_ok = _has_protocol(workspace)
+    blocked = hard_blockers(workspace, forgive_probes=has_running)
+    locked = bool(blocked)
+    missing = [blocker.label for blocker in blocked]
+
+    theme.page_header(
+        "Live Run",
+        "Launch against the saved protocol, watch the queue, open any task for "
+        "its live stream.",
+        kicker="Execute",
+    )
+    _render_readiness(workspace, ready=proto_ok)
     # Launch parameters first, then the on-demand sweep, then the board.
-    _render_launch_form(workspace)
+    _render_launch_form(workspace, locked=locked, missing=missing)
     HowNowPanel()
 
-    ui.label("Task Board").classes("text-lg font-bold mt-4")
+    with ui.row().classes("sop-section-head"):
+        ui.icon("view_kanban")
+        ui.label("Task Board").classes("sop-h2")
+        ui.space()
+        ui.label("live · 1.5 s refresh").classes("sop-hint")
     JobBoard(manager, "run")

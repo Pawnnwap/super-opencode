@@ -18,6 +18,7 @@ from services.jobs.harvest import (
     match_query,
     search_text,
 )
+from services.webui import theme
 from services.webui.components.board import JobBoard
 from services.webui.jobs import get_job_manager, sync_max_parallel_jobs
 from services.webui.launch import render_live_screen, save_and_apply_settings
@@ -104,12 +105,13 @@ class HarvesterPanel:
     # -------------------------------------------------------------- build --
 
     def _build(self) -> None:
-        with ui.card().classes("w-full bg-[#161b22]"):
-            ui.label("Select finished runs").classes("text-sm font-bold text-[#9ecbff]")
-            ui.label(
-                "Type a string to auto-select matching runs (id, workspace, "
-                "batch or final report), or tick runs by hand.",
-            ).classes("text-xs text-[#8b949e]")
+        with theme.panel(
+            "Select finished runs", icon="checklist",
+            subtitle=(
+                "Type to auto-select matching runs (id, workspace, batch or "
+                "final report), or tick them by hand."
+            ),
+        ):
             with ui.row().classes("w-full items-end gap-3 flex-wrap"):
                 self.match_input = ui.input(
                     "Match", value="", on_change=self._on_query,
@@ -122,7 +124,7 @@ class HarvesterPanel:
                     "dense outline",
                 )
                 ui.button("Clear", on_click=self._clear).props("dense flat")
-            self.count_label = ui.label("").classes("text-xs text-[#8b949e]")
+            self.count_label = ui.label("").classes("sop-hint")
             if self.runs:
                 # The list is rebuilt whenever the query/filter changes; the
                 # scroll position is remembered so a rebuild does not throw
@@ -131,25 +133,24 @@ class HarvesterPanel:
                 self._scroll_guard_until = 0.0
                 self.scroll = ui.scroll_area(
                     on_scroll=self._remember_scroll,
-                ).classes("w-full").style("height: 21rem")
+                ).classes("w-full sop-scroll").style("height: 21rem")
                 with self.scroll:
-                    self.list_col = ui.column().classes("w-full gap-0")
+                    self.list_col = ui.column().classes("sop-list")
             else:
                 ui.label(
                     "No finished runs in the store yet — run something first.",
-                ).classes("text-sm text-[#8b949e]")
+                ).classes("sop-hint")
                 self.list_col = None
                 self.scroll = None
                 self._scroll_pos = 0.0
                 self._scroll_guard_until = 0.0
 
-        with ui.card().classes("w-full bg-[#161b22]"):
-            ui.label("Harvest output").classes("text-sm font-bold text-[#9ecbff]")
-            engine = app_state.get("engine") or "opencode"
-            model = app_state.get("opencode_model") or "(not set)"
-            ui.label(f"Agent: {engine} · {model}").classes(
-                "text-xs text-[#8b949e]",
-            )
+        engine = app_state.get("engine") or "opencode"
+        model = app_state.get("opencode_model") or "(not set)"
+        with theme.panel(
+            "Harvest output", icon="drive_file_move",
+            subtitle=f"Distilled by {engine} · {model}",
+        ):
             # Where the files land is a decision-time fact: stays visible.
             self.location_input = ui.input(
                 "Harvest location", value=_default_location(),
@@ -167,9 +168,7 @@ class HarvesterPanel:
                     else "Harvest prompt · default"
                 )
 
-            self.prompt_caption = ui.label("").classes(
-                "text-sm font-bold text-[#9ecbff] mt-2",
-            )
+            self.prompt_caption = ui.label("").classes("sop-group")
             self.prompt_input = ui.textarea(
                 "Applied to each run", value=_default_prompt(),
                 on_change=lambda _e: self.prompt_caption.set_text(_prompt_caption()),
@@ -179,7 +178,7 @@ class HarvesterPanel:
                 self.launch_button = ui.button(
                     "Harvest selected", on_click=self._launch,
                 ).props("color=primary")
-                self.launch_status = ui.label("").classes("text-xs text-[#8b949e]")
+                self.launch_status = ui.label("").classes("sop-hint")
         self._rebuild()
 
     # ------------------------------------------------------------ filters --
@@ -218,6 +217,12 @@ class HarvesterPanel:
             self.selected.add(job_id)
         else:
             self.selected.discard(job_id)
+        row = getattr(self, "_rows", {}).get(job_id)
+        if row is not None:
+            if event.value:
+                row.classes(add="sop-listrow--on")
+            else:
+                row.classes(remove="sop-listrow--on")
         self._update_counts()
 
     # ------------------------------------------------------------- render --
@@ -249,25 +254,31 @@ class HarvesterPanel:
         saved_position = self._scroll_pos
         self._scroll_guard_until = time.monotonic() + 1.0
         self.list_col.clear()
+        self._rows = {}
         with self.list_col:
             for run in self._visible():
                 job_id = run["id"]
                 state = str(run["state"].get("state") or "UNKNOWN")
-                with ui.row().classes(
-                    "w-full items-center gap-2 flex-nowrap py-1 "
-                    "border-b border-[#21262d]",
-                ):
+                selected = job_id in self.selected
+                row = ui.row().classes(
+                    "sop-listrow flex-nowrap"
+                    + (" sop-listrow--on" if selected else ""),
+                )
+                self._rows[job_id] = row
+                with row:
                     ui.checkbox(
-                        value=job_id in self.selected,
+                        value=selected,
                         on_change=lambda e, jid=job_id: self._toggle(jid, e),
                     ).props("dense").classes("shrink-0")
-                    ui.label(job_id).classes("mono text-xs w-32 shrink-0")
+                    ui.label(job_id).classes("mono text-xs shrink-0").style(
+                        "width:150px;color:var(--sop-text-1)",
+                    )
                     ui.html(format_status_pill(state)).classes("shrink-0")
                     ui.label(_run_meta(run)).classes(
-                        "text-xs text-[#8b949e] truncate grow",
+                        "sop-listrow__meta truncate grow",
                     )
             if not self._visible():
-                ui.label("No matching runs.").classes("text-xs text-[#8b949e]")
+                ui.label("No matching runs.").classes("sop-hint")
         # Restore AFTER the new rows exist, so the offset is meaningful.
         if self.scroll is not None and saved_position:
             self.scroll.scroll_to(pixels=saved_position)
@@ -338,13 +349,18 @@ async def render(job_id: str = "") -> None:
         )
         return
 
-    ui.label("Harvester").classes("text-2xl font-bold")
-    ui.label(
-        "Collect finished runs into one clean folder: one subfolder per run, "
-        "a root index and a batch summary.",
-    ).classes("text-sm text-[#8b949e]")
+    theme.page_header(
+        "Harvester",
+        "Collect finished runs into one clean folder: a subfolder per run, a "
+        "root index and a batch summary — then hand the folder to a reader.",
+        kicker="Distil",
+    )
     runs = await nicegui_run.io_bound(_load_runs, manager)
     HarvesterPanel(manager, runs)
 
-    ui.label("Harvest Board").classes("text-lg font-bold mt-4")
+    with ui.row().classes("sop-section-head"):
+        ui.icon("view_kanban")
+        ui.label("Harvest Board").classes("sop-h2")
+        ui.space()
+        ui.label("finished harvest jobs").classes("sop-hint")
     JobBoard(manager, HARVEST_JOB_TYPE, base_path="/harvest")

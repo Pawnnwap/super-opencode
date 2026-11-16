@@ -12,6 +12,47 @@ Layering: this module is pure (no UI, no store), so both ``services.jobs`` and
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True, slots=True)
+class StateStyle:
+    """How a job state is presented everywhere in the UI.
+
+    ``tone`` is a semantic slot, not a colour: the stylesheet owns the hex.
+    ``needs_attention`` is what the board counts — it used to include
+    CANCELLED, so a workspace where the operator had stopped most runs showed
+    57% "need attention" and the number stopped meaning anything.
+    """
+
+    tone: str          # accent | ok | warn | bad | neutral
+    label: str         # operator-facing text
+    needs_attention: bool
+
+
+# The single source of truth for state → presentation. The board's rail, its
+# pill and the attention counter all derive from this table; adding a state
+# means editing one dict instead of six if/else chains.
+STATE_CONTRACT: dict[str, StateStyle] = {
+    "PENDING": StateStyle("accent", "PENDING", False),
+    "RUNNING": StateStyle("accent", "RUNNING", False),
+    "SUCCESS": StateStyle("ok", "SUCCESS", False),
+    "FAILED": StateStyle("bad", "FAILED", True),
+    "BLOCKED": StateStyle("warn", "BLOCKED", True),
+    "ABANDONED": StateStyle("warn", "ABANDONED", True),
+    # The operator's own action: neutral, never red, never counted as a fault.
+    "CANCELLED": StateStyle("neutral", "CANCELLED", False),
+}
+
+# Tone → the pill class that already exists in theme.py.
+PILL_TONE_CLASS: dict[str, str] = {
+    "accent": "pill-running",
+    "ok": "pill-success",
+    "warn": "pill-blocked",
+    "bad": "pill-failure",
+    "neutral": "pill-cancelled",
+}
+
 # Where the job records live. The UI process, the worker daemon and the batch
 # launcher must all agree on this path — it IS the IPC between them, so a
 # mismatch silently strands jobs in a store nobody reads.
@@ -34,12 +75,20 @@ TERMINAL_JOB_STATES = frozenset(
 )
 
 # Terminal states that represent unfinished work rather than a clean outcome.
-ATTENTION_JOB_STATES = frozenset({"FAILED", "CANCELLED", "ABANDONED"})
+# Derived, so "what counts as attention" cannot drift from "how it looks":
+# CANCELLED is excluded (the operator did it on purpose), BLOCKED is included
+# (it stopped short of the target, which is exactly what attention means).
+ATTENTION_JOB_STATES = frozenset(
+    state for state, style in STATE_CONTRACT.items() if style.needs_attention
+)
 
 __all__ = [
     "ACTIVE_JOB_STATES",
     "ATTENTION_JOB_STATES",
     "JOB_STORE_DIR",
+    "PILL_TONE_CLASS",
+    "STATE_CONTRACT",
+    "StateStyle",
     "TERMINAL_JOB_STATES",
     "WORKER_SETTINGS_FILE",
 ]

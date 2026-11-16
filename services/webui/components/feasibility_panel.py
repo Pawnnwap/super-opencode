@@ -137,17 +137,18 @@ def render(workspace: Path, protocol_text: str | Callable[[], str] = "") -> None
     gate_exp = state_expansion(
         "feasibility.gates",
         "Feasibility gates",
+        icon="rule",
         # Proposals need attention: open on the first render that has them.
         # Afterwards the operator's toggle wins (the panel is inside a
         # @ui.refreshable section, so a rebuild must not fold it).
         default=bool(pending),
-    ).classes("w-full bg-[#161b22]")
+    ).classes("sop-fold")
     with gate_exp:
         ui.label(
             "One row per acceptance criterion: what DONE means, gate by gate. "
             "Every change is saved to feasibility_facts.json automatically; "
             "any blocked gate marks the goal unreachable before the run starts.",
-        ).classes("text-xs text-[#8b949e]")
+        ).classes("sop-hint")
 
         if draft_text:
             gate_note = (
@@ -170,7 +171,7 @@ def render(workspace: Path, protocol_text: str | Callable[[], str] = "") -> None
         )
         ui.label(
             f"In {workspace.name}: {gate_note}; prior-attempt evidence: {artifact_note}.",
-        ).classes("text-xs mono text-[#8b949e]")
+        ).classes("sop-hint mono")
 
         drift = validate_refs(
             parse_gates(gates_to_facts(rows) or {}) or (),
@@ -181,7 +182,7 @@ def render(workspace: Path, protocol_text: str | Callable[[], str] = "") -> None
                 "⚠ Protocol changed since these gates were saved: "
                 + "; ".join(drift)
                 + " — regenerate or fix the refs.",
-            ).classes("text-xs text-[#e3b341]")
+            ).classes("sop-hint").style("color:var(--sop-warn)")
 
         pending_container = ui.column().classes("w-full gap-1")
 
@@ -195,7 +196,7 @@ def render(workspace: Path, protocol_text: str | Callable[[], str] = "") -> None
                         ui.label(
                             f"⚠ {name} failed {streak} consecutive run(s) — "
                             "mark it blocked?",
-                        ).classes("text-xs text-[#e3b341] grow")
+                        ).classes("sop-meta grow").style("color:var(--sop-warn)")
 
                         def _accept(_e, e_entry=entry, e_name=name) -> None:
                             for row in rows:
@@ -222,7 +223,7 @@ def render(workspace: Path, protocol_text: str | Callable[[], str] = "") -> None
                             "flat dense",
                         )
 
-        saved_label = ui.label("").classes("text-xs text-[#8b949e]")
+        saved_label = ui.label("").classes("sop-hint")
 
         def _persist() -> None:
             facts = gates_to_facts(rows, notes.value)
@@ -239,7 +240,7 @@ def render(workspace: Path, protocol_text: str | Callable[[], str] = "") -> None
         def _refresh_verdict() -> None:
             assessment = check_feasibility(gates_to_facts(rows, notes.value))
             icon = "✅" if assessment.reachable else "🚫"
-            color = "#3fb950" if assessment.reachable else "#f85149"
+            color = "var(--sop-ok)" if assessment.reachable else "var(--sop-bad)"
             verdict_label.set_text(f"{icon} {assessment.reason}")
             verdict_label.style(f"color: {color}")
             if assessment.required_gates is None:
@@ -266,9 +267,12 @@ def render(workspace: Path, protocol_text: str | Callable[[], str] = "") -> None
                     ui.label(
                         "No gates yet — add one manually or draft them "
                         "from the protocol.",
-                    ).classes("text-xs text-[#8b949e]")
+                    ).classes("sop-hint")
                 for index, row in enumerate(rows):
-                    with ui.row().classes("w-full gap-2 items-center flex-nowrap"):
+                    with ui.row().classes(
+                        "w-full gap-2 items-center flex-nowrap "
+                        "py-1 border-b border-[var(--sop-line)]",
+                    ):
                         ui.input(
                             "gate name",
                             value=row.get("name", ""),
@@ -320,7 +324,7 @@ def render(workspace: Path, protocol_text: str | Callable[[], str] = "") -> None
 
         ui.button("Add gate", on_click=_add_row).props("dense outline")
 
-        verdict_label = ui.label("").classes("text-xs mono")
+        verdict_label = ui.label("").classes("sop-meta mono")
         notes = ui.input(
             "Overall notes (optional)", value=str(current.get("notes", "")),
         ).classes("w-full")
@@ -332,7 +336,7 @@ def render(workspace: Path, protocol_text: str | Callable[[], str] = "") -> None
         notes.on_value_change(_notes_changed)
         _refresh_verdict()
 
-        gen_status = ui.label("").classes("text-xs text-[#8b949e]")
+        gen_status = ui.label("").classes("sop-hint")
 
         def _cancel_draft() -> None:
             _draft_call.cancel(gen_status, message="Cancelling draft…")
@@ -351,7 +355,7 @@ def render(workspace: Path, protocol_text: str | Callable[[], str] = "") -> None
                     "No protocol yet — refine one above; nothing to derive gates from.",
                 )
                 return
-            app_state.save()
+            app_state.flush()
             app_state.apply_api_config()
             started = time.monotonic()
 

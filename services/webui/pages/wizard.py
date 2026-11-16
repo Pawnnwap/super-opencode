@@ -6,9 +6,11 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
+from nicegui import app as nicegui_app
 from nicegui import run as nicegui_run
 from nicegui import ui
 
+from services.webui import theme
 from services.webui.components.busy import CancellableCall, busy_buttons
 from services.webui.state import app_state
 from supervisor.utils.llm_stream import GenerationCancelled
@@ -28,8 +30,47 @@ def _cancel_refine(status) -> None:
     _refine_call.cancel(status, message="Cancelling refine…")
 
 
+# The protocol editor holds the only long text in the app, and two controls
+# (engine, model) reload the page to re-align their droplists. Without this
+# slot a 1400-character draft vanished silently. The draft lives in
+# server-side general storage, which survives a reload for the same operator,
+# and is re-offered on the next render.
+_draft_slot: dict[str, object] = {"workspace": "", "getter": None}
+
+
+def _stash_protocol_draft() -> None:
+    """Keep the in-page protocol text across a reload."""
+    getter = _draft_slot.get("getter")
+    workspace = str(_draft_slot.get("workspace") or "")
+    if not getter or not workspace:
+        return
+    try:
+        payload = getter()  # type: ignore[operator]
+    except Exception:  # noqa: BLE001 — a failed stash must not block switching
+        return
+    if any(str(value or "").strip() for value in payload.values()):
+        nicegui_app.storage.general[f"protocol_draft::{workspace}"] = payload
+
+
+def _take_protocol_draft(workspace: Path) -> dict:
+    """Pop a stashed draft for this workspace, if any."""
+    try:
+        return nicegui_app.storage.general.pop(
+            f"protocol_draft::{workspace}", {},
+        ) or {}
+    except Exception:  # noqa: BLE001 — no client context, nothing to restore
+        return {}
+
+
 def _save() -> None:
-    app_state.save()
+    """Persist settings after an edit, coalescing keystrokes.
+
+    Debounced on purpose: a bound field fires per character, and a full JSON
+    write per character is both slow and the exact pattern that froze the
+    event loop before. Anything that needs the file on disk *now* (launch,
+    auto-generate) calls ``app_state.flush()`` instead.
+    """
+    app_state.schedule_save()
 
 
 def _bind_input(
@@ -141,26 +182,33 @@ def _profile_save(workspace: Path, *, configured: bool = False) -> None:
         values["access_configured"] = True
     save_profile(workspace, values)
     # The hand-off button at the bottom of the page is gated on the policy
-    # drill, which these edits change.
+    # drill, which these edits change; the progress strip mirrors it.
     _ready_section.refresh()
+    _stepper.refresh()
 
 
-def _section(title: str, *, open_: bool = False):
+def _section(
+    title: str,
+    *,
+    anchor: str = "",
+    open_: bool = False,
+    icon: str = "",
+    caption: str = "",
+):
     """One collapsible panel of the wizard, visually consistent.
 
     Its open state survives a ``@ui.refreshable`` rebuild: the protection and
     protocol sections are rebuilt whenever the workspace changes, and the
     plain ``ui.expansion`` used to come back at the constructor default,
     folding whatever the operator had opened.
+
+    ``anchor`` is the id the stepper links to — without it the five-step strip
+    is decorative, and the only way back to a section is 1500px of scrolling.
     """
-    from services.webui.ui_state import state_expansion
-
-    return state_expansion(
-        f"wizard.{title}", title, default=open_,
-    ).classes("w-full bg-[#161b22]")
-
-
-_GROUP_LABEL = "text-xs font-bold text-[#9ecbff] mt-2"
+    return theme.fold(
+        f"wizard.{title}", title, icon=icon, caption=caption, default=open_,
+        anchor=anchor,
+    )
 
 
 def _list_workspace_files(workspace: Path, limit: int) -> list[str]:
@@ -203,6 +251,7 @@ def _on_workspace_change() -> None:
     _skills_listing.refresh()
     _protocol_section.refresh()
     _ready_section.refresh()
+    _stepper.refresh()
 
 
 # ── Configuration section ─────────────────────────────────────────────────────
@@ -214,18 +263,24 @@ def _config_section() -> None:
     Progressive disclosure: backups, reasoning effort, jev, behavior
     switches, limits and maintenance live in Advanced settings (collapsed).
     """
-    with _section("Configuration", open_=True):
-        with ui.row().classes("w-full gap-4 flex-wrap"):
+    with _section(
+        "Configuration", anchor="configuration", open_=True, icon="key",
+        caption="Credentials, workspace and the execution engine",
+    ):
+        theme.group_label("Credentials")
+        with ui.row().classes("sop-row"):
             _bind_input("openai_key", "API key", password=True)
             _bind_input("base_url", "API base URL (optional)")
             _bind_input("supervisor_model", "Supervisor (judge) model")
+        theme.group_label("Workspace")
         _bind_input(
             "workspace",
             "Workspace path",
             classes="w-full mono",
             on_change=_on_workspace_change,
         )
-        with ui.row().classes("w-full gap-4 flex-wrap items-end"):
+        theme.group_label("Runtime")
+        with ui.row().classes("sop-row"):
             ui.select(
                 ["opencode", "codex", "pi"],
                 value=app_state.get("engine") or "opencode",
@@ -250,21 +305,27 @@ def _skills_listing() -> None:
         extra_dir=extra_dir,
     )
     with ui.column().classes("w-full gap-1"):
-        ui.label("Supervisor skill bank (loaded only on the judge's request):").classes(
-            "text-xs text-[#8b949e]",
-        )
+        ui.label(
+            "Supervisor skill bank — loaded only when the judge asks for one.",
+        ).classes("sop-hint")
         skills = bank.skills()
         if not skills:
-            ui.label("No skills discovered.").classes("text-xs text-[#8b949e]")
+            ui.label("No skills discovered.").classes("sop-hint")
         for skill in skills:
-            ui.label(f"• {skill.name} — {skill.description}  [{skill.source}]").classes(
-                "text-xs",
-            )
+            with ui.row().classes("items-baseline gap-2 flex-nowrap w-full"):
+                ui.label(skill.name).classes("mono text-xs").style(
+                    "color:var(--sop-text-2)",
+                )
+                ui.label(skill.description).classes("sop-hint truncate grow")
+                ui.html(f'<span class="chip">{skill.source}</span>')
 
 
 def _set_engine(value: str) -> None:
+    _stash_protocol_draft()
     app_state["engine"] = value
-    _save()
+    # flush, not _save: the reload below would race the 400ms debounce and
+    # bring the page back with the previous engine.
+    app_state.flush()
     ui.run_javascript("location.reload()")
 
 
@@ -347,30 +408,35 @@ def _agent_model_field() -> None:
             value=current,
             label=f"Agent model ({engine})",
             on_change=lambda e: _set_model(e.value),
-        ).classes("w-80")
+        ).classes("w-96 mono")
         refresh_button = ui.button(
-            "Refresh models", on_click=lambda: _refresh_models(refresh_button),
-        ).props("flat dense")
+            "Refresh models", icon="sync",
+            on_click=lambda: _refresh_models(refresh_button),
+        ).props("flat dense").tooltip("Re-read the engine's model list.")
     else:
         _bind_input("opencode_model", f"Agent model ({engine})")
         refresh_button = ui.button(
-            "Fetch models", on_click=lambda: _refresh_models(refresh_button),
-        ).props("flat dense")
+            "Fetch models", icon="cloud_download",
+            on_click=lambda: _refresh_models(refresh_button),
+        ).props("outline color=none dense").tooltip("Read the engine's model list.")
 
 
 def _advanced_section() -> None:
     """The rarely-touched 20% of configuration, collapsed until asked for.
 
-    Flat group labels inside (not nested expansions): one disclosure level
-    keeps wayfinding simple.
+    Deliberately quiet: it sits in the middle of the setup flow only because
+    the order is fixed by contract, so it wears the muted surface and says so
+    in its caption — everything here can be left alone.
     """
     from services.config.connectivity import REASONING_EFFORT_CHOICES
 
     engine = (app_state.get("engine") or "opencode").strip().lower()
-    group = "text-xs font-bold text-[#9ecbff] mt-2"
-    with _section("Advanced settings"):
-        ui.label("Models & reasoning").classes(group)
-        with ui.row().classes("w-full gap-4 flex-wrap items-end"):
+    with _section(
+        "Advanced settings", icon="tune",
+        caption="Not needed for a normal run — models, arbiter, limits",
+    ):
+        theme.group_label("Models & reasoning")
+        with ui.row().classes("sop-row"):
             _bind_input("opencode_model_backup", "Agent backup model")
             _bind_input("supervisor_model_backup", "Supervisor backup model")
             if engine == "codex":
@@ -391,14 +457,14 @@ def _advanced_section() -> None:
                 REASONING_EFFORT_CHOICES,
             )
         if engine == "codex":
-            with ui.row().classes("w-full gap-4 flex-wrap"):
+            with ui.row().classes("sop-row"):
                 _bind_input("codex_base_url", "Codex base URL (responses API)")
                 _bind_input("codex_api_key", "Codex API key", password=True)
 
         # Structured decision service (jev): opt-in final arbiter for the
         # textual judgment calls. Deterministic gates stay hard.
-        ui.label("Decision arbiter (jev)").classes(group)
-        with ui.row().classes("w-full gap-4 flex-wrap items-end"):
+        theme.group_label("Decision arbiter (jev)")
+        with ui.row().classes("sop-row"):
             _bind_switch(
                 "enable_jev_decisions",
                 "Jev decision arbiter",
@@ -423,7 +489,7 @@ def _advanced_section() -> None:
                 password=True,
             )
             _bind_number("jev_decision_timeout", "Jev timeout (s)", min=1, max=300)
-        with ui.row().classes("w-full gap-4 flex-wrap items-end"):
+        with ui.row().classes("sop-row"):
             _bind_float(
                 "jev_decision_threshold",
                 "Jev confidence threshold",
@@ -438,7 +504,7 @@ def _advanced_section() -> None:
                 "stagnation, protocol review, unblock plan) to take effect.",
             )
 
-        ui.label("Run behavior").classes(group)
+        theme.group_label("Run behavior")
         with ui.row().classes("w-full gap-6 flex-wrap"):
             _bind_switch("enable_occam_razor", "Occam Razor")
             _bind_switch("enable_supervisor_skills", "Supervisor skills")
@@ -456,8 +522,8 @@ def _advanced_section() -> None:
                 "sidecar (errors always inline). On: verbatim events.",
             )
 
-        ui.label("Limits").classes(group)
-        with ui.row().classes("w-full gap-6 flex-wrap"):
+        theme.group_label("Limits")
+        with ui.row().classes("sop-row"):
             _bind_number("max_retries", "Max retries", min=1, max=10)
             _bind_number("context_threshold", "Context threshold %", min=10, max=95)
             _bind_number("max_tokens", "Max tokens", min=1000, max=2000000)
@@ -475,9 +541,9 @@ def _advanced_section() -> None:
                 min=5, max=1000, classes="w-56",
             )
 
-        ui.label("Maintenance").classes(group)
+        theme.group_label("Maintenance")
         # The detail lives in the tooltips so the labels never ellipsize.
-        with ui.row().classes("w-full gap-4 flex-wrap"):
+        with ui.row().classes("sop-row"):
             npm_registry = _bind_input("npm_registry", "npm registry for CLI upgrades",
                                        classes="flex-grow mono")
             npm_registry.tooltip("Empty = the default registry.")
@@ -501,11 +567,12 @@ def _advanced_section() -> None:
 
 def _set_model(value: str) -> None:
     if value and value != "(custom)":
+        _stash_protocol_draft()
         app_state["opencode_model"] = value
         # Variant names are model-specific — drop a stale selection and
         # reload so the variant droplist re-aligns with the new model.
         app_state["agent_reasoning"] = ""
-        _save()
+        app_state.flush()
         ui.run_javascript("location.reload()")
 
 
@@ -523,11 +590,12 @@ async def _refresh_models(button=None) -> None:
             app_state.get("codex_api_key") or "",
         )
     if models:
+        _stash_protocol_draft()
         app_state.opencode_models = models
         app_state.model_list_engine = engine
         if not app_state.get("opencode_model"):
             app_state["opencode_model"] = models[0]
-        _save()
+        app_state.flush()
         ui.notify(f"Fetched {len(models)} {engine} models — reloading page.")
         ui.run_javascript("location.reload()")
     else:
@@ -544,26 +612,32 @@ async def _refresh_models(button=None) -> None:
 @ui.refreshable
 def _protection_section() -> None:
     """One panel for everything that bounds what the agent may touch."""
-    with _section("Access & Protection"):
-        ui.label(
-            "What the agent may touch: read-only reference directories, files "
-            "it must never modify, and the ignore list. Everything is saved to "
-            "access_protection.json in the workspace; the saved config files "
-            "are protected automatically.",
-        ).classes("text-xs text-[#8b949e]")
+    with _section(
+        "Access & Protection", anchor="access", icon="shield",
+        caption="Read-only paths, protected files, ignore list",
+    ):
+        theme.hint(
+            "What the agent may touch: read-only reference directories, files it "
+            "must never modify, and the ignore list. Saved to "
+            "access_protection.json in the workspace; the config files protect "
+            "themselves automatically.",
+        )
         workspace = _workspace()
         if not workspace:
-            ui.label("Set a valid workspace path first.").classes("text-[#e3b341]")
+            theme.notice("warn", "Set a valid workspace path in Configuration first.")
             return
-        _profile_sync(workspace, create=True)
+        # create=False: only reading this page must not write into the
+        # operator's workspace. The profile file is created by the first real
+        # edit (_profile_save), which is the moment the decision is made.
+        _profile_sync(workspace)
 
-        status = ui.label("").classes("text-xs text-[#8b949e]")
+        status = ui.label("").classes("sop-meta")
         # Same gate as the Live Run page's connectivity lock: the generator
         # reads the SAVED protocol, so with no protocol on disk the button is
         # disabled and a standing notice says what to do first. A click that
         # silently generates from an empty document is worse than a lock.
         ready, reason = _protocol_ready(workspace)
-        gate_label = ui.label(reason).classes("text-xs text-[#e3b341]")
+        gate_label = theme.notice("warn", reason)
         gate_label.set_visibility(not ready)
 
         async def _auto_generate() -> None:
@@ -574,7 +648,7 @@ def _protection_section() -> None:
 
             if not ready_now():
                 return
-            app_state.save()
+            app_state.flush()
             app_state.apply_api_config()
             notes: list[str] = []
             paths: list[str] = []
@@ -672,6 +746,7 @@ def _protection_section() -> None:
             _protected_section.refresh()
             _ignore_section.refresh()
             _ready_section.refresh()
+            _stepper.refresh()
             status.set_text(
                 f"Auto-generated: +{len(summary['whitelist_added'])} read-only "
                 f"dir(s); ignore {'updated' if summary['ignore_written'] else 'unchanged'}; "
@@ -690,15 +765,16 @@ def _protection_section() -> None:
             auto_button.set_enabled(ok)
             return ok
 
-        auto_button = ui.button(
-            "Auto-generate access & protection (LLM)", on_click=_auto_generate,
-        ).props("dense color=primary").tooltip(
-            "One LLM pass: suggests read-only reference directories from the "
-            "saved protocol, generates .opencodeignore patterns, validates "
-            "every entry, and saves both into the workspace.",
-        )
-        if not ready:
-            auto_button.set_enabled(False)
+        with ui.row().classes("items-center gap-3 flex-wrap"):
+            auto_button = ui.button(
+                "Auto-generate access & protection (LLM)", on_click=_auto_generate,
+            ).props("dense color=primary").tooltip(
+                "One LLM pass: suggests read-only reference directories from the "
+                "saved protocol, generates .opencodeignore patterns, validates "
+                "every entry, and saves both into the workspace.",
+            )
+            if not ready:
+                auto_button.set_enabled(False)
 
         _access_section()
         _protected_section()
@@ -708,14 +784,14 @@ def _protection_section() -> None:
 @ui.refreshable
 def _protected_section() -> None:
     with ui.column().classes("w-full gap-2"):
-        ui.label("Protected files").classes(_GROUP_LABEL)
-        ui.label(
+        theme.group_label("Protected files")
+        theme.hint(
             "Files the agent may not modify or delete. Saved in "
             "access_protection.json; its own config files are locked.",
-        ).classes("text-xs text-[#8b949e]")
+        )
         workspace = _workspace()
         if not workspace:
-            ui.label("Set a valid workspace path first.").classes("text-[#e3b341]")
+            ui.label("Set a valid workspace path first.").classes("sop-hint")
             return
         add_select = ui.select(
             [], multiple=True, label="Add protected files (workspace scan)",
@@ -758,17 +834,24 @@ def _refresh_chips(protected: list[str], options_holder: dict, container) -> Non
     container.clear()
     with container:
         if not protected:
-            ui.label("No protected files.").classes("text-xs text-[#8b949e]")
+            ui.label("No protected files.").classes("sop-hint")
         for path in protected:
-            with ui.row().classes("items-center gap-2"):
-                if path.lower() in {name.lower() for name in CONFIG_FILES}:
-                    ui.label(f"🔒 {path} (config, auto)").classes("text-xs mono")
-                    continue
-                ui.label(f"🔒 {path}").classes("text-xs mono")
-                ui.button(
-                    icon="close",
-                    on_click=lambda p=path: _remove_protected(p, options_holder, container),
-                ).props("flat dense")
+            auto = path.lower() in {name.lower() for name in CONFIG_FILES}
+            with ui.row().classes(
+                "items-center gap-2 flex-nowrap w-full sop-listrow",
+            ):
+                ui.icon("lock").style("color:var(--sop-warn);font-size:15px")
+                ui.label(path).classes("mono text-xs").style(
+                    "color:var(--sop-text-2)",
+                )
+                if auto:
+                    ui.html('<span class="chip">config · auto</span>')
+                else:
+                    ui.space()
+                    ui.button(
+                        icon="close",
+                        on_click=lambda p=path: _remove_protected(p, options_holder, container),
+                    ).props("flat dense").tooltip("Stop protecting this file")
 
 
 def _remove_protected(path: str, options_holder: dict, container) -> None:
@@ -789,40 +872,43 @@ def _access_section() -> None:
     from supervisor.security.access_policy import validate_whitelist_entry
 
     with ui.column().classes("w-full gap-2"):
-        ui.label("Path access whitelist (hard rule)").classes(_GROUP_LABEL)
-        ui.label(
-            "The project cwd is read/write. Whitelisted directories are "
-            "READ-ONLY. Everything else is denied for every backend "
-            "(opencode, codex, pi) - regardless of the agent's own rules. "
-            "Shell commands are parsed; dynamic constructs (substitutions, "
-            "unknown variables, encoded commands) are denied outright.",
-        ).classes("text-xs text-[#8b949e]")
+        theme.group_label("Path access whitelist (hard rule)")
+        theme.hint(
+            "The project cwd is read/write. Whitelisted directories are READ-ONLY. "
+            "Everything else is denied for every backend (opencode, codex, pi), "
+            "regardless of the agent's own rules. Shell commands are parsed; "
+            "dynamic constructs (substitutions, unknown variables, encoded "
+            "commands) are denied outright.",
+        )
         workspace = _workspace()
         if not workspace:
-            ui.label("Set a valid workspace path first.").classes("text-[#e3b341]")
+            ui.label("Set a valid workspace path first.").classes("sop-hint")
             return
 
         def _persist() -> None:
             _profile_save(workspace, configured=True)
             _drill_verdict.refresh()
 
-        _bind_switch(
-            "access_policy_enabled", "Enforce the hard path policy",
-            on_change=_persist,
-        ).props("dense")
-        _bind_switch(
-            "access_policy_strict",
-            "Strict: also deny interpreter execution (python/node/perl scripts)",
-            on_change=_persist,
-        ).props("dense")
+        with ui.row().classes("w-full gap-6 flex-wrap"):
+            _bind_switch(
+                "access_policy_enabled", "Enforce the hard path policy",
+                on_change=_persist,
+            ).props("dense")
+            _bind_switch(
+                "access_policy_strict",
+                "Strict: also deny interpreter execution (python/node/perl scripts)",
+                on_change=_persist,
+            ).props("dense")
 
-        status = ui.label("").classes("text-xs text-[#8b949e]")
+        status = ui.label("").classes("sop-meta")
 
-        with ui.row().classes("w-full items-center gap-2"):
+        with ui.row().classes("w-full items-end gap-2 flex-nowrap"):
             path_input = ui.input(
                 "Add a read-only reference directory (absolute path)",
             ).classes("grow mono")
-            add_button = ui.button("Add").props("dense")
+            add_button = ui.button("Add").props("outline color=none dense")
+            add_button.on_click(lambda: _add_path())
+            path_input.on("keydown.enter", lambda _e: _add_path())
 
         def _add_path(value: str | None = None) -> None:
             candidate = (value if value is not None else path_input.value or "").strip()
@@ -845,22 +931,27 @@ def _access_section() -> None:
             chips.refresh()
             _drill_verdict.refresh()
 
-        add_button.on_click(lambda: _add_path())
-        path_input.on("keydown.enter", lambda _e: _add_path())
-
         @ui.refreshable
         def chips() -> None:
             current = _list_str("access_whitelist")
             if not current:
-                ui.label("No whitelisted directories.").classes("text-xs text-[#8b949e]")
+                ui.label("No whitelisted directories.").classes("sop-hint")
                 return
             for entry in current:
-                with ui.row().classes("items-center gap-2"):
-                    ui.label(f"👁 RO  {entry}").classes("text-xs mono")
+                with ui.row().classes(
+                    "items-center gap-2 flex-nowrap w-full sop-listrow",
+                ):
+                    ui.icon("visibility").style(
+                        "color:var(--sop-accent-2);font-size:15px",
+                    )
+                    ui.label(entry).classes("mono text-xs grow truncate").style(
+                        "color:var(--sop-text-2)",
+                    )
+                    ui.html('<span class="chip chip--accent">read-only</span>')
                     ui.button(
                         icon="close",
                         on_click=lambda e=entry: _remove_whitelist(e),
-                    ).props("flat dense")
+                    ).props("flat dense").tooltip("Remove from the whitelist")
 
         chips()
 
@@ -878,16 +969,15 @@ def _access_section() -> None:
                 strict_dynamic=bool(app_state.get("access_policy_strict", False)),
             )
             report = run_policy_drill(workspace, policy)
-            ui.label(
-                ("✅ Policy drill passed — " if report.ok else "🚫 Policy drill FAILED — ")
+            theme.notice(
+                "ok" if report.ok else "bad",
+                ("Policy drill passed — " if report.ok else "Policy drill FAILED — ")
                 + report.summary(),
-            ).classes(
-                "text-xs " + ("text-[#3fb950]" if report.ok else "text-[#f85149]"),
             )
             if not report.ok:
                 ui.label(report.fail_text()).classes(
-                    "text-xs mono text-[#f85149] whitespace-pre-wrap",
-                )
+                    "text-xs mono whitespace-pre-wrap",
+                ).style("color:var(--sop-bad)")
 
         _drill_verdict()
 
@@ -971,10 +1061,13 @@ def _ignore_section() -> None:
     from supervisor.workspace.ignore_patterns import IGNORE_FILE, write_ignore_file
 
     with ui.column().classes("w-full gap-2"):
-        ui.label(".opencodeignore").classes(_GROUP_LABEL)
+        theme.group_label(".opencodeignore")
+        theme.hint(
+            "Glob patterns the agent must leave alone. Auto-saved on every edit.",
+        )
         workspace = _workspace()
         if not workspace:
-            ui.label("Set a valid workspace path first.").classes("text-[#e3b341]")
+            ui.label("Set a valid workspace path first.").classes("sop-hint")
             return
 
         ignore_path = workspace / IGNORE_FILE
@@ -984,7 +1077,7 @@ def _ignore_section() -> None:
         area = ui.textarea(".opencodeignore content", value=current).classes(
             "w-full mono",
         )
-        status = ui.label("").classes("text-xs text-[#8b949e]")
+        status = ui.label("").classes("sop-hint")
 
         def _autosave(e) -> None:
             write_ignore_file(workspace, e.value or "")
@@ -1048,13 +1141,20 @@ def _connectivity_section() -> None:
 
     # Engine is captured at render time; safe because switching the engine
     # reloads the whole page (see _set_engine).
-    # Not an expansion: the first-run flow is "configure the LLM, then prove
-    # it", so the buttons sit flat on the page right below the config.
-    with ui.column().classes("w-full gap-2"):
-        ui.label("Connectivity Tests").classes("text-lg font-bold mt-2")
+    # Not collapsible: the first-run flow is "configure the LLM, then prove
+    # it", so the buttons sit on the page right below the config.
+    def _head() -> None:
+        ui.label("Connectivity Tests").classes("sop-panel__title")
+        ui.label(
+            "Two probes: the agent engine and the judge model. Both must pass "
+            "before Live Run unlocks.",
+        ).classes("sop-panel__sub")
+
+    with theme.panel(icon="cable", head=_head, anchor="connectivity"):
         engine = app_state.get("engine") or "opencode"
-        status = ui.label("").classes("text-xs")
-        _refresh_status(status)
+        with ui.row().classes("items-center gap-3 flex-wrap"):
+            status = ui.label("").classes("sop-meta grow whitespace-pre-line")
+            _refresh_status(status)
 
         async def _run(kind: str) -> None:
             if not (app_state.get("workspace") or "").strip():
@@ -1067,6 +1167,7 @@ def _connectivity_section() -> None:
                 # client constructor run OUTSIDE those guards and can raise
                 # OSError / ValueError. Uncaught they vanished into NiceGUI's
                 # async task while the buttons re-enabled: a dead-looking Test.
+                results: dict[str, tuple[bool, str]] = {}
                 try:
                     if kind in ("agent", "all"):
                         ok, message = await nicegui_run.io_bound(
@@ -1080,7 +1181,7 @@ def _connectivity_section() -> None:
                             app_state.get("codex_api_key") or "",
                         )
                         app_state.flags["opencode_test_passed"] = ok
-                        status.set_text(f"{engine}: {'✅' if ok else '❌'} {message[:160]}")
+                        results[str(engine)] = (ok, message)
                     if kind in ("supervisor", "all"):
                         ok, message = await nicegui_run.io_bound(
                             test_supervisor_connectivity,
@@ -1089,33 +1190,53 @@ def _connectivity_section() -> None:
                             app_state.get("base_url") or None,
                         )
                         app_state.flags["supervisor_test_passed"] = ok
-                        status.set_text(
-                            f"supervisor: {'✅' if ok else '❌'} {message[:160]}",
-                        )
+                        results["supervisor"] = (ok, message)
                 except Exception as exc:  # noqa: BLE001 — must never be silent
                     status.set_text(
                         f"Connectivity test failed: {type(exc).__name__}: "
                         f"{str(exc)[:200]}",
                     )
                     return
+                # One line per probe: a single label meant the second result
+                # overwrote the first, so a failed agent probe could look like
+                # a pass because the supervisor one succeeded.
+                status.set_text(
+                    "\n".join(
+                        f"{'✅' if ok else '❌'} {name}: {message[:140]}"
+                        for name, (ok, message) in results.items()
+                    ),
+                )
+                # Persist the measurement so a restart does not re-lock Launch
+                # for the same, unchanged configuration.
+                from services.webui import probes
+
+                probes.record(app_state.tests_ok(), app_state.as_mapping())
                 if app_state.tests_ok():
-                    status.set_text("✅ Both connectivity tests passed — Live Run unlocked.")
+                    status.set_text(
+                        status.text
+                        + "\n✅ Both connectivity tests passed — Live Run unlocked.",
+                    )
                 # The hand-off button at the page bottom is gated on these
                 # results, so it must re-evaluate as soon as they change.
                 _ready_section.refresh()
+                _stepper.refresh()
 
-        with ui.row().classes("gap-3"):
+        with ui.row().classes("gap-3 flex-wrap items-center"):
             test_buttons = [
                 ui.button("Run Tests", on_click=lambda: _run("all")).props(
                     "color=primary",
                 ),
                 ui.button(f"Test {engine}", on_click=lambda: _run("agent")).props(
-                    "outline",
+                    "outline color=none",
                 ),
                 ui.button(
                     "Test Supervisor", on_click=lambda: _run("supervisor"),
-                ).props("outline"),
+                ).props("outline color=none"),
             ]
+            if app_state.tests_ok():
+                ui.html('<span class="chip chip--ok">both probes passed</span>')
+            else:
+                ui.html('<span class="chip chip--warn">probes not passed yet</span>')
 
 
 def _refresh_status(_label) -> None:
@@ -1134,20 +1255,51 @@ def _compose_protocol(sections: dict[str, str]) -> str:
     )
 
 
-def _update_quality(label, sections: dict[str, str]) -> None:
+def _quality_score(value: float) -> tuple[str, str]:
+    """(tone, colour) for a 0..1 completeness score."""
+    if value >= 0.8:
+        return "ok", "var(--sop-ok)"
+    if value >= 0.5:
+        return "warn", "var(--sop-warn)"
+    return "bad", "var(--sop-bad)"
+
+
+def _update_quality(labels: dict, sections: dict[str, str]) -> None:
+    """Refresh the four score chips under the protocol editor.
+
+    Chips instead of one long sentence: completeness is a set of independent
+    numbers, and a sentence forced the operator to parse it every keystroke.
+    """
     from supervisor.protocols.protocol_analyzer import ProtocolAnalyzer
 
     try:
         analysis = ProtocolAnalyzer().analyze_text(_compose_protocol(sections))
-        label.set_text(
-            f"Quality: overall {analysis.overall_score:.0%} · "
-            f"INPUT {analysis.input_score.overall:.0%} · "
-            f"TARGET {analysis.target_score.overall:.0%} · "
-            f"RESTRICTIONS {analysis.restrictions_score.overall:.0%}"
-            + (f" · {len(analysis.issues)} issue(s)" if analysis.issues else ""),
+    except Exception:  # noqa: BLE001 - UI action boundary, keep the page alive
+        for label in labels.values():
+            label.set_text("—")
+        return
+    scores = {
+        "overall": analysis.overall_score,
+        "input": analysis.input_score.overall,
+        "target": analysis.target_score.overall,
+        "restrictions": analysis.restrictions_score.overall,
+    }
+    for key, value in scores.items():
+        tone, color = _quality_score(float(value))
+        label = labels.get(key)
+        if label is None:
+            continue
+        label.set_text(f"{value:.0%}")
+        label.style(f"color:{color}")
+    issue_label = labels.get("issues")
+    if issue_label is not None:
+        count = len(analysis.issues)
+        issue_label.set_text(
+            f"{count} issue(s)" if count else "no issues",
         )
-    except Exception:  # noqa: BLE001 - UI action boundary - surface the failure, keep the page alive
-        label.set_text("Complete all three sections to see quality scores.")
+        issue_label.style(
+            "color:" + ("var(--sop-warn)" if count else "var(--sop-text-3)"),
+        )
 
 
 @ui.refreshable
@@ -1155,10 +1307,17 @@ def _protocol_section() -> None:
     """The workspace protocol as one field per section (loaded, never residual)."""
     from supervisor.protocols.protocol import load_protocol, resolve_protocol_path
 
-    with _section("Protocol", open_=True):
+    with _section(
+        "Protocol", anchor="protocol", open_=True, icon="description",
+        caption="What the task is: context, objectives, boundaries",
+    ):
         workspace = _workspace()
         if not workspace:
-            ui.label("Set a valid workspace path first.").classes("text-[#e3b341]")
+            theme.notice(
+                "warn",
+                "Set a valid workspace path in Configuration — the protocol is "
+                "read from and written to that folder.",
+            )
             return
 
         path = resolve_protocol_path(workspace)
@@ -1167,17 +1326,17 @@ def _protocol_section() -> None:
             try:
                 loaded = load_protocol(path)
             except (OSError, ValueError) as exc:
-                ui.label(f"Could not load {path.name}: {exc}").classes(
-                    "text-xs text-[#f85149]",
-                )
+                theme.notice("bad", f"Could not load {path.name}: {exc}")
             else:
-                ui.label(f"Loaded {path.name}.").classes(
-                    "text-xs text-[#3fb950]",
+                theme.notice(
+                    "ok", f"Loaded {path.name} from {workspace.name}.",
                 )
         else:
-            ui.label(
-                "No protocol yet — fill the sections below, then Refine with AI.",
-            ).classes("text-xs text-[#8b949e]")
+            theme.notice(
+                "info",
+                "No protocol yet — fill the three sections, refine with AI, "
+                "then Accept & Save. Access & Protection unlocks on save.",
+            )
 
         areas = {}
         for key, label in (
@@ -1188,33 +1347,59 @@ def _protocol_section() -> None:
             areas[key] = ui.textarea(
                 label,
                 value=getattr(loaded, f"{key}_section", "") if loaded else "",
-            ).classes("w-full mono").props("autogrow")
+            ).classes("w-full mono").props("autogrow").style("min-height: 4.5rem").style("min-height: 4.5rem")
 
         def _sections() -> dict[str, str]:
             return {key: str(area.value or "") for key, area in areas.items()}
 
-        quality_label = ui.label("").classes("text-xs text-[#8b949e]")
-        _update_quality(quality_label, _sections())
-        for area in areas.values():
-            area.on_value_change(
-                lambda _e: _update_quality(quality_label, _sections()),
+        # Register the live getter so any reload-triggering control (engine,
+        # model, fetch) can stash this text first; restore it here on the way
+        # back in. Without both halves the draft disappeared with no warning.
+        _draft_slot["workspace"] = str(workspace)
+        _draft_slot["getter"] = _sections
+        draft = _take_protocol_draft(workspace)
+        if draft:
+            for key, area in areas.items():
+                if draft.get(key):
+                    area.set_value(draft[key])
+            theme.notice(
+                "warn",
+                "Restored an unsaved protocol draft from before the last page "
+                "reload — Accept & Save to keep it.",
             )
 
-        status = ui.label("").classes("text-xs")
-        cancel_button = ui.button(
-            "Cancel", on_click=lambda: _cancel_refine(status),
-        ).props("outline color=red")
-        cancel_button.set_visibility(False)
-        refine_button = ui.button(
-            "Refine with AI",
-            on_click=lambda: _refine(
-                workspace, _sections, areas, status, refine_button, cancel_button,
-            ),
-        ).props("color=primary")
-        ui.button(
-            "Accept & Save",
-            on_click=lambda: _accept_protocol(workspace, _sections),
-        ).props("color=primary")
+        # Quality: four independent numbers, read at a glance.
+        with ui.row().classes("sop-chips items-center"):
+            chips: dict[str, object] = {}
+            for key, label in (
+                ("overall", "overall"), ("input", "INPUT"), ("target", "TARGET"),
+                ("restrictions", "RESTRICTIONS"),
+            ):
+                ui.label(label).classes("sop-hint")
+                chips[key] = ui.label("—").classes("mono text-xs font-bold")
+            chips["issues"] = ui.label("").classes("sop-hint")
+        _update_quality(chips, _sections())
+        for area in areas.values():
+            area.on_value_change(
+                lambda _e: _update_quality(chips, _sections()),
+            )
+
+        status = ui.label("").classes("sop-meta")
+        with ui.row().classes("items-center gap-2 flex-wrap"):
+            refine_button = ui.button(
+                "Refine with AI",
+                on_click=lambda: _refine(
+                    workspace, _sections, areas, status, refine_button, cancel_button,
+                ),
+            ).props("outline color=none")
+            cancel_button = ui.button(
+                "Cancel", on_click=lambda: _cancel_refine(status),
+            ).props("outline color=red")
+            cancel_button.set_visibility(False)
+            ui.button(
+                "Accept & Save",
+                on_click=lambda: _accept_protocol(workspace, _sections),
+            ).props("color=primary")
 
         _feasibility_section(_sections)
 
@@ -1243,6 +1428,12 @@ def _accept_protocol(workspace: Path, sections_getter) -> None:
         ui.notify("TARGET not ready: " + " ".join(audit.issues))
         return
     path = save_protocol(workspace, protocol)
+    # The draft is now on disk; a stale stash would resurrect it on the next
+    # render and make the page disagree with the file.
+    try:
+        nicegui_app.storage.general.pop(f"protocol_draft::{workspace}", None)
+    except Exception:  # noqa: BLE001
+        pass
     # Refresh the workspace profile so the new config file is protected too.
     _profile_save(workspace)
     # Stay on the page: Access & Protection sits directly below and only
@@ -1250,6 +1441,7 @@ def _accept_protocol(workspace: Path, sections_getter) -> None:
     # the operator away mid-setup (and made them find their way back). The
     # nav drawer still reaches Live Run whenever they are actually done.
     _protection_section.refresh()
+    _stepper.refresh()
     ui.notify(
         f"{path.name} saved to {workspace.name} — Access & Protection below "
         "is now unlocked.",
@@ -1274,7 +1466,7 @@ async def _refine(
             ProtocolWizard,
         )
 
-        app_state.save()
+        app_state.flush()
         app_state.apply_api_config()
         try:
             wizard = ProtocolWizard(
@@ -1395,6 +1587,99 @@ def _setup_blockers(workspace: Path | None) -> list[str]:
     return blockers
 
 
+def _setup_steps(workspace: Path | None) -> list[tuple[str, bool]]:
+    """The five setup steps in the order the page presents them.
+
+    One source for both the progress strip and the hand-off checklist, so the
+    two can never disagree about what "done" means.
+    """
+    from supervisor.security.access_policy import AccessPolicy
+    from supervisor.security.access_profile import load_profile
+    from supervisor.security.preflight import run_policy_drill
+
+    configured = bool((app_state.get("openai_key") or "").strip()) and workspace is not None
+    protocol_ok = False
+    if workspace is not None:
+        protocol_ok, _reason = _protocol_ready(workspace)
+    access_ok = False
+    if workspace is not None:
+        profile = load_profile(workspace)
+        drill_ok = run_policy_drill(
+            workspace,
+            AccessPolicy(
+                workspace=workspace,
+                whitelist=tuple(
+                    Path(item) for item in (profile.get("access_whitelist") or [])
+                ),
+                enabled=bool(profile.get("access_policy_enabled", True)),
+                strict_dynamic=bool(profile.get("access_policy_strict", False)),
+            ),
+        ).ok
+        access_ok = bool(profile.get("access_configured")) and drill_ok
+    tested = app_state.tests_ok()
+    return [
+        # (label, done, anchor) — the anchor is what the stepper links to.
+        ("Configure", configured, "configuration"),
+        ("Test", tested, "connectivity"),
+        ("Protocol", protocol_ok, "protocol"),
+        ("Protect", access_ok, "access"),
+        ("Launch", configured and tested and protocol_ok and access_ok, "handoff"),
+    ]
+
+
+@ui.refreshable
+def _stepper() -> None:
+    """Where the operator is in the five-step path — the page's table of contents.
+
+    The page is long by necessity (credentials, probes, protocol, protections,
+    hand-off). This strip answers "what is left" without scrolling, which is
+    the whole point of a disclosure hierarchy.
+    """
+    steps = _setup_steps(_workspace())
+    done_count = sum(1 for _label, done, _anchor in steps if done)
+    current = next(
+        (index for index, step in enumerate(steps) if not step[1]), len(steps) - 1,
+    )
+    with ui.row().classes("sop-steps"):
+        for index, (label, done, anchor) in enumerate(steps):
+            state = "done" if done else ("current" if index == current else "todo")
+            # A real link, not a styled div: clickable, focusable, and it works
+            # with the keyboard and the browser's own history.
+            link = ui.element("a").classes(f"sop-step sop-step--{state}").props(
+                f'href="#{anchor}" aria-label="{label}"',
+            )
+            if index == current:
+                link.props('aria-current="step"')
+            with link:
+                if done:
+                    # A check mark, not a green number: colour alone left done
+                    # and current indistinguishable for colour-blind users.
+                    with ui.element("div").classes("sop-step__num"):
+                        ui.icon("check").style("font-size:14px")
+                else:
+                    ui.label(str(index + 1)).classes("sop-step__num")
+                ui.label(label).classes("sop-step__label")
+    # The bottom hand-off is a page away from the top; naming the next single
+    # action here is what turns a five-step checklist into a path.
+    blockers = _setup_blockers(_workspace())
+    with ui.row().classes("sop-next"):
+        if blockers:
+            ui.label("Next").classes("sop-kicker")
+            ui.icon("arrow_right_alt").style(
+                "color:var(--sop-accent-2);font-size:16px",
+            )
+            ui.label(blockers[0]).classes("sop-meta")
+        else:
+            ui.icon("check_circle").style("color:var(--sop-ok);font-size:15px")
+            ui.label("Setup complete — hand off to Live Run at the bottom.").classes(
+                "sop-meta",
+            )
+        ui.space()
+        # Moved out of the strip: a progress count sharing the tab row read as
+        # a sixth step.
+        ui.label(f"{done_count}/{len(steps)} steps done").classes("sop-hint mono")
+
+
 @ui.refreshable
 def _ready_section() -> None:
     """The one deliberate exit to Live Run, unlocked by a complete setup.
@@ -1404,33 +1689,64 @@ def _ready_section() -> None:
     this button is the only hand-off.
     """
     blockers = _setup_blockers(_workspace())
-    with ui.column().classes("w-full gap-2 mt-4"):
-        button = ui.button(
-            "Ready for Live Run!",
-            on_click=lambda: ui.navigate.to("/run"),
-        ).props("color=primary size=lg")
-        if blockers:
-            button.set_enabled(False)
-            ui.label("Locked until every setup step and test is complete:").classes(
-                "text-xs text-[#8b949e]",
-            )
-            for item in blockers:
-                ui.label(f"• {item}").classes("text-xs text-[#e3b341]")
-        else:
-            ui.label("✅ Setup complete — Live Run is unlocked.").classes(
-                "text-xs text-[#3fb950]",
-            )
+    with theme.panel(
+        "Hand-off", icon="rocket_launch", tone="" if blockers else "quiet",
+        anchor="handoff",
+        subtitle=(
+            f"{len(blockers)} step(s) left before this page can be left"
+            if blockers else "Every setup step and probe is complete"
+        ),
+    ):
+        with ui.row().classes("w-full items-center gap-4 flex-wrap"):
+            with ui.column().classes("grow gap-1 min-w-0"):
+                if blockers:
+                    ui.label("Locked until every setup step is complete:").classes(
+                        "sop-hint",
+                    )
+                    for item in blockers:
+                        with ui.row().classes("items-start gap-2 flex-nowrap"):
+                            ui.icon("radio_button_unchecked").style(
+                                "color:var(--sop-warn);font-size:14px;margin-top:2px",
+                            )
+                            ui.label(item).classes("sop-meta")
+                else:
+                    theme.notice(
+                        "ok",
+                        "Setup complete — the run page is unlocked and reads "
+                        "this workspace and protocol.",
+                    )
+            with ui.column().classes("items-end gap-1"):
+                if blockers:
+                    # An outline, not a dimmed primary: "not yet" must not
+                    # look like "nearly".
+                    button = ui.button(
+                        "Ready for Live Run!",
+                        on_click=lambda: ui.navigate.to("/run"),
+                    ).props("outline color=none size=lg")
+                    button.set_enabled(False)
+                    ui.label("unlocks automatically").classes("sop-hint")
+                else:
+                    button = ui.button(
+                        "Ready for Live Run!",
+                        on_click=lambda: ui.navigate.to("/run"),
+                    ).props("color=primary size=lg")
 
 
 # ── Page entry ────────────────────────────────────────────────────────────────
 
 
 def render() -> None:
-    ui.label("Protocol Wizard").classes("text-2xl font-bold")
+    theme.page_header(
+        "Protocol Wizard",
+        "Write the task down, prove the models answer, bound what the agent may "
+        "touch — then hand off. Steps 1–4 are done once and reused by every run.",
+        kicker="Setup",
+    )
     # The page rendered with this workspace: any later edit triggers a
     # rebuild only when it actually resolves to a different one.
     workspace = _workspace()
     _last_refreshed_workspace["path"] = str(workspace) if workspace else ""
+    _stepper()
     _config_section()
     # Directly after the LLM configuration: the tests prove that config.
     _connectivity_section()

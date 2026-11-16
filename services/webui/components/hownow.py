@@ -95,7 +95,7 @@ def _run_sweep() -> None:
     report = ""
     error = ""
     try:
-        app_state.save()
+        app_state.flush()
         app_state.apply_api_config()
         report = run_hownow_sweep(
             app_state.as_mapping(),
@@ -144,17 +144,26 @@ class HowNowPanel:
     """
 
     def __init__(self):
+        from services.webui import theme
+
         self._mode = ""
         self._signature = None
         self._status: ui.label | None = None
         self._tail: TailStrip | None = None
 
-        ui.button("How Now", on_click=self._start).props("color=primary").tooltip(
-            "Wakes a fresh agent session to sweep every live run session "
-            "(runs and batch sub-runs) and report which ones need you. "
-            "The sweep keeps running if you leave this page.",
-        )
-        self._results = ui.column().classes("w-full gap-2")
+        with theme.panel(
+            "How now",
+            icon="radar",
+            tone="quiet",
+            subtitle=(
+                "Wake one fresh agent turn to sweep every live session and "
+                "report which runs need you. Keeps running if you leave."
+            ),
+            actions=lambda: ui.button(
+                "Run sweep", on_click=self._start,
+            ).props("outline color=none dense").tooltip("Start a sweep (one at a time)."),
+        ) as self._body:
+            self._results = ui.column().classes("w-full gap-2")
         self._timer = ui.timer(1.0, self._tick)
         # Immediate tick: re-attach to a running sweep or show the cached
         # result right at page load, without waiting a second.
@@ -183,7 +192,7 @@ class HowNowPanel:
                 self._signature = None
                 self._results.clear()
                 with self._results:
-                    self._status = ui.label("").classes("text-xs text-[#8b949e]")
+                    self._status = ui.label("").classes("sop-hint mono")
                     self._tail = TailStrip(keep=6)
             elapsed = int(time.time() - started_at)
             self._status.set_text(
@@ -206,20 +215,26 @@ class HowNowPanel:
         self._tail = None
         self._results.clear()
         if not report and not error:
+            # Idle with no cached sweep: an empty body under a titled band is
+            # pure padding, so the panel collapses to its header.
+            self._body.set_visibility(False)
             self._timer.active = False
             return
+        self._body.set_visibility(True)
+        self._body.set_visibility(True)
         with self._results:
             took = (
                 int(finished_at - started_at)
                 if started_at and finished_at else 0
             )
             ui.label(
-                f"How-now sweep · {_fmt_time(finished_at)}"
+                f"sweep · {_fmt_time(finished_at)}"
                 + (f" · {took}s" if took else ""),
-            ).classes("text-xs text-[#8b949e] mono")
+            ).classes("sop-hint mono")
             if error:
-                ui.label(f"Sweep failed: {error}").classes(
-                    "text-sm text-[#f85149]",
-                )
+                from services.webui import theme
+
+                theme.notice("bad", f"Sweep failed: {error}")
             else:
-                ui.markdown(report)
+                with ui.column().classes("sop-markdown w-full"):
+                    ui.markdown(report)

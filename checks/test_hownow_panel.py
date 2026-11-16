@@ -22,7 +22,8 @@ def isolated(monkeypatch, tmp_path):
     """Fresh singleton state + tmp cache + no real settings/store access."""
     monkeypatch.setattr(hn, "_CACHE_PATH", tmp_path / "hownow_cache.json")
     monkeypatch.setattr(hn, "app_state", SimpleNamespace(
-        save=lambda: None, apply_api_config=lambda: None, as_mapping=dict,
+        save=lambda: None, flush=lambda: None, apply_api_config=lambda: None,
+        as_mapping=dict,
     ))
     monkeypatch.setattr(
         hn, "get_job_manager", lambda: SimpleNamespace(store=None),
