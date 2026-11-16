@@ -300,15 +300,22 @@ def render_shell(active: str, job_manager) -> None:
                 ("Run", run_counts), ("Harvest", harvest_counts),
             ):
                 running, pending = counts
-                with ui.row().classes("sop-queue__row flex-nowrap w-full"):
-                    ui.label(queue_label).classes("font-medium")
+                # Two lines: a single row wraps mid-word once the LIVE badge joins it.
+                card = ui.column().classes("sop-queue__card w-full")
+                if running:
+                    card.classes("sop-queue__card--live")
+                with card:
+                    with ui.row().classes("sop-queue__row flex-nowrap w-full"):
+                        ui.label(queue_label).classes("font-medium")
+                        if running:
+                            ui.html(
+                                '<span class="pill pill-running">LIVE</span>',
+                            ).classes("sop-queue__live")
                     ui.html(
                         f'<span class="sop-queue__counts">'
-                        f"{running} <span style='color:#4d5769'>run</span> · "
-                        f"{pending} <span style='color:#4d5769'>queue</span></span>",
+                        f"<b>{running}</b> <span class='sop-queue__unit'>run</span> · "
+                        f"<b>{pending}</b> <span class='sop-queue__unit'>queue</span></span>",
                     )
-                    if running:
-                        ui.html('<span class="pill pill-running">LIVE</span>')
 
         ui.space()
         with ui.column().classes("sop-drawer__foot gap-1"):

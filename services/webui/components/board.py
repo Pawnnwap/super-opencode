@@ -524,14 +524,20 @@ class JobBoard:
         queued = states.count("PENDING")
         summary = f"{running} running / {queued} queued" if queued else f"{running} running"
         with ui.card().classes("sop-jobcard sop-jobcard--running gap-2"):
+            # Identity line and control line stay separate: one nowrap row
+            # crushed the chip, summary and button into vertical text at the
+            # grid's 300-345 px column width.
             with ui.row().classes("w-full items-center gap-2 flex-nowrap"):
                 ui.icon("folder_copy").style("color:var(--sop-accent-2);font-size:16px")
-                ui.label(f"Study batch {batch_id}").classes("sop-jobcard__id truncate")
+                ui.label(f"Study batch {batch_id}").classes(
+                    "sop-jobcard__id truncate grow min-w-0",
+                ).tooltip(batch_id)
                 ui.html(
                     f'<span class="chip chip--accent">{len(members)} replica(s)</span>',
                 )
+            with ui.row().classes("w-full items-center gap-2 flex-nowrap"):
+                ui.label(summary).classes("sop-jobcard__meta sop-jobcard__summary")
                 ui.space()
-                ui.label(summary).classes("sop-jobcard__meta")
                 ui.button(
                     "Cancel batch",
                     on_click=lambda b=batch_id: self._cancel_batch(b),

@@ -459,10 +459,16 @@ a.sop-step:not(.sop-step--current):hover { background: var(--sop-surface-2); }
 }
 .nav-item__badge--live { color: var(--sop-accent-2); border-color: rgba(79, 140, 255, 0.4); background: var(--sop-accent-soft); }
 
-.sop-queue { width: 100%; padding: 0 16px; display: flex; flex-direction: column; gap: 6px; }
-.sop-queue__row { display: flex; align-items: center; gap: 8px; font-size: 11.5px; color: var(--sop-text-3); }
+.sop-queue { width: 100%; padding: 0 8px; display: flex; flex-direction: column; gap: 6px; }
+.sop-queue__card { gap: 1px; padding: 6px 10px; border-radius: 8px; border: 1px solid transparent; }
+.sop-queue__card--live { background: #10141b; border-color: var(--sop-line); }
+.sop-queue__row { display: flex; align-items: center; gap: 8px; font-size: 11.5px; color: var(--sop-text-2); }
+.sop-queue__row > * { flex: none; }
 .sop-queue__row b { color: var(--sop-text-2); font-weight: 600; }
-.sop-queue__counts { margin-left: auto; font-family: var(--sop-mono); font-size: 11px; }
+.sop-queue__live { margin-left: auto; }
+.sop-queue__counts { font-family: var(--sop-mono); font-size: 11px; color: var(--sop-text-3); white-space: nowrap; }
+.sop-queue__counts b { color: var(--sop-text-2); font-weight: 600; }
+.sop-queue__unit { color: var(--sop-text-3); }
 .sop-drawer__foot {
   /* #4d5769 measured 2.77:1 — the least readable text in the whole chrome. */
   padding: 10px 16px 14px; font-size: 10.5px; color: var(--sop-text-3);
@@ -517,6 +523,8 @@ a.sop-step:not(.sop-step--current):hover { background: var(--sop-surface-2); }
 .sop-jobcard--blocked::before, .sop-jobcard--abandoned::before { background: var(--sop-warn); }
 .sop-jobcard__id { font-family: var(--sop-mono); font-size: 11.5px; color: var(--sop-text-1); letter-spacing: -0.01em; }
 .sop-jobcard__meta { font-size: 11.5px; color: var(--sop-text-3); }
+.sop-jobcard__summary { flex: none; white-space: nowrap; }
+.sop-jobcard .sop-jobcard__meta.mono { flex: none; white-space: nowrap; }
 /* Actions stay at full opacity: "View" is the only way into a task, and a
    hover-gated entrance is invisible to touch and keyboard users. Secondary
    actions carry their own colour (folder = neutral, delete = red) instead of
@@ -524,6 +532,16 @@ a.sop-step:not(.sop-step--current):hover { background: var(--sop-surface-2); }
 .sop-jobcard__actions { opacity: 1; }
 .sop-jobcard:hover { border-color: var(--sop-line-2); }
 .sop-jobcard:focus-within { border-color: var(--sop-line-2); }
+
+/* ── Row shrink discipline ───────────────────────────────────────────────
+   In a single-line row only truncating elements may absorb width pressure.
+   Badges, buttons and stamps keep their natural size: left shrinkable, they
+   collapsed into one-word-per-line columns at card and rail widths. */
+.pill, .chip, .sop-metric, .nav-item__badge { white-space: nowrap; }
+.q-btn { flex-shrink: 0; }
+.q-btn .q-btn__content { white-space: nowrap; }
+.row > div:has(> .pill:only-child),
+.row > div:has(> .chip:only-child) { flex: none; }
 
 /* ── Metrics strip ─────────────────────────────────────────────────────── */
 

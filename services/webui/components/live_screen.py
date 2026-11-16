@@ -245,7 +245,7 @@ class LiveJobScreen:
             ),
         )
         with ui.row().classes("w-full items-center gap-2 flex-nowrap"):
-            ui.icon("switches").style("color:var(--sop-text-3);font-size:15px")
+            ui.icon("swap_horiz").style("color:var(--sop-text-3);font-size:15px")
             ui.select(
                 ordered,
                 value=self.job_id if self.job_id in ordered else ordered[0],
