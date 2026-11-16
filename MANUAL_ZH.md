@@ -147,8 +147,9 @@ codex / pi 反复执行、评审、回收，并用硬性路径策略限制代理
 ## 9. 日常维护
 
 - **重启界面**：`.\start_suprun.ps1 -Restart`（任务不会丢；界面会重新要求连通性测试）。
-- **日志**：`guardian.log`（守护）、`supervisor_app.err.log`（界面）、
-  `job_worker.err.log`（任务）、`app.fatal.log`（崩溃取证）。
+- **日志**（统一在 `logs\` 目录）：`guardian.log`（守护）、
+  `supervisor_app.err.log`（界面）、`job_worker.err.log`（任务）、
+  `app.fatal.log`（崩溃取证）。
 - **守护规则**：守护进程只修“确实坏了”的东西；**有 RUNNING 任务时绝不杀工作进程**，
   只在空闲且卡死时重启。
 - **任务存储**：`.job_store\`（不要手动删正在跑的任务记录）。

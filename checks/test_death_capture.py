@@ -104,7 +104,8 @@ def test_scheduled_task_actions_never_open_a_console_window():
 
 def test_ui_arms_death_capture_and_lifecycle_logs():
     src = _read("app.py")
-    assert 'death_capture.install("app.fatal.log")' in src
+    assert 'log_path("app.fatal.log")' in src
+    assert "from services.runtime.log_paths import log_path" in src
     assert "app.on_connect" in src
     assert "app.on_disconnect" in src
     assert "app.on_delete" in src
@@ -120,7 +121,25 @@ def test_ui_watchdog_ticks_the_liveness_clock():
 
 def test_worker_arms_death_capture():
     src = _read("services", "jobs", "worker_service.py")
-    assert 'death_capture.install("job_worker.fatal.log")' in src
+    assert 'log_path("job_worker.fatal.log")' in src
+
+
+def test_service_logs_live_in_the_dedicated_logs_directory():
+    src = _read("start_suprun.ps1")
+    assert "$logs = Join-Path $root 'logs'" in src
+    for legacy in (
+        "Join-Path $root 'supervisor_app.out.log'",
+        "Join-Path $root 'supervisor_app.err.log'",
+        "Join-Path $root 'job_worker.out.log'",
+        "Join-Path $root 'job_worker.err.log'",
+        "Join-Path $root 'codex_compat_proxy.out.log'",
+        "Join-Path $root 'codex_compat_proxy.err.log'",
+    ):
+        assert legacy not in src
+    guardian = _read("services", "runtime", "guardian.py")
+    assert 'LOG_DIR = ROOT / "logs"' in guardian
+    proxy = _read("codex_compat_proxy.py")
+    assert 'ROOT / "logs" / "codex_compat_proxy.log"' in proxy
 
 
 def test_browser_beacon_reports_socket_and_tab_events():

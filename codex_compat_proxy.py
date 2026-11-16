@@ -46,7 +46,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 UPSTREAM = os.environ.get("SOP_UPSTREAM", "").strip().rstrip("/")
 CACHE_FILE = Path(os.environ.get("SOP_CAP_CACHE", ROOT / "codex_capability_cache.json"))
-LOG_FILE = Path(os.environ.get("SOP_CAP_LOG", ROOT / "codex_compat_proxy.log"))
+LOG_FILE = Path(
+    os.environ.get("SOP_CAP_LOG") or ROOT / "logs" / "codex_compat_proxy.log",
+)
 TTL_SECONDS = int(os.environ.get("SOP_CAP_TTL", str(6 * 3600)))
 MAX_LOG_BYTES = 2_000_000
 # Effort clamp tie-break: "down" (default, cheaper) or "up".
@@ -78,6 +80,7 @@ def _blank_profile() -> dict:
 
 def _log(line: str) -> None:
     try:
+        LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
         if LOG_FILE.exists() and LOG_FILE.stat().st_size > MAX_LOG_BYTES:
             LOG_FILE.replace(LOG_FILE.with_suffix(".log.1"))
         with open(LOG_FILE, "a", encoding="utf-8") as fh:

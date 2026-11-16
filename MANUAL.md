@@ -111,10 +111,11 @@ The guardian is one quiet `pythonw` process (default 20 s health / 180 s queue):
 - repairs via the launcher; an app that is still booting is left alone;
 - **never kills a worker with RUNNING jobs**; kills only a wedged idle worker
   (identity-checked) or a claim-stalled idle worker;
-- logs events only: `guardian.log`; heartbeat: `.job_store\guardian.heartbeat`.
+- logs events only: `logs\guardian.log`; heartbeat: `.job_store\guardian.heartbeat`.
 
-Logs: `supervisor_app.out/err.log`, `job_worker.out/err.log`, `guardian.log`,
-`app.fatal.log`; job records live in `.job_store\`.
+Logs (all under `logs\`): `supervisor_app.out/err.log`,
+`job_worker.out/err.log`, `guardian.log`, `app.fatal.log`; job records live in
+`.job_store\`.
 
 ## 9. Checks
 

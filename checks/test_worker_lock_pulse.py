@@ -54,7 +54,8 @@ def _start_worker_main(monkeypatch, tmp_path):
     # first test must still execute the pre-fix loop.
     monkeypatch.setattr(ws, "_STALL_DUMP_SECONDS", 0.4, raising=False)
     monkeypatch.setattr(ws, "_PULSE_SECONDS", 0.05, raising=False)
-    monkeypatch.chdir(tmp_path)  # death_capture writes the fatal log to CWD
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("SOP_LOG_DIR", str(tmp_path / "logs"))
     monkeypatch.setattr(ws.death_capture, "_handles", [])
     # Never let the freshness mismatch re-exec the TEST process image.
     # Direct assignment, not monkeypatch: the main() thread outlives the test,
@@ -110,7 +111,7 @@ def test_stall_leaves_forensics_naming_the_step(monkeypatch, tmp_path):
     """A stalled loop must dump thread stacks + the blocked step (fatal log)."""
     _start_worker_main(monkeypatch, tmp_path)
     deadline = time.time() + 10
-    fatal = tmp_path / "job_worker.fatal.log"
+    fatal = tmp_path / "logs" / "job_worker.fatal.log"
     while time.time() < deadline:
         if fatal.exists() and "poll loop stalled" in fatal.read_text(encoding="utf-8"):
             break

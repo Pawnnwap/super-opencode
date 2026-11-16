@@ -35,6 +35,8 @@ param(
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $python = Join-Path $root 'venv\Scripts\python.exe'
+$logs = Join-Path $root 'logs'
+if (-not (Test-Path $logs)) { New-Item -ItemType Directory -Path $logs | Out-Null }
 $stamp = Get-Date -Format 'yyyyMMdd_HHmm'
 $upstream = $Upstream.TrimEnd('/')
 if (-not $PSBoundParameters.ContainsKey('Upstream')) {
@@ -231,8 +233,8 @@ function Start-CapabilityProxy {
   # exit-time one. No launched path may contain "!" (none do).
   $inner = 'cd /d "{0}" && "{1}" -u codex_compat_proxy.py {2} {3} > "{4}" 2> "{5}" & echo !DATE! !TIME! exitcode=!ERRORLEVEL!>> "{6}"' -f `
     $root, $python, $ProxyPort, $upstream,
-    (Join-Path $root 'codex_compat_proxy.out.log'), (Join-Path $root 'codex_compat_proxy.err.log'),
-    (Join-Path $root 'codex_compat_proxy.exitcode')
+    (Join-Path $logs 'codex_compat_proxy.out.log'), (Join-Path $logs 'codex_compat_proxy.err.log'),
+    (Join-Path $logs 'codex_compat_proxy.exitcode')
   Start-Process -FilePath 'cmd.exe' `
     -ArgumentList @('/v:on', '/c', $inner) `
     -WorkingDirectory $root -WindowStyle Hidden
@@ -245,7 +247,7 @@ function Start-CapabilityProxy {
       return
     }
   }
-  Write-Output 'proxy : NOT READY after 30s - inspect codex_compat_proxy.err.log'
+  Write-Output 'proxy : NOT READY after 30s - inspect logs\codex_compat_proxy.err.log'
   exit 1
 }
 
@@ -258,12 +260,12 @@ function Start-SupervisorApp {
     Stop-ServiceProcess $AppPort
   }
   foreach ($name in @('supervisor_app.out.log', 'supervisor_app.err.log')) {
-    $p = Join-Path $root $name
+    $p = Join-Path $logs $name
     if (Test-Path $p) {
       # Rotate; a dying process may still hold the file open - fall back to
       # removing it rather than failing the whole launch.
       try {
-        Move-Item -Force -Path $p -Destination (Join-Path $root "$name.$stamp")
+        Move-Item -Force -Path $p -Destination (Join-Path $logs "$name.$stamp")
       } catch {
         Remove-Item -Force -Path $p -ErrorAction SilentlyContinue
       }
@@ -277,8 +279,8 @@ function Start-SupervisorApp {
   # Start-CapabilityProxy) - its absence marks a hard kill. Delayed
   # expansion so the recorded code/time are the EXIT ones, not launch-time.
   $inner = 'set PYTHONDONTWRITEBYTECODE=1&& cd /d "{0}" && "{1}" -u app.py > "{2}" 2> "{3}" & echo !DATE! !TIME! exitcode=!ERRORLEVEL!>> "{4}"' -f `
-    $root, $python, (Join-Path $root 'supervisor_app.out.log'), (Join-Path $root 'supervisor_app.err.log'),
-    (Join-Path $root 'supervisor_app.exitcode')
+    $root, $python, (Join-Path $logs 'supervisor_app.out.log'), (Join-Path $logs 'supervisor_app.err.log'),
+    (Join-Path $logs 'supervisor_app.exitcode')
   Start-Process -FilePath 'cmd.exe' `
     -ArgumentList @('/v:on', '/c', $inner) `
     -WorkingDirectory $root `
@@ -294,7 +296,7 @@ function Start-SupervisorApp {
       return
     }
   }
-  Write-Output "app   : NOT READY after ${ReadyTimeoutSec}s - inspect supervisor_app.err.log"
+  Write-Output "app   : NOT READY after ${ReadyTimeoutSec}s - inspect logs\supervisor_app.err.log"
   exit 1
 }
 
@@ -315,8 +317,8 @@ function Start-JobWorker {
     Write-Output 'worker: daemon already running (lock fresh) - skipped'
     return
   }
-  $outLog = Join-Path $root 'job_worker.out.log'
-  $errLog = Join-Path $root 'job_worker.err.log'
+  $outLog = Join-Path $logs 'job_worker.out.log'
+  $errLog = Join-Path $logs 'job_worker.err.log'
   $rotated = $true
   foreach ($p in @($outLog, $errLog)) {
     if (Test-Path $p) {
@@ -340,7 +342,7 @@ function Start-JobWorker {
   # expansion so the recorded code/time are the EXIT ones, not launch-time.
   $inner = 'set SOP_JOB_WORKER=1&& cd /d "{0}" && "{1}" -u -m services.jobs.worker_service > "{2}" 2> "{3}" & echo !DATE! !TIME! exitcode=!ERRORLEVEL!>> "{4}"' -f `
     $root, $python, $outLog, $errLog,
-    (Join-Path $root 'job_worker.exitcode')
+    (Join-Path $logs 'job_worker.exitcode')
   Start-Process -FilePath 'cmd.exe' `
     -ArgumentList @('/v:on', '/c', $inner) `
     -WorkingDirectory $root -WindowStyle Hidden
@@ -435,7 +437,7 @@ function Invoke-DelegatedStart {
       return
     }
   }
-  Write-Output "service: NOT READY after ${ReadyTimeoutSec}s - inspect supervisor_app.err.log / job_worker.err.log"
+  Write-Output "service: NOT READY after ${ReadyTimeoutSec}s - inspect logs\supervisor_app.err.log / job_worker.err.log"
   exit 1
 }
 

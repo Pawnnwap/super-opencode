@@ -19,6 +19,7 @@ from nicegui import app, core, ui
 
 from services.config.settings import sanitize_proxy_env
 from services.runtime import death_capture
+from services.runtime.log_paths import log_path
 from services.webui import error_net, layout, startup
 from services.webui.jobs import get_job_manager
 
@@ -115,8 +116,9 @@ def _install_forensics() -> None:
         datefmt="%H:%M:%S",
         stream=sys.stderr,
     )
-    death_capture.install("app.fatal.log")
-    log.info("death capture armed (app.fatal.log), pid %d", os.getpid())
+    fatal = log_path("app.fatal.log")
+    death_capture.install(str(fatal))
+    log.info("death capture armed (%s), pid %d", fatal, os.getpid())
 
     # An uncaught handler exception must reach the operator, not just stderr.
     # See services/webui/error_net.py for why NiceGUI's default is invisible.

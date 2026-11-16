@@ -40,7 +40,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 JOB_STORE = ROOT / ".job_store"
-LOG_PATH = ROOT / "guardian.log"
+LOG_DIR = ROOT / "logs"
+LOG_PATH = LOG_DIR / "guardian.log"
 HEARTBEAT = JOB_STORE / "guardian.heartbeat"
 QUEUE_STATE = JOB_STORE / "guardian_queue.state"
 
@@ -559,6 +560,7 @@ def probe(args, counts: tuple[int, int, int], lock_max_age: float) -> Snapshot:
 
 def log(message: str) -> None:
     try:
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
         if LOG_PATH.exists() and LOG_PATH.stat().st_size > LOG_MAX_BYTES:
             LOG_PATH.replace(LOG_PATH.with_name(LOG_PATH.name + ".1"))
         with LOG_PATH.open("a", encoding="utf-8") as handle:

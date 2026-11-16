@@ -31,6 +31,7 @@ from services.jobs.code_freshness import code_fingerprint, freshness_action
 from services.jobs.job_manager import JobManager, claim_order
 from services.jobs.job_states import JOB_STORE_DIR, WORKER_SETTINGS_FILE
 from services.runtime import death_capture
+from services.runtime.log_paths import log_path
 
 logger = logging.getLogger(__name__)
 
@@ -287,7 +288,7 @@ def main() -> int:
     )
     # Silent-death forensics (2026-11-03: the daemon vanished with its three
     # RUNNING jobs mid-stream and left no trace) - same capture as app.py.
-    death_capture.install("job_worker.fatal.log")
+    death_capture.install(str(log_path("job_worker.fatal.log")))
     store_dir = Path(JOB_STORE_DIR)
     store_dir.mkdir(parents=True, exist_ok=True)
 
