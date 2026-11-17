@@ -72,6 +72,8 @@ _ITEM_TOOL_LABELS: dict[str, tuple[str, tuple[str, ...]]] = {
     "error": ("error", ("message", "detail")),
 }
 
+_EDIT_ITEM_TYPES = frozenset({"file_change", "file_changes", "patch_apply"})
+
 # Fields inside a tool payload ("input"/"arguments"/"parameters") that carry a
 # tool's intent: MCP tools (web_search/web_fetch/...) bury the query/URL there.
 # The loop detector keys on the marker string — repeated web calls on DIFFERENT
@@ -157,6 +159,26 @@ def _reasoning_value(value) -> str:
     return ""
 
 
+def _changes_detail(item: dict) -> str:
+    """codex file_change items carry the targets under ``changes`` (a list of
+    {path, kind}), NOT a top-level path — reading only path/file_path/files
+    collapsed every patch to a bare ``[edit]`` and the loop detector killed
+    a long run mid-study for six consecutive DISTINCT applied
+    patches (verified against the codex rollout wire format)."""
+    changes = item.get("changes")
+    if not isinstance(changes, list):
+        return ""
+    paths = []
+    for ch in changes:
+        if isinstance(ch, dict):
+            p = ch.get("path") or ch.get("file_path")
+            if isinstance(p, str) and p.strip():
+                paths.append(p.strip())
+        elif isinstance(ch, str) and ch.strip():
+            paths.append(ch.strip())
+    return ", ".join(paths)
+
+
 def _tool_marker(item: dict) -> str:
     """Build a compact ``[label] <intent>`` marker from a tool-ish item.
 
@@ -172,6 +194,8 @@ def _tool_marker(item: dict) -> str:
     label, keys = _ITEM_TOOL_LABELS.get(itype, (itype, ()))
 
     detail = _mcp_content(item)
+    if not detail and itype in _EDIT_ITEM_TYPES:
+        detail = _changes_detail(item)
     if not detail:
         for key in keys:
             cand = _stringify_detail(item.get(key))
@@ -275,6 +299,11 @@ def classify_line(line: str | None) -> LineEvent | None:
             # metadata, MCP init failures), not agent tool calls — they must
             # not inflate the loop detector's tool counters.
             count_for_loop=itype != "error",
+            # An applied patch changed the file even when the marker repeats
+            # (same target, new content — the wire carries no patch body).
+            made_progress=(
+                itype in _EDIT_ITEM_TYPES and item.get("status") == "completed"
+            ),
         )
 
     # turn.started, item.started, item.updated, etc. — not turn output.

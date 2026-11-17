@@ -138,3 +138,50 @@ def test_reasoning_summary_parts_are_flattened_and_plan_update_still_drops():
         "item": {"type": "plan_update", "text": "bookkeeping"},
     }))
     assert dropped.kind == "other"
+
+
+def _patch_item(paths, status="completed"):
+    # Live shape (codex exec --json, verified 2026-11-17): targets live in
+    # `changes`, there is no top-level path field.
+    return {"type": "file_change",
+            "changes": [{"path": p, "kind": "update"} for p in paths],
+            "status": status}
+
+
+def test_patch_marker_carries_target_paths():
+    """A run aborted on six consecutive DISTINCT applied patches:
+    the old extractor read only path/file_path/files, missed `changes`,
+    and collapsed every patch to a bare [edit]."""
+    a = _marker_for(_patch_item([r"D:\ws\indicator.py"]))
+    b = _marker_for(_patch_item([r"D:\ws\output\tools\probe_v11.py"]))
+    assert a != b, (a, b)
+    assert "indicator.py" in a
+    assert a != "[edit]"
+    multi = _marker_for(_patch_item([r"D:\ws\a.py", r"D:\ws\b.py"]))
+    assert "a.py" in multi and "b.py" in multi
+
+
+def test_consecutive_applied_patches_are_NOT_a_loop():
+    """The measured misfire: 6+ consecutive successful patches (same or
+    different targets, distinct content the wire never carries) must not
+    trip the consecutive rule — each applied patch is progress."""
+    detector = LoopDetector()
+    for i in range(12):
+        # Worst case: every patch targets the SAME file, so all markers are
+        # identical even though the patch bodies differ.
+        item = _patch_item([r"D:\ws\indicator.py"])
+        event = classify_line(json.dumps({"type": "item.completed", "item": item}))
+        assert event.made_progress is True
+        signal = detector.record_tool(event.marker)
+        if event.made_progress:
+            detector.record_text()
+        assert signal is None, f"false loop at patch {i}: {signal}"
+
+
+def test_failed_patch_repeats_are_STILL_detected():
+    detector = LoopDetector()
+    item = _patch_item([r"D:\ws\indicator.py"], status="failed")
+    event = classify_line(json.dumps({"type": "item.completed", "item": item}))
+    assert event.made_progress is False
+    signals = [detector.record_tool(event.marker) for _ in range(6)]
+    assert any(s is not None for s in signals)

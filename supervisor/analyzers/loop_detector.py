@@ -72,6 +72,10 @@ class LoopDetector:
         """A prose (text) event means the agent is making progress."""
         self._tools_since_text = 0
         self._streak_keys.clear()
+        # "Consecutive" means no intervening progress: prose (or an applied
+        # patch, which the driver reports as progress) breaks the chain.
+        self._consecutive = 0
+        self._last = None
 
     def record_tool(self, marker: str) -> LoopSignal | None:
         """Record a tool marker; return a signal if a loop is detected (once)."""

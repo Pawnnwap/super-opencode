@@ -70,6 +70,11 @@ class LineEvent:
     # session-level error items): logged live but never fed to the loop
     # detector — the agent did not make a tool call.
     count_for_loop: bool = True
+    # True when the tool call demonstrably changed the world (a patch that
+    # applied successfully). The loop detector treats it as progress, like
+    # prose: the wire carries no patch content, so consecutive edits of one
+    # file are indistinguishable markers even when every patch differs.
+    made_progress: bool = False
 
 
 def parse_event_line(line: str | None) -> tuple[str | None, dict | None]:

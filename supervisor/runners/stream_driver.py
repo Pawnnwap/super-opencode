@@ -257,6 +257,11 @@ def consume_process_stream(
                     loop_reason = f"{signal.reason} ({signal.marker})"
                     _kill_process_tree(proc)
                     break
+                if event.made_progress:
+                    # A successfully applied patch is forward progress even
+                    # when its marker repeats (same file, new content): reset
+                    # the stuck counters so legitimate edit streaks survive.
+                    loop_detector.record_text()
 
     if cancelled:
         _kill_process_tree(proc)
