@@ -26,7 +26,7 @@ Key capabilities:
 - **Headline job logs** — every event persists as one key line; large blocks (prompts / outputs / verdicts / suggestions) keep their full bodies in a per-job sidecar (`.job_store/<job>.full`), and error events are always written in full
 - **Parallel study batches** — launch N isolated instances of one protocol from the Run page (workspace clones or protocol-only seeds); the board groups them into one batch card with one-click cancel, under a configurable concurrency cap
 - **Incremental workspace archiving** — `.archive/` snapshots are git object stores (one orphan commit per snapshot): unchanged files are shared by hash and retention actually frees space, with automatic full-copy fallback when git is unavailable
-- **Context management** — Token-aware monitoring with graduated warnings and auto-compaction
+- **Context management** — Token-aware monitoring with graduated warnings; session rotation on cadence, with a high-water safety restart
 - **Feasibility gate** - optional `feasibility_facts.json` (workspace root, outside the archived `logs/`) records known gate ceilings and blocked gates; an unreachable done-condition is surfaced up front instead of being rediscovered over many pre-registered attempts. The Live Run form offers **Generate draft**: the supervisor model transcribes gates from `protocol.md` and ceilings evidenced in prior-attempt artifacts (`status.json`, `REPORT.md`, …) into the form for review — it never invents numbers
 - **Judge-context budget** - tiered history compaction plus identical-input verdict reuse: a byte-identical judge input replays the stored verdict without another LLM call
 
@@ -249,8 +249,8 @@ The supervisor system runs the opencode agent in a controlled feedback loop:
 
 1. **Protocol-driven execution** — A `protocol.md` file defines INPUT, TARGET,
    and RESTRICTIONS that guide the agent's behavior
-2. **Real-time monitoring** — Context window usage is tracked and compaction
-   triggers automatically when needed
+2. **Real-time monitoring** — Context window usage is tracked and the session is
+   rotated on cadence (the engines compact their own context)
 3. **Workspace safety** — The system blocks out-of-workspace path references to
    prevent unintended modifications
 4. **Workspace archiving** — Workspace state is preserved in `.archive/` before
@@ -476,11 +476,11 @@ opencode reduces only redundant code/logic inside that copy.
 
 ## Task-State Journal
 
-Compaction writes a single `summary.md` snapshot and restarts the agent in a
-fresh session, so long tasks crossing several resets lose the thread of what
+Session rotation writes a single `summary.md` snapshot and restarts the agent in
+a fresh session, so long tasks crossing several resets lose the thread of what
 was already tried. The supervisor therefore appends one compact entry per
 judged turn to `TASK_STATE.md` in the workspace (turn number, time, phase, and
-a one-line headline). On a context reset, the journal tail is injected into
+a one-line headline). On a session rotation, the journal tail is injected into
 the restart prompt so the agent resumes with continuity.
 
 ---
@@ -655,7 +655,6 @@ supervisor/
     workspace_guard.py              Blocks out-of-workspace path references
     workspace_archiver.py           Preserves workspace versions in .archive/
     git_archiver.py                 Git-object-store backend for .archive/ snapshots
-    cleanup_candidates.py           Suggests backup/temp files for cleanup
     ignore_patterns.py              .opencodeignore parsing and pattern matching
 
 mcp_server/
@@ -741,7 +740,7 @@ Quality ratings: `excellent` (≥90%) → `good` (≥75%) → `fair` (≥50%) �
 | Execution engine | opencode | Agent backend: `opencode`, `codex`, or `pi` |
 | Agent model | *(engine default)* | Forwarded to the opencode/codex/pi CLI |
 | Max retries | 3 | Consecutive failures before forced stop |
-| Context threshold | 60% | Compaction fires at this fraction of estimated max |
+| Context threshold | 60% | Advisory warning level for context usage |
 | Max tokens | 150,000 | Model context window size |
 | Timeout | 120 min | Silence before opencode is deemed unresponsive |
 | Protected files | *(empty)* | User-defined files that opencode cannot modify |
@@ -813,17 +812,20 @@ The supervisor tracks token usage with graduated warnings:
 
 | Threshold | Action |
 |-----------|--------|
-| 50% | Context usage noted |
-| 60% | Approaching compaction threshold |
+| 50% | Session cadence mark — below it the session continues |
+| 60% | Advisory warning level (`context_threshold`) |
 | 70% | Context elevated — monitor closely |
-| 80% | Warning — compaction recommended |
-| 90% | Critical — immediate compaction required |
+| 80% | Warning — session rotation due soon |
+| 90% | High-water safety mark — rotate even if cadence has not hit |
 
 Token estimation uses `tiktoken` (o200k_base encoding) when available,
 falling back to character-based estimation (4 chars/token).
 
-Automatic compaction triggers at the configured `context_threshold`
-(default 60%), prompting opencode to clean up unnecessary files.
+The engines (opencode/codex/pi) compact their own context, so the supervisor
+does not compact on the agent's behalf. What remains is a post-judgement
+session policy: at or above 50% the supervisor writes `summary.md` and rotates
+to a fresh session; at or above 90% it also compacts its own judge history
+first. `context_threshold` (default 60%) is an advisory warning level only.
 
 ---
 

@@ -1,6 +1,4 @@
 from supervisor.prompts.templates import (
-                                          COMPACTION_INSTRUCTIONS_PROMPT,
-                                          DELETION_PERMISSION_PROMPT,
                                           FILE_SELECTION_PROMPT,
                                           INIT_PROMPT_TEMPLATE,
                                           JUDGE_PLAN_PROMPT,
@@ -18,8 +16,6 @@ from supervisor.prompts.templates import (
 )
 
 __all__ = [
-    "COMPACTION_INSTRUCTIONS_PROMPT",
-    "DELETION_PERMISSION_PROMPT",
     "FILE_SELECTION_PROMPT",
     "INIT_PROMPT_TEMPLATE",
     "JUDGE_PLAN_PROMPT",

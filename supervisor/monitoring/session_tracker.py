@@ -132,13 +132,13 @@ class SessionTracker:
 
     def _get_advice_for_threshold(self, thresh: float) -> str:
         if thresh >= 0.90:
-            return "CRITICAL: Context nearly full. Immediate compaction strongly recommended."
+            return "CRITICAL: Context nearly full. Session will be rotated at the high-water mark."
         if thresh >= 0.80:
-            return "WARNING: Context high. Compaction recommended soon."
+            return "WARNING: Context high. Session rotation is due soon."
         if thresh >= 0.70:
             return "Context usage elevated. Monitor closely."
         if thresh >= 0.60:
-            return "Context approaching compaction threshold. Plan for cleanup."
+            return "Context approaching the advisory threshold. Plan for a session rotation."
         return "Context usage above 50%. Be mindful of token budget."
 
     # -- State queries --
@@ -151,11 +151,18 @@ class SessionTracker:
 
     @property
     def should_compact(self) -> bool:
+        """Advisory only: context has crossed the configured warning level.
+
+        The engines compact their own context, so this no longer triggers a
+        supervisor-side compaction. It marks the level at which warnings are
+        worth surfacing; session rotation is decided by
+        ``can_continue_session`` / ``is_critical``.
+        """
         return self.fraction >= self.threshold
 
     @property
     def can_continue_session(self) -> bool:
-        """Check if context is low enough to safely continue the opencode session."""
+        """Session-cadence mark (50%): below it, keep the current session."""
         return self.fraction < 0.50
 
     @property
@@ -165,7 +172,7 @@ class SessionTracker:
 
     @property
     def is_critical(self) -> bool:
-        """Check if context is at a critical level (>= 90%)."""
+        """High-water safety mark (90%): rotate even if cadence has not hit."""
         return self.fraction >= 0.90
 
     @property
@@ -177,11 +184,11 @@ class SessionTracker:
         """Provide advice on how to reduce context size."""
         overage = max(0, self._current - int(self.max_tokens * self.threshold))
         if self.fraction >= 0.90:
-            recommendation = "CRITICAL: Immediate context compaction required"
+            recommendation = "CRITICAL: Session rotation at the high-water mark"
         elif self.should_compact:
-            recommendation = "Context compaction recommended"
+            recommendation = "Session rotation recommended"
         elif self.approaching_limit:
-            recommendation = "Context usage high — prepare for compaction"
+            recommendation = "Context usage high — prepare for a session rotation"
         else:
             recommendation = "Context usage is within acceptable range"
         return {

@@ -17,7 +17,6 @@ from supervisor.prompts.templates import (
 )
 from supervisor.runners.codex_support.command_builder import build_cmd
 from supervisor.utils.filesystem.file_permissions import set_file_readonly
-from supervisor.workspace.cleanup_candidates import identify_cleanup_candidates
 from supervisor.workspace.workspace_archiver import WorkspaceArchiver
 from supervisor.workspace.workspace_guard import WorkspaceGuard
 
@@ -85,35 +84,6 @@ def test_sanitize_with_protection_flags_protected_delete(tmp_path: Path):
     assert ws_v == []
     assert prot_v
     assert "CRITICAL PROTECTION" in msg
-
-
-# --------------------------------------------------------------------------- #
-# Cleanup candidates must never propose anything inside archive trees.
-# --------------------------------------------------------------------------- #
-
-
-def test_cleanup_candidates_exclude_archive_trees(tmp_path: Path):
-    (tmp_path / "common.py").write_text("x = 1\n", encoding="utf-8")
-    (tmp_path / "common.py.bak").write_text("x = 0\n", encoding="utf-8")
-    for rel in (
-        ".archive/run_1/code/old.py",
-        ".archive/run_2/code/old.py.bak",
-        "archive/notes.py",
-    ):
-        f = tmp_path / rel
-        f.parent.mkdir(parents=True, exist_ok=True)
-        f.write_text("# old\n", encoding="utf-8")
-    pycache = tmp_path / "__pycache__"
-    pycache.mkdir()
-    (pycache / "common.cpython-311.pyc").write_bytes(b"\x00")
-
-    candidates = identify_cleanup_candidates(tmp_path)
-
-    assert all(
-        not c.startswith((".archive", "archive")) for c in candidates
-    ), candidates
-    assert "common.py.bak" in candidates
-    assert "__pycache__" in candidates
 
 
 # --------------------------------------------------------------------------- #

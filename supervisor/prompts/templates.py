@@ -134,36 +134,6 @@ their size — those are where new work and possible regressions live. Stale fil
 Return ONLY a JSON array of up to {top_k} file paths from the list above, ordered by relevance (most relevant first). Example: ["src/main.py", "tests/test_core.py"]
 Do not include any explanation or markdown — just the JSON array."""
 
-COMPACTION_INSTRUCTIONS_PROMPT = """\
-The coding agent's context window is nearly full. Generate instructions for it to:
-1. Keep only the latest version of every file.
-2. Retain any foundational/fallback code it may reference.
-3. Write summary.md to the workspace with: current status, key decisions, remaining tasks and future directions.
-Output ONLY the instruction text to send to the coding agent."""
-
-DELETION_PERMISSION_PROMPT = """\
-The coding agent's context window is nearly full. Before compacting the context, you MUST address the following cleanup:
-
-## DELETION PERMISSION
-
-The supervisor has identified the following files as outdated, unused, or safe to delete:
-
-{file_list}
-
-DELETE these files ONLY if:
-1. The file is confirmed outdated (e.g., backup files, old versions, temp files)
-2. The file is unused by any current code
-3. The file is not a core module or essential configuration
-
-Generate instructions for the agent to:
-1. Review the file list above and DELETE only the confirmed outdated/unused files
-2. Keep all core modules and essential files
-3. Keep only the latest version of every file
-4. Retain any foundational/fallback code it may reference
-5. Write summary.md to the workspace with: current status, key decisions, remaining tasks and future directions
-
-Output ONLY the instruction text to send to the coding agent, including explicit permission to delete listed files."""
-
 # Marker wording matters: the previous "--- PROTOCOL VIOLATION DETECTED ---"
 # is a trigger phrase for agent-side skills (e.g. checkpoint-progress) and
 # derailed coding agents into checkpoint/recovery behavior instead of applying

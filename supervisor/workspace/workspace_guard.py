@@ -158,9 +158,9 @@ class WorkspaceGuard:
         Returns (sanitized_msg, workspace_violations, protected_violations).
         The CRITICAL PROTECTION block is appended when the message touches
         protected paths, when user-protected files are configured, or when
-        ``always_inject`` is set — use that for prompts that invite the agent
-        to delete things (compaction/cleanup), where the reminder must be
-        present regardless of what the message happens to match.
+        ``always_inject`` is set — use that for any prompt that invites the
+        agent to delete things, where the reminder must be present regardless
+        of what the message happens to match.
         """
         sanitized, ws_violations = self.sanitize_message(message)
         protected_violations = self.check_protected_violations(message)

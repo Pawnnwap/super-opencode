@@ -53,12 +53,6 @@ from supervisor.core.llm_support.judgement import (
     analyze_protocol as _analyze_protocol_impl,
 )
 from supervisor.core.llm_support.judgement import (
-    ask_for_compaction_instructions as _ask_for_compaction_instructions_impl,
-)
-from supervisor.core.llm_support.judgement import (
-    ask_for_deletion_permission as _ask_for_deletion_permission_impl,
-)
-from supervisor.core.llm_support.judgement import (
     generate_suggestions as _generate_suggestions_impl,
 )
 from supervisor.core.llm_support.judgement import (
@@ -350,16 +344,6 @@ class LLMSupervisor:
             total_plan_rounds,
             step_context,
         )
-
-    def ask_for_compaction_instructions(self) -> SupervisorVerdict:
-        return _ask_for_compaction_instructions_impl(self)
-
-    def ask_for_deletion_permission(
-        self,
-        candidates: list[str],
-        workspace: Path,
-    ) -> SupervisorVerdict:
-        return _ask_for_deletion_permission_impl(self, candidates, workspace)
 
     def report_final_status(
         self,

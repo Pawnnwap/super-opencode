@@ -224,11 +224,14 @@ def phase_state(events: list, state: str = "") -> PhaseState:
     (review begins) and the judge's `supervisor_response` (CONTINUE closes
     the round, DONE finishes).
 
-    Context compaction interrupts a round without judging it: the judge's
-    deletion-permission answer is logged as a `supervisor_response` too, so a
-    response is only a verdict when the next prompt is not a `compaction`
-    one, and everything from that compaction prompt to the `restart` prompt
-    is housekeeping, not a new round.
+    Historical job logs may contain a context-compaction round: the old
+    pre-judgement compaction path interrupted a round without judging it, and
+    the judge's deletion-permission answer was logged as a
+    `supervisor_response` too. A response is only a verdict when the next
+    prompt is not a `compaction` one, and everything from that compaction
+    prompt to the `restart` prompt is housekeeping, not a new round. Current
+    runs never emit `compaction` prompts (session rotation happens after
+    judgement), so this branch only keeps old logs rendering correctly.
     """
     events = [event for event in events if isinstance(event, dict)]
     next_prompt = [""] * len(events)

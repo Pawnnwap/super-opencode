@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 from supervisor.core.llm_support.models import StepContext, SupervisorVerdict
 from supervisor.protocols.alignment import (
     AlignmentResult,
@@ -138,27 +136,6 @@ def judge_plan(
         all_targets_met=False,
         feedback=verdict.feedback,
     )
-
-
-def ask_for_compaction_instructions(supervisor) -> SupervisorVerdict:
-    from supervisor.prompts import COMPACTION_INSTRUCTIONS_PROMPT
-
-    return supervisor._chat(COMPACTION_INSTRUCTIONS_PROMPT)
-
-
-def ask_for_deletion_permission(
-    supervisor,
-    candidates: list[str],
-    workspace: Path,
-) -> SupervisorVerdict:
-    if not candidates:
-        return ask_for_compaction_instructions(supervisor)
-
-    file_list = "\n".join(f"  - {f}" for f in candidates)
-    from supervisor.prompts import DELETION_PERMISSION_PROMPT
-
-    msg = DELETION_PERMISSION_PROMPT.format(file_list=file_list)
-    return supervisor._chat(msg)
 
 
 def report_final_status(

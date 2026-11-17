@@ -3,7 +3,7 @@
 Shared base for ALL execution-agent runners — one class, three engine
 subclasses. ``OpencodeRunner``, ``CodexRunner``, and ``PiRunner`` inherit
 this full public surface (turn lifecycle, session pinning, step detection,
-context accounting, archiving, cleanup inquiry) and implement only their
+context accounting, archiving) and implement only their
 engine seams:
 
   * ``_engine``             class attr naming the backend in logs/warnings
@@ -42,12 +42,6 @@ from supervisor.runners.opencode_support.inspection import extract_file_refs
 from supervisor.runners.opencode_support.result import RunResult
 from supervisor.runners.process_utils import kill_process_tree
 from supervisor.utils.text_utils import coerce_str, strip_thinking_blocks
-from supervisor.workspace.cleanup_candidates import (
-    build_cleanup_inquiry,
-)
-from supervisor.workspace.cleanup_candidates import (
-    identify_cleanup_candidates as discover_cleanup_candidates,
-)
 from supervisor.workspace.workspace_archiver import (
     ArchiveResult,
     WorkspaceArchiver,
@@ -447,25 +441,7 @@ class BaseRunner:
             "step_count": len(progress.steps),
         }
 
-    # -- workspace cleanup + archiving ------------------------------------ #
-
-    def send_cleanup_inquiry(self, candidates: list[str]) -> None:
-        inquiry = build_cleanup_inquiry(self.workspace, candidates)
-        if not inquiry:
-            return
-        logger.info(
-            "Sending cleanup inquiry to %s for %d candidates",
-            self._engine,
-            len(candidates),
-        )
-        for _ in self.send(inquiry):
-            pass
-
-    def identify_cleanup_candidates(self) -> list[str]:
-        candidates = discover_cleanup_candidates(self.workspace)
-        if candidates:
-            self.send_cleanup_inquiry(candidates)
-        return candidates
+    # -- workspace archiving ---------------------------------------------- #
 
     def archive_files(self, files: list[str]) -> ArchiveResult:
         return self._archiver.archive_workspace(label="cleanup", files_to_archive=files)

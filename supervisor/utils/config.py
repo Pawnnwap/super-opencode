@@ -9,6 +9,9 @@ class SupervisorConfig:
     protocol_path: Path
     workspace: Path
     max_retries: int = 3
+    # Advisory context warning level. The engines compact their own context,
+    # so this no longer triggers a supervisor-side compaction; session
+    # rotation is decided by the 50% cadence mark and the 90% high-water mark.
     context_threshold: float = 0.60
     # Execution agent backend: "opencode" (default), "codex", or "pi". All
     # are open-source coding CLIs and work on Windows + Linux. The

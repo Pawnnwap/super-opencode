@@ -20,7 +20,6 @@ from supervisor.utils.filesystem.file_ops import safe_read_text
 from supervisor.utils.text_utils import (
     head_tail_excerpt,
     sanitize_event_message,
-    strip_thinking_blocks,
 )
 
 if TYPE_CHECKING:
@@ -1822,11 +1821,6 @@ class BaseLoop:
                 self._timeout_extension_count = 0
                 yield from self._emit_heartbeat(current_progress)
 
-            if self.ctx_monitor.should_compact:
-                yield from self._maybe_compact()
-                output, timed_out = self.runner.read_output()
-                continue
-
             yield from self._do_judgement(output)
             if self._state != LoopState.RUNNING:
                 break
@@ -1845,11 +1839,19 @@ class BaseLoop:
             output, timed_out = self.runner.read_output()
 
     def _handle_session_continuity(self) -> Generator[Event]:
-        """Decide whether to continue the current opencode session or restart.
+        """Post-judgement session policy: continue, rotate, or safety-restart.
 
-        When context is below the continuation threshold, enable --continue
-        to maintain session continuity. When context exceeds the threshold,
-        write summary.md and start a fresh session.
+        The engines (opencode/codex/pi) compact their own context, so this is
+        no longer an overflow defence. It is a session-cadence policy plus a
+        last-resort safety net, and it runs only AFTER the turn has been
+        judged — a rotation must never swallow an unjudged output.
+
+          * below the cadence mark (50%): keep the session, enable --continue.
+          * at/above the cadence mark: roll up the supervisor's own history,
+            write summary.md, and rotate to a fresh session.
+          * at/above the high-water mark (90%): additionally compact the
+            supervisor history first — the safety net for engines whose own
+            compaction did not keep up.
         """
         if self.ctx_monitor.can_continue_session:
             if self.runner.is_continuation_enabled() or self.runner._session_active:
@@ -1857,12 +1859,26 @@ class BaseLoop:
                 yield _ev("info", f"Continuing {self._engine_name} session.")
             else:
                 self.runner.mark_session_active()
+            return
+
+        rolled = self.supervisor.rollup_history()
+        if rolled:
+            yield _ev("info", f"Condensed {rolled} older supervisor turn(s) to save context.")
+
+        if self.ctx_monitor.is_critical:
+            self.supervisor.compact_history()
+            yield _ev(
+                "warn",
+                f"Context at {self.ctx_monitor.fraction * 100:.0f}% — high-water safety "
+                "net: writing summary.md and restarting session.",
+            )
         else:
             yield _ev(
                 "info",
-                "Context limit approaching — writing summary.md and restarting session.",
+                f"Session cadence reached ({self.ctx_monitor.fraction * 100:.0f}%) — "
+                "writing summary.md and rotating session.",
             )
-            yield from self._restart_from_summary_output("")
+        yield from self._restart_from_summary_output("")
 
     def _should_extend_timeout(self, progress) -> bool:
         if self._timeout_extension_count >= self._max_timeout_extensions:
@@ -1937,80 +1953,6 @@ class BaseLoop:
                     f"Step progress: {progress.current_step}/{progress.total_steps_estimate} ({progress.percentage:.0f}%) - {progress.phase.name.lower()}",
                     **progress_event,
                 )
-
-    def _maybe_compact(self) -> Generator[Event]:
-        """Two-stage compaction.
-
-        Both stages first roll up the supervisor's own history (structural, no
-        LLM). Then:
-          * Stage 1 (elevated, < critical): light compaction — write summary.md
-            and restart the agent in a fresh session, skipping the expensive
-            agent cleanup/deletion turns.
-          * Stage 2 (critical, >= 90%): full compaction — agent file-cleanup
-            inquiry + deletion + summary + restart.
-        """
-        rolled = self.supervisor.rollup_history()
-        if rolled:
-            yield _ev("info", f"Condensed {rolled} older supervisor turn(s) to save context.")
-
-        if self.ctx_monitor.is_critical:
-            self.supervisor.compact_history()
-            yield from self._do_compaction()
-        else:
-            yield from self._do_light_compaction()
-
-    def _do_light_compaction(self) -> Generator[Event]:
-        """Stage-1 compaction: summary + fresh restart, no agent cleanup turns."""
-        yield _ev(
-            "warn",
-            f"Context at {self.ctx_monitor.fraction * 100:.0f}% — stage 1: "
-            "writing summary.md and restarting session (light).",
-        )
-        yield from self._restart_from_summary_output("")
-
-    def _do_compaction(self) -> Generator[Event]:
-        yield _ev(
-            "warn",
-            f"Context at {self.ctx_monitor.fraction * 100:.0f}% — stage 2: full compaction.",
-        )
-        candidates = self.runner.identify_cleanup_candidates()
-        if candidates:
-            yield _ev(
-                "info",
-                f"Identified {len(candidates)} files for potential cleanup.",
-            )
-        deletion_permission = self.supervisor.ask_for_deletion_permission(
-            candidates,
-            self.config.workspace,
-        )
-        yield _ev(
-            "supervisor_response", deletion_permission.raw,
-            digest=deletion_permission.headline(),
-        )
-        # always_inject: this prompt invites the agent to delete files, so the
-        # protected-path reminder must be present even when the message itself
-        # matches no protected pattern (a compaction prompt that omitted the
-        # reminder once let the agent rationalize deleting the whole .archive/).
-        msg, _, protected_hits = self.guard.sanitize_with_protection(
-            strip_thinking_blocks(deletion_permission.feedback),
-            always_inject=True,
-        )
-        if protected_hits:
-            yield _ev(
-                "warn",
-                f"Protected-path references in compaction instructions: {protected_hits}",
-            )
-        yield _ev("opencode_prompt", msg, prompt_kind="compaction")
-        yield from self.runner.send(msg)
-        yield from self._drain_access_violations()
-        compaction_output, _timed_out = self.runner.read_output()
-        if compaction_output.strip():
-            yield _ev("opencode_output", compaction_output)
-        yield _ev(
-            "info",
-            "Compaction complete - writing summary.md and restarting session.",
-        )
-        yield from self._restart_from_summary_output(compaction_output)
 
     def _restart_from_summary_output(self, last_output: str) -> Generator[Event]:
         """Write summary.md, reset state, and start a fresh opencode session."""
