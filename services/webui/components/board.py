@@ -602,14 +602,15 @@ class JobBoard:
             # line 1: run id + status (stop stays with the state it changes)
             with ui.row().classes("w-full items-center gap-2 flex-nowrap"):
                 ui.label(job_id).classes("sop-jobcard__id truncate grow")
-                ui.html(format_status_pill(state))
                 harvest_folder = self._collected.get(job_id)
                 if harvest_folder:
-                    # Collected already: a quiet icon keeps the identity row's
-                    # width intact; the tooltip names the folder it went to.
+                    # Collected already: a quiet icon left of the state keeps
+                    # the identity row's width intact; the tooltip names the
+                    # folder it went to.
                     ui.icon("inventory_2").classes("sop-jobcard__harvest").style(
                         "flex:none",
                     ).tooltip(f"Harvested into {harvest_folder}")
+                ui.html(format_status_pill(state))
                 if state == "RUNNING":
                     ui.button(
                         icon="stop", on_click=lambda j=job_id: self._stop(j),
