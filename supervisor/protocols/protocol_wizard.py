@@ -82,6 +82,30 @@ When user gives you raw notes for any section, you must:
 """
 
 
+def _wizard_system_prompt() -> str:
+    """The wizard system prompt with the transcription rules when available.
+
+    The SCRIBE rules stop the model inventing filenames, classes, algorithms,
+    and acceptance conditions the user never stated, and stop it silently
+    resolving a self-contradiction. Their OUTPUT section is overridden: this
+    reply is still a three-section protocol.md, not the scribe's four-section
+    report, so the last instruction below wins.
+    """
+    from supervisor.prompts.templates import load_scribe_rules
+
+    rules = load_scribe_rules()
+    if not rules:
+        return _WIZARD_SYSTEM
+    return (
+        f"{_WIZARD_SYSTEM}\n{rules}\n"
+        "OUTPUT OVERRIDE: return the three-section protocol.md described "
+        "above, not the scribe's TARGET/RESTRICTIONS/CONFLICTS/OPEN report. "
+        "Fold any CONFLICTS finding into RESTRICTIONS wording, put every "
+        "OPEN question at the end as an HTML comment, and leave SUGGESTIONS "
+        "out of the file entirely.\n"
+    )
+
+
 def _fix_prompt(protocol_md: str, issues: tuple[str, ...]) -> str:
     findings = "\n".join(f"- {issue}" for issue in issues)
     return (
@@ -117,7 +141,7 @@ class ProtocolWizard(StreamedLLMHelper):
         stop_event: Any = None,
     ) -> str:
         messages = [
-            {"role": "system", "content": _WIZARD_SYSTEM},
+            {"role": "system", "content": _wizard_system_prompt()},
             {"role": "user", "content": user_msg},
         ]
         body = self.thinking_body()

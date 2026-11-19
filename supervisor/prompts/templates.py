@@ -1,3 +1,7 @@
+from __future__ import annotations
+
+from pathlib import Path
+
 # Appended to every SHELL POLICY block. run_dd910ecc aborted because the
 # agent kept re-issuing `python - <<'EOF'` heredocs through bash/PowerShell
 # one-liners: stdin is mangled through the shell layers here, so the call
@@ -11,6 +15,19 @@ SHELL_HEREDOC_RULE = (
     "Write the code to a script file in the workspace and run it, or pass "
     "it with `python -c`."
 )
+
+# The transcription rules for a model turning user notes into a protocol.
+# Kept in a .md file so the wording can be edited and re-tested against a
+# live model without touching code.
+SCRIBE_RULES_PATH = Path(__file__).with_name("scribe_rules.md")
+
+
+def load_scribe_rules() -> str:
+    """The REQUIREMENTS SCRIBE rules; '' when the file is missing."""
+    try:
+        return SCRIBE_RULES_PATH.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
 
 INIT_PROMPT_TEMPLATE = (
     """\

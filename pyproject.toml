@@ -19,3 +19,6 @@ dependencies = [
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["supervisor*"]
+
+[tool.setuptools.package-data]
+"supervisor.prompts" = ["*.md"]
