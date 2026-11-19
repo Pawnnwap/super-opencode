@@ -129,6 +129,43 @@ def test_slug_names_the_workspace_and_job(tmp_path):
     assert "/" not in slug and " " not in slug
 
 
+def test_collected_runs_reads_the_per_run_folders(tmp_path):
+    """The reverse link a history card shows: run id -> its harvest folder.
+
+    Selected-but-skipped runs (a RUNNING run, a dead workspace) never got a
+    folder, so they must NOT be marked; a collision-suffixed "-2" folder and a
+    second harvest of the same run both still resolve.
+    """
+    old = tmp_path / "harvest_20261110_120000"
+    new = tmp_path / "harvest_20261112_090000"
+    for batch in (old, new):
+        batch.mkdir()
+    (old / "study_a__run_aaaa1111").mkdir()
+    (old / "study_b__run_bbbb2222").mkdir()
+    (new / "study_a__run_aaaa1111").mkdir()  # harvested again, later batch
+    (new / "study_c__run_cccc3333-2").mkdir()  # unique_child collision suffix
+    (new / "INDEX.md").write_text("# index\n", encoding="utf-8")
+
+    found = hv.collected_runs([old, new, tmp_path / "missing"])
+
+    assert set(found) == {"run_aaaa1111", "run_bbbb2222", "run_cccc3333"}
+    assert found["run_aaaa1111"].startswith(str(new)), (
+        "the later harvest batch must win"
+    )
+
+
+def test_collected_runs_sees_folders_a_live_harvest_adds(tmp_path):
+    """No mtime cache: NTFS does not reliably bump a dir's mtime on mkdir
+    (measured 2026-11-19), so the board's next tick must rescan."""
+    batch = tmp_path / "harvest_20261112_090000"
+    batch.mkdir()
+    (batch / "study_a__run_aaaa1111").mkdir()
+    assert set(hv.collected_runs([batch])) == {"run_aaaa1111"}
+
+    (batch / "study_b__run_bbbb2222").mkdir()
+    assert set(hv.collected_runs([batch])) == {"run_aaaa1111", "run_bbbb2222"}
+
+
 def test_report_prefers_state_then_workspace_file(tmp_path):
     workspace = tmp_path / "study"
     workspace.mkdir()

@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
+from typing import ClassVar
 
 from nicegui import run as nicegui_run
 from nicegui import ui
 
+from services.jobs.harvest import HARVEST_JOB_TYPE, collected_runs
 from services.jobs.job_states import (
     ACTIVE_JOB_STATES,
     ATTENTION_JOB_STATES,
@@ -82,6 +84,11 @@ _HISTORY_PAGE = 20
 class JobBoard:
     """Self-refreshing board for one job type ("run" | "harvest")."""
 
+    # Class-level fallback: the board tests build JobBoard with __new__, so
+    # every read needs a map even when __init__ never ran. The harvest board
+    # never scans one; the empty answers "not harvested".
+    _collected: ClassVar[dict[str, str]] = {}
+
     def __init__(
         self,
         job_manager,
@@ -102,6 +109,9 @@ class JobBoard:
         self._history_total = 0
         # job_id -> (mtime_ns, size, record) for the store walk.
         self._state_cache: dict[str, tuple] = {}
+        # Run-board only: run id -> its per-run harvest folder ("already
+        # collected"), rebuilt by every scan.
+        self._collected = {}
 
         self._build_filters()
         self._empty_signature = None
@@ -154,6 +164,7 @@ class JobBoard:
         """
         jobs: list[dict] = []
         unreadable = 0
+        harvest_dirs: list[str] = []
         store = self.job_manager.store
         try:
             job_ids = store.list_jobs()
@@ -175,12 +186,28 @@ class JobBoard:
                 status = self.job_manager.get_job_summary(job_id)
             if status is None:
                 unreadable += 1
-            elif status.get("type") == self.job_type:
+                continue
+            record_type = status.get("type")
+            # Harvest batch folders feed the history mark ("was this run
+            # collected?"); one scandir per batch, never a second store walk.
+            # No state filter: a harvest that ended FAILED still wrote a
+            # folder (and report.md) for every run it reached, and that folder
+            # is exactly what the mark points at.
+            if record_type == HARVEST_JOB_TYPE:
+                config = status.get("config") or {}
+                harvest_dirs.append(
+                    str(config.get("harvest_dir") or config.get("workspace") or ""),
+                )
+            if record_type == self.job_type:
                 jobs.append({"id": job_id, "status": status})
         # Deleted jobs must not keep a parse-cache entry alive forever.
         if cache is not None and cached_reader is not None:
             for dead in set(cache) - set(job_ids):
                 cache.pop(dead, None)
+        # Only a RUN's history card can be marked: harvest records are never
+        # harvested themselves, so that board skips the directory scans.
+        if self.job_type == "run":
+            self._collected = collected_runs(harvest_dirs)
         jobs.sort(key=lambda j: j["status"].get("updated_at", 0), reverse=True)
         return jobs, unreadable
 
@@ -400,6 +427,9 @@ class JobBoard:
             _workspace_name(job),
             status.get("batch_id") or "",
             status.get("replica_index"),
+            # A harvest finishing changes a history card, so the mark is part
+            # of what the card renders.
+            self._collected.get(job["id"], ""),
         )
 
     def _render_active(self, active: list[dict]) -> None:
@@ -573,6 +603,13 @@ class JobBoard:
             with ui.row().classes("w-full items-center gap-2 flex-nowrap"):
                 ui.label(job_id).classes("sop-jobcard__id truncate grow")
                 ui.html(format_status_pill(state))
+                harvest_folder = self._collected.get(job_id)
+                if harvest_folder:
+                    # Collected already: a quiet icon keeps the identity row's
+                    # width intact; the tooltip names the folder it went to.
+                    ui.icon("inventory_2").classes("sop-jobcard__harvest").style(
+                        "flex:none",
+                    ).tooltip(f"Harvested into {harvest_folder}")
                 if state == "RUNNING":
                     ui.button(
                         icon="stop", on_click=lambda j=job_id: self._stop(j),

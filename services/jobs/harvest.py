@@ -17,8 +17,10 @@ the agent output contract have exactly one definition.
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -50,6 +52,8 @@ REPORT_FILENAMES = (
 )
 
 _SLUG_RE = re.compile(r"[^A-Za-z0-9._-]+")
+# The job-id tail :func:`run_slug` appends, plus unique_child's "-2" suffix.
+_SLUG_JOB_RE = re.compile(r"__(run_[0-9a-z]+?)(?:-\d+)?$")
 _REPORT_INLINE_LIMIT = 8000
 
 
@@ -104,6 +108,39 @@ def unique_child(parent: Path, name: str) -> Path:
         suffix += 1
         candidate = parent / f"{name}-{suffix}"
     return candidate
+
+
+def collected_runs(harvest_dirs: Iterable[str | Path]) -> dict[str, str]:
+    """Map run id -> its per-run harvest folder for every collected run.
+
+    The job store keeps no back-reference from a run to its harvest; the
+    per-run folder is the durable evidence, because :func:`write_run_baseline`
+    runs BEFORE the agent turn - a harvest that crashed mid-way still left a
+    folder for every run it reached. A harvest job's ``harvest_job_ids``
+    cannot stand in for it: that field is what the operator SELECTED, and a
+    skipped or never-reached run is listed there without a folder.
+
+    When a run was harvested twice the later batch wins; batch names are
+    timestamped, so iterating them sorted is chronological. Scanned on every
+    call, deliberately: NTFS does not reliably bump a directory's mtime when
+    a child is created (measured 2026-11-19), so an mtime cache would hide
+    the folders a LIVE harvest adds.
+    """
+    found: dict[str, str] = {}
+    batches = sorted(
+        {str(dir or "").strip() for dir in harvest_dirs} - {""},
+        key=os.path.basename,
+    )
+    for raw in batches:
+        try:
+            with os.scandir(raw) as entries:
+                for item in entries:
+                    match = _SLUG_JOB_RE.search(item.name)
+                    if match and item.is_dir():
+                        found[match.group(1)] = item.path
+        except OSError:
+            continue
+    return found
 
 
 def make_batch_dir(location: str | Path, now: float | None = None) -> Path:
@@ -349,6 +386,7 @@ __all__ = [
     "HARVESTABLE_STATES",
     "HARVEST_JOB_TYPE",
     "HarvestEntry",
+    "collected_runs",
     "index_markdown",
     "make_batch_dir",
     "match_query",
