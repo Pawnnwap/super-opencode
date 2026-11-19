@@ -46,10 +46,7 @@ _CONFIG_DOC = [
                             "modelID": "local-ds/swift-2",
                             "variants": [
                                 {"id": "low", "settings": {"reasoningEffort": "low"}},
-                                {
-                                    "id": "xhigh",
-                                    "settings": {"reasoningEffort": "xhigh"},
-                                },
+                                {"id": "xhigh", "settings": {"reasoningEffort": "xhigh"}},
                             ],
                         },
                     },
@@ -81,13 +78,9 @@ def _hermetic_catalog(monkeypatch):
     def fake_run(cmd, **kwargs):
         args = list(cmd[1:])
         if args == ["debug", "config"]:
-            return SimpleNamespace(
-                returncode=0, stdout=json.dumps(_CONFIG_DOC), stderr=""
-            )
+            return SimpleNamespace(returncode=0, stdout=json.dumps(_CONFIG_DOC), stderr="")
         if args == ["debug", "agents"]:
-            return SimpleNamespace(
-                returncode=0, stdout=json.dumps(_AGENTS_DOC), stderr=""
-            )
+            return SimpleNamespace(returncode=0, stdout=json.dumps(_AGENTS_DOC), stderr="")
         if args == ["models"]:
             return SimpleNamespace(returncode=0, stdout=_MODELS_TEXT, stderr="")
         return SimpleNamespace(returncode=1, stdout="", stderr="unexpected probe")
@@ -108,10 +101,7 @@ def test_declared_variants_distinguishes_none_from_unknown():
     # the configured value is kept and the runtime retry covers a rejection.
     assert catalog.declared_variants("opencode", "opencode-go/glm-5.3") is None
     # A ref that already carries a variant is validated on its base model.
-    assert catalog.declared_variants("opencode", "local-ds/swift-2#low") == (
-        "low",
-        "xhigh",
-    )
+    assert catalog.declared_variants("opencode", "local-ds/swift-2#low") == ("low", "xhigh")
 
 
 def test_declared_variants_merges_project_config_over_global():
@@ -120,9 +110,7 @@ def test_declared_variants_merges_project_config_over_global():
 
 
 def test_declared_agents_lists_this_build():
-    assert catalog.declared_agents("opencode") == frozenset(
-        {"build", "plan", "explore"}
-    )
+    assert catalog.declared_agents("opencode") == frozenset({"build", "plan", "explore"})
 
 
 def test_resolve_model_qualifies_a_unique_bare_name():
@@ -235,9 +223,7 @@ def test_v2_keeps_the_removed_flags_out():
 
 def test_legacy_major_keeps_the_1x_shape(monkeypatch):
     monkeypatch.setattr(oc_builder, "_opencode_major", lambda exe: 1)
-    cmd = _build(
-        agent="coder", opencode_model="swift-1.5", variant="xhigh", dir_="C:/ws"
-    )
+    cmd = _build(agent="coder", opencode_model="swift-1.5", variant="xhigh", dir_="C:/ws")
     # 1.x has no catalog validation and no --auto; the flags stay as before.
     assert cmd[cmd.index("--agent") + 1] == "coder"
     assert cmd[cmd.index("--model") + 1] == "swift-1.5"
