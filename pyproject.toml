@@ -8,6 +8,11 @@ version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
     "openai>=1.30.0",
+    # openai 3.x builds its client on httpx2. Versions below 2.16 crash while
+    # parsing this machine's NO_PROXY (the bracketed IPv6 entry `[::1]` is
+    # read as port ":1]"), which made every client construction fail with
+    # InvalidURL before a single request was sent.
+    "httpx2>=2.16",
     "nicegui>=2.0.0",
     "tiktoken>=0.7.0",
     "pytest>=8.0.0",

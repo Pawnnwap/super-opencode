@@ -1,4 +1,7 @@
 openai>=1.30.0
+# openai 3.x builds its client on httpx2; <2.16 crashes on a bracketed IPv6
+# NO_PROXY entry (`[::1]`) with InvalidURL before any request is sent.
+httpx2>=2.16
 pytest>=8.0.0
 rich>=13.0.0
 pyscn>=1.1.2
