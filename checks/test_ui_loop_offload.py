@@ -80,7 +80,7 @@ def test_shell_reads_the_store_through_one_shared_snapshot():
     assert "_SNAPSHOT_TTL" in src
     assert "def _store_snapshot" in src
     # Both shell readers must go through the snapshot, not the store.
-    for reader in ("def _queue_stats_line", "def active_jobs"):
+    for reader in ("def _queue_counts", "def active_jobs"):
         body = src.split(reader)[1].split("\ndef ", 1)[0]
         assert "_store_snapshot(" in body, f"{reader} still walks the store"
         assert ".list_jobs()" not in body
@@ -120,7 +120,7 @@ def test_store_snapshot_is_cached_and_scoped_per_store():
     assert reads == 1
     # Second read inside the TTL must not touch the store again.
     layout.active_jobs(manager)
-    layout._queue_stats_line(manager, "run")
+    layout._queue_counts(manager, "run")
     assert store.reads == reads
 
     # A different store object is its own cache entry, never the old rows.

@@ -452,23 +452,16 @@ a.sop-step:not(.sop-step--current):hover { background: var(--sop-surface-2); }
   content: ""; position: absolute; left: -8px; top: 8px; bottom: 8px; width: 2px;
   border-radius: 2px; background: var(--sop-accent);
 }
+.nav-item__badges {
+  margin-left: auto; display: inline-flex; align-items: center; gap: 4px; flex: none;
+}
 .nav-item__badge {
-  margin-left: auto; font-family: var(--sop-mono); font-size: 10px;
+  font-family: var(--sop-mono); font-size: 10px;
   color: var(--sop-text-3); background: #10141b; border: 1px solid var(--sop-line);
   border-radius: 5px; padding: 0 5px; line-height: 1.6;
 }
 .nav-item__badge--live { color: var(--sop-accent-2); border-color: rgba(79, 140, 255, 0.4); background: var(--sop-accent-soft); }
 
-.sop-queue { width: 100%; padding: 0 8px; display: flex; flex-direction: column; gap: 6px; }
-.sop-queue__card { gap: 1px; padding: 6px 10px; border-radius: 8px; border: 1px solid transparent; }
-.sop-queue__card--live { background: #10141b; border-color: var(--sop-line); }
-.sop-queue__row { display: flex; align-items: center; gap: 8px; font-size: 11.5px; color: var(--sop-text-2); }
-.sop-queue__row > * { flex: none; }
-.sop-queue__row b { color: var(--sop-text-2); font-weight: 600; }
-.sop-queue__live { margin-left: auto; }
-.sop-queue__counts { font-family: var(--sop-mono); font-size: 11px; color: var(--sop-text-3); white-space: nowrap; }
-.sop-queue__counts b { color: var(--sop-text-2); font-weight: 600; }
-.sop-queue__unit { color: var(--sop-text-3); }
 .sop-drawer__foot {
   /* #4d5769 measured 2.77:1 — the least readable text in the whole chrome. */
   padding: 10px 16px 14px; font-size: 10.5px; color: var(--sop-text-3);
@@ -525,6 +518,13 @@ a.sop-step:not(.sop-step--current):hover { background: var(--sop-surface-2); }
 .sop-jobcard__meta { font-size: 11.5px; color: var(--sop-text-3); }
 .sop-jobcard__summary { flex: none; white-space: nowrap; }
 .sop-jobcard .sop-jobcard__meta.mono { flex: none; white-space: nowrap; }
+/* "Already harvested": a quiet trailing glyph, not a badge. The card was
+   designed as three fixed lines and a chip here added height or squeezed the
+   id at the 300 px column width; a 15 px icon costs one gap on line 1 and
+   the tooltip carries the folder it went to. Neutral on purpose: green or
+   red would read as a verdict next to the state pill. */
+.sop-jobcard__harvest { font-size: 15px; color: var(--sop-text-3); }
+.sop-jobcard:hover .sop-jobcard__harvest { color: var(--sop-text-2); }
 /* Actions stay at full opacity: "View" is the only way into a task, and a
    hover-gated entrance is invisible to touch and keyboard users. Secondary
    actions carry their own colour (folder = neutral, delete = red) instead of
@@ -833,8 +833,6 @@ body.body--dark { font-size: 16px; line-height: 1.55; }
 .nav-item { font-size: 14.5px; padding: 9px 11px; }
 .nav-item .q-icon { font-size: 19px; }
 .nav-item__badge { font-size: 12px; }
-.sop-queue__row { font-size: 13.5px; }
-.sop-queue__counts { font-size: 13px; }
 .sop-drawer__foot { font-size: 12.5px; }
 
 .sop-header__where { font-size: 14px; }

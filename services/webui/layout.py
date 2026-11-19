@@ -131,11 +131,6 @@ def _queue_counts(job_manager, job_type: str) -> tuple[int, int]:
     return _count_states(_store_snapshot(job_manager), job_type)
 
 
-def _queue_stats_line(job_manager, job_type: str) -> str:
-    running, pending = _count_states(_store_snapshot(job_manager), job_type)
-    return f"{running} running · {pending} queued"
-
-
 # One shared, briefly-cached view of the whole store.
 #
 # render_shell needs three reads of "what is active" on EVERY page render, and
@@ -232,7 +227,7 @@ def _has_active_jobs(job_manager) -> bool:
 
 
 def render_shell(active: str, job_manager) -> None:
-    """Left rail (brand, navigation, live queues) and the context top bar.
+    """Left rail (brand, navigation, live counts) and the context top bar.
 
     Hierarchy in the chrome, in one sentence: the rail answers *where am I and
     what is running*, the top bar answers *against which workspace and models*.
@@ -264,7 +259,7 @@ def render_shell(active: str, job_manager) -> None:
                     and not _has_active_jobs(job_manager)
                 )
                 counts = {"run": run_counts, "harvest": harvest_counts}.get(key)
-                live = sum(counts) if counts else 0
+                running, pending = counts if counts else (0, 0)
                 # A locked launch does not lock the PAGE: the run page still
                 # serves the board and every live screen, so the item stays
                 # fully legible and only carries a lock marker.
@@ -288,34 +283,21 @@ def render_shell(active: str, job_manager) -> None:
                         ui.icon("lock").classes("text-sm").style(
                             "color:#4d5769;margin-left:auto",
                         )
-                    elif live:
-                        ui.html(
-                            f'<span class="nav-item__badge nav-item__badge--live">'
-                            f"{live}</span>",
-                        )
-
-        ui.label("Queues").classes("sop-nav__caption")
-        with ui.column().classes("sop-queue"):
-            for queue_label, counts in (
-                ("Run", run_counts), ("Harvest", harvest_counts),
-            ):
-                running, pending = counts
-                # Two lines: a single row wraps mid-word once the LIVE badge joins it.
-                card = ui.column().classes("sop-queue__card w-full")
-                if running:
-                    card.classes("sop-queue__card--live")
-                with card:
-                    with ui.row().classes("sop-queue__row flex-nowrap w-full"):
-                        ui.label(queue_label).classes("font-medium")
+                    elif running or pending:
+                        badges = []
                         if running:
-                            ui.html(
-                                '<span class="pill pill-running">LIVE</span>',
-                            ).classes("sop-queue__live")
-                    ui.html(
-                        f'<span class="sop-queue__counts">'
-                        f"<b>{running}</b> <span class='sop-queue__unit'>run</span> · "
-                        f"<b>{pending}</b> <span class='sop-queue__unit'>queue</span></span>",
-                    )
+                            badges.append(
+                                f'<span class="nav-item__badge nav-item__badge--live" '
+                                f'title="{running} running">{running}</span>',
+                            )
+                        if pending:
+                            badges.append(
+                                f'<span class="nav-item__badge" '
+                                f'title="{pending} queued">{pending}</span>',
+                            )
+                        ui.html(
+                            f'<span class="nav-item__badges">{"".join(badges)}</span>',
+                        )
 
         ui.space()
         with ui.column().classes("sop-drawer__foot gap-1"):
