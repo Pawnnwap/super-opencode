@@ -977,7 +977,34 @@ function check(resolved, rawPath, access, base) {
  * rejects dynamic constructs (substitutions, unknown variables, encoded
  * commands, wrappers it cannot unwrap), so an unparseable command is denied
  * rather than guessed at.
+ *
+ * A timeout is retried once before failing closed: a cold interpreter start
+ * on a loaded box exceeded the first budget on 2026-11-19 and every shell
+ * call in that run was denied for six hours, which is a worse outcome than
+ * one slow gate.
  */
+function runAnalyzer(python, args, input, env) {
+  let lastError = null;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      return JSON.parse(
+        execFileSync(python, args, {
+          input,
+          encoding: "utf8",
+          timeout: 30000,
+          env,
+          windowsHide: true,
+        }),
+      );
+    } catch (err) {
+      lastError = err;
+      const text = String(err);
+      if (!/ETIMEDOUT|timed? ?out/i.test(text)) break;
+    }
+  }
+  throw lastError;
+}
+
 function scanCommand(command, base, resolved) {
   if (!command) return null;
   if (resolved.missing) {
@@ -990,7 +1017,7 @@ function scanCommand(command, base, resolved) {
       + (childEnv.PYTHONPATH ? path.delimiter + childEnv.PYTHONPATH : "");
   }
   try {
-    const output = execFileSync(
+    const result = runAnalyzer(
       python,
       [
         "-m",
@@ -1001,15 +1028,9 @@ function scanCommand(command, base, resolved) {
         resolved.logPath,
         "--check-command",
       ],
-      {
-        input: JSON.stringify({ command: String(command), cwd: base || process.cwd() }),
-        encoding: "utf8",
-        timeout: 8000,
-        env: childEnv,
-        windowsHide: true,
-      },
+      JSON.stringify({ command: String(command), cwd: base || process.cwd() }),
+      childEnv,
     );
-    const result = JSON.parse(output);
     return result.allow ? null : result.reason || "denied by the access policy";
   } catch (err) {
     return "shell analyzer unavailable (failing closed): " + String(err).slice(0, 160);
@@ -1041,18 +1062,12 @@ function protectedReason(candidate, base) {
       + (childEnv.PYTHONPATH ? path.delimiter + childEnv.PYTHONPATH : "");
   }
   try {
-    const output = execFileSync(
+    const result = runAnalyzer(
       python,
       ["-m", "supervisor.security.guard_cli", "--check-protected"],
-      {
-        input: JSON.stringify({ path: String(candidate), workspace: String(base || "") }),
-        encoding: "utf8",
-        timeout: 8000,
-        env: childEnv,
-        windowsHide: true,
-      },
+      JSON.stringify({ path: String(candidate), workspace: String(base || "") }),
+      childEnv,
     );
-    const result = JSON.parse(output);
     return result.protected ? (result.reason || "run control file") : null;
   } catch (err) {
     return "protected-file check unavailable (failing closed): " + String(err).slice(0, 160);
@@ -1061,6 +1076,15 @@ function protectedReason(candidate, base) {
 
 function gateToolCall(tool, args, resolved, base) {
   if (tool === "bash" || tool === "shell" || tool === "execute") {
+    // opencode's JS `execute` tool sends runtime code in `code`, not a command
+    // string. That code cannot be parsed by the command analyzer, so scanning
+    // an empty command would silently allow it; refuse it instead.
+    if (!String(args.command || args.cmd || "").trim() && String(args.code || "").trim()) {
+      throw new Error(
+        "Blocked by supervisor access policy (shell): " + tool
+          + " inline code cannot be verified",
+      );
+    }
     const reason = scanCommand(String(args.command || args.cmd || ""), base, resolved);
     if (reason) {
       throw new Error("Blocked by supervisor access policy (shell): " + reason);
@@ -1230,37 +1254,45 @@ function scanCommand(command: string, base: string): string | null {
     return "access policy snapshot missing (failing closed)";
   }
   const python = process.env.SOP_GUARD_PYTHON || "python";
-  try {
-    const output = execFileSync(
-      python,
-      [
-        "-m",
-        "supervisor.security.guard_cli",
-        "--policy-env",
-        "SOP_ACCESS_POLICY",
-        "--log-env",
-        "SOP_ACCESS_LOG",
-        "--check-command",
-      ],
-      {
-        input: JSON.stringify({ command, cwd: base || process.cwd() }),
+  const argv = [
+    "-m",
+    "supervisor.security.guard_cli",
+    "--policy-env",
+    "SOP_ACCESS_POLICY",
+    "--log-env",
+    "SOP_ACCESS_LOG",
+    "--check-command",
+  ];
+  const payload = JSON.stringify({ command, cwd: base || process.cwd() });
+  let lastError: unknown = null;
+  // One retry on a timeout: a cold interpreter start on a loaded box must not
+  // turn into "every shell call is denied" for the rest of the run.
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const output = execFileSync(python, argv, {
+        input: payload,
         encoding: "utf8",
-        timeout: 8000,
+        timeout: 30000,
         env: process.env,
         windowsHide: true,
-      },
-    );
-    const result = JSON.parse(output);
-    return result.allow ? null : result.reason || "denied by the access policy";
-  } catch (err) {
-    return "shell analyzer unavailable (failing closed): " + String(err).slice(0, 160);
+      });
+      const result = JSON.parse(output);
+      return result.allow ? null : result.reason || "denied by the access policy";
+    } catch (err) {
+      lastError = err;
+      if (!/ETIMEDOUT|timed? ?out/i.test(String(err))) break;
+    }
   }
+  return "shell analyzer unavailable (failing closed): " + String(lastError).slice(0, 160);
 }
 
 function blockReason(policy: Policy, event: any, cwd: string): string | null {
   const tool = String(event?.toolName || "").toLowerCase();
   const input = event?.input || {};
   if (tool === "bash" || tool === "shell" || tool === "execute") {
+    if (!String(input.command || input.cmd || "").trim() && String(input.code || "").trim()) {
+      return tool + " inline code cannot be verified";
+    }
     return scanCommand(String(input.command || input.cmd || ""), cwd);
   }
   const access: "read" | "write" = ["write", "edit", "patch", "multiedit"].includes(tool)

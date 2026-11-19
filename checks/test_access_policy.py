@@ -164,6 +164,28 @@ class TestCommandScan:
         violations = policy.scan_command(f'echo hi > "{target}"')
         assert violations and "read-only" in violations[0].reason
 
+    def test_ps_path_flag_is_a_write_for_destructive_cmdlets(self, roots):
+        ws, ref = roots
+        policy = build_policy(ws, [ref])
+        target = ref / "corpus.txt"
+        for command in (
+            f'Remove-Item -Path "{target}"',
+            f'Set-Content -Path "{target}" -Value x',
+            f'Add-Content -Path "{target}" -Value x',
+            f'Clear-Content -Path "{target}"',
+            f'New-Item -Path "{ref}/new" -ItemType File',
+            f'Rename-Item -Path "{target}" -NewName b.txt',
+            f'Out-File -Path "{target}"',
+            f'Move-Item -Path "{target}" -Destination "{ws}/stolen.txt"',
+        ):
+            violations = policy.scan_command(command)
+            assert violations, command
+        # Readers and copy sources keep their read-only grant.
+        assert policy.scan_command(f'Get-Content -Path "{target}"') == []
+        assert policy.scan_command(
+            f'Copy-Item -Path "{target}" -Destination "{ws}/a.txt"',
+        ) == []
+
     def test_copy_from_whitelist_to_cwd_is_allowed(self, roots):
         ws, ref = roots
         policy = build_policy(ws, [ref])
@@ -279,6 +301,18 @@ class TestCommandScan:
             "echo !UNKNOWN!",
         ):
             assert policy.scan_command(command), command
+
+    def test_null_device_redirection_is_allowed(self, roots):
+        # `$null` is PowerShell's empty device: the same discard as NUL, so it
+        # must not make an otherwise legal command look dynamic.
+        ws, _ = roots
+        policy = build_policy(ws, [])
+        for command in (
+            "python script.py 2>$null",
+            "python script.py > $null",
+            "cmake -B build 2>$null",
+        ):
+            assert policy.scan_command(command) == [], command
 
     def test_wrappers_are_unwrapped_recursively(self, roots):
         ws, ref = roots

@@ -218,7 +218,28 @@ _READ = frozenset(
 _TEXT_ONLY = frozenset({"echo", "printf", "write-output", "write-host", "set", "export"})
 
 _NAMED_WRITE = frozenset({"-destination", "-target", "-outfile", "-outputfile", "-literalpath"})
-_NAMED_READ = frozenset({"-path", "-source", "-from", "-include"})
+# PS: '-Path' / '-LiteralPath' name the target file, not an input, for every
+# command that creates or destroys it. Leaving '-path' in the read set let
+# `Set-Content -Path <whitelist>/x` and `Remove-Item -Path <whitelist>/x`
+# through (2026-11-19), so the destructive families get their own rule.
+# `_COPY` is absent: there '-Path' is a source, and copying a whitelisted file
+# out is exactly what the read-only grant is for. `move-item` IS present: the
+# move removes the source, so a whitelisted source must be refused even when
+# the destination sits inside the workspace.
+_NAMED_PATH_WRITE_COMMANDS = (_WRITE | {"move-item", "mi"}) | frozenset(
+    {
+        "remove-item",
+        "ri",
+        "clear-content",
+        "clc",
+        "rename-item",
+        "rn",
+        "ren",
+        "export-csv",
+        "export-clixml",
+    },
+)
+_NAMED_READ = frozenset({"-source", "-from", "-include"})
 
 _KNOWN_VARS = {
     "HOME",
@@ -659,6 +680,10 @@ def _expand(text: str, index: int, cwd: Path | None) -> tuple[str, int, bool]:
     match = re.match(r"\$([A-Za-z_][A-Za-z0-9_]*)", text[index:])
     if match:
         name = match.group(1)
+        if name.lower() == "null":
+            # PowerShell's null is the empty device: `2>$null` discards output
+            # exactly like `2>NUL`, so it is a literal, not a dynamic value.
+            return "$null", index + len(match.group(0)), False
         if name in {"HOME", "PWD", "USERPROFILE", "TEMP", "TMP", "CD"}:
             value = str(cwd) if name in {"PWD", "CD"} and cwd else _known(name)
             return value, index + len(match.group(0)), False
@@ -963,6 +988,11 @@ def _write_intent(name: str, words: list[Token], index: int, path_positions: lis
         previous = words[index - 1].text.strip("\"'`").lower()
         if previous in _NAMED_WRITE:
             return "write"
+        # '-Path' names the target for commands that create or destroy it and
+        # an input for everything else (readers, copy sources). One blanket
+        # rule let a whitelisted file be deleted or overwritten in place.
+        if previous == "-path":
+            return "write" if name in _NAMED_PATH_WRITE_COMMANDS else "read"
         if previous in _NAMED_READ:
             return "read"
     if name in _COPY:

@@ -383,6 +383,17 @@ class TestGuardCli:
         event = self._event("shell", {"command": f'type "{tmp_path / "secret.txt"}"'}, ws)
         assert violations_for_event(policy, event)
 
+    def test_inline_runtime_code_is_denied(self, layout):
+        # opencode's JS `execute` tool carries runtime code in `code`; an empty
+        # command string used to make the gate allow it.
+        ws, _, policy = layout
+        event = self._event("execute", {"code": "await tools.shell('rm -rf /')"}, ws)
+        violations = violations_for_event(policy, event)
+        assert violations and "cannot be verified" in violations[0].reason
+        # A real command alongside the code is still scanned as a command.
+        both = self._event("execute", {"command": "echo hi", "code": "x"}, ws)
+        assert violations_for_event(policy, both) == []
+
     def test_cli_is_inert_without_policy_env(self, tmp_path):
         proc = subprocess.run(
             [sys.executable, "-m", "supervisor.security.guard_cli", "--policy-env", "SOP_ACCESS_POLICY"],

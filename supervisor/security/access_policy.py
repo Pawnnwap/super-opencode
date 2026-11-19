@@ -136,10 +136,11 @@ class AccessPolicy:
     workspace: Path
     whitelist: tuple[Path, ...] = ()
     enabled: bool = True
-    # Reject commands whose inline code cannot be statically verified
-    # (`python -c`, `node -e`, `bash -c`, ...). Off by default: coding agents
-    # legitimately use one-liners, and every literal path in them is still
-    # scanned. Turn on for maximally strict runs.
+    # Inline interpreter code (`python -c`, `node -e`, `bash -c`, stdin) is
+    # refused in every mode: its file effects cannot be statically verified.
+    # ``strict_dynamic`` on top of that refuses *any* interpreter start
+    # (`python -m pytest`, `node script.js`). Off by default so ordinary
+    # script execution stays available; turn on for maximally strict runs.
     strict_dynamic: bool = False
     extra_notes: tuple[str, ...] = field(default_factory=tuple)
 
@@ -320,7 +321,7 @@ class AccessPolicy:
         )
         if self.strict_dynamic:
             lines.append(
-                "- Inline interpreter code (python -c, node -e, bash -c) is denied.",
+                "- Interpreter starts (python, node, ...) are denied in this run's strict mode.",
             )
         lines.extend(f"- {note}" for note in self.extra_notes)
         return "\n".join(lines)

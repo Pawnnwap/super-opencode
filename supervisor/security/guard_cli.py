@@ -97,6 +97,22 @@ def _looks_like_path(text: str) -> bool:
 
 _PATCH_FILE_VERBS = ("Add", "Update", "Delete")
 
+# Tool names that execute something. A shell-class payload may arrive as a
+# command string or as inline runtime code (`code` in opencode's JS `execute`
+# tool); only the command form can be parsed, so the code form is refused.
+_SHELL_TOOL_NAMES = frozenset(
+    {
+        "shell",
+        "bash",
+        "exec",
+        "execute",
+        "exec_command",
+        "shell_command",
+        "local_shell",
+        "run_command",
+    },
+)
+
 
 def _patch_payload(tool_input: dict[str, Any]) -> str:
     """The patch text when this event carries one (any engine shape)."""
@@ -204,6 +220,24 @@ def violations_for_event(policy: AccessPolicy, event: dict[str, Any]) -> list[Po
         return policy.scan_command(generic_command, cwd=cwd) + _ownership_violations(
             generic_command,
         )
+
+    # A shell-class tool carrying inline runtime code instead of a command
+    # string (opencode's JS `execute` sends `code`) cannot be parsed by the
+    # command analyzer, and scanning it as an empty command would allow it.
+    inline_code = tool_input.get("code")
+    if (
+        tool in _SHELL_TOOL_NAMES
+        and isinstance(inline_code, str)
+        and inline_code.strip()
+        and not str(tool_input.get("command") or tool_input.get("cmd") or "").strip()
+    ):
+        return [
+            PolicyViolation(
+                inline_code if len(inline_code) <= 120 else inline_code[:119] + "…",
+                "write",
+                f"{tool} inline code cannot be verified",
+            ),
+        ]
 
     if tool in {
         "shell",
