@@ -20,8 +20,13 @@ from nicegui import app, core, ui
 from services.config.settings import sanitize_proxy_env
 from services.runtime import death_capture
 from services.runtime.log_paths import log_path
-from services.webui import error_net, layout, startup
+from services.webui import error_net, i18n, layout, startup
 from services.webui.jobs import get_job_manager
+from services.webui.state import app_state
+
+# The persisted language must be active before the first page renders; the
+# switcher later updates it live and reloads the browser page.
+i18n.install(app_state.get("ui_lang"))
 
 # The UI also builds openai clients (wizard, protocol builder, connectivity
 # probes); a bracketed IPv6 NO_PROXY entry makes httpx2 raise on construction.
@@ -302,6 +307,10 @@ ui.run(
     show=False,
     dark=True,
     storage_secret="opencode-supervisor",
+    # Quasar's own locale pack + the html lang attribute. Chinese UI => the
+    # built-in framework strings (reconnect toasts) follow via NiceGUI's
+    # translations; runtime switching keeps this attribute per page request.
+    language="zh-CN" if app_state.get("ui_lang") == "zh" else "en-US",
     loop="none",
     # Reconnect grace. This single knob derives the engine.io keepalive
     # (ping_interval = 0.8x, ping_timeout = 0.4x of it) and how long the

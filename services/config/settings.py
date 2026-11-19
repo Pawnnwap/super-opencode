@@ -53,6 +53,7 @@ _PERSIST_KEYS = [
     "jev_decision_timeout",
     "jev_decision_threshold",
     "jev_choice_threshold",
+    "ui_lang",
 ]
 
 # Default values for every setting the UI binds to (persisted keys above plus
@@ -107,6 +108,9 @@ DEFAULTS: dict = {
     "jev_decision_timeout": 20,
     "jev_decision_threshold": 0.80,
     "jev_choice_threshold": 0.50,
+    # UI language: "en" (default) or "zh". Logs, paths, ids and the job-state
+    # vocabulary stay English in both.
+    "ui_lang": "en",
 }
 
 

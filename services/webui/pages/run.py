@@ -6,7 +6,7 @@ from pathlib import Path
 
 from nicegui import ui
 
-from services.webui import theme
+from services.webui import i18n, theme
 from services.webui.components.board import JobBoard
 from services.webui.components.busy import busy_buttons
 from services.webui.components.hownow import HowNowPanel
@@ -43,13 +43,17 @@ def _render_readiness(workspace: Path, *, ready: bool | None = None) -> bool:
     if ready:
         theme.notice(
             "ok",
-            f"{proto_path.name} ready in {workspace.name} — this launch reads it.",
+            i18n.tr(
+                "{name} ready in {workspace} — this launch reads it.",
+                name=proto_path.name, workspace=workspace.name,
+            ),
         )
         return True
 
     def _go() -> None:
         ui.button(
-            "Open Protocol Wizard", on_click=lambda: ui.navigate.to("/"),
+            i18n.t("Open Protocol Wizard"),
+            on_click=lambda: ui.navigate.to("/"),
         ).props("outline color=none dense")
 
     theme.notice(
@@ -86,7 +90,9 @@ def _render_launch_form(
     with theme.panel(
         "Start a task",
         icon="play_arrow",
-        subtitle=f"Protocol: {workspace.name} · one job per launch",
+        subtitle=i18n.tr(
+            "Protocol: {name} · one job per launch", name=workspace.name,
+        ),
     ):
         if locked:
             # The lock covers LAUNCHING only. The rest of the page (board,
@@ -98,28 +104,32 @@ def _render_launch_form(
             # different causes was the thing that made this screen unreadable.
             theme.notice(
                 "warn",
-                "Launch is locked: "
-                + " and ".join(missing or ["requirements are not met"])
-                + ". Browsing and opening finished tasks below is unaffected.",
+                i18n.tr(
+                    "Launch is locked: {missing}. Browsing and opening "
+                    "finished tasks below is unaffected.",
+                    missing=" and ".join(
+                        missing or [i18n.t("requirements are not met")],
+                    ),
+                ),
             )
         # Laid out flat on purpose: these are the settings a launch depends on,
         # and hiding them behind a disclosure made the effective options easy
         # to miss. The live summary keeps the values visible even so.
         with ui.row().classes("sop-row"):
             plan_rounds = ui.number(
-                "Plan mode rounds",
+                i18n.t("Plan mode rounds"),
                 value=int(app_state.get("plan_mode_rounds", 1)),
                 min=0,
                 max=10,
                 on_change=lambda _e: _update_summary(),
             ).classes("w-44")
             occam = ui.switch(
-                "Occam Razor",
+                i18n.t("Occam Razor"),
                 value=bool(app_state.get("enable_occam_razor")),
                 on_change=lambda _e: _update_summary(),
             )
             skills = ui.switch(
-                "Supervisor skills",
+                i18n.t("Supervisor skills"),
                 value=bool(app_state.get("enable_supervisor_skills")),
                 on_change=lambda _e: _update_summary(),
             ).tooltip(
@@ -128,7 +138,7 @@ def _render_launch_form(
             )
         with ui.row().classes("sop-row"):
             replicas = ui.number(
-                "Parallel instances",
+                i18n.t("Parallel instances"),
                 value=1,
                 min=1,
                 max=16,
@@ -138,25 +148,29 @@ def _render_launch_form(
                 "copy) and launches them as one batch.",
             )
             init_mode = ui.select(
-                {"copy": "Copy workspace (artifacts excluded)",
-                 "protocol": "protocol.md only"},
+                {"copy": i18n.t("Copy workspace (artifacts excluded)"),
+                 "protocol": i18n.t("protocol.md only")},
                 value="copy",
-                label="Replica init",
+                label=i18n.t("Replica init"),
                 on_change=lambda _e: _update_summary(),
             ).tooltip(
-                "How each parallel instance's workspace is seeded.",
+                i18n.t("How each parallel instance's workspace is seeded."),
             ).classes("w-72")
 
         def _update_summary() -> None:
             count = int(replicas.value or 1)
             bits = [
-                f"{count} instance{'s' if count > 1 else ''}",
-                f"plan rounds {int(plan_rounds.value or 0)}",
-                f"occam {'on' if occam.value else 'off'}",
-                f"skills {'on' if skills.value else 'off'}",
+                i18n.tr("{n} instance(s)", n=count),
+                i18n.tr("plan rounds {n}", n=int(plan_rounds.value or 0)),
+                i18n.tr("occam {state}", state=i18n.t(
+                    "on" if occam.value else "off",
+                )),
+                i18n.tr("skills {state}", state=i18n.t(
+                    "on" if skills.value else "off",
+                )),
             ]
             if count > 1:
-                bits.append(f"init: {init_mode.value}")
+                bits.append(i18n.tr("init: {mode}", mode=init_mode.value))
             summary.set_text(" · ".join(bits))
 
         async def _launch() -> None:
@@ -181,7 +195,12 @@ def _render_launch_form(
                             enable_occam_razor=bool(occam.value),
                             enable_supervisor_skills=bool(skills.value),
                         )
-                        ui.notify(f"Batch launched: {len(job_ids)} instance(s)")
+                        ui.notify(
+                            i18n.tr(
+                                "Batch launched: {n} instance(s)",
+                                n=len(job_ids),
+                            ),
+                        )
                         target = f"/run/{job_ids[0]}"
                     else:
                         job_id = _launch_run(
@@ -201,7 +220,10 @@ def _render_launch_form(
                 # the operator sees a Launch click that "does nothing".
                 except Exception as exc:  # noqa: BLE001 - must never be silent
                     ui.notify(
-                        f"Launch failed: {type(exc).__name__}: {str(exc)[:600]}",
+                        i18n.tr(
+                            "Launch failed: {detail}",
+                            detail=f"{type(exc).__name__}: {str(exc)[:600]}",
+                        ),
                         type="negative",
                     )
                     return
@@ -210,14 +232,20 @@ def _render_launch_form(
         with ui.row().classes("w-full items-end gap-4 flex-wrap"):
             summary = ui.label("").classes("sop-meta mono grow")
             with ui.column().classes("items-end gap-1"):
-                launch_button = ui.button("Launch", on_click=_launch).props(
+                launch_button = ui.button(
+                    i18n.t("Launch"), on_click=_launch,
+                ).props(
                     "color=primary",
                 ).classes("px-6")
                 if locked:
                     launch_button.set_enabled(False)
                     ui.label(
-                        "disabled: "
-                        + " and ".join(missing or ["requirements are not met"]),
+                        i18n.tr(
+                            "disabled: {missing}",
+                            missing=" and ".join(
+                                missing or [i18n.t("requirements are not met")],
+                            ),
+                        ),
                     ).classes("sop-hint")
         _update_summary()
 
@@ -239,7 +267,7 @@ def render(job_id: str = "") -> None:
             job_type="run",
             base_path="/run",
             running_message="Task is running in the background.",
-            not_found_label=f"Run job {job_id} not found.",
+            not_found_label=i18n.tr("Run job {id} not found.", id=job_id),
         )
         return
 
@@ -249,7 +277,7 @@ def render(job_id: str = "") -> None:
         # what already ran, so it stays on the page instead of a dead end.
         with ui.row().classes("sop-section-head"):
             ui.icon("view_kanban")
-            ui.label("Task Board").classes("sop-h2")
+            ui.label(i18n.t("Task Board")).classes("sop-h2")
         JobBoard(manager, "run")
         return
 
@@ -279,7 +307,7 @@ def render(job_id: str = "") -> None:
 
     with ui.row().classes("sop-section-head"):
         ui.icon("view_kanban")
-        ui.label("Task Board").classes("sop-h2")
+        ui.label(i18n.t("Task Board")).classes("sop-h2")
         ui.space()
-        ui.label("live · 1.5 s refresh").classes("sop-hint")
+        ui.label(i18n.t("live · 1.5 s refresh")).classes("sop-hint")
     JobBoard(manager, "run")

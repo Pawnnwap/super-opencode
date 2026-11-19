@@ -25,14 +25,17 @@ class Blocker:
 
 def blockers(workspace: Path | str | None) -> list[Blocker]:
     """Everything standing between this workspace and a launch, in fix order."""
-    from supervisor.protocols.protocol import resolve_protocol_path
-
+    from services.webui import i18n
     from services.webui.state import app_state
+    from supervisor.protocols.protocol import resolve_protocol_path
 
     ws = Path(workspace) if workspace else None
     if ws is None or not ws.exists():
         return [
-            Blocker("no_workspace", "no usable workspace path", "/#configuration"),
+            Blocker(
+                "no_workspace",
+                i18n.t("no usable workspace path"), "/#configuration",
+            ),
         ]
 
     out: list[Blocker] = []
@@ -40,13 +43,18 @@ def blockers(workspace: Path | str | None) -> list[Blocker]:
     proto = resolve_protocol_path(ws)
     if not proto.is_file():
         out.append(
-            Blocker("no_protocol", f"no {proto.name} in {ws.name}", "/#protocol"),
+            Blocker(
+                "no_protocol",
+                i18n.tr("no {name} in {workspace}", name=proto.name, workspace=ws.name),
+                "/#protocol",
+            ),
         )
 
     if not app_state.tests_ok():
         out.append(
             Blocker(
-                "probes_failed", "connectivity probes not passed",
+                "probes_failed",
+                i18n.t("connectivity probes not passed"),
                 "/#connectivity",
             ),
         )
@@ -58,7 +66,7 @@ def blockers(workspace: Path | str | None) -> list[Blocker]:
             out.append(
                 Blocker(
                     "access_not_configured",
-                    "access & protection not configured",
+                    i18n.t("access & protection not configured"),
                     "/#access",
                     "warn",
                 ),

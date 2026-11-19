@@ -21,6 +21,7 @@ from pathlib import Path
 from nicegui import ui
 
 from services.jobs.hownow import run_hownow_sweep
+from services.webui import i18n
 from services.webui.components.log_panel import TailStrip
 from services.webui.jobs import get_job_manager
 from services.webui.state import app_state
@@ -160,8 +161,10 @@ class HowNowPanel:
                 "report which runs need you. Keeps running if you leave."
             ),
             actions=lambda: ui.button(
-                "Run sweep", on_click=self._start,
-            ).props("outline color=none dense").tooltip("Start a sweep (one at a time)."),
+                i18n.t("Run sweep"), on_click=self._start,
+            ).props("outline color=none dense").tooltip(
+                i18n.t("Start a sweep (one at a time)."),
+            ),
         ) as self._body:
             self._results = ui.column().classes("w-full gap-2")
         self._timer = ui.timer(1.0, self._tick)
@@ -171,7 +174,9 @@ class HowNowPanel:
 
     def _start(self) -> None:
         if not start_sweep():
-            ui.notify("A how-now sweep is already running.", type="warning")
+            ui.notify(
+                i18n.t("A how-now sweep is already running."), type="warning",
+            )
             return
         # Re-arm the poller: _tick() stops it once a sweep settles.
         self._timer.active = True
@@ -196,7 +201,10 @@ class HowNowPanel:
                     self._tail = TailStrip(keep=6)
             elapsed = int(time.time() - started_at)
             self._status.set_text(
-                f"Sweeping live sessions… {elapsed}s, {len(steps)} step(s)",
+                i18n.tr(
+                    "Sweeping live sessions… {elapsed}s, {n} step(s)",
+                    elapsed=elapsed, n=len(steps),
+                ),
             )
             self._tail.update(steps)
             return
@@ -228,13 +236,15 @@ class HowNowPanel:
                 if started_at and finished_at else 0
             )
             ui.label(
-                f"sweep · {_fmt_time(finished_at)}"
-                + (f" · {took}s" if took else ""),
+                i18n.tr("sweep · {time}", time=_fmt_time(finished_at))
+                + (i18n.tr(" · {n}s", n=took) if took else ""),
             ).classes("sop-hint mono")
             if error:
                 from services.webui import theme
 
-                theme.notice("bad", f"Sweep failed: {error}")
+                theme.notice(
+                    "bad", i18n.tr("Sweep failed: {error}", error=error),
+                )
             else:
                 with ui.column().classes("sop-markdown w-full"):
                     ui.markdown(report)

@@ -23,8 +23,9 @@ def test_log_panel_has_speech_and_tool_toggles_and_no_noise_switch():
     """The log display offers explicit Agent-speech / Tool-use toggles; the
     noise switch is gone and noise levels are never rendered."""
     panel = _read("services", "webui", "components", "log_panel.py")
-    assert 'ui.switch(\n                "Agent speech"' in panel
-    assert 'ui.switch(\n                "Tool use"' in panel
+    # Labels go through the translation table; the English key is unchanged.
+    assert 'i18n.t("Agent speech")' in panel
+    assert 'i18n.t("Tool use")' in panel
     assert "Show noise" not in panel
     assert "verbose_switch" not in panel
     # Noise is unconditionally in the hidden set; both toggles gate their
@@ -38,7 +39,7 @@ def test_connectivity_section_is_flat_not_an_expansion():
     src = _read("services", "webui", "pages", "wizard.py")
     body = src.split("def _connectivity_section")[1].split("\ndef ", 1)[0]
     # Plain heading + buttons on the page; no collapsible wrapper.
-    assert 'ui.label("Connectivity Tests")' in body
+    assert 'i18n.t("Connectivity Tests")' in body
     assert "_section(" not in body
 
 

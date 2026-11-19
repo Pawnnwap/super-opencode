@@ -19,7 +19,7 @@ from services.jobs.job_states import (
     PILL_TONE_CLASS,
     STATE_CONTRACT,
 )
-from services.webui import theme
+from services.webui import i18n, theme
 from services.webui.state import app_state
 
 # Kept as an alias: the stylesheet is a single source of truth in theme.py.
@@ -218,6 +218,34 @@ def active_jobs(job_manager, job_type: str = "") -> list[dict]:
     ]
 
 
+def _language_switch() -> None:
+    """EN / 中文 toggle in the rail footer.
+
+    The choice is persisted through the settings file (so a restart keeps it)
+    and applied process-wide BEFORE the reload: NiceGUI rebuilds every page
+    from Python source, so a full reload is what actually re-renders the
+    strings through the new table.
+    """
+    def _set(lang: str) -> None:
+        if lang == i18n.current():
+            return
+        app_state["ui_lang"] = lang
+        app_state.flush()
+        i18n.set_lang(lang)
+        ui.run_javascript("location.reload()")
+
+    options = {code: label for code, label in i18n.LANG_LABELS.items()}
+    with ui.row().classes("items-center gap-1 flex-nowrap w-full"):
+        ui.icon("translate").style("color:var(--sop-text-3);font-size:15px")
+        ui.select(
+            options,
+            value=i18n.current(),
+            on_change=lambda e: _set(str(e.value)),
+        ).props("dense borderless").classes(
+            "sop-lang mono text-xs grow",
+        ).tooltip(i18n.t("Interface language"))
+
+
 def _has_active_jobs(job_manager) -> bool:
     """Any run job queued or running right now (store read)."""
     return any(
@@ -246,10 +274,12 @@ def render_shell(active: str, job_manager) -> None:
                 ui.icon("terminal")
             with ui.column().classes("gap-0 min-w-0"):
                 ui.label("opencode Supervisor").classes("sop-brand__name")
-                ui.label("run control").classes("sop-brand__sub")
+                ui.label(i18n.t("run control")).classes("sop-brand__sub")
 
-        with ui.element("nav").props('aria-label="Workspace"').classes("sop-nav"):
-            ui.label("Workspace").classes("sop-nav__caption")
+        with ui.element("nav").props(
+            f'aria-label="{i18n.t("Workspace")}"',
+        ).classes("sop-nav"):
+            ui.label(i18n.t("Workspace")).classes("sop-nav__caption")
             for key, label, icon in _PAGES:
                 # The lock gates new work only: with a live/queued job the pages
                 # must stay open - that is where the run is watched and stopped.
@@ -271,14 +301,16 @@ def render_shell(active: str, job_manager) -> None:
                     nav.props('aria-current="page"')
                 if locked:
                     nav.tooltip(
-                        "Launch is locked until the connectivity probes pass — "
-                        "the board and history stay readable.",
+                        i18n.t(
+                            "Launch is locked until the connectivity probes "
+                            "pass — the board and history stay readable.",
+                        ),
                     )
                 with nav, ui.element("div").classes(
                     "flex items-center gap-2 w-full min-w-0",
                 ):
                     ui.icon(icon)
-                    ui.label(label).classes("truncate")
+                    ui.label(i18n.t(label)).classes("truncate")
                     if locked:
                         ui.icon("lock").classes("text-sm").style(
                             "color:#4d5769;margin-left:auto",
@@ -288,12 +320,14 @@ def render_shell(active: str, job_manager) -> None:
                         if running:
                             badges.append(
                                 f'<span class="nav-item__badge nav-item__badge--live" '
-                                f'title="{running} running">{running}</span>',
+                                f'title="{i18n.tr("{n} running", n=running)}">'
+                                f"{running}</span>",
                             )
                         if pending:
                             badges.append(
                                 f'<span class="nav-item__badge" '
-                                f'title="{pending} queued">{pending}</span>',
+                                f'title="{i18n.tr("{n} queued", n=pending)}">'
+                                f"{pending}</span>",
                             )
                         ui.html(
                             f'<span class="nav-item__badges">{"".join(badges)}</span>',
@@ -301,37 +335,51 @@ def render_shell(active: str, job_manager) -> None:
 
         ui.space()
         with ui.column().classes("sop-drawer__foot gap-1"):
+            _language_switch()
             ui.label(f"nicegui · {app_state.get('engine') or 'opencode'}")
 
     # Global context, not a second page title: every page already carries
     # its own heading, so repeating the page name here just printed it twice.
     workspace_raw = str(app_state.get("workspace") or "").strip()
-    where = Path(workspace_raw).name if workspace_raw else "(no workspace)"
+    where = Path(workspace_raw).name if workspace_raw else i18n.t("(no workspace)")
     engine = app_state.get("engine") or "opencode"
-    model = app_state.get("opencode_model") or "(no model)"
-    judge = app_state.get("supervisor_model") or "(no judge)"
+    model = app_state.get("opencode_model") or i18n.t("(no model)")
+    judge = app_state.get("supervisor_model") or i18n.t("(no judge)")
     with ui.header().classes("sop-header items-center flex-nowrap"):
         with ui.row().classes("sop-header__where flex-nowrap min-w-0"):
             ui.icon("folder_open")
-            ui.label(where).classes("truncate").tooltip(workspace_raw or "No workspace set")
+            ui.label(where).classes("truncate").tooltip(
+                workspace_raw or i18n.t("No workspace set"),
+            )
             # A configured-but-missing folder is the single most common reason
             # every other page refuses to work; say it here, once, in context.
             if not workspace_raw or not Path(workspace_raw).exists():
-                ui.html('<span class="chip chip--bad">missing</span>')
+                ui.html(
+                    '<span class="chip chip--bad">'
+                    f'{escape(i18n.t("missing"))}</span>',
+                )
         ui.element("div").classes("sop-header__sep")
         with ui.row().classes("sop-chips flex-nowrap"):
             # Settings text is operator-controlled and lands in raw HTML here,
             # so it is escaped rather than trusted.
-            for text in (engine, model, f"judge · {judge}"):
+            for text in (
+                engine, model, i18n.tr("judge · {name}", name=judge),
+            ):
                 ui.html(
                     f'<span class="sop-header__chip">'
                     f"<span>{escape(str(text))}</span></span>",
                 )
         ui.space()
         if tests_ok:
-            ui.html('<span class="chip chip--ok">✓ ready to launch</span>')
+            ui.html(
+                '<span class="chip chip--ok">'
+                f'{escape(i18n.t("✓ ready to launch"))}</span>',
+            )
         else:
-            ui.html('<span class="chip chip--warn">tests pending</span>')
+            ui.html(
+                '<span class="chip chip--warn">'
+                f'{escape(i18n.t("tests pending"))}</span>',
+            )
 
     # Keyboard bindings live with the chrome: they are global, and installing
     # them per page was how the four timers ended up with four different
@@ -354,6 +402,8 @@ def render_startup_banner() -> None:
     if not items:
         theme.notice("info", "Preparing — CLI upgrades and MCP config…")
         return
+    # Task names are English by design: they mirror the startup pipeline's
+    # own log vocabulary and carry no product meaning to translate.
     # The pipeline appends a "running" and later a "done"/"failed" record per
     # task; keep only the latest record so each task shows once and the
     # all-done check can actually fire.
@@ -370,7 +420,7 @@ def render_startup_banner() -> None:
 
     with state_expansion(
         "layout.startup_tasks",
-        f"Startup tasks — {done}/{len(items)} done",
+        i18n.tr("Startup tasks — {done}/{total} done", done=done, total=len(items)),
         # Bad news must never be buried: force it open the first time a task
         # fails, but never re-open (or re-close) a panel the operator set.
         default=failed,

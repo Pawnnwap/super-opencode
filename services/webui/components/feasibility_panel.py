@@ -16,6 +16,7 @@ from pathlib import Path
 from nicegui import run as nicegui_run
 from nicegui import ui
 
+from services.webui import i18n
 from services.webui.components.busy import CancellableCall, busy_buttons
 from services.webui.state import app_state
 from supervisor.utils.llm_stream import GenerationCancelled
@@ -136,7 +137,7 @@ def render(workspace: Path, protocol_text: str | Callable[[], str] = "") -> None
 
     gate_exp = state_expansion(
         "feasibility.gates",
-        "Feasibility gates",
+        i18n.t("Feasibility gates"),
         icon="rule",
         # Proposals need attention: open on the first render that has them.
         # Afterwards the operator's toggle wins (the panel is inside a
@@ -145,32 +146,44 @@ def render(workspace: Path, protocol_text: str | Callable[[], str] = "") -> None
     ).classes("sop-fold")
     with gate_exp:
         ui.label(
-            "One row per acceptance criterion: what DONE means, gate by gate. "
-            "Every change is saved to feasibility_facts.json automatically; "
-            "any blocked gate marks the goal unreachable before the run starts.",
+            i18n.t(
+                "One row per acceptance criterion: what DONE means, gate by "
+                "gate. Every change is saved to feasibility_facts.json "
+                "automatically; any blocked gate marks the goal unreachable "
+                "before the run starts.",
+            ),
         ).classes("sop-hint")
 
         if draft_text:
             gate_note = (
-                f"protocol draft — {target_gates} numbered TARGET item(s)"
+                i18n.tr(
+                    "protocol draft — {n} numbered TARGET item(s)",
+                    n=target_gates,
+                )
                 if target_gates
-                else "protocol draft (no numbered TARGET items detected)"
+                else i18n.t("protocol draft (no numbered TARGET items detected)")
             )
         elif sources["protocol_found"]:
             gate_note = (
-                f"protocol.md — {target_gates} numbered TARGET item(s)"
+                i18n.tr(
+                    "protocol.md — {n} numbered TARGET item(s)", n=target_gates,
+                )
                 if target_gates
-                else "protocol.md (no numbered TARGET items detected)"
+                else i18n.t("protocol.md (no numbered TARGET items detected)")
             )
         else:
-            gate_note = "no protocol.md in this workspace yet"
+            gate_note = i18n.t("no protocol.md in this workspace yet")
         artifact_note = (
             ", ".join(sources["artifacts"])
             if sources["artifacts"]
-            else "no prior-attempt artifacts"
+            else i18n.t("no prior-attempt artifacts")
         )
         ui.label(
-            f"In {workspace.name}: {gate_note}; prior-attempt evidence: {artifact_note}.",
+            i18n.tr(
+                "In {workspace}: {gate}; prior-attempt evidence: {artifacts}.",
+                workspace=workspace.name, gate=gate_note,
+                artifacts=artifact_note,
+            ),
         ).classes("sop-hint mono")
 
         drift = validate_refs(
@@ -179,9 +192,11 @@ def render(workspace: Path, protocol_text: str | Callable[[], str] = "") -> None
         )
         if drift:
             ui.label(
-                "⚠ Protocol changed since these gates were saved: "
-                + "; ".join(drift)
-                + " — regenerate or fix the refs.",
+                i18n.tr(
+                    "⚠ Protocol changed since these gates were saved: "
+                    "{drift} — regenerate or fix the refs.",
+                    drift="; ".join(drift),
+                ),
             ).classes("sop-hint").style("color:var(--sop-warn)")
 
         pending_container = ui.column().classes("w-full gap-1")
@@ -194,8 +209,11 @@ def render(workspace: Path, protocol_text: str | Callable[[], str] = "") -> None
                     streak = entry.get("streak", "?")
                     with ui.row().classes("w-full items-center gap-2 flex-nowrap"):
                         ui.label(
-                            f"⚠ {name} failed {streak} consecutive run(s) — "
-                            "mark it blocked?",
+                            i18n.tr(
+                                "⚠ {name} failed {n} consecutive run(s) — "
+                                "mark it blocked?",
+                                name=name, n=streak,
+                            ),
                         ).classes("sop-meta grow").style("color:var(--sop-warn)")
 
                         def _accept(_e, e_entry=entry, e_name=name) -> None:
@@ -216,10 +234,14 @@ def render(workspace: Path, protocol_text: str | Callable[[], str] = "") -> None
                             _rebuild_pending()
                             _persist()
 
-                        ui.button("Mark blocked", on_click=_accept).props(
+                        ui.button(
+                            i18n.t("Mark blocked"), on_click=_accept,
+                        ).props(
                             "dense outline color=warning",
                         )
-                        ui.button("Dismiss", on_click=_dismiss).props(
+                        ui.button(
+                            i18n.t("Dismiss"), on_click=_dismiss,
+                        ).props(
                             "flat dense",
                         )
 
@@ -232,9 +254,12 @@ def render(workspace: Path, protocol_text: str | Callable[[], str] = "") -> None
             write_feasibility_facts(facts, default_facts_path(workspace))
             stamp = time.strftime("%H:%M:%S")
             saved_label.set_text(
-                "auto-saved (no gates — file cleared)"
+                i18n.t("auto-saved (no gates — file cleared)")
                 if facts is None
-                else f"auto-saved · {len(facts['gates'])} gate(s) · {stamp}",
+                else i18n.tr(
+                    "auto-saved · {n} gate(s) · {time}",
+                    n=len(facts["gates"]), time=stamp,
+                ),
             )
 
         def _refresh_verdict() -> None:
@@ -244,12 +269,17 @@ def render(workspace: Path, protocol_text: str | Callable[[], str] = "") -> None
             verdict_label.set_text(f"{icon} {assessment.reason}")
             verdict_label.style(f"color: {color}")
             if assessment.required_gates is None:
-                gate_exp.set_text("Feasibility gates — no gates recorded")
+                gate_exp.set_text(
+                    i18n.t("Feasibility gates — no gates recorded"),
+                )
             else:
                 blocked_n = len(assessment.blocked_gates)
                 gate_exp.set_text(
-                    f"Feasibility gates · {icon} {assessment.required_gates} gate(s)"
-                    + (f" · {blocked_n} blocked" if blocked_n else ""),
+                    i18n.tr(
+                        "Feasibility gates · {icon} {n} gate(s)",
+                        icon=icon, n=assessment.required_gates,
+                    )
+                    + (i18n.tr(" · {n} blocked", n=blocked_n) if blocked_n else ""),
                 )
 
         def _edit(row: dict, key: str):
@@ -265,8 +295,10 @@ def render(workspace: Path, protocol_text: str | Callable[[], str] = "") -> None
             with rows_container:
                 if not rows:
                     ui.label(
-                        "No gates yet — add one manually or draft them "
-                        "from the protocol.",
+                        i18n.t(
+                            "No gates yet — add one manually or draft them "
+                            "from the protocol.",
+                        ),
                     ).classes("sop-hint")
                 for index, row in enumerate(rows):
                     with ui.row().classes(
@@ -274,19 +306,19 @@ def render(workspace: Path, protocol_text: str | Callable[[], str] = "") -> None
                         "py-1 border-b border-[var(--sop-line)]",
                     ):
                         ui.input(
-                            "gate name",
+                            i18n.t("gate name"),
                             value=row.get("name", ""),
                             on_change=_edit(row, "name"),
                         ).classes("w-44 mono shrink-0").props("dense")
                         ui.textarea(
-                            "pass condition",
+                            i18n.t("pass condition"),
                             value=row.get("definition", ""),
                             on_change=_edit(row, "definition"),
                         ).classes("grow mono").props(
                             "dense autogrow",
                         ).style("min-height: 2.3rem")
                         ui.select(
-                            _STATUS_LABELS,
+                            {key: i18n.t(label) for key, label in _STATUS_LABELS.items()},
                             value=row.get("status", "open"),
                             on_change=_edit(row, "status"),
                         ).classes("w-56 shrink-0").props("dense")
@@ -295,9 +327,11 @@ def render(workspace: Path, protocol_text: str | Callable[[], str] = "") -> None
                             ui.chip(
                                 f"⚙ {check.get('kind')}",
                             ).props("dense square outline").tooltip(
-                                "Machine-checked gate (deterministic; the "
-                                "judge is never asked): "
-                                + json.dumps(check, ensure_ascii=False),
+                                i18n.tr(
+                                    "Machine-checked gate (deterministic; the "
+                                    "judge is never asked): {check}",
+                                    check=json.dumps(check, ensure_ascii=False),
+                                ),
                             )
 
                         def _remove(_e, r_index=index) -> None:
@@ -308,7 +342,7 @@ def render(workspace: Path, protocol_text: str | Callable[[], str] = "") -> None
 
                         ui.button(icon="delete", on_click=_remove).props(
                             "flat dense",
-                        ).tooltip("Remove this gate")
+                        ).tooltip(i18n.t("Remove this gate"))
 
         rows_container = ui.column().classes("w-full gap-2")
         _rebuild_rows()
@@ -322,11 +356,11 @@ def render(workspace: Path, protocol_text: str | Callable[[], str] = "") -> None
             _refresh_verdict()
             _persist()
 
-        ui.button("Add gate", on_click=_add_row).props("dense outline")
+        ui.button(i18n.t("Add gate"), on_click=_add_row).props("dense outline")
 
         verdict_label = ui.label("").classes("sop-meta mono")
         notes = ui.input(
-            "Overall notes (optional)", value=str(current.get("notes", "")),
+            i18n.t("Overall notes (optional)"), value=str(current.get("notes", "")),
         ).classes("w-full")
 
         def _notes_changed(e) -> None:
@@ -339,7 +373,9 @@ def render(workspace: Path, protocol_text: str | Callable[[], str] = "") -> None
         gen_status = ui.label("").classes("sop-hint")
 
         def _cancel_draft() -> None:
-            _draft_call.cancel(gen_status, message="Cancelling draft…")
+            _draft_call.cancel(
+                gen_status, message=i18n.t("Cancelling draft…"),
+            )
 
         async def _generate() -> None:
             text = _current_text()
@@ -352,7 +388,10 @@ def render(workspace: Path, protocol_text: str | Callable[[], str] = "") -> None
                 text = read_protocol_text(resolve_protocol_path(workspace))
             if not text.strip():
                 gen_status.set_text(
-                    "No protocol yet — refine one above; nothing to derive gates from.",
+                    i18n.t(
+                        "No protocol yet — refine one above; nothing to derive "
+                        "gates from.",
+                    ),
                 )
                 return
             app_state.flush()
@@ -363,15 +402,23 @@ def render(workspace: Path, protocol_text: str | Callable[[], str] = "") -> None
                 elapsed = time.monotonic() - started
                 if reasoning_chars and not content_chars:
                     gen_status.set_text(
-                        f"Thinking… {reasoning_chars:,} reasoning chars "
-                        f"({elapsed:.0f}s) — Cancel if this drags",
+                        i18n.tr(
+                            "Thinking… {n} reasoning chars ({elapsed}s) — "
+                            "Cancel if this drags",
+                            n=f"{reasoning_chars:,}", elapsed=f"{elapsed:.0f}",
+                        ),
                     )
                 elif content_chars:
                     gen_status.set_text(
-                        f"Writing… {content_chars:,} chars ({elapsed:.0f}s)",
+                        i18n.tr(
+                            "Writing… {n} chars ({elapsed}s)",
+                            n=f"{content_chars:,}", elapsed=f"{elapsed:.0f}",
+                        ),
                     )
 
-            gen_status.set_text("Drafting gates from the protocol (LLM)…")
+            gen_status.set_text(
+                i18n.t("Drafting gates from the protocol (LLM)…"),
+            )
             stop_event = _draft_call.begin()
             cancel_button.set_visibility(True)
             try:
@@ -385,15 +432,17 @@ def render(workspace: Path, protocol_text: str | Callable[[], str] = "") -> None
                             stop_event=stop_event,
                         )
                     except GenerationCancelled:
-                        gen_status.set_text("Draft cancelled.")
+                        gen_status.set_text(i18n.t("Draft cancelled."))
                         return
                     except Exception as exc:  # noqa: BLE001 — surface, keep rows
-                        gen_status.set_text(f"Draft failed: {str(exc)[:200]}")
+                        gen_status.set_text(
+                            i18n.tr("Draft failed: {error}", error=str(exc)[:200]),
+                        )
                         return
                     drafted = facts_to_gate_rows(facts)
                     if not drafted:
                         gen_status.set_text(
-                            "Draft contained no gates — nothing filled.",
+                            i18n.t("Draft contained no gates — nothing filled."),
                         )
                         return
                     rows[:] = drafted
@@ -402,28 +451,38 @@ def render(workspace: Path, protocol_text: str | Callable[[], str] = "") -> None
                     _persist()
                     blocked = sum(1 for row in rows if row["status"] == "blocked")
                     gen_status.set_text(
-                        f"Drafted {len(rows)} gate(s) ({blocked} blocked) — "
-                        "auto-saved; edit freely.",
+                        i18n.tr(
+                            "Drafted {n} gate(s) ({blocked} blocked) — "
+                            "auto-saved; edit freely.",
+                            n=len(rows), blocked=blocked,
+                        ),
                     )
             # ``_persist`` writes the facts file; an OSError there (read-only
             # dir, locked file) used to escape into NiceGUI's async task, which
             # only logs to stderr — the operator saw a button that did nothing
             # after the rows were already redrawn.
             except Exception as exc:  # noqa: BLE001 — must never be silent
-                gen_status.set_text(f"Draft failed: {type(exc).__name__}: {str(exc)[:200]}")
+                gen_status.set_text(
+                    i18n.tr(
+                        "Draft failed: {error}",
+                        error=f"{type(exc).__name__}: {str(exc)[:200]}",
+                    ),
+                )
             finally:
                 _draft_call.end()
                 cancel_button.set_visibility(False)
 
         with ui.row().classes("gap-3"):
             gen_button = ui.button(
-                "Draft gates from protocol (LLM)", on_click=_generate,
+                i18n.t("Draft gates from protocol (LLM)"), on_click=_generate,
             ).props("dense outline").tooltip(
-                "The supervisor model transcribes one gate per TARGET item, "
-                "with statuses only where prior-attempt artifacts evidence "
-                "them; it never invents results.",
+                i18n.t(
+                    "The supervisor model transcribes one gate per TARGET "
+                    "item, with statuses only where prior-attempt artifacts "
+                    "evidence them; it never invents results.",
+                ),
             )
             cancel_button = ui.button(
-                "Cancel", on_click=_cancel_draft,
+                i18n.t("Cancel"), on_click=_cancel_draft,
             ).props("dense outline color=red")
             cancel_button.set_visibility(False)

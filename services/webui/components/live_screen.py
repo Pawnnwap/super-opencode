@@ -9,7 +9,7 @@ from nicegui import run as nicegui_run
 from nicegui import ui
 
 from services.jobs.job_states import ACTIVE_JOB_STATES
-from services.webui import theme
+from services.webui import i18n, theme
 from services.webui.components.log_panel import LogPanel, TailStrip
 from services.webui.components.progress_widgets import ProgressWidgets
 from services.webui.layout import format_status_pill
@@ -61,7 +61,7 @@ class LiveJobScreen:
         if not status:
             theme.empty_state(
                 "search_off",
-                f"Job {self.job_id} not found.",
+                i18n.tr("Job {id} not found.", id=self.job_id),
                 "It may have been removed by retention. The board lists every "
                 "task still in the store.",
                 action_label="Back to board",
@@ -93,7 +93,8 @@ class LiveJobScreen:
                 from services.webui.ui_state import state_expansion
 
                 with state_expansion(
-                    f"job.{self.job_type}.fulllog", "Full log", icon="receipt_long",
+                    f"job.{self.job_type}.fulllog", i18n.t("Full log"),
+                    icon="receipt_long",
                 ).classes("sop-fold"):
                     self.log_panel = LogPanel(
                         detail_fetcher=self._fetch_event_detail,
@@ -109,7 +110,9 @@ class LiveJobScreen:
         self.log_panel.update(safe_logs(status))
 
         if state in ACTIVE_JOB_STATES:
-            ui.label(self.running_message + " (auto-refreshing)").classes(
+            ui.label(
+                i18n.t(self.running_message) + i18n.t(" (auto-refreshing)"),
+            ).classes(
                 "sop-hint",
             )
             self.timer = ui.timer(2.0, self.tick)
@@ -139,8 +142,11 @@ class LiveJobScreen:
             self.timer.active = False
             self.state_pill.set_content(format_status_pill("UNKNOWN"))
             ui.notify(
-                f"Job {self.job_id} state is unreadable "
-                f"({self._read_failures} consecutive failed reads) — use Refresh",
+                i18n.tr(
+                    "Job {id} state is unreadable ({n} consecutive failed "
+                    "reads) — use Refresh",
+                    id=self.job_id, n=self._read_failures,
+                ),
                 type="warning",
             )
             return
@@ -155,7 +161,7 @@ class LiveJobScreen:
             self.timer.active = False
             self._render_failure(status)
             self._render_report(status)
-            ui.notify(f"Job {self.job_id} finished: {state}")
+            ui.notify(i18n.tr("Job {id} finished: {state}", id=self.job_id, state=state))
 
     def _fetch_event_detail(self, ref: int) -> dict | None:
         return self.job_manager.get_event_detail(self.job_id, ref)
@@ -170,7 +176,10 @@ class LiveJobScreen:
         workspace = str((status.get("config") or {}).get("workspace") or "")
         with ui.row().classes("w-full items-center gap-3 flex-wrap"):
             with ui.column().classes("gap-1 min-w-0"):
-                ui.label(f"{self.job_type.capitalize()} job").classes("sop-kicker")
+                ui.label(
+                    i18n.t("Run job") if self.job_type != "harvest"
+                    else i18n.t("Harvest job"),
+                ).classes("sop-kicker")
                 with ui.row().classes("items-center gap-3 flex-nowrap"):
                     ui.label(self.job_id).classes("sop-h1 mono").style(
                         "font-size:22px;letter-spacing:-0.02em",
@@ -180,17 +189,18 @@ class LiveJobScreen:
             with ui.row().classes("items-center gap-2 flex-nowrap"):
                 if state in ACTIVE_JOB_STATES:
                     ui.button(
-                        "Stop",
+                        i18n.t("Stop"),
                         on_click=lambda: self.job_manager.cancel_job(self.job_id),
                     ).props("color=red")
                 else:
                     ui.button(
-                        "Back to board", on_click=lambda: ui.navigate.to(self.base_path),
+                        i18n.t("Back to board"),
+                        on_click=lambda: ui.navigate.to(self.base_path),
                     ).props("outline color=none")
                 ui.button(
                     icon="refresh",
                     on_click=lambda: ui.run_javascript("location.reload()"),
-                ).props("flat").tooltip("Reload this page")
+                ).props("flat").tooltip(i18n.t("Reload this page"))
         if workspace:
             with ui.row().classes("w-full items-center gap-2 flex-nowrap"):
                 ui.icon("folder").style(
@@ -207,7 +217,7 @@ class LiveJobScreen:
                         on_click=lambda _e, j=self.job_id: ui.run_javascript(
                             f"fetch('/jobs/{j}/open-folder', {{method: 'POST'}})",
                         ),
-                    ).props("flat dense").tooltip("Open in the file manager")
+                    ).props("flat dense").tooltip(i18n.t("Open in the file manager"))
 
     def _render_switcher(self, status: dict, state: str) -> None:
         # Summaries only (no logs) and read ONCE per job: this widget used to
@@ -249,7 +259,7 @@ class LiveJobScreen:
             ui.select(
                 ordered,
                 value=self.job_id if self.job_id in ordered else ordered[0],
-                label="Other active tasks",
+                label=i18n.t("Other active tasks"),
                 on_change=lambda e: ui.navigate.to(f"{self.base_path}/{e.value}"),
             ).classes("w-96 mono")
 
@@ -264,8 +274,8 @@ class LiveJobScreen:
         if self.job_type == "harvest":
             rows += [
                 ("Engine", engine),
-                ("Model", f"{app_state.get('opencode_model') or '(not set)'}"),
-                ("Runs", f"{len(config.get('harvest_job_ids') or [])} selected"),
+                ("Model", f"{app_state.get('opencode_model') or i18n.t('(not set)')}"),
+                ("Runs", i18n.tr("{n} selected", n=len(config.get('harvest_job_ids') or []))),
                 (
                     "Folder",
                     config.get("harvest_dir") or config.get("workspace") or "?",
@@ -274,27 +284,28 @@ class LiveJobScreen:
         else:
             rows += [
                 ("Engine", engine),
-                ("Agent model", app_state.get("opencode_model") or "(not set)"),
+                ("Agent model", app_state.get("opencode_model") or i18n.t("(not set)")),
                 (
                     "Judge model",
-                    app_state.get("supervisor_model") or "(not set)",
+                    app_state.get("supervisor_model") or i18n.t("(not set)"),
                 ),
                 (
                     "Occam Razor",
-                    "on" if config.get("enable_occam_razor", False) else "off",
+                    i18n.t("on") if config.get("enable_occam_razor", False)
+                    else i18n.t("off"),
                 ),
             ]
 
+        # Only the label and the two sentinel values go through the table;
+        # the data (model ids, paths, engine names) passes through untouched.
         with theme.panel("Details", icon="info"):
             for key, value in rows:
                 with ui.row().classes(
                     "w-full items-baseline gap-2 flex-nowrap",
                 ):
-                    ui.label(key).classes("sop-hint").style(
+                    ui.label(i18n.t(key)).classes("sop-hint").style(
                         "width:96px;flex:none",
                     )
-                    # Wrap, do not ellipsize: a model id is the fact the
-                    # reader came for, and "nemotron-3.5-l…" answers nothing.
                     ui.label(value).classes("mono text-xs").style(
                         "color:var(--sop-text-2);overflow-wrap:anywhere",
                     )
@@ -342,7 +353,8 @@ class LiveJobScreen:
         workspace = str((status.get("config") or {}).get("workspace") or "")
         with slot:
             with theme.panel(
-                f"Failure · {state}", icon="error", tone="warn", anchor="failure",
+                i18n.tr("Failure · {state}", state=state), icon="error",
+                tone="warn", anchor="failure",
             ):
                 if body:
                     ui.label(body[:4000]).classes(
@@ -360,21 +372,21 @@ class LiveJobScreen:
                 with ui.row().classes("items-center gap-2 flex-wrap"):
                     if body:
                         ui.button(
-                            "Copy error", icon="content_copy",
+                            i18n.t("Copy error"), icon="content_copy",
                             on_click=lambda b=body: ui.run_javascript(
                                 f"navigator.clipboard.writeText({_json.dumps(b)})",
                             ),
                         ).props("outline color=none dense")
                     if workspace:
                         ui.button(
-                            "Open folder", icon="folder_open",
+                            i18n.t("Open folder"), icon="folder_open",
                             on_click=lambda: ui.run_javascript(
                                 f"fetch('/jobs/{self.job_id}/open-folder', "
                                 "{method: 'POST'})",
                             ),
                         ).props("outline color=none dense")
                     ui.button(
-                        "Launch again", icon="replay",
+                        i18n.t("Launch again"), icon="replay",
                         on_click=lambda: ui.navigate.to("/run"),
                     ).props("outline color=none dense")
 
@@ -397,13 +409,16 @@ class LiveJobScreen:
         self.report_slot.clear()
         with self.report_slot:  # noqa: SIM117 - NiceGUI element nesting
             with state_expansion(
-                f"job.{self.job_id}.report", title, default=True, icon="summarize",
+                f"job.{self.job_id}.report", i18n.t(title), default=True,
+                icon="summarize",
             ).classes("sop-fold"):
                 with ui.row().classes("w-full items-center gap-2"):
-                    ui.label(f"{len(report):,} chars").classes("sop-hint")
+                    ui.label(i18n.tr("{n} chars", n=f"{len(report):,}")).classes(
+                        "sop-hint",
+                    )
                     ui.space()
                     ui.button(
-                        "Download markdown",
+                        i18n.t("Download markdown"),
                         icon="download",
                         on_click=lambda: ui.download(
                             report.encode("utf-8"),

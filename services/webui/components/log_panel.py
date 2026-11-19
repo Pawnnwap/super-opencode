@@ -18,6 +18,7 @@ from collections.abc import Callable
 from nicegui import run as nicegui_run
 from nicegui import ui
 
+from services.webui import i18n
 from services.webui.log_format import (
     DEFAULT_HIDDEN_LEVELS,
     event_counts,
@@ -215,35 +216,44 @@ class LogPanel:
 
         with ui.row().classes("w-full items-center gap-3 flex-wrap"):
             self.search_input = ui.input(
-                placeholder="Search logs…", on_change=lambda _e: self._refresh(),
+                placeholder=i18n.t("Search logs…"),
+                on_change=lambda _e: self._refresh(),
             ).classes("mono w-56").props("debounce=300")
             self.counts_label = ui.label("").classes("sop-hint mono")
             self.speech_switch = ui.switch(
-                "Agent speech", value=True, on_change=lambda _e: self._refresh(),
+                i18n.t("Agent speech"), value=True,
+                on_change=lambda _e: self._refresh(),
             ).props("dense").tooltip(
                 "The agent's plain-text prose and reasoning summaries "
                 "(💭 thoughts). Tool I/O stays out; tool markers have their "
                 "own toggle.",
             )
             self.tool_switch = ui.switch(
-                "Tool use", value=True, on_change=lambda _e: self._refresh(),
-            ).props("dense").tooltip("Shell / edit / mcp tool markers from the agent.")
+                i18n.t("Tool use"), value=True, on_change=lambda _e: self._refresh(),
+            ).props("dense").tooltip(
+                i18n.t("Shell / edit / mcp tool markers from the agent."),
+            )
             # Never let the trailing icons wrap under the filters: they are
             # one control group and split apart at larger type sizes.
             with ui.row().classes("items-center gap-1 ml-auto flex-nowrap"):
                 if detail_fetcher is not None:
                     self.ref_input = ui.input(
-                        placeholder="event #",
+                        placeholder=i18n.t("event #"),
                     ).classes("mono w-24").props("dense")
                     ui.button(
                         icon="open_in_new", on_click=self._show_ref,
                     ).props("flat dense").tooltip(
-                        "Fetch one headline event's full body from the job sidecar.",
+                        i18n.t(
+                            "Fetch one headline event's full body from the job "
+                            "sidecar.",
+                        ),
                     )
                 if download_fetcher is not None:
                     ui.button(
                         icon="download", on_click=self._download,
-                    ).props("flat dense").tooltip("Download the full log as text.")
+                    ).props("flat dense").tooltip(
+                        i18n.t("Download the full log as text."),
+                    )
         self.log = ui.log(max_lines=max_lines).classes(
             "log-box log-panel-newest w-full h-[520px]",
         )
@@ -279,21 +289,31 @@ class LogPanel:
         try:
             ref = int(str(self.ref_input.value).strip().lstrip("#"))
         except ValueError:
-            ui.notify("Enter an event # from a headline line, e.g. 12", type="warning")
+            ui.notify(
+                i18n.t("Enter an event # from a headline line, e.g. 12"),
+                type="warning",
+            )
             return
         detail = self._detail_fetcher(ref)
         if not detail:
-            ui.notify(f"No sidecar record for event #{ref}", type="negative")
+            ui.notify(
+                i18n.tr("No sidecar record for event #{ref}", ref=ref),
+                type="negative",
+            )
             return
         body = sanitize_event_message(detail.get("body") or "")
         ts = fmt_ts(detail)
         with ui.dialog() as dialog, ui.card().classes("w-[900px] h-[70vh]"):
             ui.label(
-                f"Event #{ref} · {detail.get('level', '?')} · {len(body):,} chars · {ts}",
+                i18n.tr(
+                    "Event #{ref} · {level} · {chars} chars · {ts}",
+                    ref=ref, level=detail.get("level", "?"),
+                    chars=f"{len(body):,}", ts=ts,
+                ),
             ).classes("text-xs text-[#8b949e]")
             with ui.scroll_area().classes("w-full flex-grow"):
                 ui.markdown(f"```\n{body}\n```")
-            ui.button("Close", on_click=dialog.close).props("flat")
+            ui.button(i18n.t("Close"), on_click=dialog.close).props("flat")
         dialog.open()
 
     @staticmethod
@@ -311,7 +331,10 @@ class LogPanel:
         self._logs = logs
         counts = event_counts(logs)
         self.counts_label.set_text(
-            f"{counts['error']} err · {counts['warn']} warn · {counts['tool']} tool",
+            i18n.tr(
+                "{err} err · {warn} warn · {tool} tool",
+                err=counts["error"], warn=counts["warn"], tool=counts["tool"],
+            ),
         )
 
         # Noise (heartbeat / step-progress / token pings) is never shown.

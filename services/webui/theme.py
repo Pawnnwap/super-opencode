@@ -31,6 +31,8 @@ from html import escape
 
 from nicegui import ui
 
+from services.webui import i18n
+
 _RULES = """
 :root {
   --sop-canvas: #080a0e;
@@ -893,7 +895,8 @@ def apply() -> None:
     ui.add_head_html(f"<style>{CSS}</style>")
     # The document shipped with an empty lang attribute, so a screen reader
     # guessed the language (and guessed wrong on mixed Chinese paths).
-    ui.add_head_html('<script>document.documentElement.lang="en";</script>')
+    lang = i18n.html_lang()
+    ui.add_head_html(f'<script>document.documentElement.lang="{lang}";</script>')
     ui.colors(
         primary="#3370e0",
         secondary="#232c3a",
@@ -926,14 +929,14 @@ def page_header(
         with ui.row().classes("w-full items-end gap-3 flex-wrap"):
             with ui.column().classes("gap-1"):
                 if kicker:
-                    ui.label(kicker).classes("sop-kicker")
-                ui.html(f'<h1 class="sop-h1">{escape(title)}</h1>')
+                    ui.label(i18n.t(kicker)).classes("sop-kicker")
+                ui.html(f'<h1 class="sop-h1">{escape(i18n.t(title))}</h1>')
             ui.space()
             if actions is not None:
                 with ui.row().classes("sop-h1-actions"):
                     actions()
         if subtitle:
-            ui.label(subtitle).classes("sop-sub")
+            ui.label(i18n.t(subtitle)).classes("sop-sub")
 
 
 @contextlib.contextmanager
@@ -974,10 +977,11 @@ def panel(
                             # h2, not a div: panel titles are the document's
                             # second level and must appear in the outline.
                             ui.html(
-                                f'<h2 class="sop-panel__title">{escape(title)}</h2>',
+                                '<h2 class="sop-panel__title">'
+                                f"{escape(i18n.t(title))}</h2>",
                             )
                         if subtitle:
-                            ui.label(subtitle).classes("sop-panel__sub")
+                            ui.label(i18n.t(subtitle)).classes("sop-panel__sub")
                 if actions is not None:
                     ui.space()
                     with ui.row().classes("items-center gap-2"):
@@ -1009,11 +1013,11 @@ def outline_button(
 
 def group_label(text: str) -> None:
     """A sub-section marker inside a panel body (rule to the right)."""
-    ui.label(text).classes("sop-group")
+    ui.label(i18n.t(text)).classes("sop-group")
 
 
 def hint(text: str) -> None:
-    ui.label(text).classes("sop-hint")
+    ui.label(i18n.t(text)).classes("sop-hint")
 
 
 def notice(
@@ -1035,7 +1039,7 @@ def notice(
         f"sop-notice sop-notice--{kind} items-start flex-wrap",
     ).props(role) as row:
         ui.icon(icon or icons.get(kind, "info"))
-        ui.label(text).classes("sop-notice__text grow")
+        ui.label(i18n.t(text)).classes("sop-notice__text grow")
         if action is not None:
             action()
     return row
@@ -1057,8 +1061,8 @@ def empty_state(
     """
     with ui.column().classes("sop-empty"):
         ui.icon(icon)
-        ui.label(title).classes("sop-empty__title")
-        ui.label(body).classes("sop-empty__body")
+        ui.label(i18n.t(title)).classes("sop-empty__title")
+        ui.label(i18n.t(body)).classes("sop-empty__body")
         if detail:
             ui.label(detail).classes("mono text-xs").style(
                 "color:var(--sop-text-3);background:var(--sop-surface-2);"
@@ -1066,7 +1070,7 @@ def empty_state(
                 "padding:3px 10px;max-width:100%;overflow-wrap:anywhere",
             )
         if action is not None and action_label:
-            ui.button(action_label, on_click=action).props("outline dense")
+            ui.button(i18n.t(action_label), on_click=action).props("outline dense")
 
 
 @contextlib.contextmanager
@@ -1083,7 +1087,8 @@ def fold(
     from services.webui.ui_state import state_expansion
 
     exp = state_expansion(
-        key, title, caption=caption, icon=icon or None, default=default,
+        key, i18n.t(title), caption=i18n.t(caption), icon=icon or None,
+        default=default,
     ).classes("sop-fold")
     if anchor:
         exp.props(f'id="{anchor}"')

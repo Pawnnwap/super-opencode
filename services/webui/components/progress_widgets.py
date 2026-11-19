@@ -6,6 +6,7 @@ import time
 
 from nicegui import ui
 
+from services.webui import i18n
 from services.webui.log_format import (
     latest_token_current,
     phase_breadcrumb,
@@ -56,17 +57,20 @@ class ProgressWidgets:
             beat = ""
             if isinstance(heartbeat_at, (int, float)) and heartbeat_at > 0:
                 age = max(0, int(time.time() - heartbeat_at))
-                beat = f" · 💓 {age}s ago"
+                beat = i18n.tr(" · 💓 {age}s ago", age=age)
             step_count = sum(
                 1 for e in logs
                 if isinstance(e, dict) and e.get("level") in ("step", "phase_transition")
             )
             self.status_label.set_text(
-                "🟢 Background process active"
-                f"{beat} · 🧭 {step_count}",
+                i18n.t("🟢 Background process active")
+                + beat
+                + i18n.tr(" · 🧭 {n}", n=step_count),
             )
         else:
-            self.status_label.set_text(f"ended · {(state or 'unknown').lower()}")
+            self.status_label.set_text(
+                i18n.tr("ended · {state}", state=(state or "unknown").lower()),
+            )
 
         current = latest_token_current(logs)
         fraction = None
@@ -81,4 +85,10 @@ class ProgressWidgets:
             color = "🔴" if fraction > 0.9 else "🟡" if fraction > 0.7 else "🟢"
             self.token_row.set_visibility(True)
             self.token_bar.set_value(min(fraction, 1.0))
-            self.token_label.set_text(f"{color} {current:,} / {self.max_tokens:,} tokens")
+            self.token_label.set_text(
+                f"{color} "
+                + i18n.tr(
+                    "{current} / {maximum} tokens",
+                    current=f"{current:,}", maximum=f"{self.max_tokens:,}",
+                ),
+            )

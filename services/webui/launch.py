@@ -14,6 +14,7 @@ from pathlib import Path
 from nicegui import ui
 
 from services.config.supervisor_config_builder import build_supervisor_config
+from services.webui import i18n
 from services.webui.jobs import get_job_manager, sync_max_parallel_jobs
 from services.webui.state import app_state
 
@@ -56,7 +57,10 @@ def launch_job(
     blocked = hard_blockers(workspace, forgive_probes=True)
     if blocked:
         raise LaunchBlocked(
-            blocked[0].label + " — fix it in the Protocol Wizard before launching.",
+            i18n.tr(
+                "{label} — fix it in the Protocol Wizard before launching.",
+                label=blocked[0].label,
+            ),
         )
     save_and_apply_settings()
     sync_max_parallel_jobs()
@@ -67,7 +71,7 @@ def launch_job(
         **overrides,
     )
     job_id = get_job_manager().enqueue_job(job_type, config)
-    ui.notify(f"Task launched: {job_id}")
+    ui.notify(i18n.tr("Task launched: {id}", id=job_id))
     return job_id
 
 
@@ -98,7 +102,7 @@ def require_workspace() -> Path | None:
             " Point Configuration at an existing folder: the protocol and every "
             "run live there."
         ),
-        detail=raw or "(empty)",
+        detail=raw or i18n.t("(empty)"),
         action_label="Open Protocol Wizard",
         action=lambda: ui.navigate.to("/"),
     )

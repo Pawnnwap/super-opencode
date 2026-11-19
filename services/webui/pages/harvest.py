@@ -18,7 +18,7 @@ from services.jobs.harvest import (
     match_query,
     search_text,
 )
-from services.webui import theme
+from services.webui import i18n, theme
 from services.webui.components.board import JobBoard
 from services.webui.jobs import get_job_manager, sync_max_parallel_jobs
 from services.webui.launch import render_live_screen, save_and_apply_settings
@@ -34,7 +34,6 @@ _FILTERS = {
     "CANCELLED": "CANCELLED",
     "ABANDONED": "ABANDONED",
 }
-
 
 def _filter_states(key: str) -> frozenset[str]:
     if key == "completed":
@@ -72,12 +71,12 @@ def _run_meta(run: dict) -> str:
     stamp = time.strftime("%m-%d %H:%M", time.localtime(updated)) if updated else "?"
     bits = [workspace, stamp]
     if run.get("workspace_exists") is False:
-        bits.append("⚠ no workspace")
+        bits.append(i18n.t("⚠ no workspace"))
     if state.get("batch_id"):
-        bits.append(f"batch {state['batch_id']}")
+        bits.append(i18n.tr("batch {id}", id=state["batch_id"]))
     report_chars = len(str(state.get("report") or ""))
     if report_chars:
-        bits.append(f"report {report_chars:,}c")
+        bits.append(i18n.tr("report {n}c", n=f"{report_chars:,}"))
     return " · ".join(bits)
 
 
@@ -114,16 +113,21 @@ class HarvesterPanel:
         ):
             with ui.row().classes("w-full items-end gap-3 flex-wrap"):
                 self.match_input = ui.input(
-                    "Match", value="", on_change=self._on_query,
+                    i18n.t("Match"), value="", on_change=self._on_query,
                 ).classes("mono w-80").props("clearable debounce=250")
                 self.state_filter = ui.select(
-                    _FILTERS, value="completed", label="State",
+                    {key: i18n.t(label) for key, label in _FILTERS.items()},
+                    value="completed", label=i18n.t("State"),
                     on_change=self._on_filter,
                 ).classes("w-64")
-                ui.button("Select shown", on_click=self._select_shown).props(
+                ui.button(
+                    i18n.t("Select shown"), on_click=self._select_shown,
+                ).props(
                     "dense outline",
                 )
-                ui.button("Clear", on_click=self._clear).props("dense flat")
+                ui.button(
+                    i18n.t("Clear"), on_click=self._clear,
+                ).props("dense flat")
             self.count_label = ui.label("").classes("sop-hint")
             if self.runs:
                 # The list is rebuilt whenever the query/filter changes; the
@@ -138,7 +142,10 @@ class HarvesterPanel:
                     self.list_col = ui.column().classes("sop-list")
             else:
                 ui.label(
-                    "No finished runs in the store yet — run something first.",
+                    i18n.t(
+                        "No finished runs in the store yet — run something "
+                        "first.",
+                    ),
                 ).classes("sop-hint")
                 self.list_col = None
                 self.scroll = None
@@ -146,37 +153,39 @@ class HarvesterPanel:
                 self._scroll_guard_until = 0.0
 
         engine = app_state.get("engine") or "opencode"
-        model = app_state.get("opencode_model") or "(not set)"
+        model = app_state.get("opencode_model") or i18n.t("(not set)")
         with theme.panel(
             "Harvest output", icon="drive_file_move",
-            subtitle=f"Distilled by {engine} · {model}",
+            subtitle=i18n.tr("Distilled by {engine} · {model}", engine=engine, model=model),
         ):
             # Where the files land is a decision-time fact: stays visible.
             self.location_input = ui.input(
-                "Harvest location", value=_default_location(),
+                i18n.t("Harvest location"), value=_default_location(),
             ).classes("w-full mono").tooltip(
-                "A fresh harvest_<timestamp>/ folder is created inside this "
-                "location. Each run gets its own subfolder with report.md, "
-                "run.json and harvest.md; the root gets INDEX.md and a batch "
-                "HARVEST.md.",
+                i18n.t(
+                    "A fresh harvest_<timestamp>/ folder is created inside "
+                    "this location. Each run gets its own subfolder with "
+                    "report.md, run.json and harvest.md; the root gets "
+                    "INDEX.md and a batch HARVEST.md.",
+                ),
             )
             def _prompt_caption() -> str:
                 current = str(self.prompt_input.value or "").strip()
                 custom = current and current != DEFAULT_HARVEST_PROMPT
-                return (
+                return i18n.t(
                     "Harvest prompt · custom" if custom
-                    else "Harvest prompt · default"
+                    else "Harvest prompt · default",
                 )
 
             self.prompt_caption = ui.label("").classes("sop-group")
             self.prompt_input = ui.textarea(
-                "Applied to each run", value=_default_prompt(),
+                i18n.t("Applied to each run"), value=_default_prompt(),
                 on_change=lambda _e: self.prompt_caption.set_text(_prompt_caption()),
             ).classes("w-full mono").props("autogrow").style("min-height: 5rem")
             self.prompt_caption.set_text(_prompt_caption())
             with ui.row().classes("items-center gap-3"):
                 self.launch_button = ui.button(
-                    "Harvest selected", on_click=self._launch,
+                    i18n.t("Harvest selected"), on_click=self._launch,
                 ).props("color=primary")
                 self.launch_status = ui.label("").classes("sop-hint")
         self._rebuild()
@@ -230,13 +239,15 @@ class HarvesterPanel:
     def _update_counts(self) -> None:
         shown = self._visible()
         self.count_label.set_text(
-            f"{len(shown)} shown · {len(self.selected)} selected · "
-            f"{len(self.runs)} finished run(s)",
+            i18n.tr(
+                "{shown} shown · {selected} selected · {total} finished run(s)",
+                shown=len(shown), selected=len(self.selected), total=len(self.runs),
+            ),
         )
         self.launch_button.set_text(
-            f"Harvest selected ({len(self.selected)})"
+            i18n.tr("Harvest selected ({n})", n=len(self.selected))
             if self.selected
-            else "Harvest selected",
+            else i18n.t("Harvest selected"),
         )
 
     def _remember_scroll(self, event) -> None:
@@ -278,7 +289,7 @@ class HarvesterPanel:
                         "sop-listrow__meta truncate grow",
                     )
             if not self._visible():
-                ui.label("No matching runs.").classes("sop-hint")
+                ui.label(i18n.t("No matching runs.")).classes("sop-hint")
         # Restore AFTER the new rows exist, so the offset is meaningful.
         if self.scroll is not None and saved_position:
             self.scroll.scroll_to(pixels=saved_position)
@@ -288,11 +299,13 @@ class HarvesterPanel:
     def _launch(self) -> None:
         job_ids = [run["id"] for run in self.runs if run["id"] in self.selected]
         if not job_ids:
-            ui.notify("Select at least one finished run.", type="warning")
+            ui.notify(
+                i18n.t("Select at least one finished run."), type="warning",
+            )
             return
         location = str(self.location_input.value or "").strip()
         if not location:
-            ui.notify("Set a harvest location.", type="warning")
+            ui.notify(i18n.t("Set a harvest location."), type="warning")
             return
         prompt = (
             str(self.prompt_input.value or "").strip() or DEFAULT_HARVEST_PROMPT
@@ -300,7 +313,10 @@ class HarvesterPanel:
         try:
             batch = make_batch_dir(location)
         except OSError as exc:
-            ui.notify(f"Cannot create harvest folder: {exc}", type="negative")
+            ui.notify(
+                i18n.tr("Cannot create harvest folder: {error}", error=exc),
+                type="negative",
+            )
             return
 
         app_state["harvest_prompt"] = prompt
@@ -324,7 +340,10 @@ class HarvesterPanel:
             job_id = self.manager.enqueue_job(HARVEST_JOB_TYPE, config)
         except Exception as exc:  # noqa: BLE001 - must never be silent
             ui.notify(
-                f"Harvest launch failed: {type(exc).__name__}: {str(exc)[:400]}",
+                i18n.tr(
+                    "Harvest launch failed: {detail}",
+                    detail=f"{type(exc).__name__}: {str(exc)[:400]}",
+                ),
                 type="negative",
             )
             try:
@@ -332,7 +351,7 @@ class HarvesterPanel:
             except OSError:
                 pass
             return
-        ui.notify(f"Harvest launched: {job_id} → {batch}")
+        ui.notify(i18n.tr("Harvest launched: {id} → {path}", id=job_id, path=batch))
         ui.navigate.to(f"/harvest/{job_id}")
 
 
@@ -345,7 +364,7 @@ async def render(job_id: str = "") -> None:
             job_type=HARVEST_JOB_TYPE,
             base_path="/harvest",
             running_message="Harvest is running in the background.",
-            not_found_label=f"Harvest job {job_id} not found.",
+            not_found_label=i18n.tr("Harvest job {id} not found.", id=job_id),
         )
         return
 
@@ -360,7 +379,7 @@ async def render(job_id: str = "") -> None:
 
     with ui.row().classes("sop-section-head"):
         ui.icon("view_kanban")
-        ui.label("Harvest Board").classes("sop-h2")
+        ui.label(i18n.t("Harvest Board")).classes("sop-h2")
         ui.space()
-        ui.label("finished harvest jobs").classes("sop-hint")
+        ui.label(i18n.t("finished harvest jobs")).classes("sop-hint")
     JobBoard(manager, HARVEST_JOB_TYPE, base_path="/harvest")
