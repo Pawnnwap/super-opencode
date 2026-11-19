@@ -12,10 +12,8 @@ draft that passes the gate (or raise ProtocolGateError).
 from supervisor.protocols import protocol_wizard as pw_module
 from supervisor.protocols.protocol_wizard import (
     GATE_FIX_ROUNDS,
-    REQUIRED_TARGET,
     ProtocolGateError,
     ProtocolWizard,
-    _append_required_target,
 )
 from supervisor.protocols.target_audit import audit_target
 
@@ -47,21 +45,13 @@ class ScriptedWizard(ProtocolWizard):
         return self.replies.pop(0)
 
 
-def test_appended_required_target_keeps_a_good_draft_actionable():
+def test_refine_returns_the_draft_without_injecting_extra_targets():
     from supervisor.protocols.protocol import parse_protocol_text
 
-    md = _append_required_target(GOOD_DRAFT)
-    assert md.count(REQUIRED_TARGET) == 1
-    protocol = parse_protocol_text(md)
+    protocol = parse_protocol_text(GOOD_DRAFT)
     assert audit_target(
         protocol.target_section, protocol.restrictions_section,
     ).is_actionable
-
-
-def test_append_required_target_is_idempotent():
-    once = _append_required_target(GOOD_DRAFT)
-    twice = _append_required_target(once)
-    assert twice == once
 
 
 def test_refine_returns_first_passing_draft_without_edit_rounds():
@@ -75,7 +65,8 @@ def test_refine_returns_first_passing_draft_without_edit_rounds():
     ).is_actionable
     assert len(wizard.prompts) == 1
     assert rounds == []
-    assert REQUIRED_TARGET in md
+    # The model's own target survives verbatim; nothing is appended to it.
+    assert md.strip() == GOOD_DRAFT.strip()
 
 
 def test_refine_feeds_audit_findings_back_and_returns_passing_draft():

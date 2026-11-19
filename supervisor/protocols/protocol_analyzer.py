@@ -12,6 +12,7 @@ from supervisor.protocols.analyzer_support import (
     Severity,
     ValidationIssue,
 )
+from supervisor.protocols.contradiction_audit import audit_contradictions
 from supervisor.protocols.protocol import Protocol, parse_protocol_text
 from supervisor.protocols.target_audit import audit_target
 
@@ -394,10 +395,52 @@ class ProtocolAnalyzer:
 
         return round(max(score, 0.0), 2)
 
+    def _validate_self_contradiction(
+        self, protocol: Protocol, issues: list[ValidationIssue],
+    ) -> None:
+        """Flag orders the restrictions make impossible to satisfy.
+
+        A run whose protocol demands a file in a directory it forbids writes
+        to cannot succeed: it spends the budget proving that and closes
+        BLOCKED. Such a pair is an ERROR because no execution can resolve it;
+        a path spelled two ways is a WARNING because the agent could still
+        pick one reading.
+        """
+        audit = audit_contradictions(
+            protocol.target_section, protocol.restrictions_section,
+        )
+        for contradiction in audit.contradictions:
+            issues.append(
+                ValidationIssue(
+                    severity=Severity.ERROR,
+                    section="RESTRICTIONS",
+                    message=contradiction.message,
+                    suggestion=(
+                        "Resolve before launching: either drop the creation from "
+                        "TARGET, or narrow the prohibition in RESTRICTIONS so the "
+                        "named file is allowed. Neither side may be relaxed "
+                        "silently."
+                    ),
+                ),
+            )
+        for conflict in audit.path_type_conflicts:
+            issues.append(
+                ValidationIssue(
+                    severity=Severity.WARNING,
+                    section="RESTRICTIONS",
+                    message=conflict,
+                    suggestion=(
+                        "Write the path one way in both sections: same separators, "
+                        "same trailing form, same file-or-directory wording."
+                    ),
+                ),
+            )
+
     def _validate_cross_section(
         self, protocol: Protocol, issues: list[ValidationIssue],
     ) -> None:
         """Validate consistency across protocol sections."""
+        self._validate_self_contradiction(protocol, issues)
         # Check if restrictions mention things from target (potential contradictions)
         target_lower = protocol.target_section.lower()
         restrict_lower = protocol.restrictions_section.lower()

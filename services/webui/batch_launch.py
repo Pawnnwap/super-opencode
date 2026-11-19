@@ -22,8 +22,38 @@ from typing import Any
 
 from services.config.supervisor_config_builder import build_supervisor_config
 from supervisor.core.task_state import TASK_STATE_FILENAME
-from supervisor.protocols.protocol import resolve_protocol_path
+from supervisor.protocols.contradiction_audit import audit_contradictions
+from supervisor.protocols.protocol import (
+    load_protocol,
+    resolve_protocol_path,
+)
 from supervisor.utils.config import SupervisorConfig
+
+
+def refuse_self_contradictory_protocol(protocol_path: Path) -> None:
+    """Raise when a protocol orders work its own restrictions forbid.
+
+    A self-contradictory protocol cannot be satisfied: every replica spends
+    its budget proving the impossible and closes BLOCKED. Refusing at launch
+    is the only cheap exit, and it names every conflicting pair so the author
+    can fix the exact lines.
+    """
+    try:
+        protocol = load_protocol(protocol_path)
+    except (OSError, ValueError):
+        # Unreadable protocols are reported by the loader's own callers; this
+        # gate only judges the sections it can read.
+        return
+    audit = audit_contradictions(
+        protocol.target_section, protocol.restrictions_section,
+    )
+    if not audit.blocking:
+        return
+    raise ValueError(
+        "Protocol is self-contradictory and can never be satisfied:\n- "
+        + "\n- ".join(audit.issues()),
+    )
+
 
 # Run artifacts that must NOT seed a fresh replica: snapshots and journals
 # belong to the run that produced them, and dot-dirs (.opencode sessions,
@@ -88,6 +118,7 @@ def provision_replica(
             f"No protocol file (protocol.jsonl or protocol.md) in {workspace} — "
             "save one first.",
         )
+    refuse_self_contradictory_protocol(protocol_src)
 
     replica.parent.mkdir(parents=True, exist_ok=True)
     if init_mode == "protocol":

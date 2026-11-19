@@ -12,6 +12,7 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
+from supervisor.protocols.contradiction_audit import audit_contradictions
 from supervisor.protocols.protocol import (
     Protocol,
     parse_protocol_text,
@@ -39,14 +40,6 @@ GATE_FIX_ROUNDS = 3
 # providers accept different names, and a proxy can accept one while clamping
 # it to "off". Endpoints that reject the parameter fall back to one plain call.
 
-REQUIRED_TARGET = "Construct/refactor the codebase to eliminate redundancy by implementing base classes and shared utility functions."
-
-# The appended item never satisfies the audit by itself (it names no
-# evidence), so the model's own TARGET items must carry it. Idempotence
-# marker: skip re-appending when the item is already in the draft.
-_REQUIRED_TARGET_MARKER = "eliminate redundancy by implementing base classes"
-
-
 class ProtocolGateError(Exception):
     """The refined protocol still fails the target audit after all fix rounds."""
 
@@ -57,33 +50,6 @@ class ProtocolGateError(Exception):
             f"TARGET not ready after {fix_rounds} auto-fix round(s): "
             + " ".join(issues)
         )
-
-
-def _append_required_target(md: str) -> str:
-    if _REQUIRED_TARGET_MARKER in md:
-        return md
-    lines = md.split("\n")
-    target_idx = None
-    for i, line in enumerate(lines):
-        if line.strip().lower() == "## target":
-            target_idx = i
-            break
-    if target_idx is None:
-        return md
-    count = 0
-    last_numbered_idx = None
-    for i in range(target_idx + 1, len(lines)):
-        line = lines[i].strip()
-        if line and line[0].isdigit():
-            count += 1
-            last_numbered_idx = i
-        if line.startswith("## "):
-            break
-    if last_numbered_idx is None:
-        return md
-    new_item = f"{count + 1}. {REQUIRED_TARGET}"
-    lines.insert(last_numbered_idx + 1, new_item)
-    return "\n".join(lines)
 
 
 _WIZARD_SYSTEM = """\
@@ -106,6 +72,11 @@ When user gives you raw notes for any section, you must:
    condition (what blocks acceptance or requires replanning).
    Never leave "improve" or "enhance" unmeasured.
 3. Keep restrictions as clear prohibitions ("Do not …").
+   Every TARGET creation must be checked against EVERY restriction before
+   you answer: never order a file to be created in a directory that a
+   restriction forbids writing to, and never give one path two types
+   (file in one section, directory in the other). A protocol that
+   contradicts itself can never pass.
 4. Return ONLY the full protocol.md content, no preamble, no commentary.
    The file must start with the three headings in order.
 """
@@ -119,10 +90,13 @@ def _fix_prompt(protocol_md: str, issues: tuple[str, ...]) -> str:
         f"{protocol_md}\n\n"
         "Audit findings that must be fixed:\n"
         f"{findings}\n\n"
-        "Edit the TARGET so every finding resolves: name concrete acceptance "
-        "evidence (e.g. the pytest suite or benchmark that must pass), the "
-        "observable done condition, and what blocks acceptance. Keep the "
-        "three headings and everything else unchanged.\n\n"
+        "Edit the protocol so every finding resolves. For a TARGET finding, "
+        "name concrete acceptance evidence (e.g. the pytest suite or benchmark "
+        "that must pass), the observable done condition, and what blocks "
+        "acceptance. For a contradiction finding, change the side the finding "
+        "names so the two sections agree: do not delete a finding by "
+        "weakening an unrelated rule. Keep the three headings and everything "
+        "else unchanged.\n\n"
         "Return ONLY the corrected full protocol.md content, no preamble, "
         "no commentary."
     )
@@ -213,7 +187,7 @@ class ProtocolWizard(StreamedLLMHelper):
 
         issues: tuple[str, ...] = ()
         for fix_round in range(max_fix_rounds + 1):
-            candidate = _append_required_target(refined_md)
+            candidate = refined_md
             try:
                 protocol = parse_protocol_text(candidate)
             except ValueError as exc:
@@ -224,9 +198,12 @@ class ProtocolWizard(StreamedLLMHelper):
                 audit = audit_target(
                     protocol.target_section, protocol.restrictions_section,
                 )
-                if audit.is_actionable:
+                contradiction = audit_contradictions(
+                    protocol.target_section, protocol.restrictions_section,
+                )
+                if audit.is_actionable and not contradiction.blocking:
                     return candidate, protocol
-                issues = audit.issues
+                issues = audit.issues + contradiction.issues()
             if fix_round == max_fix_rounds:
                 break
             if on_round is not None:
