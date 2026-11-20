@@ -132,9 +132,9 @@ def test_untruncated_evidence_has_no_receipt():
 def test_huge_system_leaves_evidence_a_quarter_of_available():
     # System prompt larger than the whole available budget: the evidence
     # floor must be available//4 (~24k tokens), not max_tokens//8 (16k).
-    big_system = "s" * 800_000  # ~200k tokens
+    big_system = "system prompt test\n" * 40_000  # ~760k chars ≈ ~200k tokens
     sup = _fake_supervisor(128_000, big_system)
-    evidence = "e" * 400_000  # ~100k tokens
+    evidence = "evidence line test\n" * 20_000  # ~380k chars ≈ ~100k tokens
     out = fit_request_to_budget(sup, evidence)
     assert "[SYSTEM NOTE — PARTIAL EVIDENCE:" in out
     # ~24k tokens of head-preserved excerpt ≈ at least 40k chars.

@@ -44,6 +44,11 @@ except ImportError as exc:
 
 server = Server("codehelp")
 
+if not hasattr(Server, "list_tools"):
+    Server.list_tools = lambda self: (lambda f: f)  # type: ignore[attr-defined]
+if not hasattr(Server, "call_tool"):
+    Server.call_tool = lambda self: (lambda f: f)  # type: ignore[attr-defined]
+
 
 CODEHELP_SEARCH_DOCSTRINGS_TOOL = Tool(
     name="search_docstrings",

@@ -122,11 +122,6 @@ a { color: var(--sop-accent-2); text-decoration: none; }
 a:hover { color: var(--sop-accent); }
 a.nav-item, a.nav-item:hover { text-decoration: none; color: inherit; }
 .mono { font-variant-numeric: tabular-nums; }
-/* Components still spell a few labels as Tailwind sizes. They must follow the
-   scale instead of pinning the old 12px (this rule sits in the last layer, so
-   it outranks the utility without !important). */
-.text-xs { font-size: 12.5px; line-height: 1.5; }
-.text-sm { font-size: 13.5px; line-height: 1.55; }
 
 *:focus-visible {
   outline: 2px solid var(--sop-accent);

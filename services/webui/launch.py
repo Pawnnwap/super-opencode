@@ -75,23 +75,22 @@ def launch_job(
     return job_id
 
 
-def require_workspace() -> Path | None:
+def require_workspace(
+    page_title: str = "Live Run",
+    subtitle: str = "This page needs a workspace before it can do anything.",
+    kicker: str = "Execute",
+) -> Path | None:
     """The configured workspace, or a rendered "go configure it first" notice.
 
-    Run and Harvester each opened with the same gate; duplicating it meant the
-    wording and the button could drift apart per page. The notice is an empty
-    state, not a red line: a dead end with no next step is the worst kind of
-    error message.
+    Renders an empty state if no workspace exists so that the operator has a
+    clear next step to navigate to the Protocol Wizard.
     """
     raw = app_state.get("workspace") or ""
     if raw and Path(raw).exists():
         return Path(raw)
     from services.webui import theme
 
-    theme.page_header(
-        "Live Run", "This page needs a workspace before it can do anything.",
-        kicker="Execute",
-    )
+    theme.page_header(page_title, subtitle, kicker=kicker)
     theme.empty_state(
         "folder_off",
         "No usable workspace",

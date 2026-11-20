@@ -47,6 +47,7 @@ _ZH: dict[str, str] = {
     "Preparing — CLI upgrades and MCP config…": "准备中 — CLI 升级与 MCP 配置…",
     "Startup tasks — {done}/{total} done": "启动任务 — {done}/{total} 已完成",
     "Interface language": "界面语言",
+    "Toggle navigation": "切换导航栏",
 
     # ── Wizard: page + sections ─────────────────────────────────────────
     "Setup": "设置",
@@ -338,8 +339,6 @@ _ZH: dict[str, str] = {
         "协议：填写各部分并点击“接受并保存”。",
     "Access & Protection: auto-generate it, or edit it by hand.":
         "访问与保护：自动生成，或手工编辑。",
-    "Access & Protection: policy drill failed — {detail}":
-        "访问与保护：策略演练失败 — {detail}",
 
     # ── Run page ────────────────────────────────────────────────────────
     "Execute": "执行",

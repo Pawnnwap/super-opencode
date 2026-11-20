@@ -27,6 +27,11 @@ _UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like
 
 server = Server("web_tools")
 
+if not hasattr(Server, "list_tools"):
+    Server.list_tools = lambda self: (lambda f: f)  # type: ignore[attr-defined]
+if not hasattr(Server, "call_tool"):
+    Server.call_tool = lambda self: (lambda f: f)  # type: ignore[attr-defined]
+
 
 def _strip_tags(fragment: str) -> str:
     fragment = re.sub(r"<[^>]+>", "", fragment)

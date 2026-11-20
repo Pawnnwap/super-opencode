@@ -62,12 +62,14 @@ class CancellableCall:
         """Close the call; the Cancel button can no longer reach it."""
         self._event = None
 
-    def cancel(self, status_label=None, *, message: str = "Cancelling…") -> bool:
+    def cancel(self, status_label=None, *, message: str = "") -> bool:
         """Request cancellation; False when nothing was in flight."""
+        from services.webui import i18n
+
         if self._event is None:
-            ui.notify("Nothing is running.")
+            ui.notify(i18n.t("Nothing is running."))
             return False
         self._event.set()
         if status_label is not None:
-            status_label.set_text(message)
+            status_label.set_text(message or i18n.t("Cancelling…"))
         return True

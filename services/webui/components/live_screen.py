@@ -284,10 +284,17 @@ class LiveJobScreen:
         else:
             rows += [
                 ("Engine", engine),
-                ("Agent model", app_state.get("opencode_model") or i18n.t("(not set)")),
+                (
+                    "Agent model",
+                    config.get("opencode_model")
+                    or app_state.get("opencode_model")
+                    or i18n.t("(not set)"),
+                ),
                 (
                     "Judge model",
-                    app_state.get("supervisor_model") or i18n.t("(not set)"),
+                    config.get("supervisor_model")
+                    or app_state.get("supervisor_model")
+                    or i18n.t("(not set)"),
                 ),
                 (
                     "Occam Razor",

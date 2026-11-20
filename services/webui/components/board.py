@@ -35,10 +35,6 @@ def may_pause_autorefresh(
     return bool(auto_refresh) and not active and not scan_incomplete
 
 
-def _workspace_name(job: dict) -> str:
-    return workspace_name(job)
-
-
 def _fmt_when(status: dict) -> str:
     """Compact local timestamp of the last write, '' when unknown.
 
@@ -297,7 +293,7 @@ class JobBoard:
         out = []
         for job in jobs:
             job_state = job["status"].get("state", "UNKNOWN")
-            name = _workspace_name(job)
+            name = workspace_name(job)
             if state == "Active queue" and job_state not in ACTIVE_JOB_STATES:
                 continue
             if state not in {"All states", "Active queue"} and job_state != state:
@@ -331,7 +327,7 @@ class JobBoard:
         self._render(*collected)
 
     def _render(self, jobs: list[dict], incomplete: int = 0) -> None:
-        workspaces = sorted({_workspace_name(j) for j in jobs} - {""})
+        workspaces = sorted({workspace_name(j) for j in jobs} - {""})
         known = set(self.workspace_filter.options or {}) - {"All workspaces"}
         if set(workspaces) != known:
             # Dict form: the sentinel value stays "All workspaces" for the
@@ -442,7 +438,7 @@ class JobBoard:
         return (
             job["id"],
             status.get("state", ""),
-            _workspace_name(job),
+            workspace_name(job),
             status.get("batch_id") or "",
             status.get("replica_index"),
             # A harvest finishing changes a history card, so the mark is part

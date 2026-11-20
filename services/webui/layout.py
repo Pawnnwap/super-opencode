@@ -248,10 +248,7 @@ def _language_switch() -> None:
 
 def _has_active_jobs(job_manager) -> bool:
     """Any run job queued or running right now (store read)."""
-    return any(
-        state.get("type") == "run"
-        for state in active_jobs(job_manager)
-    )
+    return bool(active_jobs(job_manager, "run"))
 
 
 def render_shell(active: str, job_manager) -> None:
@@ -266,9 +263,10 @@ def render_shell(active: str, job_manager) -> None:
     run_counts = _queue_counts(job_manager, "run")
     harvest_counts = _queue_counts(job_manager, "harvest")
 
-    with ui.left_drawer(value=True, fixed=True, top_corner=False).classes(
+    drawer = ui.left_drawer(value=True, fixed=True, top_corner=False).classes(
         "sop-drawer",
-    ).props("bordered width=236"):
+    ).props("bordered width=236 breakpoint=768")
+    with drawer:
         with ui.row().classes("sop-brand w-full flex-nowrap"):
             with ui.element("div").classes("sop-brand__mark"):
                 ui.icon("terminal")
@@ -346,6 +344,9 @@ def render_shell(active: str, job_manager) -> None:
     model = app_state.get("opencode_model") or i18n.t("(no model)")
     judge = app_state.get("supervisor_model") or i18n.t("(no judge)")
     with ui.header().classes("sop-header items-center flex-nowrap"):
+        ui.button(icon="menu", on_click=drawer.toggle).props(
+            "flat dense round color=grey-4",
+        ).classes("mr-1").tooltip(i18n.t("Toggle navigation"))
         with ui.row().classes("sop-header__where flex-nowrap min-w-0"):
             ui.icon("folder_open")
             ui.label(where).classes("truncate").tooltip(

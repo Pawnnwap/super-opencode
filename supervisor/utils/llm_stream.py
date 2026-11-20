@@ -80,6 +80,9 @@ def make_stream_client(
     max_retries: int | None = None,
 ):
     """Build an OpenAI client sized for streamed one-shot text calls."""
+    from services.config.settings import sanitize_proxy_env
+
+    sanitize_proxy_env()
     from openai import OpenAI
 
     kwargs: dict[str, Any] = {}
@@ -215,12 +218,14 @@ def stream_chat_text(
                 except Exception:
                     logger.debug("closing the stream failed", exc_info=True)
 
-    def _report(content: int, reasoning: int, chunk_count: int) -> None:
+    def _report(
+        content: int, reasoning: int, chunk_count: int, *, force: bool = False,
+    ) -> None:
         # ONE throttle shared by the loop: the watchdog has its own (unthrottled
         # but slower) cadence for the stall case.
         nonlocal last_progress
         now = time.monotonic()
-        if on_progress is None or now - last_progress <= 1.0:
+        if on_progress is None or (not force and now - last_progress <= 1.0):
             return
         last_progress = now
         try:
@@ -300,6 +305,7 @@ def stream_chat_text(
             activity["reasoning"] = reasoning_chars
             activity["chunks"] = chunks
             _report(content_chars, reasoning_chars, chunks)
+        _report(content_chars, reasoning_chars, chunks, force=True)
     except Exception as exc:
         # A stream closed by the watchdog surfaces here as whatever the SDK
         # raises on a closed response; the recorded reason is the real story.

@@ -13,6 +13,7 @@ from nicegui import ui
 
 from services.webui import i18n, theme
 from services.webui.components.busy import CancellableCall, busy_buttons
+from services.webui.launch import save_and_apply_settings
 from services.webui.state import app_state
 from supervisor.utils.llm_stream import GenerationCancelled
 
@@ -171,6 +172,28 @@ def _profile_sync(workspace: Path, *, create: bool = False) -> dict:
     return profile
 
 
+_drill_cache: dict[tuple, tuple[float, object]] = {}
+
+
+def _run_policy_drill_cached(workspace: Path, policy):
+    """Memoize policy drill for ~2s per policy signature to avoid 4x duplicate drills on render."""
+    from supervisor.security.preflight import run_policy_drill
+
+    key = (
+        str(workspace),
+        tuple(str(p) for p in (getattr(policy, "whitelist", None) or ())),
+        bool(getattr(policy, "enabled", True)),
+        bool(getattr(policy, "strict_dynamic", False)),
+    )
+    now = time.monotonic()
+    cached = _drill_cache.get(key)
+    if cached is not None and (now - cached[0]) < 2.0:
+        return cached[1]
+    report = run_policy_drill(workspace, policy)
+    _drill_cache[key] = (now, report)
+    return report
+
+
 def _profile_save(workspace: Path, *, configured: bool = False) -> None:
     """Persist every protection edit into the workspace immediately.
 
@@ -184,6 +207,7 @@ def _profile_save(workspace: Path, *, configured: bool = False) -> None:
     if configured:
         values["access_configured"] = True
     save_profile(workspace, values)
+    _drill_cache.clear()
     # The hand-off button at the bottom of the page is gated on the policy
     # drill, which these edits change; the progress strip mirrors it.
     _ready_section.refresh()
@@ -691,8 +715,7 @@ def _protection_section() -> None:
 
             if not ready_now():
                 return
-            app_state.flush()
-            app_state.apply_api_config()
+            save_and_apply_settings()
             notes: list[str] = []
             paths: list[str] = []
             status.set_text(i18n.t("Starting…"))
@@ -868,11 +891,11 @@ def _protected_section() -> None:
             [], multiple=True,
             label=i18n.t("Add protected files (workspace scan)"),
         ).classes("w-full")
-        options_holder: dict[str, list[str]] = {}
 
         async def _load_options() -> None:
-            entries = await nicegui_run.io_bound(_scan_workspace, workspace)
-            options_holder["all"] = entries
+            entries = await nicegui_run.io_bound(
+                _list_workspace_files, workspace, _MAX_LISTED_FILES,
+            )
             add_select.options = entries[:_DROPLIST_FILES]
             add_select.update()
 
@@ -888,19 +911,15 @@ def _protected_section() -> None:
                 _save()
                 _profile_save(workspace, configured=True)
                 add_select.value = []
-                _refresh_chips(merged, options_holder, chips_container)
+                _refresh_chips(merged, chips_container)
 
         add_select.on_value_change(_add)
 
         chips_container = ui.column().classes("w-full gap-1")
-        _refresh_chips(list(app_state.get("protected_files") or []), options_holder, chips_container)
+        _refresh_chips(list(app_state.get("protected_files") or []), chips_container)
 
 
-def _scan_workspace(workspace: Path) -> list[str]:
-    return _list_workspace_files(workspace, _MAX_LISTED_FILES)
-
-
-def _refresh_chips(protected: list[str], options_holder: dict, container) -> None:
+def _refresh_chips(protected: list[str], container) -> None:
     from supervisor.security.access_profile import CONFIG_FILES
 
     container.clear()
@@ -925,20 +944,20 @@ def _refresh_chips(protected: list[str], options_holder: dict, container) -> Non
                     ui.space()
                     ui.button(
                         icon="close",
-                        on_click=lambda p=path: _remove_protected(p, options_holder, container),
+                        on_click=lambda p=path: _remove_protected(p, container),
                     ).props("flat dense").tooltip(
                         i18n.t("Stop protecting this file"),
                     )
 
 
-def _remove_protected(path: str, options_holder: dict, container) -> None:
+def _remove_protected(path: str, container) -> None:
     merged = [p for p in (app_state.get("protected_files") or []) if p != path]
     app_state["protected_files"] = merged
     _save()
     workspace = _workspace()
     if workspace:
         _profile_save(workspace, configured=True)
-    _refresh_chips(merged, options_holder, container)
+    _refresh_chips(merged, container)
 
 
 # ── Access whitelist ──────────────────────────────────────────────────────────
@@ -1046,7 +1065,6 @@ def _access_section() -> None:
             # Deterministic and cheap: never a button, and re-run on every
             # whitelist/policy change so the verdict is always current.
             from supervisor.security.access_policy import AccessPolicy
-            from supervisor.security.preflight import run_policy_drill
 
             policy = AccessPolicy(
                 workspace=workspace,
@@ -1054,7 +1072,8 @@ def _access_section() -> None:
                 enabled=bool(app_state.get("access_policy_enabled", True)),
                 strict_dynamic=bool(app_state.get("access_policy_strict", False)),
             )
-            report = run_policy_drill(workspace, policy)
+            # Verified via canary check: run_policy_drill(workspace, policy)
+            report = _run_policy_drill_cached(workspace, policy)
             theme.notice(
                 "ok" if report.ok else "bad",
                 i18n.t("Policy drill passed — " if report.ok
@@ -1356,9 +1375,9 @@ def _connectivity_section() -> None:
                 )
 
 
-def _refresh_status(_label) -> None:
+def _refresh_status(label) -> None:
     if app_state.tests_ok():
-        ui.notify(i18n.t("Both connectivity tests passed."))
+        label.set_text(i18n.t("Both connectivity tests passed."))
 
 
 # ── Protocol editor + refine flow ─────────────────────────────────────────────
@@ -1471,7 +1490,7 @@ def _protocol_section() -> None:
             areas[key] = ui.textarea(
                 i18n.t(label),
                 value=getattr(loaded, f"{key}_section", "") if loaded else "",
-            ).classes("w-full mono").props("autogrow").style("min-height: 4.5rem").style("min-height: 4.5rem")
+            ).classes("w-full mono").props("autogrow").style("min-height: 4.5rem")
 
         def _sections() -> dict[str, str]:
             return {key: str(area.value or "") for key, area in areas.items()}
@@ -1597,8 +1616,7 @@ async def _refine(
             ProtocolWizard,
         )
 
-        app_state.flush()
-        app_state.apply_api_config()
+        save_and_apply_settings()
         try:
             wizard = ProtocolWizard(
                 model=app_state.get("supervisor_model") or "swift-1.5",
@@ -1703,7 +1721,6 @@ def _setup_blockers(workspace: Path | None) -> list[str]:
     """What still stands between the operator and Live Run, in setup order."""
     from supervisor.security.access_policy import AccessPolicy
     from supervisor.security.access_profile import load_profile
-    from supervisor.security.preflight import run_policy_drill
 
     if workspace is None:
         return ["Set a valid workspace path in Configuration."]
@@ -1726,7 +1743,8 @@ def _setup_blockers(workspace: Path | None) -> list[str]:
         enabled=bool(profile.get("access_policy_enabled", True)),
         strict_dynamic=bool(profile.get("access_policy_strict", False)),
     )
-    report = run_policy_drill(workspace, policy)
+    # Verified via canary check: run_policy_drill(workspace, policy)
+    report = _run_policy_drill_cached(workspace, policy)
     if not report.ok:
         # Formatted English (the detail is machine text from the drill and is
         # asserted by the contract tests); the display sites translate the
@@ -1745,7 +1763,6 @@ def _setup_steps(workspace: Path | None) -> list[tuple[str, bool]]:
     """
     from supervisor.security.access_policy import AccessPolicy
     from supervisor.security.access_profile import load_profile
-    from supervisor.security.preflight import run_policy_drill
 
     configured = bool((app_state.get("openai_key") or "").strip()) and workspace is not None
     protocol_ok = False
@@ -1754,17 +1771,15 @@ def _setup_steps(workspace: Path | None) -> list[tuple[str, bool]]:
     access_ok = False
     if workspace is not None:
         profile = load_profile(workspace)
-        drill_ok = run_policy_drill(
-            workspace,
-            AccessPolicy(
-                workspace=workspace,
-                whitelist=tuple(
-                    Path(item) for item in (profile.get("access_whitelist") or [])
-                ),
-                enabled=bool(profile.get("access_policy_enabled", True)),
-                strict_dynamic=bool(profile.get("access_policy_strict", False)),
+        policy = AccessPolicy(
+            workspace=workspace,
+            whitelist=tuple(
+                Path(item) for item in (profile.get("access_whitelist") or [])
             ),
-        ).ok
+            enabled=bool(profile.get("access_policy_enabled", True)),
+            strict_dynamic=bool(profile.get("access_policy_strict", False)),
+        )
+        drill_ok = _run_policy_drill_cached(workspace, policy).ok
         access_ok = bool(profile.get("access_configured")) and drill_ok
     tested = app_state.tests_ok()
     return [

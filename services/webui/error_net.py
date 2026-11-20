@@ -32,7 +32,10 @@ _MAX_MESSAGE_CHARS = 300
 
 def message_for(exc: BaseException) -> str:
     """The single-line text shown to the operator."""
-    return f"Action failed: {type(exc).__name__}: {str(exc)[:_MAX_MESSAGE_CHARS]}"
+    from services.webui import i18n
+
+    detail = f"{type(exc).__name__}: {str(exc)[:_MAX_MESSAGE_CHARS]}"
+    return i18n.tr("Action failed: {detail}", detail=detail)
 
 
 def report_unhandled(exc: BaseException) -> None:

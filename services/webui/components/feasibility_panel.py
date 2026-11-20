@@ -18,6 +18,7 @@ from nicegui import ui
 
 from services.webui import i18n
 from services.webui.components.busy import CancellableCall, busy_buttons
+from services.webui.launch import save_and_apply_settings
 from services.webui.state import app_state
 from supervisor.utils.llm_stream import GenerationCancelled
 
@@ -394,8 +395,7 @@ def render(workspace: Path, protocol_text: str | Callable[[], str] = "") -> None
                     ),
                 )
                 return
-            app_state.flush()
-            app_state.apply_api_config()
+            save_and_apply_settings()
             started = time.monotonic()
 
             def _on_progress(content_chars: int, reasoning_chars: int, _chunks: int) -> None:

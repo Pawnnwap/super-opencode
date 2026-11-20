@@ -214,7 +214,7 @@ class JobStateStore:
         """Parse one state file with the retry policy both readers share."""
         if not path.exists():
             return None
-        for attempt in range(5):
+        for attempt in range(8):
             try:
                 with open(path, encoding="utf-8-sig") as f:
                     return json.load(f)
@@ -222,7 +222,7 @@ class JobStateStore:
                 logger.warning("Corrupt job state file for %s: %s", path.name, exc)
                 return None
             except OSError as exc:
-                if attempt == 4:
+                if attempt == 7:
                     logger.warning("Cannot read job state %s: %s", path.name, exc)
                     return None
                 time.sleep(0.02 * (attempt + 1))

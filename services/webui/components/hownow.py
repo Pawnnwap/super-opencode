@@ -24,6 +24,7 @@ from services.jobs.hownow import run_hownow_sweep
 from services.webui import i18n
 from services.webui.components.log_panel import TailStrip
 from services.webui.jobs import get_job_manager
+from services.webui.launch import save_and_apply_settings
 from services.webui.state import app_state
 
 logger = logging.getLogger(__name__)
@@ -96,8 +97,7 @@ def _run_sweep() -> None:
     report = ""
     error = ""
     try:
-        app_state.flush()
-        app_state.apply_api_config()
+        save_and_apply_settings()
         report = run_hownow_sweep(
             app_state.as_mapping(),
             get_job_manager().store,
