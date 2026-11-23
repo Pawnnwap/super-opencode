@@ -401,60 +401,73 @@ class BaseLoop:
 
     def _install_access_guard(self, engine: str) -> None:
         """Write the engine-specific gate and hand its flags to the runner."""
-        from supervisor.security.engine_guards import install_access_guard
-
-        try:
-            result = install_access_guard(
-                self.config.workspace,
-                self.access_policy,
-                engine,
-            )
-        except (OSError, ValueError) as exc:
-            # Fail closed: keep the run from starting with a policy the engine
-            # cannot enforce.
-            logger.error("Access guard installation failed: %s", exc)
-            raise RuntimeError(f"access guard installation failed: {exc}") from exc
-
-        self.access_guard = result
-        if result.failed:
-            raise RuntimeError(
-                "access guard could not be installed for "
-                f"{engine}: {'; '.join(result.warnings) or 'unknown error'}",
-            )
-        from supervisor.security.preflight import run_drill
-
-        drill = run_drill(engine, self.config.workspace, self.access_policy, result)
-        self.access_drill = drill
-        for check in drill.checks:
-            logger.info("Access drill %s", check.line())
-        if not drill.ok:
-            # Cage's canary lesson: prove the boundary instead of trusting the
-            # configuration. A gate that does not deny is a failed install.
-            raise RuntimeError(
-                f"access policy drill failed: {drill.fail_text()}",
-            )
-        if result.warnings:
-            for warning in result.warnings:
-                logger.warning("Access guard: %s", warning)
-        if result.flags:
-            self.runner.access_guard_flags = list(result.flags)
-        if result.env:
-            # Every engine process layer merges this bag into the child env, so
-            # the native gate can find the policy snapshot (which lives outside
-            # the agent's writable cwd).
-            self.runner.access_guard_env = dict(result.env)
-            merged = dict(getattr(self.runner, "codex_extra_env", None) or {})
-            merged.update(result.env)
-            self.runner.codex_extra_env = merged
-        # Ownership markers for everything the agent starts: the ledger path
-        # lets the shell gate prove a kill target belongs to THIS run, and the
-        # run id makes the proof unambiguous across concurrent runs.
-        self._expose_run_env()
-        logger.info(
-            "Access guard installed for %s: %s",
-            engine,
-            [str(path) for path in result.artifacts],
+        from supervisor.security.engine_guards import (
+            GUARD_INSTALL_LOCK,
+            install_access_guard,
         )
+
+        # The install and the drill are one critical section: a peer replica
+        # can flip the shared codex hook representation (TOML vs hooks.json)
+        # between them, which made the drill fail on a gate that was just
+        # installed. The lock is re-entrant because install_access_guard
+        # takes it too.
+        with GUARD_INSTALL_LOCK:
+            try:
+                result = install_access_guard(
+                    self.config.workspace,
+                    self.access_policy,
+                    engine,
+                )
+            except (OSError, ValueError) as exc:
+                # Fail closed: keep the run from starting with a policy the
+                # engine cannot enforce.
+                logger.error("Access guard installation failed: %s", exc)
+                raise RuntimeError(f"access guard installation failed: {exc}") from exc
+
+            self.access_guard = result
+            if result.failed:
+                raise RuntimeError(
+                    "access guard could not be installed for "
+                    f"{engine}: {'; '.join(result.warnings) or 'unknown error'}",
+                )
+            from supervisor.security.preflight import run_drill
+
+            drill = run_drill(
+                engine, self.config.workspace, self.access_policy, result,
+            )
+            self.access_drill = drill
+            for check in drill.checks:
+                logger.info("Access drill %s", check.line())
+            if not drill.ok:
+                # Cage's canary lesson: prove the boundary instead of trusting
+                # the configuration. A gate that does not deny is a failed
+                # install.
+                raise RuntimeError(
+                    f"access policy drill failed: {drill.fail_text()}",
+                )
+            if result.warnings:
+                for warning in result.warnings:
+                    logger.warning("Access guard: %s", warning)
+            if result.flags:
+                self.runner.access_guard_flags = list(result.flags)
+            if result.env:
+                # Every engine process layer merges this bag into the child env,
+                # so the native gate can find the policy snapshot (which lives
+                # outside the agent's writable cwd).
+                self.runner.access_guard_env = dict(result.env)
+                merged = dict(getattr(self.runner, "codex_extra_env", None) or {})
+                merged.update(result.env)
+                self.runner.codex_extra_env = merged
+            # Ownership markers for everything the agent starts: the ledger
+            # path lets the shell gate prove a kill target belongs to THIS run,
+            # and the run id makes the proof unambiguous across concurrent
+            # runs.
+            self._expose_run_env()
+            logger.info(
+                "Access guard installed for %s: %s",
+                engine,
+                [str(path) for path in result.artifacts],
+            )
 
     def _expose_run_env(self) -> None:
         """Publish the run's ownership markers to every child environment."""

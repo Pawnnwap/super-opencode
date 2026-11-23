@@ -347,8 +347,14 @@ class LiveJobScreen:
             None,
         )
         body = sanitize_event_message(culprit.get("msg") or "") if culprit else ""
+        failure_class = str(status.get("failure_class") or "")
+        summary = str(status.get("failure_summary") or "")
+        headline = f"[{failure_class}] {summary}" if failure_class else summary
+        if body.strip() == headline.strip():
+            # The newest error event is the summary line; do not show it twice.
+            body = ""
 
-        signature = (state, len(body))
+        signature = (state, failure_class, summary, len(body))
         if self._failure_signature == signature:
             return
         self._failure_signature = signature
@@ -363,6 +369,15 @@ class LiveJobScreen:
                 i18n.tr("Failure · {state}", state=state), icon="error",
                 tone="warn", anchor="failure",
             ):
+                if headline:
+                    ui.label(headline[:4000]).classes(
+                        "mono text-xs whitespace-pre-wrap",
+                    ).style(
+                        "color:var(--sop-text-2);max-height:120px;overflow:auto;"
+                        "background:var(--sop-surface-2);font-weight:600;"
+                        "border:1px solid var(--sop-line);border-radius:8px;"
+                        "padding:10px 12px",
+                    )
                 if body:
                     ui.label(body[:4000]).classes(
                         "mono text-xs whitespace-pre-wrap",
@@ -372,15 +387,22 @@ class LiveJobScreen:
                         "border:1px solid var(--sop-line);border-radius:8px;"
                         "padding:10px 12px",
                     )
-                else:
+                if not headline and not body:
                     ui.label(
                         "No error event was recorded — open the full log below.",
                     ).classes("sop-hint")
+                if status.get("resume_available"):
+                    ui.label(
+                        "A pending plan judge was checkpointed — launching "
+                        "this workspace again resumes it without re-running "
+                        "the agent turn.",
+                    ).classes("sop-hint")
+                copy_text = headline or body
                 with ui.row().classes("items-center gap-2 flex-wrap"):
-                    if body:
+                    if copy_text:
                         ui.button(
                             i18n.t("Copy error"), icon="content_copy",
-                            on_click=lambda b=body: ui.run_javascript(
+                            on_click=lambda b=copy_text: ui.run_javascript(
                                 f"navigator.clipboard.writeText({_json.dumps(b)})",
                             ),
                         ).props("outline color=none dense")

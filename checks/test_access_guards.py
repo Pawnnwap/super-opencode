@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -226,6 +227,65 @@ def test_codex_disable_removes_hook(layout, tmp_path):
         for handler in entry.get("hooks", [])
     ]
     assert not any("supervisor.security.guard_cli" in command for command in commands)
+
+
+@pytest.mark.parametrize("seed", ["hooks.json", "config.toml"])
+def test_codex_concurrent_installs_keep_exactly_one_hook(layout, tmp_path, seed):
+    """Six replicas installing the shared codex home at once must not collide.
+
+    Before the install lock + unique temp files, parallel replicas produced
+    ``WinError 32/5/13`` on the fixed ``config.toml.tmp`` and could flip the
+    TOML-vs-hooks.json representation between another thread's install and
+    drill.
+    """
+    ws, _, policy = layout
+    home = tmp_path / "codex_home"
+    home.mkdir()
+    if seed == "hooks.json":
+        (home / "hooks.json").write_text(
+            json.dumps({"hooks": {"SessionStart": [{"hooks": [
+                {"type": "command", "command": "echo keep"},
+            ]}]}}),
+            encoding="utf-8",
+        )
+    else:
+        (home / "config.toml").write_text(
+            'model = "x"\n\n[[hooks.PostToolUse]]\nmatcher = "Edit"\n'
+            'hooks = [\n  { type = "command", command = "echo gate" },\n]\n',
+            encoding="utf-8",
+        )
+
+    barrier = threading.Barrier(6)
+    errors: list[BaseException] = []
+
+    def install() -> None:
+        try:
+            barrier.wait(timeout=10)
+            install_access_guard(ws, policy, "codex", codex_home=home)
+        except BaseException as exc:  # noqa: BLE001 - the test reports it
+            errors.append(exc)
+
+    threads = [threading.Thread(target=install) for _ in range(6)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+
+    assert not errors, errors
+    assert not any(thread.is_alive() for thread in threads)
+
+    config_text = (home / "config.toml").read_text(encoding="utf-8") if (home / "config.toml").exists() else ""
+    hooks_text = (home / "hooks.json").read_text(encoding="utf-8") if (home / "hooks.json").exists() else ""
+    if "supervisor-access-guard" in config_text:
+        assert config_text.count("[[hooks.PreToolUse]]") == 1
+    else:
+        data = json.loads(hooks_text)
+        guard_entries = [
+            entry
+            for entry in data["hooks"]["PreToolUse"]
+            if any(GUARD_MARKER in str(h.get("statusMessage", "")) for h in entry["hooks"])
+        ]
+        assert len(guard_entries) == 1
 
 
 def test_codex_install_joins_toml_representation(layout, tmp_path):

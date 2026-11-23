@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from supervisor.core.llm_support.chat import judge_checkpoint, judge_phase
 from supervisor.core.llm_support.models import StepContext, SupervisorVerdict
 from supervisor.protocols.alignment import (
     AlignmentResult,
@@ -26,7 +27,8 @@ def judge(supervisor, opencode_output: str) -> SupervisorVerdict:
     )
     msg = build_judge_prompt(opencode_output, context_blocks=context_blocks)
     history_msg = build_judge_prompt(opencode_output, context_blocks="")
-    return supervisor._chat(msg, history_content=history_msg)
+    with judge_phase("build"):
+        return supervisor._chat(msg, history_content=history_msg)
 
 
 def judge_with_step_context(
@@ -76,7 +78,8 @@ def judge_with_step_context(
         opencode_output=opencode_output,
         verdict_format="",
     )
-    return supervisor._chat(msg, history_content=history_msg)
+    with judge_phase("build"):
+        return supervisor._chat(msg, history_content=history_msg)
 
 
 def judge_plan(
@@ -130,7 +133,16 @@ def judge_plan(
         context_blocks="",
     )
 
-    verdict = supervisor._chat(msg, history_content=history_msg)
+    checkpoint = {
+        "phase": "plan",
+        "round": plan_round,
+        "total": total_plan_rounds,
+        "output": opencode_output,
+    }
+    with judge_phase("plan", plan_round, total_plan_rounds), judge_checkpoint(
+        checkpoint,
+    ):
+        verdict = supervisor._chat(msg, history_content=history_msg)
     return SupervisorVerdict(
         raw=verdict.raw,
         all_targets_met=False,

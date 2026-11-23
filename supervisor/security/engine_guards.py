@@ -35,6 +35,9 @@ import os
 import re
 import shutil
 import sys
+import tempfile
+import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -42,6 +45,14 @@ from typing import Any
 from supervisor.security.access_policy import AccessPolicy
 
 logger = logging.getLogger(__name__)
+
+# The codex home is machine-wide, and every run in a replica batch installs
+# into it at the same second. The fixed ``config.toml.tmp`` name let two
+# writers collide (WinError 32/5/13), and the TOML-vs-hooks.json decision is
+# a read-modify-write: one run could migrate hooks.json away between another
+# run's install and its drill. One process-wide lock covers both because all
+# farm jobs are threads in a single worker process.
+GUARD_INSTALL_LOCK = threading.RLock()
 
 # Policy artifacts live OUTSIDE the agent's writable cwd: a hard rule the
 # agent can edit (or delete) is not a hard rule. The store is keyed by the
@@ -186,40 +197,43 @@ def install_access_guard(
     engine = (engine or "opencode").strip().lower()
     result = GuardInstallResult(engine=engine, enabled=policy.enabled)
 
-    if not policy.enabled:
-        result.removed = remove_access_guard(workspace, engine, codex_home=codex_home)
+    with GUARD_INSTALL_LOCK:
+        if not policy.enabled:
+            result.removed = remove_access_guard(
+                workspace, engine, codex_home=codex_home,
+            )
+            return result
+
+        snapshot_path = _write_policy_snapshot(workspace, policy)
+        result.artifacts.append(snapshot_path)
+        log_path = violation_log_for(workspace, policy)
+
+        if engine == "opencode":
+            _install_opencode(workspace, policy, result, snapshot_path)
+        elif engine == "pi":
+            _install_pi(workspace, policy, result)
+        elif engine == "codex":
+            _install_codex(workspace, policy, result, codex_home=codex_home)
+        else:
+            result.warnings.append(f"unknown engine {engine!r}: no native gate installed")
+
+        # All engines read the snapshot through this env var; it also lets the
+        # codex hook stay inert outside supervised runs.
+        result.env["SOP_ACCESS_POLICY"] = str(snapshot_path)
+        result.env["SOP_ACCESS_LOG"] = str(log_path)
+        # The JS gates shell out to this exact interpreter for command analysis.
+        result.env["SOP_GUARD_PYTHON"] = sys.executable
+        # The codex hook runs in a fresh interpreter: make the supervisor package
+        # importable even when the app was not installed editable.
+        package_root = Path(__file__).resolve().parents[2]
+        inherited = os.environ.get("PYTHONPATH", "")
+        result.env["PYTHONPATH"] = (
+            str(package_root) + (os.pathsep + inherited if inherited else "")
+        )
+        # Record what was installed so a later drill can prove the artifacts were
+        # not rewritten by the agent (they live in writable directories).
+        record_guard_integrity(workspace, list(result.artifacts))
         return result
-
-    snapshot_path = _write_policy_snapshot(workspace, policy)
-    result.artifacts.append(snapshot_path)
-    log_path = violation_log_for(workspace, policy)
-
-    if engine == "opencode":
-        _install_opencode(workspace, policy, result, snapshot_path)
-    elif engine == "pi":
-        _install_pi(workspace, policy, result)
-    elif engine == "codex":
-        _install_codex(workspace, policy, result, codex_home=codex_home)
-    else:
-        result.warnings.append(f"unknown engine {engine!r}: no native gate installed")
-
-    # All engines read the snapshot through this env var; it also lets the
-    # codex hook stay inert outside supervised runs.
-    result.env["SOP_ACCESS_POLICY"] = str(snapshot_path)
-    result.env["SOP_ACCESS_LOG"] = str(log_path)
-    # The JS gates shell out to this exact interpreter for command analysis.
-    result.env["SOP_GUARD_PYTHON"] = sys.executable
-    # The codex hook runs in a fresh interpreter: make the supervisor package
-    # importable even when the app was not installed editable.
-    package_root = Path(__file__).resolve().parents[2]
-    inherited = os.environ.get("PYTHONPATH", "")
-    result.env["PYTHONPATH"] = (
-        str(package_root) + (os.pathsep + inherited if inherited else "")
-    )
-    # Record what was installed so a later drill can prove the artifacts were
-    # not rewritten by the agent (they live in writable directories).
-    record_guard_integrity(workspace, list(result.artifacts))
-    return result
 
 
 # --------------------------------------------------------------------------- #
@@ -234,7 +248,7 @@ def _write_policy_snapshot(workspace: Path, policy: AccessPolicy) -> Path:
     payload["generatedBy"] = "supervisor.security.engine_guards"
     payload["workspaceDisplay"] = str(policy.workspace)
     payload["whitelistDisplay"] = [str(item) for item in policy.whitelist]
-    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    _replace_text(path, json.dumps(payload, indent=2, ensure_ascii=False) + "\n")
     return path
 
 
@@ -425,6 +439,39 @@ def _remember_generated_rules(config_path: Path, rules: dict[str, Any]) -> None:
         logger.debug("could not write opencode rules marker", exc_info=True)
 
 
+def _replace_text(path: Path, text: str) -> None:
+    """Atomically replace *path* with *text* using a unique temp file.
+
+    Windows refuses ``os.replace`` while a reader holds the destination or
+    another writer is mid-replace, so transient OSErrors are retried. The
+    temp name is unique per call: parallel replicas installing the shared
+    codex config used to collide on one fixed ``config.toml.tmp``.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if path.exists():
+            try:
+                os.chmod(tmp_path, path.stat().st_mode)
+            except OSError:
+                pass
+        for attempt in range(5):
+            try:
+                os.replace(tmp_path, path)
+                return
+            except OSError:
+                if attempt == 4:
+                    raise
+                time.sleep(0.05 * (attempt + 1))
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+
 def _write_json_with_backup(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.exists():
@@ -432,9 +479,7 @@ def _write_json_with_backup(path: Path, payload: dict[str, Any]) -> None:
         if not backup.exists():
             shutil.copyfile(path, backup)
     text = json.dumps(payload, indent=2, ensure_ascii=False) + "\n"
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(text, encoding="utf-8")
-    os.replace(tmp, path)
+    _replace_text(path, text)
 
 
 # --------------------------------------------------------------------------- #
@@ -542,9 +587,7 @@ def _merge_codex_toml(config_path: Path, command: str) -> None:
         if not backup.exists():
             shutil.copyfile(config_path, backup)
     payload = (cleaned + "\n\n" if cleaned else "") + _managed_toml_block(command)
-    tmp = config_path.parent / (config_path.name + ".tmp")
-    tmp.write_text(payload, encoding="utf-8")
-    os.replace(tmp, config_path)
+    _replace_text(config_path, payload)
 
 
 def _migrate_hooks_json(hooks_path: Path, result: GuardInstallResult) -> None:
@@ -671,9 +714,7 @@ def _merge_codex_hooks(hooks_path: Path, workspace: Path) -> None:
         backup = hooks_path.with_suffix(".json.bak-supervisor")
         if not backup.exists():
             shutil.copyfile(hooks_path, backup)
-    tmp = hooks_path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    os.replace(tmp, hooks_path)
+    _replace_text(hooks_path, json.dumps(data, indent=2, ensure_ascii=False) + "\n")
 
 
 # --------------------------------------------------------------------------- #
@@ -733,26 +774,25 @@ def remove_access_guard(
         removed.append(extension)
 
     if engine == "codex":
-        home = Path(codex_home) if codex_home else default_codex_home()
-        config_path = home / "config.toml"
-        try:
-            if config_path.exists():
-                text = config_path.read_text(encoding="utf-8")
-                cleaned = _strip_managed_toml(text)
-                if cleaned != text:
-                    cleaned = cleaned.rstrip("\n")
-                    tmp = config_path.parent / (config_path.name + ".tmp")
-                    tmp.write_text(cleaned + "\n" if cleaned else "", encoding="utf-8")
-                    os.replace(tmp, config_path)
-                    removed.append(config_path)
-        except (OSError, ValueError):
-            logger.debug("could not strip codex TOML hook", exc_info=True)
-        hooks_path = home / "hooks.json"
-        try:
-            if hooks_path.exists():
-                _strip_codex_hook(hooks_path)
-        except (OSError, ValueError):
-            logger.debug("could not strip codex hook", exc_info=True)
+        with GUARD_INSTALL_LOCK:
+            home = Path(codex_home) if codex_home else default_codex_home()
+            config_path = home / "config.toml"
+            try:
+                if config_path.exists():
+                    text = config_path.read_text(encoding="utf-8")
+                    cleaned = _strip_managed_toml(text)
+                    if cleaned != text:
+                        cleaned = cleaned.rstrip("\n")
+                        _replace_text(config_path, cleaned + "\n" if cleaned else "")
+                        removed.append(config_path)
+            except (OSError, ValueError):
+                logger.debug("could not strip codex TOML hook", exc_info=True)
+            hooks_path = home / "hooks.json"
+            try:
+                if hooks_path.exists():
+                    _strip_codex_hook(hooks_path)
+            except (OSError, ValueError):
+                logger.debug("could not strip codex hook", exc_info=True)
 
     return removed
 

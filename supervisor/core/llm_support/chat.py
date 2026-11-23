@@ -1,7 +1,15 @@
 from __future__ import annotations
 
+import contextvars
+import json
 import logging
+import os
+import random
+import tempfile
 import time
+from contextlib import contextmanager
+from datetime import datetime
+from pathlib import Path
 
 from openai import (
     APIConnectionError,
@@ -13,7 +21,9 @@ from openai import (
     RateLimitError,
 )
 
+from supervisor.core.failure_class import classify_failure
 from supervisor.core.llm_support.history_compaction import build_context_messages
+from supervisor.core.llm_support.judge_gate import judge_slot
 from supervisor.core.llm_support.models import (
     SupervisorVerdict,
     _is_token_limit_error,
@@ -30,6 +40,289 @@ from supervisor.monitoring.token_estimator import should_truncate
 from supervisor.utils.text_utils import normalize_model_response
 
 logger = logging.getLogger(__name__)
+
+_JUDGE_CONTEXT: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
+    "judge_context", default=None,
+)
+_HEADER_WHITELIST = ("server", "content-type", "x-request-id", "via", "date")
+# A gateway 502/503/504 is transient far more often than the old fail-fast
+# policy assumed: the 09:49 outage returned 502s for ~30 s while the box kept
+# serving other requests. Four calls over ~50 s of jittered backoff cover
+# that window; a dead endpoint still fails in well under two minutes.
+_SERVER_RETRY_WAITS = (5.0, 15.0, 30.0)
+
+
+@contextmanager
+def judge_phase(phase: str, round: int | None = None, total: int | None = None):
+    """Name the phase a judge call belongs to for failure diagnostics."""
+    token = _JUDGE_CONTEXT.set({"phase": phase, "round": round, "total": total})
+    try:
+        yield
+    finally:
+        _JUDGE_CONTEXT.reset(token)
+
+
+_CHECKPOINT_META: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
+    "judge_checkpoint_meta", default=None,
+)
+
+
+@contextmanager
+def judge_checkpoint(meta: dict):
+    """Persist the exact request before this judge call; clear it on verdict.
+
+    A plan phase can spend an hour producing the output that is judged next;
+    a provider outage at that point used to discard the turn because replay
+    restarted the plan from scratch. The checkpoint lets a replay re-issue
+    just the judge call.
+    """
+    token = _CHECKPOINT_META.set(dict(meta))
+    try:
+        yield
+    finally:
+        _CHECKPOINT_META.reset(token)
+
+
+def _response_snapshot(exc: BaseException) -> dict:
+    """Status, request id, safe headers and body excerpt of an API error."""
+    response = getattr(exc, "response", None)
+    headers: dict[str, str] = {}
+    body = ""
+    if response is not None:
+        try:
+            for name in _HEADER_WHITELIST:
+                value = response.headers.get(name)
+                if value:
+                    headers[name] = str(value)
+        except Exception:  # diagnostics must not mask the error
+            logger.debug("Could not read response headers", exc_info=True)
+        try:
+            body = response.text or ""
+        except Exception:  # noqa: BLE001
+            body = ""
+    raw_body = getattr(exc, "body", None)
+    if not body and raw_body is not None:
+        try:
+            body = raw_body if isinstance(raw_body, str) else json.dumps(
+                raw_body, ensure_ascii=False,
+            )
+        except Exception:  # noqa: BLE001
+            body = repr(raw_body)
+    return {
+        "status_code": getattr(exc, "status_code", None),
+        "request_id": getattr(exc, "request_id", None),
+        "headers": headers,
+        "body_excerpt": body[:500],
+        "message": str(exc)[:500],
+    }
+
+
+def _error_detail(exc: BaseException) -> str:
+    """Compact status/request-id/body suffix for retry log lines."""
+    snapshot = _response_snapshot(exc)
+    bits: list[str] = []
+    if snapshot.get("status_code") is not None:
+        bits.append(f"status={snapshot['status_code']}")
+    if snapshot.get("request_id"):
+        bits.append(f"request_id={snapshot['request_id']}")
+    if snapshot.get("body_excerpt"):
+        bits.append(f"body={snapshot['body_excerpt'][:200]!r}")
+    return f" [{', '.join(bits)}]" if bits else ""
+
+
+def _atomic_write_json(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_path, path)
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+
+def _checkpoint_path(supervisor) -> Path | None:
+    workspace = getattr(supervisor, "_workspace", None)
+    if workspace is None:
+        return None
+    return Path(workspace) / ".opencode" / "judge_pending.json"
+
+
+def _write_judge_checkpoint(
+    supervisor,
+    messages: list[dict],
+    record_content: str,
+    user_content: str,
+    should_record_user: bool,
+    meta: dict,
+) -> None:
+    path = _checkpoint_path(supervisor)
+    if path is None:
+        return
+    payload = {
+        "schema": 1,
+        **{key: value for key, value in meta.items() if key != "messages"},
+        "messages": messages,
+        "history": [
+            dict(message)
+            for message in getattr(supervisor, "_history", [])
+            if isinstance(message, dict)
+        ],
+        "record_content": record_content,
+        "user_content": user_content,
+        "should_record_user": bool(should_record_user),
+        "created_at": datetime.now().astimezone().isoformat(),
+    }
+    try:
+        _atomic_write_json(path, payload)
+    except Exception:  # the judge call is worth making even if the dump fails
+        logger.warning("Could not write judge checkpoint %s", path, exc_info=True)
+
+
+def _clear_judge_checkpoint(supervisor) -> None:
+    path = _checkpoint_path(supervisor)
+    if path is None:
+        return
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        logger.warning("Could not clear judge checkpoint %s", path, exc_info=True)
+
+
+def load_judge_checkpoint(workspace) -> dict | None:
+    """Read a pending plan judge; a corrupt file is ignored, not fatal."""
+    path = Path(workspace) / ".opencode" / "judge_pending.json"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.warning("Ignoring unreadable judge checkpoint %s: %s", path, exc)
+        return None
+    if not isinstance(payload, dict) or payload.get("schema") != 1:
+        logger.warning("Ignoring unsupported judge checkpoint %s", path)
+        return None
+    if not isinstance(payload.get("messages"), list) or not payload["messages"]:
+        logger.warning("Ignoring judge checkpoint without messages: %s", path)
+        return None
+    return payload
+
+
+def resume_chat(supervisor, payload: dict) -> SupervisorVerdict:
+    """Re-issue a checkpointed judge call without re-running the agent turn."""
+    messages = payload.get("messages")
+    if not isinstance(messages, list) or not messages:
+        raise ValueError("judge checkpoint has no messages")
+    record_content = str(payload.get("record_content") or "")
+    user_content = str(payload.get("user_content") or "")
+    should_record_user = bool(payload.get("should_record_user", True))
+    history = payload.get("history")
+    if isinstance(history, list):
+        supervisor._history = [
+            dict(message) for message in history if isinstance(message, dict)
+        ]
+    verdict = chat_with_retry(
+        supervisor,
+        messages,
+        record_content,
+        should_record_user,
+    )
+    supervisor._last_judged_content = user_content
+    supervisor._last_verdict = verdict
+    _clear_judge_checkpoint(supervisor)
+    return verdict
+
+
+def _failure_payload(
+    supervisor,
+    exc: BaseException,
+    *,
+    model: str,
+    extra_body: dict | None,
+    messages: list[dict],
+    attempt: int,
+    elapsed: float,
+    total_elapsed: float,
+) -> dict:
+    ctx = _JUDGE_CONTEXT.get() or {}
+    try:
+        prompt_chars = sum(len(str(m.get("content") or "")) for m in messages)
+    except Exception:  # noqa: BLE001
+        prompt_chars = 0
+    return {
+        "ts": datetime.now().astimezone().isoformat(),
+        "failure_class": classify_failure(exc),
+        "phase": ctx.get("phase"),
+        "round": ctx.get("round"),
+        "total_rounds": ctx.get("total"),
+        "model": model,
+        "extra_body": extra_body,
+        "attempt": attempt,
+        "elapsed_s": round(elapsed, 3),
+        "total_elapsed_s": round(total_elapsed, 3),
+        "prompt_chars": prompt_chars,
+        "message_count": len(messages),
+        "exc_type": type(exc).__name__,
+        **_response_snapshot(exc),
+        "messages": messages,
+    }
+
+
+def _record_judge_failure(
+    supervisor,
+    exc: BaseException,
+    *,
+    model: str,
+    extra_body: dict | None,
+    messages: list[dict],
+    attempt: int,
+    elapsed: float,
+    total_elapsed: float,
+) -> None:
+    """Attach the failing request context and persist a replayable sidecar."""
+    payload = _failure_payload(
+        supervisor,
+        exc,
+        model=model,
+        extra_body=extra_body,
+        messages=messages,
+        attempt=attempt,
+        elapsed=elapsed,
+        total_elapsed=total_elapsed,
+    )
+    try:
+        exc.failure_context = payload
+    except Exception:  # diagnostics must not mask the error
+        logger.debug("Could not attach failure context", exc_info=True)
+    logger.error(
+        "Judge call failed [%s] phase=%s model=%s attempt=%d elapsed=%.1fs "
+        "total=%.1fs status=%s request_id=%s headers=%s body=%r",
+        payload["failure_class"],
+        payload["phase"],
+        model,
+        attempt,
+        elapsed,
+        total_elapsed,
+        payload["status_code"],
+        payload["request_id"],
+        payload["headers"],
+        payload["body_excerpt"][:200],
+    )
+    workspace = getattr(supervisor, "_workspace", None)
+    if workspace is None:
+        return
+    try:
+        out_dir = Path(workspace) / ".opencode" / "judge_failures"
+        stamp = datetime.now().astimezone().strftime("%Y%m%d-%H%M%S-%f")
+        _atomic_write_json(
+            out_dir / f"{stamp}-{payload['failure_class']}.json",
+            payload,
+        )
+    except Exception:
+        logger.debug("Could not write judge failure sidecar", exc_info=True)
 
 
 def chat(
@@ -132,9 +425,21 @@ def chat(
     messages.append({"role": "user", "content": user_content})
 
     supervisor._log_prompt("Supervisor Chat", messages)
+    checkpoint_meta = _CHECKPOINT_META.get()
+    if checkpoint_meta is not None:
+        _write_judge_checkpoint(
+            supervisor,
+            messages,
+            record_content,
+            user_content,
+            should_record_user,
+            checkpoint_meta,
+        )
     verdict = chat_with_retry(
         supervisor, messages, record_content, should_record_user,
     )
+    if checkpoint_meta is not None:
+        _clear_judge_checkpoint(supervisor)
     supervisor._last_judged_content = user_content
     supervisor._last_verdict = verdict
     return verdict
@@ -156,162 +461,196 @@ def chat_with_retry(
     # backoff ladder — one quick retry, then fail the turn fast.
     conn_attempt = 0
     max_conn_retries = 1
+    # Transient 5xx ladder (gateway blips). Independent from the token-limit
+    # and backup counters so neither policy can reset the other.
+    server_retries = 0
+    max_server_retries = len(_SERVER_RETRY_WAITS)
     working_messages = list(messages)
     using_backup = False
     token_limit_retry = 0
     max_token_limit_retries = 3
 
-    while attempt <= max_retries:
-        current_model = supervisor._model_backup if using_backup else supervisor._model
-        try:
-            create_kwargs = {
-                "model": current_model,
-                "messages": working_messages,
-            }
-            # Thinking-effort control for real runs; None = provider default.
-            if getattr(supervisor, "_reasoning_body", None):
-                create_kwargs["extra_body"] = supervisor._reasoning_body
-            response = supervisor._client.chat.completions.create(**create_kwargs)
-            if not response.choices:
-                if empty_choices_retries >= max_empty_choices_retries:
-                    raise OpenAIError(
-                        f"LLM response returned no choices after {max_empty_choices_retries} retries",
+    call_index = 0
+    total_started = time.monotonic()
+    attempt_started = total_started
+    current_model = supervisor._model
+    create_kwargs: dict = {}
+    try:
+        while attempt <= max_retries:
+            current_model = supervisor._model_backup if using_backup else supervisor._model
+            try:
+                create_kwargs = {
+                    "model": current_model,
+                    "messages": working_messages,
+                }
+                # Thinking-effort control for real runs; None = provider default.
+                if getattr(supervisor, "_reasoning_body", None):
+                    create_kwargs["extra_body"] = supervisor._reasoning_body
+                call_index += 1
+                with judge_slot():
+                    attempt_started = time.monotonic()
+                    response = supervisor._client.chat.completions.create(**create_kwargs)
+                if not response.choices:
+                    if empty_choices_retries >= max_empty_choices_retries:
+                        raise OpenAIError(
+                            f"LLM response returned no choices after {max_empty_choices_retries} retries",
+                        )
+                    wait = 15 * (2 ** empty_choices_retries)
+                    logger.warning(
+                        "LLM response returned no choices, retry %d/%d after %ds",
+                        empty_choices_retries + 1,
+                        max_empty_choices_retries,
+                        wait,
                     )
-                wait = 15 * (2 ** empty_choices_retries)
+                    time.sleep(wait)
+                    empty_choices_retries += 1
+                    continue
+                empty_choices_retries = 0
+                reply = normalize_model_response(
+                    response.choices[0].message.content,
+                    "supervisor response",
+                )
+                break
+            except RateLimitError as exc:
+                if transient_attempt >= max_transient_retries:
+                    logger.error(
+                        "Transient API error after %d retries, giving up: %s",
+                        max_transient_retries,
+                        exc,
+                    )
+                    raise
+                wait = min(60, 5 * (2 ** transient_attempt))
                 logger.warning(
-                    "LLM response returned no choices, retry %d/%d after %ds",
-                    empty_choices_retries + 1,
-                    max_empty_choices_retries,
+                    "Transient API error %s (attempt %d/%d), retrying after %ds",
+                    type(exc).__name__,
+                    transient_attempt + 1,
+                    max_transient_retries,
                     wait,
                 )
                 time.sleep(wait)
-                empty_choices_retries += 1
+                transient_attempt += 1
                 continue
-            empty_choices_retries = 0
-            reply = normalize_model_response(
-                response.choices[0].message.content,
-                "supervisor response",
-            )
-            break
-        except RateLimitError as exc:
-            if transient_attempt >= max_transient_retries:
-                logger.error(
-                    "Transient API error after %d retries, giving up: %s",
-                    max_transient_retries,
-                    exc,
-                )
-                raise
-            wait = min(60, 5 * (2 ** transient_attempt))
-            logger.warning(
-                "Transient API error %s (attempt %d/%d), retrying after %ds",
-                type(exc).__name__,
-                transient_attempt + 1,
-                max_transient_retries,
-                wait,
-            )
-            time.sleep(wait)
-            transient_attempt += 1
-            continue
-        except (APIConnectionError, APITimeoutError) as exc:
-            if conn_attempt >= max_conn_retries:
-                logger.error(
-                    "Connection error after %d quick retry, failing fast: %s",
-                    max_conn_retries,
-                    exc,
-                )
-                raise
-            conn_attempt += 1
-            logger.warning(
-                "Connection error %s — one quick retry after 2s, then fast fail",
-                type(exc).__name__,
-            )
-            time.sleep(2)
-            continue
-        except BadRequestError as exc:
-            if _is_token_limit_error(exc):
-                if token_limit_retry >= max_token_limit_retries:
+            except (APIConnectionError, APITimeoutError) as exc:
+                if conn_attempt >= max_conn_retries:
                     logger.error(
-                        "BadRequestError: input length exceeds model limit after %d retries",
-                        max_token_limit_retries,
+                        "Connection error after %d quick retry, failing fast: %s",
+                        max_conn_retries,
+                        exc,
                     )
                     raise
-                current_limit = (
-                    supervisor._extract_token_limit_from_error(exc)
-                    or supervisor._get_model_limit_for_model(current_model)
+                conn_attempt += 1
+                logger.warning(
+                    "Connection error %s — one quick retry after 2s, then fast fail",
+                    type(exc).__name__,
                 )
-                old_count = len(working_messages)
-                working_messages = truncate_messages_for_limit(
-                    working_messages,
-                    current_limit,
-                )
-                new_count = len(working_messages)
-                if new_count >= old_count:
-                    working_messages = truncate_older_turns(working_messages)
+                time.sleep(2)
+                continue
+            except BadRequestError as exc:
+                if _is_token_limit_error(exc):
+                    if token_limit_retry >= max_token_limit_retries:
+                        logger.error(
+                            "BadRequestError: input length exceeds model limit after %d retries",
+                            max_token_limit_retries,
+                        )
+                        raise
+                    current_limit = (
+                        supervisor._extract_token_limit_from_error(exc)
+                        or supervisor._get_model_limit_for_model(current_model)
+                    )
+                    old_count = len(working_messages)
+                    working_messages = truncate_messages_for_limit(
+                        working_messages,
+                        current_limit,
+                    )
                     new_count = len(working_messages)
-                token_limit_retry += 1
-                logger.warning(
-                    "BadRequestError (input length) retry %d/%d: truncated messages from %d to %d for limit %d",
-                    token_limit_retry,
-                    max_token_limit_retries,
-                    old_count,
-                    new_count,
-                    current_limit,
-                )
-                continue
-            raise
-        except (APIError, OpenAIError) as exc:
-            if isinstance(exc, InternalServerError):
-                code = getattr(exc, "code", None) or getattr(
-                    exc, "status_code", None,
-                )
-                body = str(exc)
-                if code != 511 and "max tokens" not in body.lower():
-                    # Endpoint-down 5xx (e.g. 502): the backup model shares
-                    # the endpoint, so a fallback call is doomed — fail fast.
-                    logger.error(
-                        "Endpoint 5xx (code %s), failing fast: %s", code, exc,
+                    if new_count >= old_count:
+                        working_messages = truncate_older_turns(working_messages)
+                        new_count = len(working_messages)
+                    token_limit_retry += 1
+                    logger.warning(
+                        "BadRequestError (input length) retry %d/%d: truncated messages from %d to %d for limit %d",
+                        token_limit_retry,
+                        max_token_limit_retries,
+                        old_count,
+                        new_count,
+                        current_limit,
                     )
-                    raise
-            if not using_backup and supervisor._model_backup:
-                logger.warning(
-                    "Primary model %s failed (%s), falling back to backup %s",
-                    supervisor._model,
-                    exc,
-                    supervisor._model_backup,
-                )
-                using_backup = True
-                attempt = 0
-                continue
-            if isinstance(exc, InternalServerError):
-                code = getattr(exc, "code", None) or getattr(
-                    exc,
-                    "status_code",
-                    None,
-                )
-                body = str(exc)
-                if code != 511 and "max tokens" not in body.lower():
-                    raise
-                if attempt >= max_retries:
-                    logger.error(
-                        "Prompt still exceeds token limit after %d truncation attempts",
-                        max_retries,
+                    continue
+                raise
+            except (APIError, OpenAIError) as exc:
+                if isinstance(exc, InternalServerError):
+                    status = getattr(exc, "status_code", None)
+                    if status == 511 or _is_token_limit_error(exc):
+                        # Token-limit surfaced as 5xx: truncating the prompt is
+                        # the only useful response. A backup call against the
+                        # same endpoint just repeats the oversized request.
+                        if attempt >= max_retries:
+                            logger.error(
+                                "Prompt still exceeds token limit after %d truncation attempts",
+                                max_retries,
+                            )
+                            raise
+                        old_count = len(working_messages)
+                        working_messages = truncate_older_turns(working_messages)
+                        new_count = len(working_messages)
+                        removed = old_count - new_count
+                        attempt += 1
+                        logger.warning(
+                            "Token-limit retry %d/%d: removed %d older message(s), now %d messages in request",
+                            attempt,
+                            max_retries,
+                            removed,
+                            new_count,
+                        )
+                        continue
+                    if server_retries >= max_server_retries:
+                        logger.error(
+                            "Endpoint 5xx (status %s) after %d retries: %s%s",
+                            status,
+                            max_server_retries,
+                            exc,
+                            _error_detail(exc),
+                        )
+                        raise
+                    wait = _SERVER_RETRY_WAITS[server_retries] * random.uniform(
+                        0.8, 1.2,
                     )
-                    raise
-                old_count = len(working_messages)
-                working_messages = truncate_older_turns(working_messages)
-                new_count = len(working_messages)
-                removed = old_count - new_count
-                attempt += 1
-                logger.warning(
-                    "Token-limit retry %d/%d: removed %d older message(s), now %d messages in request",
-                    attempt,
-                    max_retries,
-                    removed,
-                    new_count,
-                )
-            else:
+                    server_retries += 1
+                    logger.warning(
+                        "Transient 5xx (status %s, attempt %d/%d), retrying after %.1fs: %s%s",
+                        status,
+                        server_retries,
+                        max_server_retries,
+                        wait,
+                        exc,
+                        _error_detail(exc),
+                    )
+                    time.sleep(wait)
+                    continue
+                if not using_backup and supervisor._model_backup:
+                    logger.warning(
+                        "Primary model %s failed (%s), falling back to backup %s",
+                        supervisor._model,
+                        exc,
+                        supervisor._model_backup,
+                    )
+                    using_backup = True
+                    attempt = 0
+                    continue
                 raise
 
+    except Exception as exc:
+        _record_judge_failure(
+            supervisor,
+            exc,
+            model=current_model,
+            extra_body=create_kwargs.get("extra_body") if create_kwargs else None,
+            messages=working_messages,
+            attempt=max(call_index, 1),
+            elapsed=max(0.0, time.monotonic() - attempt_started),
+            total_elapsed=max(0.0, time.monotonic() - total_started),
+        )
+        raise
     if should_record_user:
         supervisor._history.append({"role": "user", "content": record_content})
     supervisor._history.append({"role": "assistant", "content": reply})
@@ -384,6 +723,8 @@ def _request_structured_verdict(
             ),
         },
     ]
+    body = None
+    repair_started = time.monotonic()
     try:
         repair_kwargs = {
             "model": supervisor._model,
@@ -397,9 +738,20 @@ def _request_structured_verdict(
         body = mechanical() if callable(mechanical) else None
         if body:
             repair_kwargs["extra_body"] = body
-        response = supervisor._client.chat.completions.create(**repair_kwargs)
+        with judge_slot():
+            response = supervisor._client.chat.completions.create(**repair_kwargs)
     except Exception as exc:  # noqa: BLE001 - a failed repair is not a verdict
         logger.warning("structured-verdict repair call failed: %s", exc)
+        _record_judge_failure(
+            supervisor,
+            exc,
+            model=supervisor._model,
+            extra_body=body if body else None,
+            messages=repair_messages,
+            attempt=1,
+            elapsed=max(0.0, time.monotonic() - repair_started),
+            total_elapsed=max(0.0, time.monotonic() - repair_started),
+        )
         return None
     if not response.choices:
         return None

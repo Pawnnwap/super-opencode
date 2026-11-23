@@ -491,6 +491,10 @@ def _advanced_section() -> None:
                 "Supervisor thinking effort",
                 REASONING_EFFORT_CHOICES,
             )
+        ui.label(
+            "Backup models must differ from the primary; both use the same "
+            "API endpoint, so a same-host outage defeats the fallback.",
+        ).classes("sop-hint")
         if engine == "codex":
             with ui.row().classes("sop-row"):
                 _bind_input("codex_base_url", "Codex base URL (responses API)")

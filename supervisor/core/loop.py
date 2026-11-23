@@ -17,6 +17,7 @@ from collections.abc import Generator
 
 from supervisor.analyzers.opencode_step_detector import StepProgress
 from supervisor.core.llm_supervisor import StepContext, SupervisorVerdict
+from supervisor.core.llm_support.chat import judge_phase, load_judge_checkpoint
 from supervisor.core.loop_base import BaseLoop, Event, LoopState, _ev
 from supervisor.core.occam_razor import OccamRazorStage
 from supervisor.protocols.protocol import read_protocol_text
@@ -254,7 +255,58 @@ class SupervisorLoop(BaseLoop):
         last_feedback: str = ""
         last_plan_output: str = ""
 
-        for round_num in range(1, total + 1):
+        # A prior process may have died between persisting the plan output and
+        # receiving the verdict. Re-issue only the judge call; the agent turn
+        # (often an hour of work) is not re-run.
+        start_round = 1
+        checkpoint = load_judge_checkpoint(self.config.workspace)
+        if checkpoint is not None:
+            try:
+                resumed_round = int(checkpoint.get("round") or 0)
+                checkpoint_total = int(checkpoint.get("total") or 0)
+            except (TypeError, ValueError):
+                resumed_round = checkpoint_total = 0
+            if (
+                1 <= resumed_round <= total
+                and checkpoint_total == total
+                and checkpoint.get("phase") == "plan"
+            ):
+                yield _ev(
+                    "warn",
+                    f"[plan mode] Resuming pending judge for round "
+                    f"{resumed_round}/{total} — the agent turn is not re-run.",
+                )
+                with judge_phase("plan", resumed_round, total):
+                    raw = self.supervisor.resume_chat(checkpoint)
+                verdict = SupervisorVerdict(
+                    raw=raw.raw,
+                    all_targets_met=False,
+                    feedback=raw.feedback,
+                )
+                last_plan_output = str(checkpoint.get("output") or "")
+                last_feedback = verdict.feedback
+                yield _ev(
+                    "supervisor_response",
+                    verdict.raw,
+                    digest=verdict.headline(),
+                )
+                yield _ev(
+                    "log-plan_phase",
+                    f"[plan mode] Round {resumed_round}/{total} complete "
+                    "(resumed judge).",
+                )
+                yield from self._emit_token_warnings()
+                start_round = resumed_round + 1
+            else:
+                logger.warning(
+                    "Ignoring plan judge checkpoint for round %s/%s "
+                    "(configured total %s)",
+                    checkpoint.get("round"),
+                    checkpoint.get("total"),
+                    total,
+                )
+
+        for round_num in range(start_round, total + 1):
             yield _ev(
                 "log-plan_phase",
                 f"[plan mode] Round {round_num}/{total} — sending prompt to {self._engine_name}…",
@@ -315,16 +367,9 @@ class SupervisorLoop(BaseLoop):
             )
             yield from self._emit_token_warnings()
 
-            # Early termination: if the supervisor says all targets are met,
-            # exit plan mode immediately regardless of remaining rounds.
-            if verdict.all_targets_met:
-                yield _ev(
-                    "info",
-                    f"[plan mode] Supervisor signaled all targets met after round {round_num}/{total} — ending plan phase early.",
-                )
-                last_feedback = verdict.feedback
-                break
-
+            # Every configured plan round runs: judge_plan returns feedback
+            # only (all_targets_met is forced False), so there is no plan-level
+            # DONE to exit on. Task completion is judged in the build phase.
             last_feedback = verdict.feedback
 
         plan_runner.stop()

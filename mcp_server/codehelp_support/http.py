@@ -54,8 +54,9 @@ def _http_get_text(
     url: str,
     *,
     timeout: int = _DEFAULT_TIMEOUT,
+    validate_url: Callable[[str], bool] | None = None,
 ) -> str:
-    text, _ = _http_get_text_with_meta(url, timeout=timeout)
+    text, _ = _http_get_text_with_meta(url, timeout=timeout, validate_url=validate_url)
     return text
 
 

@@ -14,6 +14,13 @@ from services.jobs.job_states import (
     TERMINAL_JOB_STATES,
 )
 from services.jobs.state_store import JobStateStore
+from supervisor.core.failure_class import (
+    classify_failure,
+    classify_failure_text,
+    failure_summary,
+    is_retryable,
+    summarize_failure_text,
+)
 from supervisor.core.loop import SupervisorLoop
 from supervisor.runners.command_common import PARALLEL_RUNS_ENV
 from supervisor.utils.config import SupervisorConfig
@@ -111,6 +118,16 @@ def pending_record(
         "report": "",
         **meta,
     }, meta
+
+
+def _resume_available(config) -> bool:
+    """A persisted plan judge means a replay can skip the agent turn."""
+    try:
+        return (
+            Path(config.workspace) / ".opencode" / "judge_pending.json"
+        ).is_file()
+    except (AttributeError, OSError):
+        return False
 
 
 def assert_workspace_free(store: JobStateStore, workspace: Path) -> None:
@@ -599,14 +616,52 @@ class JobManager:
             if not report_content:
                 report_content = self._fetch_report(config.workspace, job_type)
 
-            self._update_state(job_id, final_state, report=report_content)
+            if final_state == "FAILED":
+                error_events = [
+                    e for e in logs if e.get("level") == "error"
+                ]
+                last_error = str(error_events[-1].get("msg") or "") if error_events else ""
+                failure_class = classify_failure_text(last_error)
+                summary = summarize_failure_text(last_error)
+                if summary:
+                    # Newest error first in the panel: the traceback stays in
+                    # the log, the operator gets the cause line on top.
+                    self.store.append_log(job_id, {
+                        "level": "error",
+                        "msg": f"[{failure_class}] {summary}",
+                    })
+                self._update_state(
+                    job_id, final_state, report=report_content,
+                    failure_class=failure_class,
+                    failure_summary=summary,
+                    retryable=is_retryable(failure_class),
+                    resume_available=_resume_available(config),
+                )
+            else:
+                self._update_state(job_id, final_state, report=report_content)
 
         except Exception as e:
             import traceback
+
+            failure_class = classify_failure(e)
+            summary = failure_summary(e)
             error_msg = f"Worker error: {e!s}\n{traceback.format_exc()}"
             logger.exception("Job %s failed", job_id)
             self.store.append_log(job_id, {"level": "error", "msg": error_msg})
-            self._update_state(job_id, "FAILED", report=report_content if "report_content" in locals() else "")
+            # Appended last so the failure panel shows the one-line cause;
+            # the full traceback above stays available in the log.
+            self.store.append_log(job_id, {
+                "level": "error",
+                "msg": f"[{failure_class}] {summary}",
+            })
+            self._update_state(
+                job_id, "FAILED",
+                report=report_content if "report_content" in locals() else "",
+                failure_class=failure_class,
+                failure_summary=summary,
+                retryable=is_retryable(failure_class),
+                resume_available=_resume_available(config),
+            )
         finally:
             # A finished job owns nothing: whatever it left running is a
             # stray of THIS run's tree (ledger-proved()), so it is cleaned
@@ -630,7 +685,7 @@ class JobManager:
             except OSError:
                 pass
 
-    def _update_state(self, job_id: str, state_name: str, report: str = ""):
+    def _update_state(self, job_id: str, state_name: str, report: str = "", **extra):
         """Helper to update the stored job state."""
         current = self.store.get_job_state(job_id) or {}
         current.update({
@@ -638,6 +693,8 @@ class JobManager:
             "heartbeat_at": time.time(),
             "report": report,
         })
+        if extra:
+            current.update(extra)
         self.store.save_job_state(job_id, current)
 
     def _fetch_report(self, workspace: Path, job_type: str) -> str:

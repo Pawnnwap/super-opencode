@@ -38,6 +38,7 @@ _PERSIST_KEYS = [
     "log_detail",
     "max_parallel_jobs",
     "max_stored_jobs",
+    "judge_max_concurrency",
     "harvest_prompt",
     "harvest_dir",
     "enable_occam_razor",
@@ -85,6 +86,9 @@ DEFAULTS: dict = {
     # Terminal jobs beyond this count lose their log payloads (.logs/.full)
     # on the next enqueue; state summaries stay for the board history.
     "max_stored_jobs": 50,
+    # Concurrent judge HTTP calls across the whole farm. The farm is one
+    # worker process, so a process-local gate is exact.
+    "judge_max_concurrency": 4,
     # Harvester: last operator prompt and output parent. Empty prompt means
     # the built-in default; empty dir follows the configured workspace.
     "harvest_prompt": "",

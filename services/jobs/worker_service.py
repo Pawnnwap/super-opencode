@@ -293,6 +293,14 @@ def main() -> int:
     store_dir.mkdir(parents=True, exist_ok=True)
 
     settings = _read_settings(store_dir)
+    from supervisor.core.llm_support.judge_gate import ENV_VAR as JUDGE_CAP_ENV
+
+    try:
+        judge_limit = max(1, int(settings.get("judge_max_concurrency") or 4))
+    except (TypeError, ValueError):
+        judge_limit = 4
+    # The judge gate reads this on first use; the worker's first claim follows.
+    os.environ.setdefault(JUDGE_CAP_ENV, str(judge_limit))
     manager = JobManager(
         store_dir=str(store_dir),
         max_parallel_jobs=int(settings.get("max_parallel_jobs") or 4),

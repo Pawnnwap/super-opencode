@@ -19,6 +19,9 @@ from supervisor.core.llm_support.chat import (
     fit_request_to_budget as _fit_request_to_budget_impl,
 )
 from supervisor.core.llm_support.chat import (
+    resume_chat as _resume_chat_impl,
+)
+from supervisor.core.llm_support.chat import (
     truncate_messages_for_limit as _truncate_messages_for_limit_impl,
 )
 from supervisor.core.llm_support.chat import (
@@ -423,6 +426,10 @@ class LLMSupervisor:
             record_content,
             should_record_user,
         )
+
+    def resume_chat(self, payload: dict) -> SupervisorVerdict:
+        """Re-issue the judge call persisted in a plan checkpoint."""
+        return _resume_chat_impl(self, payload)
 
     def _should_omit_step_context(
         self,

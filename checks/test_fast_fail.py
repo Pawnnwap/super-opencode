@@ -66,9 +66,12 @@ def _supervisor(create):
     )
 
 
-def test_502_raises_immediately_without_backup_attempt():
+def test_502_retries_then_raises_without_backup_attempt(monkeypatch):
     from supervisor.core.llm_support.chat import chat_with_retry
 
+    monkeypatch.setattr(
+        "supervisor.core.llm_support.chat.time.sleep", lambda _s: None,
+    )
     calls: list[int] = []
 
     def create(**_kwargs):
@@ -80,9 +83,35 @@ def test_502_raises_immediately_without_backup_attempt():
         chat_with_retry(_supervisor(create), [], "record", False)
     elapsed = time.monotonic() - started
 
-    # exactly one call: no SDK retries, no doomed backup-model attempt
-    assert len(calls) == 1
+    # initial call + three jittered retries; never the doomed backup call
+    assert len(calls) == 4
     assert elapsed < 5
+
+
+def test_502_once_then_succeeds(monkeypatch):
+    from supervisor.core.llm_support.chat import chat_with_retry
+
+    monkeypatch.setattr(
+        "supervisor.core.llm_support.chat.time.sleep", lambda _s: None,
+    )
+    calls: list[int] = []
+
+    def create(**_kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            raise _http_error(InternalServerError, 502)
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(content="DONE: no\nfeedback: ok"),
+                ),
+            ],
+        )
+
+    verdict = chat_with_retry(_supervisor(create), [], "record", False)
+
+    assert len(calls) == 2
+    assert verdict is not None
 
 
 def test_connection_error_gets_one_quick_retry_then_raises():

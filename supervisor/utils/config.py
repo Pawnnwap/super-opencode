@@ -1,7 +1,10 @@
 """supervisor/config.py — immutable run configuration."""
 
+import logging
 from dataclasses import asdict, dataclass
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -184,6 +187,36 @@ class SupervisorConfig:
     # contained in its job object, so a kill can only ever reach this run's
     # own process tree. Empty for ad-hoc/legacy construction.
     run_id: str = ""
+
+    def __post_init__(self) -> None:
+        """Drop backups that equal the primary; they repeat the same call.
+
+        The judge and the agent each build one client per run, so a backup
+        can only differ by model, not by endpoint. An identical model is a
+        no-op fallback against the same host — exactly the config the failing
+        runs carried ("falling back" to deepseek-v4.1-flash from itself).
+        """
+        for primary_name, backup_name, label in (
+            ("supervisor_model", "supervisor_model_backup", "supervisor"),
+            ("opencode_model", "opencode_model_backup", "agent"),
+        ):
+            primary = getattr(self, primary_name, None)
+            backup = getattr(self, backup_name, None)
+            if isinstance(backup, str) and not backup.strip():
+                object.__setattr__(self, backup_name, None)
+                continue
+            if (
+                backup
+                and primary
+                and str(backup).strip() == str(primary).strip()
+            ):
+                object.__setattr__(self, backup_name, None)
+                logger.warning(
+                    "Ignoring %s backup model %r: identical to the primary "
+                    "(both use the same API endpoint)",
+                    label,
+                    backup,
+                )
 
     def to_state_dict(self) -> dict[str, object]:
         data = asdict(self)
