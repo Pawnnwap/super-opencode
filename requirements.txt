@@ -19,6 +19,6 @@ pyupgrade>=3.3.0
 bandit>=1.7.0
 pylint>=3.0.0
 pyflakes>=3.0.0
-semgrep>=1.50.0
+semgrep>=1.50.0; sys_platform != "win32"
 pip-audit>=2.6.0
 pyscn>=1.1.2

@@ -39,6 +39,6 @@ def test_ci_runs_tests_lint_and_security_gates():
     text = workflow.read_text(encoding="utf-8")
 
     assert "pytest" in text
-    assert "ruff check" in text
+    assert '"ruff", "check"' in text or "ruff check" in text
     assert "bandit" in text
     assert "python -m build" in text

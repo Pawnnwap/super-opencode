@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import socket
+import ssl
 
 import pytest
 
@@ -107,18 +108,20 @@ def test_https_connection_preserves_sni_hostname(monkeypatch):
     tls_socket = object()
     seen: list[str] = []
 
-    class _Context:
-        def wrap_socket(self, sock, *, server_hostname):
-            assert sock is raw_socket
-            seen.append(server_hostname)
-            return tls_socket
+    context = ssl.create_default_context()
 
+    def _wrap_socket(sock, *, server_hostname):
+        assert sock is raw_socket
+        seen.append(server_hostname)
+        return tls_socket
+
+    monkeypatch.setattr(context, "wrap_socket", _wrap_socket)
     monkeypatch.setattr(socket, "create_connection", lambda *_a, **_k: raw_socket)
     connection = _PinnedHTTPSConnection(
         "docs.example.test",
         port=443,
         timeout=5,
-        context=_Context(),
+        context=context,
         resolver=lambda _host, _port: ["93.184.216.34"],
     )
 
