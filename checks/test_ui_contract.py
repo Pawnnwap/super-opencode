@@ -10,6 +10,7 @@ a style class.
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 from services.jobs.job_states import (
     ATTENTION_JOB_STATES,
@@ -47,6 +48,16 @@ def test_quasar_fighting_rules_sit_in_the_first_layer():
     for selector in (".q-btn--flat", ".q-btn--outline", ".mono"):
         assert selector in block, selector
     assert "!important" in block
+
+
+def test_long_lists_keep_only_their_vertical_scrollbar():
+    assert ".sop-scroll .q-scrollarea__content { width: 100%; min-width: 0; }" in theme.CSS
+    assert ".sop-scroll .q-scrollarea__thumb--h { display: none; }" in theme.CSS
+    harvest = (
+        Path(__file__).resolve().parents[1]
+        / "services" / "webui" / "pages" / "harvest.py"
+    ).read_text(encoding="utf-8")
+    assert 'props("scrollbar-x=false")' in harvest
 
 
 def test_accent_fill_token_is_readable_with_white_text():

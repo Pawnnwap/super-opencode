@@ -561,7 +561,10 @@ a.sop-step:not(.sop-step--current):hover { background: var(--sop-surface-2); }
 
 /* ── List rows (selection lists, detail rows) ──────────────────────────── */
 
-.sop-list { width: 100%; display: flex; flex-direction: column; }
+.sop-list { width: 100%; min-width: 0; display: flex; flex-direction: column; }
+.sop-scroll .q-scrollarea__content { width: 100%; min-width: 0; }
+.sop-scroll .q-scrollarea__container { overflow-x: hidden; overscroll-behavior: contain; }
+.sop-scroll .q-scrollarea__thumb--h { display: none; }
 .sop-listrow {
   display: flex; align-items: center; gap: 10px; width: 100%;
   padding: 7px 10px; border-bottom: 1px solid var(--sop-line);
@@ -584,8 +587,10 @@ a.sop-step:not(.sop-step--current):hover { background: var(--sop-surface-2); }
   font-family: var(--sop-mono);
   font-size: 11.5px;
   line-height: 1.65;
-  max-height: 580px;
+  height: 520px;
+  overflow-x: hidden;
   overflow-y: auto;
+  overscroll-behavior: contain;
   white-space: pre-wrap;
   word-break: break-word;
   color: #c3cbd8;
@@ -745,7 +750,6 @@ _IMPORTANT_RULES = """
 .q-btn--flat.text-red, .q-btn--flat.text-negative { color: var(--sop-bad) !important; }
 .sop-fold .q-item__label { color: var(--sop-text-1) !important; }
 .sop-fold .q-item__label--caption { color: var(--sop-text-3) !important; }
-.nicegui-log .q-scrollarea__content { white-space: pre-wrap !important; overflow-wrap: anywhere; }
 .nicegui-markdown pre, .nicegui-markdown code, .nicegui-code pre, .nicegui-code code { white-space: pre-wrap !important; overflow-wrap: anywhere; }
 .q-btn.disabled, .q-btn[disabled], .q-btn--disabled { opacity: 0.62 !important; }
 

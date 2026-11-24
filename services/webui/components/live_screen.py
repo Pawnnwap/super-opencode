@@ -403,7 +403,8 @@ class LiveJobScreen:
                 ui.label(headline[:4000]).classes(
                     "mono text-xs whitespace-pre-wrap",
                 ).style(
-                    "color:var(--sop-text-2);max-height:120px;overflow:auto;"
+                    "color:var(--sop-text-2);max-height:120px;"
+                    "overflow-x:hidden;overflow-y:auto;"
                     "background:var(--sop-surface-2);font-weight:600;"
                     "border:1px solid var(--sop-line);border-radius:8px;"
                     "padding:10px 12px",
@@ -412,7 +413,8 @@ class LiveJobScreen:
                 ui.label(body[:4000]).classes(
                     "mono text-xs whitespace-pre-wrap",
                 ).style(
-                    "color:var(--sop-text-2);max-height:320px;overflow:auto;"
+                    "color:var(--sop-text-2);max-height:320px;"
+                    "overflow-x:hidden;overflow-y:auto;"
                     "background:var(--sop-surface-2);"
                     "border:1px solid var(--sop-line);border-radius:8px;"
                     "padding:10px 12px",

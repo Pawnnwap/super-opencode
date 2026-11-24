@@ -137,7 +137,9 @@ class HarvesterPanel:
                 self._scroll_guard_until = 0.0
                 self.scroll = ui.scroll_area(
                     on_scroll=self._remember_scroll,
-                ).classes("w-full sop-scroll").style("height: 21rem")
+                ).classes("w-full sop-scroll").props("scrollbar-x=false").style(
+                    "height: 21rem",
+                )
                 with self.scroll:
                     self.list_col = ui.column().classes("sop-list")
             else:

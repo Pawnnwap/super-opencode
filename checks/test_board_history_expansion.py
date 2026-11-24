@@ -289,17 +289,18 @@ def test_board_never_rebuilds_the_whole_queue_column():
     )
 
 
-def test_log_panel_keeps_the_reader_position():
-    """The log must not be pinned to the top on every arriving event."""
+def test_log_panel_uses_one_native_scroll_surface():
+    """Live arrivals must not rebuild the log or drive its scroll position."""
     from services.webui.components import log_panel
 
     text = Path(log_panel.__file__).read_text(encoding="utf-8")
     panel_body = text.split("class LogPanel")[1]
     update_body = panel_body.split("    def update(self, logs")[1].split("\n    def ")[0]
-    assert "setInterval" not in update_body, (
-        "the old 15-iteration top-pinning loop is what made the log unreadable"
-    )
-    assert "_restore_scroll_js" in update_body
+    assert "self.log = ui.column()" in panel_body
+    assert "ui.log(" not in panel_body
+    assert "label.move(self.log, 0)" in update_body
+    assert "run_javascript" not in update_body
+    assert "scrollTop" not in update_body
 
 
 def test_live_screen_offers_the_workspace_folder_button():
