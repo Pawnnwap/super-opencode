@@ -23,11 +23,29 @@ jobs:
           python -m pip install -r requirements.txt
           python -m pip install -e . build
       - name: Ruff
-        run: python -m ruff check app.py codex_compat_proxy.py services supervisor mcp_server checks
+        run: python -m ruff check --output-format=github app.py codex_compat_proxy.py services supervisor mcp_server checks
       - name: Bandit
         # B602/B604 cover required Windows command shims; B324 covers non-security hashes.
         run: python -m bandit -q -r app.py codex_compat_proxy.py services supervisor mcp_server -ll --skip B324,B602,B604
       - name: Tests
-        run: python -m pytest checks -q -p no:cacheprovider
+        run: python -m pytest checks -q -p no:cacheprovider --junitxml=test-results.xml
+      - name: Annotate test failures
+        if: failure()
+        shell: python
+        run: |
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+
+          report = Path("test-results.xml")
+          if not report.exists():
+              raise SystemExit
+          for case in ET.parse(report).iter("testcase"):
+              failure = case.find("failure")
+              if failure is None:
+                  continue
+              name = f"{case.attrib.get('classname', '')}::{case.attrib.get('name', '')}"
+              message = (failure.attrib.get("message") or failure.text or "").splitlines()[0]
+              message = message.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+              print(f"::error title={name}::{message}")
       - name: Build
         run: python -m build
