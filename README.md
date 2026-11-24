@@ -235,6 +235,22 @@ running, and a proxy whose live upstream differs from `-Upstream` is
 restarted so the parameter always wins. Equivalent manual start:
 `python app.py` (then the app serves `http://127.0.0.1:8501`).
 
+### Local UI sign-in
+
+The UI is protected by a random local capability token, not a username or
+password. The token is created automatically in `.job_store/ui.token`; keep that
+file private. Read it and open the tokenized URL once:
+
+```powershell
+Get-Content .\.job_store\ui.token
+# Open http://127.0.0.1:8501/?token=<token>
+```
+
+That first request sets an `HttpOnly`, `SameSite=Strict` cookie, so later visits
+need no token. API clients may send `Authorization: Bearer <token>` instead.
+`/healthz` remains public for the guardian; other paths return `401` without a
+valid token.
+
 The job worker watches its own source tree (`supervisor/`, `services/`). When
 the tree changes, live jobs keep the code they started with and the queue keeps
 filling up to `max_parallel_jobs`; the worker re-execs to load the new code at

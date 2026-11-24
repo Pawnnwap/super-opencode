@@ -41,3 +41,12 @@ def test_codex_home_comment_does_not_deny_configured_mcp_servers():
     config = _text(".codex_home_soprun/config.toml")
     assert "no MCP servers" not in config
     assert "[mcp_servers.web_tools]" in config
+
+
+def test_readmes_explain_local_ui_token_sign_in():
+    for name in ("README.md", "README_zh.md"):
+        text = _text(name)
+        assert r"Get-Content .\.job_store\ui.token" in text
+        assert "?token=<token>" in text
+        assert "HttpOnly" in text
+        assert "/healthz" in text

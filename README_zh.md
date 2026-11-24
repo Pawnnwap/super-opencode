@@ -211,6 +211,20 @@ pip install -r requirements.txt
 `-Upstream` 不一致会自动重启代理，保证参数生效。等效的手动方式：
 `python app.py`（应用在 `http://127.0.0.1:8501` 提供服务）。
 
+### 本地 UI 登录
+
+UI 使用随机生成的本地能力令牌保护，不是用户名/密码。令牌会自动创建在
+`.job_store/ui.token`，请妥善保管该文件。读取令牌后，首次打开带令牌的 URL：
+
+```powershell
+Get-Content .\.job_store\ui.token
+# 打开 http://127.0.0.1:8501/?token=<token>
+```
+
+首次请求会设置 `HttpOnly`、`SameSite=Strict` Cookie，之后访问无需再带令牌。
+API 客户端也可以改用 `Authorization: Bearer <token>`。`/healthz` 保持公开供
+guardian 检查；其他路径没有有效令牌时返回 `401`。
+
 ---
 
 ## Supervisor 的作用
