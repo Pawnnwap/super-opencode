@@ -367,14 +367,18 @@ class TestCommandScan:
         ref = tmp_path / "ref data"
         ref.mkdir()
         policy = build_policy(ws, [ref])
-        bash_escaped = str(ref).replace(" ", "\\ ") + "\\a.txt"
-        ps_escaped = str(ref).replace(" ", "` ") + "\\a.txt"
-        cmd_escaped = str(ref).replace(" ", "^ ") + "\\a.txt"
-        for command in (
-            f'cp {bash_escaped} "{ws}/a.txt"',
-            f'cp {ps_escaped} "{ws}/a.txt"',
-            f'copy {cmd_escaped} "{ws}/a.txt"',
-        ):
+        bash_escaped = str(ref).replace(" ", "\\ ") + "/a.txt"
+        commands = [f'cp {bash_escaped} "{ws}/a.txt"']
+        if WINDOWS:
+            ps_escaped = str(ref).replace(" ", "` ") + "\\a.txt"
+            cmd_escaped = str(ref).replace(" ", "^ ") + "\\a.txt"
+            commands.extend(
+                [
+                    f'cp {ps_escaped} "{ws}/a.txt"',
+                    f'copy {cmd_escaped} "{ws}/a.txt"',
+                ],
+            )
+        for command in commands:
             assert policy.scan_command(command) == [], command
 
     def test_unknown_command_paths_are_treated_as_writes(self, roots):

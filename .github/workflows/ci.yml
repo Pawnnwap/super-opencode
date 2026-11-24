@@ -23,7 +23,25 @@ jobs:
           python -m pip install -r requirements.txt
           python -m pip install -e . build
       - name: Ruff
-        run: python -m ruff check --output-format=github app.py codex_compat_proxy.py services supervisor mcp_server checks
+        shell: python
+        run: |
+          import subprocess
+          import sys
+
+          command = [
+              sys.executable, "-m", "ruff", "check", "--output-format=github",
+              "app.py", "codex_compat_proxy.py", "services", "supervisor",
+              "mcp_server", "checks",
+          ]
+          result = subprocess.run(command, capture_output=True, text=True)
+          print(result.stdout, end="")
+          print(result.stderr, end="", file=sys.stderr)
+          if result.returncode:
+              lines = (result.stderr or result.stdout).strip().splitlines()
+              message = lines[0] if lines else f"exit code {result.returncode}"
+              message = message.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+              print(f"::error title=Ruff::{message}")
+          raise SystemExit(result.returncode)
       - name: Bandit
         # B602/B604 cover required Windows command shims; B324 covers non-security hashes.
         run: python -m bandit -q -r app.py codex_compat_proxy.py services supervisor mcp_server -ll --skip B324,B602,B604
