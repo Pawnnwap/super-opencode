@@ -48,7 +48,6 @@ def _run_task(task: str, fn) -> None:
         _record(task, "failed", str(exc)[:200])
 
 
-
 def _launch_from_env() -> str:
     # Multi-workspace launcher: SUPERVISOR_LAUNCH_WORKSPACES="a;b;c" plus
     # SUPERVISOR_LAUNCH_PLAN_ROUNDS (default 1; 0 = no plan phase) enqueue one
@@ -74,9 +73,7 @@ def _launch_from_env() -> str:
         rounds = 1
     sync_max_parallel_jobs()
     manager = get_job_manager()
-    batch_id = (
-        f"study_{time_mod.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:4]}"
-    )
+    batch_id = f"study_{time_mod.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:4]}"
     launched: list[str] = []
     index = 0
     for part in raw.split(";"):
@@ -95,11 +92,15 @@ def _launch_from_env() -> str:
                 app_state.get("enable_supervisor_skills", True),
             ),
         )
-        job_id = manager.enqueue_job("run", config, meta={
-            "batch_id": batch_id,
-            "replica_index": index,
-            "replica_count": len(raw.split(";")),
-        })
+        job_id = manager.enqueue_job(
+            "run",
+            config,
+            meta={
+                "batch_id": batch_id,
+                "replica_index": index,
+                "replica_count": len(raw.split(";")),
+            },
+        )
         launched.append(f"{ws.name} -> {job_id}")
     return "; ".join(launched)
 
@@ -112,23 +113,22 @@ def _replay_job() -> str:
     import os
 
     from services.webui.jobs import get_job_manager
-    from supervisor.utils.config import SupervisorConfig
 
     job_id = os.environ.get("SUPERVISOR_REPLAY_JOB", "").strip()
     if not job_id:
         return "no replay request"
     manager = get_job_manager()
-    state = manager.store.get_job_state(job_id)
-    if not state:
+    if not manager.store.get_job_state(job_id):
         return f"replay job {job_id} not found in store"
-    raw = state.get("config") or {}
-    fields = set(SupervisorConfig.__dataclass_fields__)
-    kwargs = {k: v for k, v in dict(raw).items() if k in fields}
-    kwargs["protocol_path"] = Path(kwargs["protocol_path"])
-    kwargs["workspace"] = Path(kwargs["workspace"])
-    config = SupervisorConfig(**kwargs)
-    new_id = manager.enqueue_job(str(state.get("type", "run")), config)
+    config = manager.config_from_state(job_id)
+    if config is None:
+        return f"replay job {job_id} has invalid config"
+    new_id = manager.enqueue_job(
+        str(manager.store.get_job_state(job_id).get("type", "run")), config
+    )
     return f"replayed {job_id} -> {new_id}"
+
+
 def launch_startup_tasks() -> None:
     """Kick off all startup work in a daemon thread (idempotent)."""
     global _started

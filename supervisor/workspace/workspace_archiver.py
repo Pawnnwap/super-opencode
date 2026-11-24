@@ -32,7 +32,9 @@ logger = logging.getLogger(__name__)
 
 
 def create_archiver(
-    workspace: Path, keep_last: int = 5, backend: str = "git",
+    workspace: Path,
+    keep_last: int = 5,
+    backend: str = "git",
 ) -> WorkspaceArchiver:
     """Build the configured archiver backend.
 
@@ -96,7 +98,9 @@ def save_archive_counter(archive_root: Path, value: int) -> None:
         try:
             remove_file_readonly(str(counter_file))
         except Exception as exc:  # noqa: BLE001 - archive failure is reported, never fatal
-            logger.warning("Could not remove read-only on counter file %s: %s", counter_file, exc)
+            logger.warning(
+                "Could not remove read-only on counter file %s: %s", counter_file, exc
+            )
     counter_file.write_text(str(value), encoding="utf-8")
 
 
@@ -215,13 +219,16 @@ class WorkspaceArchiver:
                 "workspace": str(self.workspace),
             }
             (archive_path / "archive_metadata.json").write_text(
-                json.dumps(metadata, indent=2), encoding="utf-8",
+                json.dumps(metadata, indent=2),
+                encoding="utf-8",
             )
 
             pruned = self._prune_old_archives()
             message = f"Archived {len(archived)} files to {archive_path}"
             if pruned:
-                message += f"; pruned {len(pruned)} old snapshot(s): {', '.join(pruned)}"
+                message += (
+                    f"; pruned {len(pruned)} old snapshot(s): {', '.join(pruned)}"
+                )
 
             return ArchiveResult(
                 success=True,
@@ -274,7 +281,9 @@ class WorkspaceArchiver:
                             pass
                 shutil.rmtree(snapshot_dir, ignore_errors=True)
                 if snapshot_dir.exists():
-                    logger.warning("Could not fully prune archive snapshot %s", snapshot_dir)
+                    logger.warning(
+                        "Could not fully prune archive snapshot %s", snapshot_dir
+                    )
                     continue
                 removed.append(snapshot_dir.name)
             except OSError as exc:
@@ -310,6 +319,10 @@ class WorkspaceArchiver:
         """
         restored: list[str] = []
         if not archive_path.is_dir():
+            return restored
+        try:
+            archive_path.resolve().relative_to(self.archive_root.resolve())
+        except ValueError:
             return restored
 
         for subdir in archive_path.iterdir():

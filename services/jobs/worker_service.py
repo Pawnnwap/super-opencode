@@ -6,10 +6,8 @@ the real :class:`JobManager`). Everything job-side - codex subprocess chains,
 scanner storms, sidecar writes - happens here, so nothing the job machinery
 does to its process can ever reach the UI's event loop again.
 
-Single instance via ``.job_store/worker.lock``: the holder touches it every
-poll; a lock older than ``_STALE_SECONDS`` belongs to a dead predecessor and
-is taken over. At startup, PENDING/RUNNING orphans (the predecessor's jobs)
-are marked ABANDONED, exactly like the old in-UI behaviour.
+Single instance via an OS-held ``.job_store/worker.lock``: the holder touches
+it every poll for liveness, and the kernel releases it automatically on exit.
 
 Honours cross-process cancellation: the UI writes CANCELLED, the poll loop
 sees it and cancels the live in-process job (which stops the loop and kills
@@ -28,10 +26,12 @@ from pathlib import Path
 
 from services.config.settings import sanitize_proxy_env
 from services.jobs.code_freshness import code_fingerprint, freshness_action
+from services.jobs.file_lock import FileLock
 from services.jobs.job_manager import JobManager, claim_order
 from services.jobs.job_states import JOB_STORE_DIR, WORKER_SETTINGS_FILE
 from services.runtime import death_capture
 from services.runtime.log_paths import log_path
+from supervisor.security.redaction import install_log_redaction
 
 logger = logging.getLogger(__name__)
 
@@ -45,13 +45,14 @@ _LOCK_FILE = "worker.lock"
 # instead of killing (see services/runtime/guardian.py).
 _STOP_FILE = "worker.stop"
 _POLL_SECONDS = 1.0
-_STALE_SECONDS = 15.0
 # Liveness pulse cadence and the silent-stall detector threshold (see
 # _LoopPulse): the watchdog tree-kills the worker once the lock ages past
 # its own threshold, so the lock must be touched independently of whatever
 # the poll loop is doing.
 _PULSE_SECONDS = 1.0
 _STALL_DUMP_SECONDS = 15.0
+_SHUTDOWN_DRAIN_SECONDS = 30.0
+_WORKER_LOCK: FileLock | None = None
 # How often the daemon compares its imported code with the tree on disk.
 # Content hashing ~1.3 MB is milliseconds; a deployment must not wait for a
 # natural worker restart (one stayed stale for 20 hours).
@@ -63,7 +64,9 @@ _PRUNE_SECONDS = 60.0
 
 def _read_settings(store_dir: Path) -> dict:
     try:
-        data = json.loads((store_dir / WORKER_SETTINGS_FILE).read_text(encoding="utf-8"))
+        data = json.loads(
+            (store_dir / WORKER_SETTINGS_FILE).read_text(encoding="utf-8")
+        )
         return data if isinstance(data, dict) else {}
     except (OSError, ValueError):
         return {}
@@ -78,7 +81,10 @@ def _running_job_count(store_dir: Path) -> int:
                 data = json.loads(path.read_text(encoding="utf-8-sig"))
             except (OSError, ValueError):
                 continue
-            if isinstance(data, dict) and str(data.get("state", "")).upper() == "RUNNING":
+            if (
+                isinstance(data, dict)
+                and str(data.get("state", "")).upper() == "RUNNING"
+            ):
                 count += 1
     except OSError:
         return 0
@@ -86,29 +92,30 @@ def _running_job_count(store_dir: Path) -> int:
 
 
 def _acquire_lock(store_dir: Path, now: float | None = None) -> bool:
-    """Claim the single-instance lock; refuse only a FRESH live holder.
-
-    Liveness is judged by the lock file's mtime (the holder touches it every
-    poll), so a crashed daemon's lock is recycled without PID checks.
-    """
-    lock_path = store_dir / _LOCK_FILE
-    now = time.time() if now is None else now
-    if lock_path.exists():
-        age = now - lock_path.stat().st_mtime
-        if age < _STALE_SECONDS:
-            return False
-    lock_path.write_text(
-        json.dumps({"pid": os.getpid(), "ts": now}), encoding="utf-8",
-    )
+    """Acquire the singleton lock for this process's lifetime."""
+    global _WORKER_LOCK
+    if _WORKER_LOCK is not None:
+        return False
+    lock = FileLock(store_dir / _LOCK_FILE)
+    if not lock.acquire():
+        return False
+    lock.write_json({"pid": os.getpid(), "ts": time.time() if now is None else now})
+    _WORKER_LOCK = lock
     return True
 
 
+def _release_worker_lock() -> None:
+    global _WORKER_LOCK
+    if _WORKER_LOCK is not None:
+        _WORKER_LOCK.release()
+        _WORKER_LOCK = None
+
+
 def _touch_lock(store_dir: Path) -> None:
-    lock_path = store_dir / _LOCK_FILE
     try:
-        os.utime(lock_path)
+        os.utime(store_dir / _LOCK_FILE)
     except OSError:
-        lock_path.write_text(json.dumps({"pid": os.getpid()}), encoding="utf-8")
+        pass
 
 
 class _LoopPulse(threading.Thread):
@@ -144,6 +151,7 @@ class _LoopPulse(threading.Thread):
         # Set by the pulse, consumed by the poll loop: the process exits from
         # its own main thread so job threads keep their finally cleanup.
         self.exit_requested = False
+        self.shutdown_requested = threading.Event()
 
     def note(self, step: str) -> None:
         """Record poll-loop progress; cheap attribute writes only."""
@@ -240,16 +248,56 @@ def _mark_orphans(manager: JobManager) -> list[str]:
             if last:
                 state["last_activity"] = last
             manager.store.save_job_state(job_id, state)
-            manager.store.append_log(job_id, {
-                "level": "warn",
-                "msg": "Worker daemon restarted while this job was active - "
-                       "marked ABANDONED at stage: "
-                       + (last or "(no recent activity)")
-                       + " (re-enqueue via the board or "
-                         "SUPERVISOR_REPLAY_JOB=<job_id>).",
-            })
+            manager.store.append_log(
+                job_id,
+                {
+                    "level": "warn",
+                    "msg": "Worker daemon restarted while this job was active - "
+                    "marked ABANDONED at stage: "
+                    + (last or "(no recent activity)")
+                    + " (re-enqueue via the board or "
+                    "SUPERVISOR_REPLAY_JOB=<job_id>).",
+                },
+            )
             flagged.append(job_id)
     return flagged
+
+
+def _terminate_orphans(manager: JobManager) -> None:
+    from supervisor.runtime.process_control import terminate_orphaned_run
+
+    for job_id in manager.store.list_jobs():
+        state = manager.store.get_job_state(job_id) or {}
+        if state.get("state") != "RUNNING":
+            continue
+        config = state.get("config") or {}
+        run_id = str(config.get("run_id") or job_id)
+        terminate_orphaned_run(
+            run_id,
+            directory=manager.store.store_dir,
+            reason=f"worker recovery for {job_id}",
+        )
+
+
+def _recover_orphans(manager: JobManager) -> list[str]:
+    _terminate_orphans(manager)
+    return _mark_orphans(manager)
+
+
+def _begin_shutdown(
+    manager: JobManager, pulse: _LoopPulse, now: float | None = None
+) -> float:
+    if not pulse.shutdown_requested.is_set():
+        return 0.0
+    lock = getattr(manager, "_lock", None)
+    if lock is None:
+        job_ids = list(manager._active_jobs)
+    else:
+        with lock:
+            job_ids = list(manager._active_jobs)
+    for job_id in job_ids:
+        manager.cancel_job(job_id)
+    return (time.time() if now is None else now) + _SHUTDOWN_DRAIN_SECONDS
 
 
 def _claim_pending(
@@ -286,6 +334,7 @@ def main() -> int:
         datefmt="%H:%M:%S",
         stream=sys.stderr,
     )
+    install_log_redaction()
     # Silent-death forensics (2026-11-03: the daemon vanished with its three
     # RUNNING jobs mid-stream and left no trace) - same capture as app.py.
     death_capture.install(str(log_path("job_worker.fatal.log")))
@@ -320,16 +369,31 @@ def main() -> int:
     pulse = _LoopPulse(store_dir, active_jobs=manager.active_job_count)
     pulse.start()
 
+    import signal
+
+    def _request_shutdown(_signum, _frame):
+        pulse.shutdown_requested.set()
+
+    for signal_name in ("SIGTERM", "SIGINT"):
+        sig = getattr(signal, signal_name, None)
+        if sig is not None and threading.current_thread() is threading.main_thread():
+            signal.signal(sig, _request_shutdown)
+
     # Only RUNNING records are orphans; PENDING jobs are queued work and are
-    # claimed by this daemon, including after an in-place re-exec.
-    orphaned = _mark_orphans(manager)
+    # claimed by this daemon, including after an in-place re-exec. Intentional
+    # re-exec happens only when no job is live, so normal startup performs
+    # ownership-gated orphan termination first.
+    orphaned = _recover_orphans(manager) if not reexec else _mark_orphans(manager)
     startup_fingerprint = _LOADED_CODE_FINGERPRINT
     logger.info(
         "worker daemon started (pid %d, code %s, %d orphaned job(s) marked ABANDONED)",
-        os.getpid(), startup_fingerprint[:12], len(orphaned),
+        os.getpid(),
+        startup_fingerprint[:12],
+        len(orphaned),
     )
 
     claimed: set[str] = set()
+    shutdown_deadline: float | None = None
     applied_settings: dict = dict(settings)
     stale_logged = False
     last_code_check = time.time()
@@ -344,7 +408,9 @@ def main() -> int:
         nonlocal stale_logged
         current = code_fingerprint()
         action = freshness_action(
-            startup_fingerprint, current, manager.active_job_count(),
+            startup_fingerprint,
+            current,
+            manager.active_job_count(),
         )
         if action == "ok":
             stale_logged = False
@@ -357,7 +423,7 @@ def main() -> int:
                 "restarting the worker now (idle)"
                 if action == "restart"
                 else "live jobs keep their code, the queue keeps filling, "
-                     "reloading at the next idle poll",
+                "reloading at the next idle poll",
             )
         if action == "restart":
             logger.info(
@@ -375,6 +441,13 @@ def main() -> int:
             # termination, slot release, log flush) has already run.
             logger.info("worker exiting on the guardian's stop request")
             return 0
+        if pulse.shutdown_requested.is_set() and shutdown_deadline is None:
+            shutdown_deadline = _begin_shutdown(manager, pulse)
+        if shutdown_deadline is not None:
+            if manager.active_job_count() == 0 or time.time() >= shutdown_deadline:
+                logger.info("worker shutdown drain complete")
+                return 0
+            continue
         try:
             pulse.note("poll")
             now = time.time()
@@ -412,7 +485,9 @@ def main() -> int:
                     # A cross-process cancel can arrive at any moment; the
                     # sentinel file (not the state field, which this worker's
                     # heartbeat rewrites) is the durable request.
-                    if manager.cancel_sentinel_exists(job_id) and manager.cancel_if_live(job_id):
+                    if manager.cancel_sentinel_exists(
+                        job_id
+                    ) and manager.cancel_if_live(job_id):
                         logger.info("honoured cancel request for %s", job_id)
                     continue
                 state = manager.store.get_job_state_cached(job_id, state_cache) or {}

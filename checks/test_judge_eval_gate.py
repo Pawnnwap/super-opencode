@@ -41,7 +41,8 @@ def _write_facts(tmp_path: Path, body: dict) -> None:
     from supervisor.protocols.feasibility_gate import default_facts_path
 
     default_facts_path(tmp_path).write_text(
-        json.dumps(body), encoding="utf-8",
+        json.dumps(body),
+        encoding="utf-8",
     )
 
 
@@ -53,7 +54,9 @@ def _guard(tmp_path: Path, **config_overrides):
     protocol = parse_protocol_text(_PROTOCOL_MD)
     return GoalGuard(
         SupervisorConfig(
-            protocol_path=tmp_path / "protocol.md", workspace=tmp_path,
+            protocol_path=tmp_path / "protocol.md",
+            workspace=tmp_path,
+            access_policy_strict=False,
             **config_overrides,
         ),
         protocol,
@@ -87,13 +90,18 @@ def _audit_lines(tmp_path: Path) -> list[dict]:
 
 def test_positive_verdict_matching_measurement_is_accepted(tmp_path):
     (tmp_path / "ok.py").write_text("print('ok')\n", encoding="utf-8")
-    _write_facts(tmp_path, {
-        "gates": [{
-            "name": "must_pass",
-            "status": "open",
-            "check": {"kind": "command", "cmd": "python ok.py"},
-        }],
-    })
+    _write_facts(
+        tmp_path,
+        {
+            "gates": [
+                {
+                    "name": "must_pass",
+                    "status": "open",
+                    "check": {"kind": "command", "cmd": "python ok.py"},
+                }
+            ],
+        },
+    )
     guard = _guard(tmp_path)
     (tmp_path / "deliverable.py").write_text("x = 1\n", encoding="utf-8")
 
@@ -111,13 +119,18 @@ def test_positive_audit_carries_proposal_and_evidence_snapshot(tmp_path):
     """8.5.4: the audit must contain the full proposal + evidence hashes."""
     (tmp_path / "ok.py").write_text("print('ok')\n", encoding="utf-8")
     (tmp_path / "deliverable.py").write_text("x = 1\n", encoding="utf-8")
-    _write_facts(tmp_path, {
-        "gates": [{
-            "name": "must_pass",
-            "status": "open",
-            "check": {"kind": "command", "cmd": "python ok.py"},
-        }],
-    })
+    _write_facts(
+        tmp_path,
+        {
+            "gates": [
+                {
+                    "name": "must_pass",
+                    "status": "open",
+                    "check": {"kind": "command", "cmd": "python ok.py"},
+                }
+            ],
+        },
+    )
     guard = _guard(tmp_path)
 
     guard.evaluate_done(
@@ -145,14 +158,24 @@ def test_positive_audit_carries_proposal_and_evidence_snapshot(tmp_path):
 
 
 def test_no_record_gate_claims_must_block_done(tmp_path):
-    _write_facts(tmp_path, {
-        "gates": [{
-            "name": "must_pass",
-            "status": "open",
-            "check": {"kind": "metric", "metric": "x", "op": ">",
-                      "value": 1, "source": "absent.json:x"},
-        }],
-    })
+    _write_facts(
+        tmp_path,
+        {
+            "gates": [
+                {
+                    "name": "must_pass",
+                    "status": "open",
+                    "check": {
+                        "kind": "metric",
+                        "metric": "x",
+                        "op": ">",
+                        "value": 1,
+                        "source": "absent.json:x",
+                    },
+                }
+            ],
+        },
+    )
     guard = _guard(tmp_path)
     (tmp_path / "deliverable.py").write_text("x = 1\n", encoding="utf-8")
 
@@ -205,11 +228,13 @@ def test_boundary_fabricated_gate_is_flagged(tmp_path):
     from supervisor.protocols.gate_rubric import verdict_violations
 
     facts = {
-        "gates": [{
-            "name": "must_pass",
-            "status": "open",
-            "check": {"kind": "command", "cmd": "python ok.py"},
-        }],
+        "gates": [
+            {
+                "name": "must_pass",
+                "status": "open",
+                "check": {"kind": "command", "cmd": "python ok.py"},
+            }
+        ],
     }
     gates = parse_gates(facts)
     # The judge invents a gate the rubric never defined.
@@ -226,11 +251,13 @@ def test_boundary_claimed_pass_contradicting_measurement(tmp_path):
 
     (tmp_path / "fail.py").write_text("raise SystemExit(2)\n", encoding="utf-8")
     facts = {
-        "gates": [{
-            "name": "must_pass",
-            "status": "open",
-            "check": {"kind": "command", "cmd": "python fail.py"},
-        }],
+        "gates": [
+            {
+                "name": "must_pass",
+                "status": "open",
+                "check": {"kind": "command", "cmd": "python fail.py"},
+            }
+        ],
     }
     gates = parse_gates(facts)
     evaluations = evaluate_rubric(gates, tmp_path)
@@ -247,11 +274,13 @@ def test_boundary_unadjudicated_machine_gate(tmp_path):
 
     (tmp_path / "ok.py").write_text("print('ok')\n", encoding="utf-8")
     facts = {
-        "gates": [{
-            "name": "must_pass",
-            "status": "open",
-            "check": {"kind": "command", "cmd": "python ok.py"},
-        }],
+        "gates": [
+            {
+                "name": "must_pass",
+                "status": "open",
+                "check": {"kind": "command", "cmd": "python ok.py"},
+            }
+        ],
     }
     gates = parse_gates(facts)
     evaluations = evaluate_rubric(gates, tmp_path)
@@ -303,16 +332,22 @@ def test_boundary_weakened_test_file_is_labelled(tmp_path):
     accepted: the accept is kept (the operator decides) but the reason must
     carry the red-flag note."""
     (tmp_path / "ok.py").write_text("print('ok')\n", encoding="utf-8")
-    _write_facts(tmp_path, {
-        "gates": [{
-            "name": "must_pass",
-            "status": "open",
-            "check": {"kind": "command", "cmd": "python ok.py"},
-        }],
-    })
+    _write_facts(
+        tmp_path,
+        {
+            "gates": [
+                {
+                    "name": "must_pass",
+                    "status": "open",
+                    "check": {"kind": "command", "cmd": "python ok.py"},
+                }
+            ],
+        },
+    )
     (tmp_path / "checks").mkdir()
     (tmp_path / "checks" / "test_thing.py").write_text(
-        "def test_ok():\n    assert True\n", encoding="utf-8",
+        "def test_ok():\n    assert True\n",
+        encoding="utf-8",
     )
     guard = _guard(tmp_path)
 
@@ -346,8 +381,7 @@ def test_boundary_unverified_cap_accept_is_labelled(tmp_path):
     # Audit honesty: unverified flag present, all_targets_met reflects the
     # verdict's own (contradictory) claim, not a whitewashed True.
     record = [
-        r for r in _audit_lines(tmp_path)
-        if r["event"] == "done_accepted_unverified"
+        r for r in _audit_lines(tmp_path) if r["event"] == "done_accepted_unverified"
     ][-1]
     assert record["unverified"] is True
     assert record["pending_review"] is True
@@ -367,19 +401,25 @@ def test_boundary_agent_closure_contradicted_by_facts_stays_open(tmp_path):
     )
 
     initialise_target_state(tmp_path, target="Reach 9 gates.")
-    _write_facts(tmp_path, {
-        "gates": [
-            {"name": "g1", "status": "open"},
-            {"name": "g2", "status": "passing"},
-        ],
-    })
+    _write_facts(
+        tmp_path,
+        {
+            "gates": [
+                {"name": "g1", "status": "open"},
+                {"name": "g2", "status": "passing"},
+            ],
+        },
+    )
     audit = tmp_path / ".opencode" / "goal_audit.jsonl"
     audit.parent.mkdir(parents=True, exist_ok=True)
     audit.write_text(
-        json.dumps({
-            "event": "goal_terminal",
-            "reason": "agent says it is done pursuing",
-        }) + "\n",
+        json.dumps(
+            {
+                "event": "goal_terminal",
+                "reason": "agent says it is done pursuing",
+            }
+        )
+        + "\n",
         encoding="utf-8",
     )
 
@@ -393,7 +433,11 @@ def test_boundary_agent_closure_contradicted_by_facts_stays_open(tmp_path):
     loop._record_structured_failure = lambda *a, **k: None
     loop._memory_goal = lambda: ""
 
-    list(loop._on_blocked(SimpleNamespace(all_targets_met=False, unmet_criteria=[]), "agent closure"))
+    list(
+        loop._on_blocked(
+            SimpleNamespace(all_targets_met=False, unmet_criteria=[]), "agent closure"
+        )
+    )
 
     # Facts say reachable (no blocked gates) → the state must stay resumable.
     assert load_target_state(tmp_path).status != "closed"
@@ -418,7 +462,11 @@ def test_boundary_agent_closure_with_no_contradicting_facts_closes(tmp_path):
     loop._record_structured_failure = lambda *a, **k: None
     loop._memory_goal = lambda: ""
 
-    list(loop._on_blocked(SimpleNamespace(all_targets_met=False, unmet_criteria=[]), "agent closure"))
+    list(
+        loop._on_blocked(
+            SimpleNamespace(all_targets_met=False, unmet_criteria=[]), "agent closure"
+        )
+    )
 
     assert load_target_state(tmp_path).status == "closed"
 
@@ -435,10 +483,12 @@ def test_terminal_assertion_survives_a_large_audit_journal(tmp_path):
 
     audit = tmp_path / ".opencode" / "goal_audit.jsonl"
     audit.parent.mkdir(parents=True, exist_ok=True)
-    terminal = json.dumps({
-        "event": "goal_terminal",
-        "reason": "certified ceiling",
-    })
+    terminal = json.dumps(
+        {
+            "event": "goal_terminal",
+            "reason": "certified ceiling",
+        }
+    )
     filler = json.dumps({"event": "turn", "reason": "x" * 300})
     with audit.open("w", encoding="utf-8") as handle:
         handle.write(terminal + "\n")
@@ -457,7 +507,9 @@ def test_last_terminal_event_wins_across_the_whole_file(tmp_path):
     audit.parent.mkdir(parents=True, exist_ok=True)
     with audit.open("w", encoding="utf-8") as handle:
         handle.write(json.dumps({"event": "goal_terminal", "reason": "old"}) + "\n")
-        handle.write(json.dumps({"event": "run_closed_by_agent", "reason": "new"}) + "\n")
+        handle.write(
+            json.dumps({"event": "run_closed_by_agent", "reason": "new"}) + "\n"
+        )
         handle.write(json.dumps({"event": "turn", "reason": "noise"}) + "\n")
 
     assertion = read_terminal_assertion(tmp_path)

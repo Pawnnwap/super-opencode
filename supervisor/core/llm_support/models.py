@@ -92,7 +92,7 @@ def _check_completion_phrases(reply: str, phrases: list[str]) -> bool:
         pattern = r"\b" + re.escape(phrase) + r"\b"
         for match in re.finditer(pattern, reply_lower):
             start = match.start()
-            prefix_context = reply_lower[max(0, start - 50):start]
+            prefix_context = reply_lower[max(0, start - 50) : start]
             if not any(re.search(neg, prefix_context) for neg in negation_prefixes):
                 return True
     return False
@@ -120,15 +120,20 @@ _DONE_PHRASES = [
 # weak/free models often omit them, so callers must fall back to done-phrase
 # matching when the structured flag is absent.
 _CRITERIA_LINE_RE = re.compile(
-    r"^\s*[-*]?\s*\[(?P<state>MET|UNMET)\]\s*(?P<rest>.+)$", re.IGNORECASE,
+    r"^\s*[-*]?\s*\[(?P<state>MET|UNMET)\]\s*(?P<rest>.+)$",
+    re.IGNORECASE,
 )
-_DONE_LINE_RE = re.compile(r"^\s*DONE\s*:\s*(?P<flag>yes|no|true|false)\s*$", re.IGNORECASE)
+_DONE_LINE_RE = re.compile(
+    r"^\s*DONE\s*:\s*(?P<flag>yes|no|true|false)\s*$", re.IGNORECASE
+)
 _NEXT_ACTION_RE = re.compile(r"^\s*NEXT_ACTION\s*:\s*(?P<action>.+)$", re.IGNORECASE)
 _EVIDENCE_REQUEST_RE = re.compile(
-    r"^\s*NEED_EVIDENCE\s*:\s*(?P<request>.+)$", re.IGNORECASE,
+    r"^\s*NEED_EVIDENCE\s*:\s*(?P<request>.+)$",
+    re.IGNORECASE,
 )
 _LOAD_SKILL_RE = re.compile(
-    r"^\s*LOAD_SKILL\s*:\s*(?P<name>.+)$", re.IGNORECASE,
+    r"^\s*LOAD_SKILL\s*:\s*(?P<name>.+)$",
+    re.IGNORECASE,
 )
 
 # Evidence text that contradicts a [MET] claim: weak judges occasionally mark
@@ -151,7 +156,7 @@ _NEGATIVE_EVIDENCE_RE = re.compile(
     r"|\bno\s+" + _ISSUE_WORD + r"[\w.\-]+\s+found\b"
     r"|\bno\s+(?:changes?|evidence|such|sign|trace|output|results?)\b"
     r"|\bstill\s+(?:missing|absent|empty|failing|failed|broken)\b"
-    r"|\bunable\s+to\b"
+    r"|\bunable\s+to\s+(?:find|locate|verify|confirm|create|write|implement|fix|install|add|update|modify)\b"
     r"|\b(?:cannot|can't|could\s+not|couldn't)\s+(?:find|locate|verify|confirm|access)\b"
     r"|\b(?:missing|absent)\s+from\b"
     r"|\bis\s+(?:still\s+)?empty\b",
@@ -171,8 +176,12 @@ def flag_contradicted_criteria(
     notes: list[str] = []
     adjusted: list[CriterionResult] = []
     for result in criteria:
-        if result.met and result.evidence and _NEGATIVE_EVIDENCE_RE.search(
-            result.evidence,
+        if (
+            result.met
+            and result.evidence
+            and _NEGATIVE_EVIDENCE_RE.search(
+                result.evidence,
+            )
         ):
             adjusted.append(
                 CriterionResult(

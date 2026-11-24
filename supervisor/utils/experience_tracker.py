@@ -18,6 +18,8 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from supervisor.security.redaction import redact_data
+
 logger = logging.getLogger(__name__)
 
 _HEADER_WORKED = "## What Worked"
@@ -64,7 +66,7 @@ def _append_memory_event(
     }
     try:
         with _get_events_path(workspace).open("a", encoding="utf-8") as f:
-            f.write(json.dumps(event, ensure_ascii=False) + "\n")
+            f.write(json.dumps(redact_data(event), ensure_ascii=False) + "\n")
     except OSError as e:
         logger.warning("Failed to append memory event in %s: %s", workspace, e)
 
@@ -87,7 +89,7 @@ def _save_cache_to_file(workspace: Path, cache: dict[str, Any]) -> None:
     cache_path = _get_cache_path(workspace)
     try:
         with cache_path.open("w", encoding="utf-8") as f:
-            json.dump(cache, f, indent=2)
+            json.dump(redact_data(cache), f, indent=2)
     except OSError as e:
         logger.warning("Failed to save experience cache to %s: %s", cache_path, e)
 
@@ -120,7 +122,14 @@ class RunSummary:
     def to_markdown(self) -> str:
         lines = [
             "### " + (self.goal or "Unnamed run") + " [" + self.outcome + "]",
-            "- **Iterations:** " + str(self.iterations) + " | **Steps:** " + str(self.final_step) + "/" + str(self.total_steps) + " | **Phase:** " + self.final_phase,
+            "- **Iterations:** "
+            + str(self.iterations)
+            + " | **Steps:** "
+            + str(self.final_step)
+            + "/"
+            + str(self.total_steps)
+            + " | **Phase:** "
+            + self.final_phase,
         ]
         if self.test_baseline:
             lines.append("- **Test Baseline:** " + self.test_baseline)
@@ -145,7 +154,9 @@ class RunSummary:
             for c in self.challenges[:5]:
                 lines.append("  - " + c)
         if self.failure_patterns:
-            lines.append("- **Failure Patterns:** " + "; ".join(self.failure_patterns[:5]))
+            lines.append(
+                "- **Failure Patterns:** " + "; ".join(self.failure_patterns[:5])
+            )
         if self.solutions:
             lines.append("- **Solutions:**")
             for s in self.solutions[:5]:
@@ -181,7 +192,16 @@ class ExperienceInsight:
     recommendation: str = ""
 
     def to_markdown(self) -> str:
-        return "- [" + self.insight_type + "] " + self.description + " (seen " + str(self.frequency) + "x). " + self.recommendation
+        return (
+            "- ["
+            + self.insight_type
+            + "] "
+            + self.description
+            + " (seen "
+            + str(self.frequency)
+            + "x). "
+            + self.recommendation
+        )
 
 
 @dataclass(frozen=True)
@@ -284,7 +304,9 @@ def log_run_summary(workspace: Path, summary: RunSummary) -> None:
         goal=summary.goal,
         outcome=summary.outcome,
     )
-    logger.info("Logged run summary: %s [%s]", summary.goal or "unnamed", summary.outcome)
+    logger.info(
+        "Logged run summary: %s [%s]", summary.goal or "unnamed", summary.outcome
+    )
 
 
 def snapshot_memory(workspace: Path, label: str = "") -> MemorySnapshot:
@@ -294,7 +316,10 @@ def snapshot_memory(workspace: Path, label: str = "") -> MemorySnapshot:
     timestamp = datetime.now(UTC).isoformat()
     snapshot_dir = _get_snapshot_dir(workspace)
     snapshot_dir.mkdir(parents=True, exist_ok=True)
-    path = snapshot_dir / f"{timestamp.replace(':', '-').replace('+', '_')}_{snapshot_id[:8]}.json"
+    path = (
+        snapshot_dir
+        / f"{timestamp.replace(':', '-').replace('+', '_')}_{snapshot_id[:8]}.json"
+    )
     payload = {
         "schema_version": _SCHEMA_VERSION,
         "snapshot_id": snapshot_id,
@@ -303,7 +328,10 @@ def snapshot_memory(workspace: Path, label: str = "") -> MemorySnapshot:
         "state": _serialize_cache_for_save(cache),
     }
     try:
-        path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+        path.write_text(
+            json.dumps(redact_data(payload), indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
     except OSError as e:
         logger.warning("Failed to snapshot memory in %s: %s", workspace, e)
         raise
@@ -314,7 +342,9 @@ def snapshot_memory(workspace: Path, label: str = "") -> MemorySnapshot:
         label=label,
         snapshot_path=str(path),
     )
-    return MemorySnapshot(snapshot_id=snapshot_id, path=path, label=label, timestamp=timestamp)
+    return MemorySnapshot(
+        snapshot_id=snapshot_id, path=path, label=label, timestamp=timestamp
+    )
 
 
 def restore_memory_snapshot(workspace: Path, snapshot: MemorySnapshot | Path) -> bool:
@@ -419,40 +449,52 @@ def extract_insights(workspace: Path) -> list[ExperienceInsight]:
 
     for pattern, count in failure_counts.items():
         if count >= 2:
-            insights.append(ExperienceInsight(
-                insight_type="failure_mode",
-                description=pattern,
-                frequency=count,
-                recommendation="Avoid patterns that caused failures in prior runs",
-            ))
+            insights.append(
+                ExperienceInsight(
+                    insight_type="failure_mode",
+                    description=pattern,
+                    frequency=count,
+                    recommendation="Avoid patterns that caused failures in prior runs",
+                )
+            )
 
     for pattern, count in success_patterns.items():
         if count >= 2:
-            insights.append(ExperienceInsight(
-                insight_type="success_pattern",
-                description=pattern,
-                frequency=count,
-                recommendation="Apply this proven approach in similar contexts",
-            ))
+            insights.append(
+                ExperienceInsight(
+                    insight_type="success_pattern",
+                    description=pattern,
+                    frequency=count,
+                    recommendation="Apply this proven approach in similar contexts",
+                )
+            )
 
     if runs_with_regressions > 0:
         avg_reg = regression_sums / runs_with_regressions
-        insights.append(ExperienceInsight(
-            insight_type="regression_trend",
-            description="Regressions occurred in " + str(runs_with_regressions) + " run(s)",
-            frequency=runs_with_regressions,
-            context="Average " + str(round(avg_reg, 1)) + " regressions per affected run",
-            recommendation="Run tests frequently; rollback on regression detection",
-        ))
+        insights.append(
+            ExperienceInsight(
+                insight_type="regression_trend",
+                description="Regressions occurred in "
+                + str(runs_with_regressions)
+                + " run(s)",
+                frequency=runs_with_regressions,
+                context="Average "
+                + str(round(avg_reg, 1))
+                + " regressions per affected run",
+                recommendation="Run tests frequently; rollback on regression detection",
+            )
+        )
 
     for violation, count in violation_counts.items():
         if count >= 2:
-            insights.append(ExperienceInsight(
-                insight_type="violation_trend",
-                description=violation,
-                frequency=count,
-                recommendation="Ensure protocol compliance to avoid repeated violations",
-            ))
+            insights.append(
+                ExperienceInsight(
+                    insight_type="violation_trend",
+                    description=violation,
+                    frequency=count,
+                    recommendation="Ensure protocol compliance to avoid repeated violations",
+                )
+            )
 
     return insights
 
@@ -494,7 +536,10 @@ def _summary_score(
     normalized_files = {path.replace("\\", "/").lower() for path in files}
     for changed_file in summary.changed_files:
         changed = changed_file.replace("\\", "/").lower()
-        if any(changed.endswith(file) or file.endswith(changed) for file in normalized_files):
+        if any(
+            changed.endswith(file) or file.endswith(changed)
+            for file in normalized_files
+        ):
             score += 8.0
     score += max(0.0, min(1.0, summary.confidence))
     if summary.outcome == "success":
@@ -535,12 +580,8 @@ def retrieve_memory(
     # until they age out naturally behind structured summaries.
     cache = _get_cache(workspace)
     if not selected:
-        lessons = [
-            ("Worked", lesson)
-            for lesson in cache.get("worked", [])[-10:]
-        ] + [
-            ("Failed", lesson)
-            for lesson in cache.get("failed", [])[-10:]
+        lessons = [("Worked", lesson) for lesson in cache.get("worked", [])[-10:]] + [
+            ("Failed", lesson) for lesson in cache.get("failed", [])[-10:]
         ]
         lessons.sort(
             key=lambda item: len(goal_terms & _term_set(item[1])),
@@ -593,7 +634,20 @@ def get_legacy_experience_context(workspace: Path) -> str:
         lines.append("Found " + str(len(summaries)) + " recent run(s):")
         lines.append("")
         for i, s in enumerate(summaries, 1):
-            lines.append(str(i) + ". " + (s.goal or "Unnamed") + " [" + s.outcome + "] - " + str(s.iterations) + " iterations, " + str(s.final_step) + "/" + str(s.total_steps) + " steps")
+            lines.append(
+                str(i)
+                + ". "
+                + (s.goal or "Unnamed")
+                + " ["
+                + s.outcome
+                + "] - "
+                + str(s.iterations)
+                + " iterations, "
+                + str(s.final_step)
+                + "/"
+                + str(s.total_steps)
+                + " steps"
+            )
             if s.test_delta:
                 lines.append("   Test delta: " + s.test_delta)
             if s.regressions_count:

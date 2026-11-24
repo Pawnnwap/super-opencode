@@ -11,6 +11,7 @@ log. Serving health and revival belong to the task-owned Python guardian
 with it, never repaired anything, and each probe built a full page that
 churned one "client deleted" line into ui.lifecycle a minute later.
 """
+
 import os
 import sys
 from pathlib import Path
@@ -81,7 +82,8 @@ def test_ui_lock_rewrites_a_predecessors_pid(tmp_path):
     lock.write_text('{"pid": 999999}', encoding="utf-8")
     namespace = {"os": os, "_UI_LOCK": lock}
     exec(  # noqa: S102 - executing the module's own source, not user input
-        "import os\n" + "def _touch_ui_lock() -> None:" + body, namespace,
+        "import os\n" + "def _touch_ui_lock() -> None:" + body,
+        namespace,
     )
     namespace["_touch_ui_lock"]()
     assert lock.read_text(encoding="utf-8").strip() == f'{{"pid": {os.getpid()}}}'
@@ -104,7 +106,7 @@ def test_ui_port_follows_ports_json_and_env(tmp_path, monkeypatch):
 
     body = _APP_SRC.split("def _resolve_ui_port(")[1].split("\n# Serving loop", 1)[0]
     body = body.split(") -> int:", 1)[1]
-    namespace = {"os": os, "json": json, "Path": Path}
+    namespace = {"os": os, "json": json, "Path": Path, "JOB_STORE_DIR": ".job_store"}
     exec(  # noqa: S102 - executing the module's own source, not user input
         "import json, os\nfrom pathlib import Path\n"
         "def _resolve_ui_port(default: int = 8501) -> int:" + body,

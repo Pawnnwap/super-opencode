@@ -7,6 +7,7 @@ plus runtime-only flags that used to be Streamlit session state.
 
 from __future__ import annotations
 
+import logging
 import threading
 
 from services.config.settings import (
@@ -15,6 +16,8 @@ from services.config.settings import (
     load_settings,
     save_settings,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class AppState:
@@ -82,8 +85,8 @@ class AppState:
             self._save_timer = None
         try:
             self.save()
-        except Exception:  # noqa: BLE001 — settings are best-effort
-            pass
+        except Exception:
+            logger.debug("Scheduled settings save failed", exc_info=True)
 
     def flush(self) -> None:
         """Write any pending edit immediately (launch, blur, shutdown).

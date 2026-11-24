@@ -11,8 +11,11 @@ Every consumer now reads this module, so "can I launch?" has one answer.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,7 +37,8 @@ def blockers(workspace: Path | str | None) -> list[Blocker]:
         return [
             Blocker(
                 "no_workspace",
-                i18n.t("no usable workspace path"), "/#configuration",
+                i18n.t("no usable workspace path"),
+                "/#configuration",
             ),
         ]
 
@@ -71,14 +75,16 @@ def blockers(workspace: Path | str | None) -> list[Blocker]:
                     "warn",
                 ),
             )
-    except Exception:  # noqa: BLE001 — a missing profile must not crash a render
-        pass
+    except Exception:
+        logger.debug("Could not load access profile for %s", ws, exc_info=True)
 
     return out
 
 
 def hard_blockers(
-    workspace: Path | str | None, *, forgive_probes: bool = False,
+    workspace: Path | str | None,
+    *,
+    forgive_probes: bool = False,
 ) -> list[Blocker]:
     """Blockers that must disable Launch.
 

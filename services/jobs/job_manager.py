@@ -3,17 +3,19 @@ import os
 import threading
 import time
 import uuid
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 from services.jobs.event_recorder import EventRecorder
+from services.jobs.file_lock import FileLock
 from services.jobs.harvest_loop import HarvestLoop
 from services.jobs.job_states import (
     ACTIVE_JOB_STATES,
     JOB_STORE_DIR,
     TERMINAL_JOB_STATES,
 )
-from services.jobs.state_store import JobStateStore
+from services.jobs.state_store import JobStateStore, validate_job_id
 from supervisor.core.failure_class import (
     classify_failure,
     classify_failure_text,
@@ -23,6 +25,7 @@ from supervisor.core.failure_class import (
 )
 from supervisor.core.loop import SupervisorLoop
 from supervisor.runners.command_common import PARALLEL_RUNS_ENV
+from supervisor.security.secrets import decrypt_secrets
 from supervisor.utils.config import SupervisorConfig
 from supervisor.utils.text_utils import sanitize_event_message
 
@@ -52,6 +55,7 @@ def codex_engine_ready(explicit: str = "") -> tuple[bool, str]:
         _codex_probe.update(at=now, path=path, error=error)
     return bool(path), error
 
+
 # Level -> terminal state. The newest one in the log wins: a run that emitted
 # success long ago and then aborted must not be recorded SUCCESS off that old
 # event (the previous `any(...)` scan did exactly that over 28h job logs).
@@ -66,7 +70,7 @@ def final_state_from_logs(logs: list[dict[str, Any]]) -> str:
             continue
         # An error newer than the closing marker means the run broke on its way
         # out (cleanup, occam pass, worker) - the marker cannot vouch for it.
-        if any(str(e.get("level")) == "error" for e in logs[index + 1:]):
+        if any(str(e.get("level")) == "error" for e in logs[index + 1 :]):
             return "FAILED"
         return state
     return "FAILED"
@@ -123,9 +127,7 @@ def pending_record(
 def _resume_available(config) -> bool:
     """A persisted plan judge means a replay can skip the agent turn."""
     try:
-        return (
-            Path(config.workspace) / ".opencode" / "judge_pending.json"
-        ).is_file()
+        return (Path(config.workspace) / ".opencode" / "judge_pending.json").is_file()
     except (AttributeError, OSError):
         return False
 
@@ -253,6 +255,7 @@ class JobManager:
         """
         new_workspace = Path(config.workspace).resolve()
         job_id = f"{job_type}_{uuid.uuid4().hex[:8]}"
+        config = replace(config, run_id=job_id)
         stop_event = threading.Event()
         record, meta = pending_record(job_type, config, meta, time.time())
 
@@ -260,7 +263,7 @@ class JobManager:
         # two concurrent enqueues for the same workspace cannot both pass the
         # guard. Without this, each caller could read the store before either
         # one has written its PENDING record.
-        with self._lock:
+        with self._lock, FileLock(self.store.store_dir / "enqueue.lock"):
             assert_workspace_free(self.store, new_workspace)
             self._active_jobs[job_id] = {"stop_event": stop_event, "loop": None}
             self.store.save_job_state(job_id, record)
@@ -284,7 +287,9 @@ class JobManager:
 
         return job_id
 
-    def get_job_status(self, job_id: str, max_logs: int | None = None) -> dict[str, Any] | None:
+    def get_job_status(
+        self, job_id: str, max_logs: int | None = None
+    ) -> dict[str, Any] | None:
         """Retrieve current status and logs for a job (see ``read_job_status``)."""
         return self.store.read_job_status(job_id, max_logs)
 
@@ -309,7 +314,7 @@ class JobManager:
         state = self.store.get_job_state(job_id)
         if not state:
             return None
-        raw = dict(state.get("config") or {})
+        raw = decrypt_secrets(dict(state.get("config") or {}))
         names = {f.name for f in dataclass_fields(SupervisorConfig)}
         kwargs = {k: v for k, v in raw.items() if k in names}
         kwargs["protocol_path"] = Path(kwargs["protocol_path"])
@@ -319,17 +324,32 @@ class JobManager:
         return SupervisorConfig(**kwargs)
 
     def run_stored_job(self, job_id: str) -> bool:
-        """Claim a PENDING store record and execute it in this process.
+        """Claim a PENDING record under an interprocess exclusive lock."""
+        job_id = validate_job_id(job_id)
+        claim = FileLock(self.store.store_dir / f"{job_id}.claim")
+        if not claim.acquire():
+            return False
+        try:
+            claimed = self._run_stored_job_claimed(job_id, claim)
+        except Exception:
+            claim.release()
+            raise
+        if not claimed:
+            claim.release()
+        return claimed
 
-        The worker daemon's claim path: the UI enqueues by writing a PENDING
-        record, and this turns the record into a live worker thread here.
-        Callers must keep their own claimed-id set.
-
-        A claim requires a free run slot (reserved atomically with the thread
-        start); a full manager returns ``False`` and the record stays PENDING.
-        """
+    def _run_stored_job_claimed(self, job_id: str, claim: FileLock) -> bool:
+        """Execute the claim after the caller has exclusive ownership."""
         state = self.store.get_job_state(job_id)
-        if not state or state.get("state") != "PENDING":
+        if not state:
+            return False
+        if state.get("state") == "STOPPING":
+            self.store.update_job_state(
+                job_id,
+                lambda current: current.update({"state": "CANCELLED"}),
+            )
+            return False
+        if state.get("state") != "PENDING":
             return False
         if self.cancel_sentinel_exists(job_id):
             # Cancelled between enqueue and claim: never start it.
@@ -341,10 +361,7 @@ class JobManager:
             return False
         # Ownership: every process this job starts is ledgered under the job
         # id, so a kill can only ever reach this job's own process tree.
-        if not getattr(config, "run_id", ""):
-            from dataclasses import replace as dataclass_replace
-
-            config = dataclass_replace(config, run_id=job_id)
+        config = replace(config, run_id=job_id)
         if str(getattr(config, "engine", "") or "").lower() == "codex":
             ready, why = codex_engine_ready(
                 str(getattr(config, "opencode_executable", "") or ""),
@@ -371,7 +388,11 @@ class JobManager:
                 return False
             self._running_count += 1
             self._sync_parallel_flag()
-            self._active_jobs[job_id] = {"stop_event": stop_event, "loop": None}
+            self._active_jobs[job_id] = {
+                "stop_event": stop_event,
+                "loop": None,
+                "claim": claim,
+            }
         thread = threading.Thread(
             target=self._worker,
             args=(job_id, job_type, config, stop_event, meta, True),
@@ -410,40 +431,45 @@ class JobManager:
         return True
 
     def _cancel_sentinel_path(self, job_id: str) -> Path:
-        return self.store.store_dir / f"{job_id}.cancel"
+        return self.store.store_dir / f"{validate_job_id(job_id)}.cancel"
 
     def cancel_sentinel_exists(self, job_id: str) -> bool:
         return self._cancel_sentinel_path(job_id).exists()
 
-    def cancel_job(self, job_id: str):
-        """Request cancellation of a running job."""
-        # Sentinel FIRST, before any state write: the worker heartbeat
-        # rewrites the state file (RUNNING) every few seconds, so a cancel
-        # that lives only in the state field can be erased by the very
-        # process it targets. The file is the durable intent; the state
-        # write is just immediate board feedback.
+    def cancel_job(self, job_id: str) -> bool:
+        """Request cancellation without releasing ownership before cleanup."""
+        job_id = validate_job_id(job_id)
+        state = self.store.get_job_state(job_id) or {}
+        with self._lock:
+            locally_active = job_id in self._active_jobs
+        if state and state.get("state") not in ACTIVE_JOB_STATES:
+            return False
+        if not state and not locally_active:
+            return False
         try:
-            self._cancel_sentinel_path(job_id).write_text(
-                str(time.time()), encoding="utf-8",
-            )
+            self.store.write_cancel_sentinel(job_id)
         except OSError as exc:
             logger.warning("Could not write cancel sentinel for %s: %s", job_id, exc)
+            return False
         with self._lock:
             if job_id in self._active_jobs:
                 entry = self._active_jobs[job_id]
-                # Signal the worker to stop FIRST, before any state writes
                 entry["stop_event"].set()
                 loop = entry.get("loop")
                 if loop is not None:
                     self._request_loop_stop(loop)
 
-        # Write cancellation state AFTER signalling, outside the lock,
-        # so the worker's stop_event check wins the race reliably.
-        self.store.append_log(job_id, {"level": "warn", "msg": "Job cancelled by user."})
-        current = self.store.get_job_state(job_id) or {}
-        current["state"] = "CANCELLED"
-        current["heartbeat_at"] = time.time()
-        self.store.save_job_state(job_id, current)
+        def _transition(state):
+            if state.get("state") in TERMINAL_JOB_STATES:
+                return
+            state["state"] = "STOPPING"
+            state["heartbeat_at"] = time.time()
+
+        self.store.update_job_state(job_id, _transition)
+        self.store.append_log(
+            job_id, {"level": "warn", "msg": "Job cancelled by user."}
+        )
+        return True
 
     def _request_loop_stop(self, loop: Any) -> None:
         """Ask a loop to stop without assuming its concrete implementation."""
@@ -467,8 +493,7 @@ class JobManager:
             state = self.store.get_job_state(jid) or {}
             if state.get("batch_id") != batch_id:
                 continue
-            if state.get("state") in ACTIVE_JOB_STATES:
-                self.cancel_job(jid)
+            if state.get("state") in ACTIVE_JOB_STATES and self.cancel_job(jid):
                 cancelled.append(jid)
         return cancelled
 
@@ -493,6 +518,7 @@ class JobManager:
         # Only release a slot that was taken: run_stored_job reserves it
         # before the thread starts, the in-process enqueue path parks here.
         slot_held = slot_reserved
+        report_content = ""
         sentinel = self._cancel_sentinel_path(job_id)
         try:
             if not slot_reserved:
@@ -508,17 +534,32 @@ class JobManager:
             stored = self.store.get_job_state(job_id) or {}
             if stored.get("state") in self.TERMINAL_STATES:
                 return
+            if stored.get("state") == "STOPPING" or sentinel.exists():
+                return
 
-            # Update state to RUNNING
-            self.store.save_job_state(job_id, {
-                "type": job_type,
-                "state": "RUNNING",
-                "progress": 0.0,
-                "heartbeat_at": time.time(),
-                "config": self._serialize_config(config),
-                "report": "",
-                **meta,
-            })
+            def _mark_running(current):
+                if (
+                    current.get("state") in self.TERMINAL_STATES
+                    or current.get("state") == "STOPPING"
+                    or sentinel.exists()
+                ):
+                    return
+                current.clear()
+                current.update(
+                    {
+                        "type": job_type,
+                        "state": "RUNNING",
+                        "progress": 0.0,
+                        "heartbeat_at": time.time(),
+                        "config": self._serialize_config(config),
+                        "report": "",
+                        **meta,
+                    }
+                )
+
+            self.store.update_job_state(job_id, _mark_running)
+            if (self.store.get_job_state(job_id) or {}).get("state") != "RUNNING":
+                return
 
             # Select the appropriate loop
             if job_type == "run":
@@ -534,11 +575,11 @@ class JobManager:
 
             heartbeat_interval = 5.0
             last_heartbeat = time.time()
-            report_content = ""
             # Headline mode condenses large blocks to one key line each (full
             # bodies go to the .full sidecar); "full" restores verbatim logs.
             recorder = EventRecorder(
-                self.store, job_id,
+                self.store,
+                job_id,
                 mode=str(getattr(config, "log_detail", "headline")),
             )
 
@@ -547,15 +588,11 @@ class JobManager:
             # Cross-process cancel: the UI (or another process) may drop a
             # sentinel file at any moment - the state field alone is racy
             # against this worker's own RUNNING heartbeats.
-            stop_requested = (
-                lambda: stop_event.is_set() or sentinel.exists()
-            )
+            stop_requested = lambda: stop_event.is_set() or sentinel.exists()
             for event in stream:
                 if stop_requested():
                     self._request_loop_stop(loop)
                     stream.close()
-                    if sentinel.exists():
-                        self._update_state(job_id, "CANCELLED", report=report_content)
                     return
 
                 # Handle non-dict events (e.g., strings) by converting to event dict
@@ -588,25 +625,27 @@ class JobManager:
                     if stop_requested():
                         self._request_loop_stop(loop)
                         stream.close()
-                        if sentinel.exists():
-                            self._update_state(job_id, "CANCELLED", report=report_content)
                         return
 
-                    self.store.save_job_state(job_id, {
-                        "type": job_type,
-                        "state": "RUNNING",
-                        "progress": 0.0,
-                        "heartbeat_at": now,
-                        "config": self._serialize_config(config),
-                        "report": report_content,
-                        **meta,
-                    })
+                    def _heartbeat(current, now=now, report_content=report_content):
+                        if (
+                            current.get("state") in self.TERMINAL_STATES
+                            or current.get("state") == "STOPPING"
+                            or stop_requested()
+                        ):
+                            return
+                        current.update(
+                            {
+                                "heartbeat_at": now,
+                                "report": report_content,
+                            }
+                        )
+
+                    self.store.update_job_state(job_id, _heartbeat)
                     last_heartbeat = now
 
             if stop_requested():
                 self._request_loop_stop(loop)
-                if sentinel.exists():
-                    self._update_state(job_id, "CANCELLED", report=report_content)
                 return
             # Determine final state
             logs = self.store.get_logs(job_id)
@@ -615,23 +654,31 @@ class JobManager:
             # Final report check if not captured during streaming
             if not report_content:
                 report_content = self._fetch_report(config.workspace, job_type)
+            if stop_requested():
+                self._request_loop_stop(loop)
+                return
 
             if final_state == "FAILED":
-                error_events = [
-                    e for e in logs if e.get("level") == "error"
-                ]
-                last_error = str(error_events[-1].get("msg") or "") if error_events else ""
+                error_events = [e for e in logs if e.get("level") == "error"]
+                last_error = (
+                    str(error_events[-1].get("msg") or "") if error_events else ""
+                )
                 failure_class = classify_failure_text(last_error)
                 summary = summarize_failure_text(last_error)
                 if summary:
                     # Newest error first in the panel: the traceback stays in
                     # the log, the operator gets the cause line on top.
-                    self.store.append_log(job_id, {
-                        "level": "error",
-                        "msg": f"[{failure_class}] {summary}",
-                    })
+                    self.store.append_log(
+                        job_id,
+                        {
+                            "level": "error",
+                            "msg": f"[{failure_class}] {summary}",
+                        },
+                    )
                 self._update_state(
-                    job_id, final_state, report=report_content,
+                    job_id,
+                    final_state,
+                    report=report_content,
                     failure_class=failure_class,
                     failure_summary=summary,
                     retryable=is_retryable(failure_class),
@@ -650,18 +697,23 @@ class JobManager:
             self.store.append_log(job_id, {"level": "error", "msg": error_msg})
             # Appended last so the failure panel shows the one-line cause;
             # the full traceback above stays available in the log.
-            self.store.append_log(job_id, {
-                "level": "error",
-                "msg": f"[{failure_class}] {summary}",
-            })
-            self._update_state(
-                job_id, "FAILED",
-                report=report_content if "report_content" in locals() else "",
-                failure_class=failure_class,
-                failure_summary=summary,
-                retryable=is_retryable(failure_class),
-                resume_available=_resume_available(config),
+            self.store.append_log(
+                job_id,
+                {
+                    "level": "error",
+                    "msg": f"[{failure_class}] {summary}",
+                },
             )
+            if not (stop_event.is_set() or sentinel.exists()):
+                self._update_state(
+                    job_id,
+                    "FAILED",
+                    report=report_content,
+                    failure_class=failure_class,
+                    failure_summary=summary,
+                    retryable=is_retryable(failure_class),
+                    resume_available=_resume_available(config),
+                )
         finally:
             # A finished job owns nothing: whatever it left running is a
             # stray of THIS run's tree (ledger-proved()), so it is cleaned
@@ -672,12 +724,24 @@ class JobManager:
 
                 terminate_run(job_id, reason="job final")
             except Exception:
-                logger.debug("final process cleanup failed for %s", job_id, exc_info=True)
+                logger.debug(
+                    "final process cleanup failed for %s", job_id, exc_info=True
+                )
+
+            current = self.store.get_job_state(job_id) or {}
+            if current.get("state") not in TERMINAL_JOB_STATES and (
+                stop_event.is_set()
+                or sentinel.exists()
+                or current.get("state") == "STOPPING"
+            ):
+                self._update_state(job_id, "CANCELLED", report=report_content)
             if slot_held:
                 self._release_slot()
             with self._lock:
-                if job_id in self._active_jobs:
-                    del self._active_jobs[job_id]
+                entry = self._active_jobs.pop(job_id, None)
+            claim = entry.get("claim") if entry else None
+            if claim is not None:
+                claim.release()
             # The request has been fully consumed (worker exited); leave no
             # stale sentinel behind to cancel a future re-enqueue.
             try:
@@ -686,16 +750,24 @@ class JobManager:
                 pass
 
     def _update_state(self, job_id: str, state_name: str, report: str = "", **extra):
-        """Helper to update the stored job state."""
-        current = self.store.get_job_state(job_id) or {}
-        current.update({
-            "state": state_name,
-            "heartbeat_at": time.time(),
-            "report": report,
-        })
-        if extra:
-            current.update(extra)
-        self.store.save_job_state(job_id, current)
+        """Apply a monotonic terminal transition under the per-job state lock."""
+
+        def _transition(current):
+            if current.get("state") in TERMINAL_JOB_STATES:
+                return
+            if current.get("state") == "STOPPING" and state_name != "CANCELLED":
+                return
+            current.update(
+                {
+                    "state": state_name,
+                    "heartbeat_at": time.time(),
+                    "report": report,
+                }
+            )
+            if extra:
+                current.update(extra)
+
+        self.store.update_job_state(job_id, _transition)
 
     def _fetch_report(self, workspace: Path, job_type: str) -> str:
         """Try to read final report files from workspace."""

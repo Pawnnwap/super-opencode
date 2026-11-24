@@ -1,10 +1,60 @@
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
 
 from supervisor.utils.text_utils import coerce_str
+
+
+def _trusted_executable_roots() -> tuple[Path, ...]:
+    home = Path.home()
+    candidates = [
+        home / ".local" / "bin",
+        home / ".cargo" / "bin",
+        home / ".bun" / "bin",
+        home / ".volta" / "bin",
+        home / ".conda" / "envs",
+        home / "miniconda3" / "envs",
+        home / "anaconda3" / "envs",
+        Path("/usr/local/bin"),
+        Path("/usr/bin"),
+        Path("/opt/homebrew/bin"),
+        Path("C:/Program Files"),
+        Path("C:/Program Files (x86)"),
+    ]
+    for env_name in (
+        "APPDATA",
+        "LOCALAPPDATA",
+        "CONDA_PREFIX",
+        "SOP_TRUSTED_EXECUTABLE_ROOTS",
+    ):
+        raw = os.environ.get(env_name, "").strip()
+        if not raw:
+            continue
+        for value in raw.split(os.pathsep):
+            if not value:
+                continue
+            path = Path(value)
+            if env_name == "APPDATA":
+                path = path / "npm"
+            elif env_name == "LOCALAPPDATA":
+                path = path / "Programs"
+            candidates.append(path)
+    return tuple(path for path in candidates if path.is_dir())
+
+
+def _trusted_explicit_executable(value: str) -> str | None:
+    path = Path(value).expanduser()
+    if not path.is_file():
+        return None
+    resolved = path.resolve()
+    if any(
+        resolved.is_relative_to(root.resolve()) for root in _trusted_executable_roots()
+    ):
+        return str(resolved)
+    return None
 
 
 def find_executable(
@@ -25,9 +75,9 @@ def find_executable(
     explicit = coerce_str(explicit, f"{tool}_executable (find arg)")
 
     if explicit:
-        path = Path(explicit)
-        if path.is_file():
-            return explicit
+        trusted = _trusted_explicit_executable(explicit)
+        if trusted:
+            return trusted
 
     lookup_cmd = "where" if sys.platform == "win32" else "which"
     try:
@@ -46,8 +96,9 @@ def find_executable(
                 path for path in candidates if path.lower().endswith(exec_exts)
             ] or candidates
         for path in candidates:
-            if Path(path).is_file():
-                return path
+            trusted = _trusted_explicit_executable(path)
+            if trusted:
+                return trusted
     except (subprocess.CalledProcessError, FileNotFoundError):
         pass
 
@@ -77,7 +128,8 @@ def find_executable(
     for directory in search_dirs:
         for name in names:
             candidate = directory / name
-            if candidate.is_file():
-                return str(candidate)
+            trusted = _trusted_explicit_executable(str(candidate))
+            if trusted:
+                return trusted
 
     raise FileNotFoundError(not_found_message)

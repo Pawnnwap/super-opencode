@@ -53,7 +53,7 @@
   外加项目插件拦截权限扫描器无法归类的 shell 写入；不写 V2 `permissions` 键，
   因为 opencode 1.x 会因此判定整个配置文件无效；
 - **pi**：通过显式 `-e` 加载 `tool_call` 扩展，在工具执行前返回 `{ block: true }`；
-- **codex**：在 `$CODEX_HOME/hooks.json` 注册 `PreToolUse` 钩子，调用 supervisor 的策略闸门。
+- **codex**：优先在 `$CODEX_HOME/config.toml` 注册 `PreToolUse` 钩子，旧版回退到 `hooks.json`，调用 supervisor 的策略闸门。
 
 策略快照存放在工作区之外（`~/.opencode_supervisor/access/`），通过
 `SOP_ACCESS_POLICY` 传给后端，agent 无法通过修改 cwd 内文件放宽自己的策略。
@@ -217,7 +217,7 @@ pip install -r requirements.txt
 
 监督系统在一个受控的反馈循环中运行代理：
 
-1. **协议驱动执行** — `protocol.md` 文件定义 INPUT、TARGET 和 RESTRICTIONS 来指导代理的行为
+1. **协议驱动执行** — `protocol.jsonl` 是 INPUT、TARGET 和 RESTRICTIONS 的规范契约；旧版 `protocol.md` 仍可兼容读取。
 2. **实时监控** — 跟踪上下文窗口使用情况，并按节奏轮换会话（各引擎自行压缩上下文）
 3. **工作区安全** — 系统阻止对工作区外路径的引用，以防止意外的修改
 4. **工作区归档** — 每次运行前和每次迭代后，工作区状态都会保存到 `.archive/`
@@ -271,6 +271,14 @@ pip install -r requirements.txt
 
 ---
 
+## BLOCKED 与 jev 决策
+
+启用 `enable_jev_decisions` 后，jev 会参与 DONE、对齐、继续/阻塞以及阻塞救援决策。
+救援不设预算开关：每次 BLOCKED 都会交给 jev；jev 拒绝即终止，不存在无限重试。
+确定性证据（测试、文件、闸门、工作区变化）仍由本地规则裁决，不交给 LLM。
+
+---
+
 ## 奥卡姆剃刀阶段
 
 运行成功后，可选的后处理阶段（`enable_occam_razor`，默认关闭）让代理剥离冗余代码和
@@ -301,7 +309,7 @@ pip install -r requirements.txt
 「Stored jobs」上限后，下次入队时丢弃最旧者的日志载荷（状态摘要保留）。
 
 ### ① 协议向导
-用自然语言填写 INPUT / TARGET / RESTRICTIONS → 点击 **用 AI 优化** → 查看生成的 `protocol.md` → 接受并保存。
+用自然语言填写 INPUT / TARGET / RESTRICTIONS → 点击 **用 AI 优化** → 查看生成的 `protocol.jsonl` → 接受并保存。
 
 向导功能包括：
 - **配置面板** — 执行引擎（OpenCode、Codex 或 pi）、API 密钥与基础 URL、工作区路径、
@@ -476,7 +484,8 @@ requirements.txt                    备用依赖列表（核心 + 静态分析�
 
 ## 协议系统
 
-`protocol.md` 文件是你与 supervisor 之间的核心契约。
+`protocol.jsonl` 文件是你与 supervisor 之间的核心规范；旧版 `protocol.md`
+仍可作为兼容输入读取。
 它必须包含恰好三个部分：
 
 ```markdown
@@ -607,8 +616,8 @@ Token 估算在可用时使用 `tiktoken`（o200k_base 编码），
 
 每次运行都在 `.archive/` 中保留工作区状态：
 
-**git 后端（默认，`archive_backend: "git"`）** — 快照存放在私有裸仓库
-`.archive/snapshots.git` 中，通过 `--git-dir/--work-tree` 驱动，绝不触碰
+**git 后端（默认，`archive_backend: "git"`）** — 快照存放在用户级 supervisor
+数据目录中的私有裸仓库里，通过 `--git-dir/--work-tree` 驱动，绝不触碰
 工作区自带的 `.git`：
 
 - 一次快照 = `git add -A` → `write-tree` → 一个**无父提交**（orphan
@@ -627,8 +636,8 @@ Token 估算在可用时使用 `tiktoken`（o200k_base 编码），
 目录，含 `code/`、`results/`、`logs/`、`other/` 子目录与
 `archive_metadata.json`。
 
-两种后端下：`.archive/` 目录本身受保护，无法修改；版本文件从不删除 ——
-只归档。
+两种后端下：`.archive/` 目录本身受保护，无法修改；只保留最新
+`archive_keep_last` 个快照，`0` 表示不限数量；保留策略不会删除工作区文件。
 
 ---
 
@@ -647,8 +656,9 @@ Super-Opencode 使用执行后端原生的文件工具。OpenCode 提供 `read`�
 
 ## 代码辅助 MCP 服务器
 
-系统内置一个 MCP 服务器（`mcp_server/codehelp.py`，工具实现位于
-`mcp_server/codehelp_support/`），提供代码辅助和文档查找工具：
+系统内置两个 MCP 服务器：`mcp_server/codehelp.py`（代码辅助，工具实现位于
+`mcp_server/codehelp_support/`）和 `mcp_server/web_tools.py`（网页搜索/抓取）。
+Codehelp 提供：
 
 - **search_docstrings** — 搜索本地代码库中包、模块、类、函数或方法的文档字符串
 - **search_package_version** — 查询 PyPI/npm 的最新发布版本、发布日期和文档 URL

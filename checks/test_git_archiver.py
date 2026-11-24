@@ -14,7 +14,11 @@ Contract:
 - files_to_archive mode snapshots only the requested files.
 """
 
+import os
 import shutil
+import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 
@@ -22,8 +26,14 @@ from supervisor.workspace.git_archiver import GitWorkspaceArchiver
 from supervisor.workspace.workspace_archiver import WorkspaceArchiver, create_archiver
 
 pytestmark = pytest.mark.skipif(
-    shutil.which("git") is None, reason="git executable required",
+    shutil.which("git") is None,
+    reason="git executable required",
 )
+
+
+@pytest.fixture(autouse=True)
+def _archive_state(tmp_path, monkeypatch):
+    monkeypatch.setenv("SUPER_OPENCODE_DATA_DIR", str(tmp_path / "archive-state"))
 
 
 def _mk_ws(tmp_path, name="ws"):
@@ -43,7 +53,8 @@ def test_incremental_snapshot_only_changed_file(tmp_path):
     assert first.success
     assert set(first.archived_files) == {"protocol.md", "code.py"}
     assert "noise.log" not in first.archived_files
-    assert (ws / ".archive" / "snapshots.git" / "HEAD").exists()
+    assert (archiver.repo_dir / "HEAD").exists()
+    assert not archiver.repo_dir.is_relative_to(ws)
 
     (ws / "code.py").write_text("print(2)", encoding="utf-8")
     second = archiver.archive_workspace(label="second")
@@ -51,7 +62,8 @@ def test_incremental_snapshot_only_changed_file(tmp_path):
 
     # The snapshot tags share unchanged blobs; only code.py differs.
     diff = archiver._git(
-        "diff", "--name-only",
+        "diff",
+        "--name-only",
         f"snap/{first.archive_path.name}",
         f"snap/{second.archive_path.name}",
     ).stdout.split()
@@ -113,7 +125,8 @@ def test_retention_drops_oldest_and_reclaims(tmp_path):
 
     # The dropped snapshots' unique 200 KB blobs are gone after gc.
     blob_count = archiver._git(
-        "count-objects", "-v",
+        "count-objects",
+        "-v",
     ).stdout
     size_kb = int(
         next(ln for ln in blob_count.splitlines() if ln.startswith("size:")).split()[1]
@@ -126,7 +139,8 @@ def test_retention_drops_oldest_and_reclaims(tmp_path):
 def test_git_missing_falls_back_to_copy(tmp_path, monkeypatch):
     ws = _mk_ws(tmp_path)
     monkeypatch.setattr(
-        "supervisor.workspace.git_archiver.shutil.which", lambda _: "",
+        "supervisor.workspace.git_archiver.shutil.which",
+        lambda _: "",
     )
     archiver = GitWorkspaceArchiver(ws, keep_last=2)
     assert isinstance(archiver._fallback, WorkspaceArchiver)
@@ -140,10 +154,12 @@ def test_git_missing_falls_back_to_copy(tmp_path, monkeypatch):
 def test_factory_selects_backend(tmp_path):
     ws = _mk_ws(tmp_path)
     assert isinstance(
-        create_archiver(ws, keep_last=1, backend="git"), GitWorkspaceArchiver,
+        create_archiver(ws, keep_last=1, backend="git"),
+        GitWorkspaceArchiver,
     )
     assert isinstance(
-        create_archiver(ws, keep_last=1, backend="copy"), WorkspaceArchiver,
+        create_archiver(ws, keep_last=1, backend="copy"),
+        WorkspaceArchiver,
     )
 
 
@@ -167,11 +183,24 @@ def test_legacy_dirs_still_listed_and_restorable(tmp_path):
     assert (ws / "code.py").read_text(encoding="utf-8") == "print(1)"
 
 
+def test_legacy_restore_refuses_sources_outside_archive(tmp_path):
+    ws = _mk_ws(tmp_path)
+    outside = tmp_path / "outside"
+    (outside / "code").mkdir(parents=True)
+    (outside / "code" / "stolen.py").write_text("secret", encoding="utf-8")
+
+    restored = WorkspaceArchiver(ws, keep_last=0).restore_archive(outside)
+
+    assert restored == []
+    assert not (ws / "stolen.py").exists()
+
+
 def test_files_to_archive_partial_snapshot(tmp_path):
     ws = _mk_ws(tmp_path)
     archiver = GitWorkspaceArchiver(ws, keep_last=0)
     result = archiver.archive_workspace(
-        label="cleanup", files_to_archive=["code.py", "noise.log"],
+        label="cleanup",
+        files_to_archive=["code.py", "noise.log"],
     )
     assert result.success
     assert result.archived_files == ["code.py"]  # .log filtered
@@ -187,3 +216,56 @@ def test_stats_report_backend(tmp_path):
     assert stats["backend"] == "git"
     assert stats["archive_count"] == 1
     assert stats["total_files"] == 2
+
+
+def test_agent_controlled_workspace_repo_cannot_execute_filters(tmp_path):
+    ws = _mk_ws(tmp_path)
+    malicious_repo = ws / ".archive" / "snapshots.git"
+    subprocess.run(
+        ["git", "init", "--bare", "--quiet", str(malicious_repo)],
+        check=True,
+    )
+    sentinel = tmp_path / "filter-executed"
+    code = f"from pathlib import Path; Path({str(sentinel)!r}).write_text('executed')"
+    filter_cmd = subprocess.list2cmdline([sys.executable, "-c", code])
+    subprocess.run(
+        [
+            "git",
+            f"--git-dir={malicious_repo}",
+            "config",
+            "filter.pwn.clean",
+            filter_cmd,
+        ],
+        check=True,
+    )
+    (ws / ".gitattributes").write_text("*.py filter=pwn\n", encoding="utf-8")
+    (ws / "code.py").write_text("print(2)\n", encoding="utf-8")
+
+    archiver = GitWorkspaceArchiver(ws, keep_last=0)
+    result = archiver.archive_workspace(label="safe snapshot")
+
+    assert result.success
+    assert not sentinel.exists()
+    assert not archiver.repo_dir.is_relative_to(ws)
+    assert archiver.repo_dir.is_relative_to(
+        Path(os.environ["SUPER_OPENCODE_DATA_DIR"]),
+    )
+
+
+def test_global_git_config_cannot_enable_workspace_filters(tmp_path, monkeypatch):
+    ws = _mk_ws(tmp_path)
+    sentinel = tmp_path / "global-filter-executed"
+    code = f"from pathlib import Path; Path({str(sentinel)!r}).write_text('executed')"
+    filter_cmd = subprocess.list2cmdline([sys.executable, "-c", code])
+    global_config = tmp_path / "global.gitconfig"
+    global_config.write_text(
+        f'[filter "pwn"]\n    clean = {filter_cmd}\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(global_config))
+    (ws / ".gitattributes").write_text("*.py filter=pwn\n", encoding="utf-8")
+
+    result = GitWorkspaceArchiver(ws, keep_last=0).archive_workspace(label="safe")
+
+    assert result.success
+    assert not sentinel.exists()

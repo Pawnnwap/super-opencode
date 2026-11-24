@@ -33,6 +33,64 @@ from supervisor.runtime.process_registry import ProcessRegistry
 
 logger = logging.getLogger(__name__)
 
+_ENV_ALLOWLIST = (
+    "PATH",
+    "PATHEXT",
+    "SYSTEMROOT",
+    "WINDIR",
+    "COMSPEC",
+    "TEMP",
+    "TMP",
+    "HOME",
+    "USERPROFILE",
+    "HOMEDRIVE",
+    "HOMEPATH",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "PROGRAMFILES",
+    "PROGRAMFILES(X86)",
+    "PROGRAMDATA",
+    "OS",
+    "PROCESSOR_ARCHITECTURE",
+    "NUMBER_OF_PROCESSORS",
+    "LANG",
+    "LC_ALL",
+    "TERM",
+    "NO_COLOR",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "NO_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+    "no_proxy",
+)
+_SOP_ENV_KEYS = frozenset(
+    {
+        "SOP_RUN_ID",
+        "SOP_PROC_LEDGER",
+        "SOP_WORKSPACE",
+        "SOP_ACCESS_POLICY",
+        "SOP_PARALLEL_RUNS",
+        "SOP_JUDGE_MAX_CONCURRENCY",
+        "SOP_JOB_STORE_DIR",
+        "SOP_APP_PORT",
+        "SOP_PROXY_PORT",
+        "SOP_UPSTREAM",
+    }
+)
+
+
+def base_environment(extra: dict[str, str] | None = None) -> dict[str, str]:
+    env = {key: os.environ[key] for key in _ENV_ALLOWLIST if key in os.environ}
+    for key in _SOP_ENV_KEYS:
+        if key in os.environ:
+            env[key] = os.environ[key]
+    if extra:
+        env.update(extra)
+    return env
+
 
 @dataclass
 class ProcResult:
@@ -113,10 +171,10 @@ class OwnedProcess(ABC):
     # -- template methods ------------------------------------------------ #
 
     def base_env(self) -> dict[str, str]:
-        """A copy of the current environment plus the run-scoped markers."""
-        env = {**os.environ, **(self._env or {})}
-        env.setdefault("SOP_RUN_ID", self.run_id)
-        env.setdefault("SOP_PROC_LEDGER", str(self._ledger_hint()))
+        """Allowlisted environment plus explicit run-scoped markers."""
+        env = base_environment(self._env)
+        env["SOP_RUN_ID"] = self.run_id
+        env["SOP_PROC_LEDGER"] = str(self._ledger_hint())
         return self.child_env(env)
 
     def _ledger_hint(self) -> Path:
@@ -192,7 +250,9 @@ class OwnedProcess(ABC):
         if not text_out and logs is not None:
             text_out = _tail(logs[0])
         return ProcResult(
-            returncode=int(spawned.popen.returncode if spawned.popen.returncode is not None else -1),
+            returncode=int(
+                spawned.popen.returncode if spawned.popen.returncode is not None else -1
+            ),
             stdout=text_out,
             stderr=_as_text(stderr) or (_tail(logs[1]) if logs is not None else ""),
             timed_out=timed_out,

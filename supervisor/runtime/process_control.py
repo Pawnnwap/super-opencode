@@ -25,6 +25,7 @@ import os
 import subprocess
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from supervisor.runtime.job_object import JobScope
 from supervisor.runtime.process_registry import (
@@ -167,7 +168,14 @@ def spawn_tracked(
         state="live",
     )
     if run_id:
-        ProcessRegistry(run_id).register(record)
+        try:
+            ProcessRegistry(run_id).register(record)
+        except OSError:
+            if scope is not None:
+                scope.terminate()
+            child.kill()
+            child.wait()
+            raise
 
     return SpawnedProcess(popen=child, job=scope, record=record)
 
@@ -264,7 +272,8 @@ def _is_direct_child(pid: int, expected_create_time: float | None) -> bool:
             return False
         return not (
             expected_create_time is not None
-            and abs(proc.create_time() - float(expected_create_time)) > CREATE_TIME_TOLERANCE
+            and abs(proc.create_time() - float(expected_create_time))
+            > CREATE_TIME_TOLERANCE
         )
     except Exception:  # noqa: BLE001 - gone or denied means no proof
         return False
@@ -417,13 +426,54 @@ def terminate_run(run_id: str, *, reason: str = "") -> int:
         if _protected(record.pid) or record.state != "live":
             continue
         try:
-            if verify_owned(key, record.pid) and _kill_now(record.pid, record.create_time):
+            if verify_owned(key, record.pid) and _kill_now(
+                record.pid, record.create_time
+            ):
                 killed += 1
                 ProcessRegistry(key).mark_exited(record.pid)
         except KillRefused:
             continue
-    logger.info("terminated run %s (%d target(s), %s)", key, killed, reason or "no reason")
+    logger.info(
+        "terminated run %s (%d target(s), %s)", key, killed, reason or "no reason"
+    )
     close_scope(key)
+    return killed
+
+
+def terminate_orphaned_run(
+    run_id: str,
+    *,
+    directory: Path,
+    reason: str = "",
+) -> int:
+    """Kill live ledger roots and their trees after an unexpected worker death.
+
+    The ledger is the only ownership proof that survives the dead worker. Every
+    root is revalidated by pid + create time immediately before its current
+    descendant tree is swept. Intentional re-exec callers skip this function.
+    """
+    key = str(run_id or "")
+    if not key:
+        return 0
+    registry = ProcessRegistry(key, directory)
+    killed = 0
+    for record in registry.live_records():
+        if _protected(record.pid):
+            continue
+        live = _create_time(record.pid)
+        if live is None or abs(live - record.create_time) > CREATE_TIME_TOLERANCE:
+            registry.mark_exited(record.pid)
+            continue
+        _kill_descendants(record.pid)
+        if _kill_now(record.pid, record.create_time):
+            killed += 1
+        registry.mark_exited(record.pid)
+    logger.info(
+        "terminated orphaned run %s (%d root(s), %s)",
+        key,
+        killed,
+        reason or "worker recovery",
+    )
     return killed
 
 
@@ -511,6 +561,7 @@ __all__ = [
     "close_scope",
     "scope_for_run",
     "spawn_tracked",
+    "terminate_orphaned_run",
     "terminate_pid",
     "terminate_run",
     "terminate_tree",

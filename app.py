@@ -18,11 +18,15 @@ from pathlib import Path
 from nicegui import app, core, ui
 
 from services.config.settings import sanitize_proxy_env
+from services.jobs.job_states import JOB_STORE_DIR
+from services.jobs.state_store import validate_job_id
 from services.runtime import death_capture
 from services.runtime.log_paths import log_path
 from services.webui import error_net, i18n, layout, startup
 from services.webui.jobs import get_job_manager
+from services.webui.security import LocalUIAuth, LocalUIAuthMiddleware
 from services.webui.state import app_state
+from supervisor.security.redaction import install_log_redaction, redact_text
 
 # The persisted language must be active before the first page renders; the
 # switcher later updates it live and reloads the browser page.
@@ -49,12 +53,13 @@ def _resolve_ui_port(default: int = _UI_PORT) -> int:
         return int(env)
     try:
         data = json.loads(
-            (Path(".job_store") / "ports.json").read_text(encoding="utf-8-sig"),
+            (Path(JOB_STORE_DIR) / "ports.json").read_text(encoding="utf-8-sig"),
         )
         port = int(data["app"])
     except (OSError, ValueError, KeyError, TypeError):
         return default
     return port if 0 < port < 65536 else default
+
 
 # Serving loop. uvicorn >= 0.36 forces ProactorEventLoop (IOCP) on Windows
 # through its loop factory, ignoring the policy; `loop="none"` defers to the
@@ -72,6 +77,7 @@ if sys.platform == "win32":
 # ASGI callables are available if it decides to respond).
 _original_translate_request = core.sio.eio._async["translate_request"]
 
+
 async def _translate_request_without_disconnect(scope, receive, send):
     environ = await _original_translate_request(scope, receive, send)
     if environ:
@@ -86,6 +92,7 @@ async def _translate_request_without_disconnect(scope, receive, send):
         "asgi.send": send,
         "asgi.scope": scope,
     }
+
 
 core.sio.eio._async["translate_request"] = _translate_request_without_disconnect
 
@@ -105,7 +112,13 @@ lifecycle_log = logging.getLogger("ui.lifecycle")
 # the same trick as .job_store/worker.lock for the worker daemon. It is the
 # only fine-grained clock for a kill that takes the cmd wrappers too (no
 # exitcode sentinel). Not a *.json file: the job store globs those as jobs.
-_UI_LOCK = Path(".job_store") / "ui.lock"
+_UI_LOCK = Path(JOB_STORE_DIR) / "ui.lock"
+_UI_AUTH = LocalUIAuth(
+    Path(JOB_STORE_DIR) / "ui.token",
+    Path(JOB_STORE_DIR) / "ui.storage_secret",
+)
+if app.middleware_stack is None:
+    app.add_middleware(LocalUIAuthMiddleware, auth=_UI_AUTH)
 
 
 @app.on_startup
@@ -121,6 +134,7 @@ def _install_forensics() -> None:
         datefmt="%H:%M:%S",
         stream=sys.stderr,
     )
+    install_log_redaction()
     fatal = log_path("app.fatal.log")
     death_capture.install(str(fatal))
     log.info("death capture armed (%s), pid %d", fatal, os.getpid())
@@ -132,7 +146,10 @@ def _install_forensics() -> None:
     @app.on_connect
     def _log_connect(client) -> None:
         lifecycle_log.info(
-            "client connected id=%s ip=%s tab=%s", client.id, client.ip, client.tab_id,
+            "client connected id=%s ip=%s tab=%s",
+            client.id,
+            client.ip,
+            client.tab_id,
         )
 
     @app.on_disconnect
@@ -168,6 +185,12 @@ async def _start_ui_watchdog() -> None:
     )
 
 
+@app.on_shutdown
+def _shutdown_ui() -> None:
+    _watchdog.setdefault("stop", threading.Event()).set()
+    app_state.flush()
+
+
 def _touch_ui_lock() -> None:
     try:
         _UI_LOCK.parent.mkdir(parents=True, exist_ok=True)
@@ -193,8 +216,8 @@ def _touch_ui_lock() -> None:
 
 def _ui_watchdog() -> None:
     frozen_cycles = 0
-    while True:
-        time.sleep(10)
+    stop = _watchdog.setdefault("stop", threading.Event())
+    while not stop.wait(10):
         _touch_ui_lock()
         loop = _watchdog.get("loop")
         if loop is None:
@@ -211,7 +234,9 @@ def _ui_watchdog() -> None:
         delay = time.perf_counter() - started
         if not responsive:
             frozen_cycles += 1
-            log.error("event loop did not process a callback within 5s - loop is frozen")
+            log.error(
+                "event loop did not process a callback within 5s - loop is frozen"
+            )
             if frozen_cycles == 3:
                 # 30 s without a callback: capture the blocking stacks
                 # before the task-owned watchdog restarts us; stderr alone
@@ -228,12 +253,12 @@ def _ui_watchdog() -> None:
 # Side-effect-free liveness target for the task-owned watchdog. Probing "/"
 # builds a full page and registers a UI client that expires 60s later; this
 # plain route answers without ever creating one.
-@app.get('/healthz')
+@app.get("/healthz")
 def _healthz() -> dict:
-    return {'ok': True}
+    return {"ok": True}
 
 
-@app.post('/jobs/{job_id}/open-folder')
+@app.post("/jobs/{job_id}/open-folder")
 def _open_job_folder(job_id: str):
     """Reveal a job's workspace in the OS file manager (local board shortcut).
 
@@ -242,12 +267,17 @@ def _open_job_folder(job_id: str):
     """
     from fastapi.responses import JSONResponse
 
+    try:
+        validate_job_id(job_id)
+    except ValueError:
+        return JSONResponse({"ok": False, "error": "invalid job id"}, status_code=400)
     record = get_job_manager().get_job_summary(job_id) or {}
     workspace = str((record.get("config") or {}).get("workspace") or "")
     path = Path(workspace)
     if not workspace or not path.is_dir():
         return JSONResponse(
-            {"ok": False, "error": "workspace folder not found"}, status_code=404,
+            {"ok": False, "error": "workspace folder not found"},
+            status_code=404,
         )
     try:
         if os.name == "nt":
@@ -257,7 +287,9 @@ def _open_job_folder(job_id: str):
         else:
             subprocess.Popen(["xdg-open", str(path)])
     except OSError as exc:
-        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+        return JSONResponse(
+            {"ok": False, "error": redact_text(str(exc))}, status_code=500
+        )
     return {"ok": True}
 
 
@@ -306,7 +338,7 @@ ui.run(
     reload=False,
     show=False,
     dark=True,
-    storage_secret="opencode-supervisor",
+    storage_secret=_UI_AUTH.storage_secret(),
     # Quasar's own locale pack + the html lang attribute. Chinese UI => the
     # built-in framework strings (reconnect toasts) follow via NiceGUI's
     # translations; runtime switching keeps this attribute per page request.

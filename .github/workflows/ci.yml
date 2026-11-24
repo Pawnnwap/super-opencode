@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+        python: ["3.11", "3.13"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install -e . build
+      - name: Ruff
+        run: python -m ruff check app.py codex_compat_proxy.py services supervisor mcp_server checks
+      - name: Bandit
+        # B602/B604 cover required Windows command shims; B324 covers non-security hashes.
+        run: python -m bandit -q -r app.py codex_compat_proxy.py services supervisor mcp_server -ll --skip B324,B602,B604
+      - name: Tests
+        run: python -m pytest checks -q -p no:cacheprovider
+      - name: Build
+        run: python -m build

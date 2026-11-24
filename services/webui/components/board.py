@@ -23,7 +23,9 @@ from services.webui.ui_state import state_expansion, stored_expansion
 
 
 def may_pause_autorefresh(
-    auto_refresh: bool, active: int, scan_incomplete: bool,
+    auto_refresh: bool,
+    active: int,
+    scan_incomplete: bool,
 ) -> bool:
     """Whether the 1.5 s board timer may pause itself.
 
@@ -124,7 +126,9 @@ class JobBoard:
             # again on the next 1.5 s tick.
             self._history_key = f"board.{self.job_type}.history"
             self.history_exp = state_expansion(
-                self._history_key, i18n.t("History"), icon="history",
+                self._history_key,
+                i18n.t("History"),
+                icon="history",
             ).classes("sop-fold")
             with self.history_exp:
                 self.history_grid = ui.element("div").classes(
@@ -138,7 +142,8 @@ class JobBoard:
                 ) as self.history_footer:
                     self.history_count_label = ui.label("").classes("sop-hint")
                     self.history_more_button = ui.button(
-                        i18n.t("Show more"), on_click=self._show_more_history,
+                        i18n.t("Show more"),
+                        on_click=self._show_more_history,
                     ).props("flat dense")
                 self.history_footer.set_visibility(False)
             self.history_exp.set_visibility(False)
@@ -172,7 +177,8 @@ class JobBoard:
         # cached reader; fall back to the plain summary read then.
         cache = getattr(self, "_state_cache", None)
         cached_reader = (
-            store.get_job_state_cached if hasattr(store, "get_job_state_cached")
+            store.get_job_state_cached
+            if hasattr(store, "get_job_state_cached")
             else None
         )
         for job_id in job_ids:
@@ -214,14 +220,24 @@ class JobBoard:
         # below stays visible, and the header flags when a filter is active
         # so a narrowed board is never a silent surprise.
         self.filter_exp = state_expansion(
-            f"board.{self.job_type}.filters", i18n.t("Search & filter"),
+            f"board.{self.job_type}.filters",
+            i18n.t("Search & filter"),
             icon="filter_list",
         ).classes("sop-fold sop-fold--dense")
         self._filter_caption = i18n.t("Search & filter")
         # Option VALUES stay the English sentinels the filter logic compares
         # against; only the shown labels go through the translation table.
-        state_choices = ["All states", "Active queue", "RUNNING", "PENDING",
-                         "SUCCESS", "FAILED", "CANCELLED", "BLOCKED", "ABANDONED"]
+        state_choices = [
+            "All states",
+            "Active queue",
+            "RUNNING",
+            "PENDING",
+            "SUCCESS",
+            "FAILED",
+            "CANCELLED",
+            "BLOCKED",
+            "ABANDONED",
+        ]
         with self.filter_exp:  # noqa: SIM117 - NiceGUI element nesting
             with ui.row().classes("w-full items-end gap-3 flex-wrap"):
                 self.state_filter = ui.select(
@@ -232,18 +248,25 @@ class JobBoard:
                 ).classes("w-40")
                 self.workspace_filter = ui.select(
                     {"All workspaces": i18n.t("All workspaces")},
-                    value="All workspaces", label=i18n.t("Workspace"),
+                    value="All workspaces",
+                    label=i18n.t("Workspace"),
                     on_change=self.refresh,
                 ).classes("w-48")
-                self.search_input = ui.input(
-                    i18n.t("Search"), on_change=self.refresh,
-                ).classes(
-                    "mono w-64",
-                ).props("debounce=350 clearable")
+                self.search_input = (
+                    ui.input(
+                        i18n.t("Search"),
+                        on_change=self.refresh,
+                    )
+                    .classes(
+                        "mono w-64",
+                    )
+                    .props("debounce=350 clearable")
+                )
                 # Esc clears without moving the mouse; the debounce means one
                 # scan per pause, not one per keystroke.
                 self.search_input.on(
-                    "keydown.esc", lambda: self.search_input.set_value(""),
+                    "keydown.esc",
+                    lambda: self.search_input.set_value(""),
                 )
                 self.auto_refresh = ui.switch(i18n.t("Auto-refresh"), value=True)
         # One html element re-written per tick: five chip spans are cheaper to
@@ -344,7 +367,8 @@ class JobBoard:
         # re-typed, so a new state cannot be counted in one place and missed
         # in another.
         counts = dict.fromkeys(
-            ACTIVE_JOB_STATES | TERMINAL_JOB_STATES, 0,
+            ACTIVE_JOB_STATES | TERMINAL_JOB_STATES,
+            0,
         )
         for job in jobs:
             state = str(job["status"].get("state", "")).upper()
@@ -370,7 +394,8 @@ class JobBoard:
                     active,
                     i18n.tr(
                         "active · {run} run / {queued} queued",
-                        run=counts["RUNNING"], queued=counts["PENDING"],
+                        run=counts["RUNNING"],
+                        queued=counts["PENDING"],
                     ),
                     "live",
                 ),
@@ -389,8 +414,12 @@ class JobBoard:
             or self.workspace_filter.value != "All workspaces"
             or bool((self.search_input.value or "").strip())
         )
-        caption = i18n.t("Search & filter · active") if filters_active else i18n.t(
-            "Search & filter",
+        caption = (
+            i18n.t("Search & filter · active")
+            if filters_active
+            else i18n.t(
+                "Search & filter",
+            )
         )
         if caption != self._filter_caption:
             self._filter_caption = caption
@@ -423,7 +452,9 @@ class JobBoard:
             j for j in filtered if j["status"].get("state") not in ACTIVE_JOB_STATES
         ]
         self._render_active(active_jobs)
-        self._render_history(history_jobs, auto_open=not active_jobs and not filters_active)
+        self._render_history(
+            history_jobs, auto_open=not active_jobs and not filters_active
+        )
 
     # ------------------------------------------------------------------ #
 
@@ -529,7 +560,7 @@ class JobBoard:
             and signature[: len(rendered)] == rendered
         )
         if appended:
-            new_cards = shown[len(rendered):]
+            new_cards = shown[len(rendered) :]
             with self.history_grid:
                 for job in new_cards:
                     self._render_card(job)
@@ -545,7 +576,9 @@ class JobBoard:
         total = self._history_total
         more = shown < total
         text = i18n.tr(
-            "Showing {shown} of {total} finished task(s)", shown=shown, total=total,
+            "Showing {shown} of {total} finished task(s)",
+            shown=shown,
+            total=total,
         )
         if not more:
             text += i18n.t(" — all shown")
@@ -571,8 +604,11 @@ class JobBoard:
         running = states.count("RUNNING")
         queued = states.count("PENDING")
         summary = (
-            i18n.tr("{running} running / {queued} queued", running=running, queued=queued)
-            if queued else i18n.tr("{n} running", n=running)
+            i18n.tr(
+                "{running} running / {queued} queued", running=running, queued=queued
+            )
+            if queued
+            else i18n.tr("{n} running", n=running)
         )
         with ui.card().classes("sop-jobcard sop-jobcard--running gap-2"):
             # Identity line and control line stay separate: one nowrap row
@@ -585,7 +621,7 @@ class JobBoard:
                 ).tooltip(batch_id)
                 ui.html(
                     f'<span class="chip chip--accent">'
-                    f'{escape(i18n.tr("{n} replica(s)", n=len(members)))}</span>',
+                    f"{escape(i18n.tr('{n} replica(s)', n=len(members)))}</span>",
                 )
             with ui.row().classes("w-full items-center gap-2 flex-nowrap"):
                 ui.label(summary).classes("sop-jobcard__meta sop-jobcard__summary")
@@ -596,7 +632,8 @@ class JobBoard:
                 ).props("flat dense color=red")
             with ui.row().classes("w-full gap-1 flex-wrap"):
                 for member in sorted(
-                    members, key=lambda m: int(m["status"].get("replica_index") or 0),
+                    members,
+                    key=lambda m: int(m["status"].get("replica_index") or 0),
                 ):
                     state = member["status"].get("state", "?")
                     index = member["status"].get("replica_index", "?")
@@ -612,7 +649,8 @@ class JobBoard:
         ui.notify(
             i18n.tr(
                 "Cancelled {n} job(s) of batch {id}",
-                n=len(cancelled), id=batch_id,
+                n=len(cancelled),
+                id=batch_id,
             ),
         )
 
@@ -642,7 +680,8 @@ class JobBoard:
                 ui.html(format_status_pill(state))
                 if state == "RUNNING":
                     ui.button(
-                        icon="stop", on_click=lambda j=job_id: self._stop(j),
+                        icon="stop",
+                        on_click=lambda j=job_id: self._stop(j),
                     ).props(
                         'flat dense color=red aria-label="'
                         + escape(i18n.t("Stop this run"))
@@ -680,9 +719,11 @@ class JobBoard:
                 "w-full items-center gap-2 sop-jobcard__actions",
             ):
                 ui.button(
-                    i18n.t("View"), icon="open_in_new",
+                    i18n.t("View"),
+                    icon="open_in_new",
                     on_click=lambda j=job_id: ui.navigate.to(
-                        f"{self.base_path}/{j}", new_tab=True,
+                        f"{self.base_path}/{j}",
+                        new_tab=True,
                     ),
                 ).props("flat dense").tooltip(i18n.t("Open the live screen"))
                 if state in TERMINAL_JOB_STATES:
@@ -696,7 +737,8 @@ class JobBoard:
                     # cards diluted the one colour that has to mean "this run
                     # failed". The colour still arrives before the click.
                     ui.button(
-                        icon="delete", on_click=lambda j=job_id: self._delete(j),
+                        icon="delete",
+                        on_click=lambda j=job_id: self._delete(j),
                     ).props(
                         'flat dense color=none aria-label="'
                         + escape(i18n.t("Delete this job record"))
@@ -704,8 +746,12 @@ class JobBoard:
                     ).classes("sop-danger").tooltip(i18n.t("Remove this record"))
 
     def _stop(self, job_id: str) -> None:
-        self.job_manager.cancel_job(job_id)
-        ui.notify(i18n.tr("Stop requested: {id}", id=job_id))
+        if self.job_manager.cancel_job(job_id):
+            ui.notify(i18n.tr("Stop requested: {id}", id=job_id))
+        else:
+            ui.notify(
+                i18n.t("Stop failed: cancellation was not persisted"), type="negative"
+            )
 
     def _delete(self, job_id: str) -> None:
         self.job_manager.store.delete_job(job_id)

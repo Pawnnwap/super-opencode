@@ -6,6 +6,7 @@ import logging
 import os
 import random
 import tempfile
+import threading
 import time
 from contextlib import contextmanager
 from datetime import datetime
@@ -23,7 +24,7 @@ from openai import (
 
 from supervisor.core.failure_class import classify_failure
 from supervisor.core.llm_support.history_compaction import build_context_messages
-from supervisor.core.llm_support.judge_gate import judge_slot
+from supervisor.core.llm_support.judge_gate import JudgeCancelled, judge_slot
 from supervisor.core.llm_support.models import (
     SupervisorVerdict,
     _is_token_limit_error,
@@ -37,12 +38,15 @@ from supervisor.monitoring.session_tracker import (
     warn_if_exceeds_limit,
 )
 from supervisor.monitoring.token_estimator import should_truncate
+from supervisor.security.redaction import redact_data
+from supervisor.security.secrets import open_json, seal_json
 from supervisor.utils.text_utils import normalize_model_response
 
 logger = logging.getLogger(__name__)
 
 _JUDGE_CONTEXT: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
-    "judge_context", default=None,
+    "judge_context",
+    default=None,
 )
 _HEADER_WHITELIST = ("server", "content-type", "x-request-id", "via", "date")
 # A gateway 502/503/504 is transient far more often than the old fail-fast
@@ -63,7 +67,8 @@ def judge_phase(phase: str, round: int | None = None, total: int | None = None):
 
 
 _CHECKPOINT_META: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
-    "judge_checkpoint_meta", default=None,
+    "judge_checkpoint_meta",
+    default=None,
 )
 
 
@@ -103,18 +108,25 @@ def _response_snapshot(exc: BaseException) -> dict:
     raw_body = getattr(exc, "body", None)
     if not body and raw_body is not None:
         try:
-            body = raw_body if isinstance(raw_body, str) else json.dumps(
-                raw_body, ensure_ascii=False,
+            body = (
+                raw_body
+                if isinstance(raw_body, str)
+                else json.dumps(
+                    raw_body,
+                    ensure_ascii=False,
+                )
             )
         except Exception:  # noqa: BLE001
             body = repr(raw_body)
-    return {
-        "status_code": getattr(exc, "status_code", None),
-        "request_id": getattr(exc, "request_id", None),
-        "headers": headers,
-        "body_excerpt": body[:500],
-        "message": str(exc)[:500],
-    }
+    return redact_data(
+        {
+            "status_code": getattr(exc, "status_code", None),
+            "request_id": getattr(exc, "request_id", None),
+            "headers": headers,
+            "body_excerpt": body[:500],
+            "message": str(exc)[:500],
+        }
+    )
 
 
 def _error_detail(exc: BaseException) -> str:
@@ -130,13 +142,17 @@ def _error_detail(exc: BaseException) -> str:
     return f" [{', '.join(bits)}]" if bits else ""
 
 
-def _atomic_write_json(path: Path, payload: dict) -> None:
+def _atomic_write_json(path: Path, payload: dict, *, seal: bool = False) -> None:
+    payload = redact_data(payload)
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     tmp_path = Path(tmp_name)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(payload, handle, ensure_ascii=False, indent=2)
+            if seal:
+                handle.write(seal_json(payload))
+            else:
+                json.dump(payload, handle, ensure_ascii=False, indent=2)
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(tmp_path, path)
@@ -177,7 +193,7 @@ def _write_judge_checkpoint(
         "created_at": datetime.now().astimezone().isoformat(),
     }
     try:
-        _atomic_write_json(path, payload)
+        _atomic_write_json(path, payload, seal=True)
     except Exception:  # the judge call is worth making even if the dump fails
         logger.warning("Could not write judge checkpoint %s", path, exc_info=True)
 
@@ -196,7 +212,11 @@ def load_judge_checkpoint(workspace) -> dict | None:
     """Read a pending plan judge; a corrupt file is ignored, not fatal."""
     path = Path(workspace) / ".opencode" / "judge_pending.json"
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        text = path.read_text(encoding="utf-8")
+        try:
+            payload = open_json(text)
+        except Exception:  # noqa: BLE001 - legacy plaintext checkpoints remain readable
+            payload = json.loads(text)
     except FileNotFoundError:
         return None
     except (OSError, json.JSONDecodeError) as exc:
@@ -359,8 +379,7 @@ def chat(
     ):
         supervisor._verdict_reuses += 1
         logger.info(
-            "Reused prior verdict (%d): identical judge input (%d chars), "
-            "no LLM call",
+            "Reused prior verdict (%d): identical judge input (%d chars), no LLM call",
             supervisor._verdict_reuses,
             len(user_content),
         )
@@ -399,9 +418,7 @@ def chat(
         user_content = fit_request_to_budget(supervisor, user_content)
         new_estimate = estimate_request_tokens(
             supervisor._system,
-            "\n".join(
-                m["content"] for m in supervisor._history if m.get("content")
-            ),
+            "\n".join(m["content"] for m in supervisor._history if m.get("content")),
             user_content,
         )
         trunc_warning = (
@@ -436,13 +453,49 @@ def chat(
             checkpoint_meta,
         )
     verdict = chat_with_retry(
-        supervisor, messages, record_content, should_record_user,
+        supervisor,
+        messages,
+        record_content,
+        should_record_user,
     )
     if checkpoint_meta is not None:
         _clear_judge_checkpoint(supervisor)
     supervisor._last_judged_content = user_content
     supervisor._last_verdict = verdict
     return verdict
+
+
+def _sleep_or_cancel(seconds: float, cancel_event) -> None:
+    if cancel_event is None:
+        time.sleep(seconds)
+        return
+    if cancel_event.wait(seconds):
+        raise JudgeCancelled("judge retry cancelled")
+
+
+def _create_completion(supervisor, create_kwargs: dict, cancel_event):
+    create = supervisor._client.chat.completions.create
+    if cancel_event is None:
+        with judge_slot():
+            return create(**create_kwargs)
+    result: dict[str, object] = {}
+
+    def _run() -> None:
+        try:
+            with judge_slot(cancel_event=cancel_event):
+                result["response"] = create(**create_kwargs)
+        except Exception as exc:  # noqa: BLE001 - propagated on the calling thread
+            result["error"] = exc
+
+    thread = threading.Thread(target=_run, name="judge-http", daemon=True)
+    thread.start()
+    while thread.is_alive():
+        if cancel_event.wait(0.1):
+            raise JudgeCancelled("judge request cancelled")
+    thread.join()
+    if "error" in result:
+        raise result["error"]
+    return result["response"]
 
 
 def chat_with_retry(
@@ -469,6 +522,7 @@ def chat_with_retry(
     using_backup = False
     token_limit_retry = 0
     max_token_limit_retries = 3
+    cancel_event = getattr(supervisor, "_cancel_event", None)
 
     call_index = 0
     total_started = time.monotonic()
@@ -477,7 +531,11 @@ def chat_with_retry(
     create_kwargs: dict = {}
     try:
         while attempt <= max_retries:
-            current_model = supervisor._model_backup if using_backup else supervisor._model
+            if cancel_event is not None and cancel_event.is_set():
+                raise JudgeCancelled("judge call cancelled")
+            current_model = (
+                supervisor._model_backup if using_backup else supervisor._model
+            )
             try:
                 create_kwargs = {
                     "model": current_model,
@@ -487,22 +545,21 @@ def chat_with_retry(
                 if getattr(supervisor, "_reasoning_body", None):
                     create_kwargs["extra_body"] = supervisor._reasoning_body
                 call_index += 1
-                with judge_slot():
-                    attempt_started = time.monotonic()
-                    response = supervisor._client.chat.completions.create(**create_kwargs)
+                attempt_started = time.monotonic()
+                response = _create_completion(supervisor, create_kwargs, cancel_event)
                 if not response.choices:
                     if empty_choices_retries >= max_empty_choices_retries:
                         raise OpenAIError(
                             f"LLM response returned no choices after {max_empty_choices_retries} retries",
                         )
-                    wait = 15 * (2 ** empty_choices_retries)
+                    wait = 15 * (2**empty_choices_retries)
                     logger.warning(
                         "LLM response returned no choices, retry %d/%d after %ds",
                         empty_choices_retries + 1,
                         max_empty_choices_retries,
                         wait,
                     )
-                    time.sleep(wait)
+                    _sleep_or_cancel(wait, cancel_event)
                     empty_choices_retries += 1
                     continue
                 empty_choices_retries = 0
@@ -519,7 +576,7 @@ def chat_with_retry(
                         exc,
                     )
                     raise
-                wait = min(60, 5 * (2 ** transient_attempt))
+                wait = min(60, 5 * (2**transient_attempt))
                 logger.warning(
                     "Transient API error %s (attempt %d/%d), retrying after %ds",
                     type(exc).__name__,
@@ -543,7 +600,7 @@ def chat_with_retry(
                     "Connection error %s — one quick retry after 2s, then fast fail",
                     type(exc).__name__,
                 )
-                time.sleep(2)
+                _sleep_or_cancel(2, cancel_event)
                 continue
             except BadRequestError as exc:
                 if _is_token_limit_error(exc):
@@ -553,10 +610,9 @@ def chat_with_retry(
                             max_token_limit_retries,
                         )
                         raise
-                    current_limit = (
-                        supervisor._extract_token_limit_from_error(exc)
-                        or supervisor._get_model_limit_for_model(current_model)
-                    )
+                    current_limit = supervisor._extract_token_limit_from_error(
+                        exc
+                    ) or supervisor._get_model_limit_for_model(current_model)
                     old_count = len(working_messages)
                     working_messages = truncate_messages_for_limit(
                         working_messages,
@@ -613,7 +669,8 @@ def chat_with_retry(
                         )
                         raise
                     wait = _SERVER_RETRY_WAITS[server_retries] * random.uniform(
-                        0.8, 1.2,
+                        0.8,
+                        1.2,
                     )
                     server_retries += 1
                     logger.warning(
@@ -625,7 +682,7 @@ def chat_with_retry(
                         exc,
                         _error_detail(exc),
                     )
-                    time.sleep(wait)
+                    _sleep_or_cancel(wait, cancel_event)
                     continue
                 if not using_backup and supervisor._model_backup:
                     logger.warning(
@@ -639,6 +696,8 @@ def chat_with_retry(
                     continue
                 raise
 
+    except JudgeCancelled:
+        raise
     except Exception as exc:
         _record_judge_failure(
             supervisor,
@@ -908,4 +967,3 @@ def truncate_messages_for_limit(
 
     result.extend(preserved)
     return result
-

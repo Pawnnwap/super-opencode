@@ -116,7 +116,7 @@ def _is_closure_directive(action: str) -> bool:
     """
     text = " ".join((action or "").split())
     for match in _CLOSURE_DIRECTIVE_RE.finditer(text):
-        prefix = text[max(0, match.start() - 48):match.start()].lower()
+        prefix = text[max(0, match.start() - 48) : match.start()].lower()
         if re.search(r"\bif\b[^.;]{0,40}$", prefix):
             continue
         return True
@@ -362,7 +362,9 @@ class BaseLoop:
         except (OSError, ValueError) as exc:
             logger.warning("Access policy could not be built (%s); denying all", exc)
             policy = AccessPolicy(
-                workspace=self.config.workspace, whitelist=(), enabled=True,
+                workspace=self.config.workspace,
+                whitelist=(),
+                enabled=True,
             )
         if policy.enabled:
             logger.info(
@@ -380,7 +382,9 @@ class BaseLoop:
         run's tree. Reconcile is the crash-recovery half and deliberately only
         classifies — a restart must never kill; leftovers are reported.
         """
-        run_id = str(getattr(self.config, "run_id", "") or getattr(self.runner, "run_id", ""))
+        run_id = str(
+            getattr(self.config, "run_id", "") or getattr(self.runner, "run_id", "")
+        )
         if not run_id:
             return
         try:
@@ -433,7 +437,10 @@ class BaseLoop:
             from supervisor.security.preflight import run_drill
 
             drill = run_drill(
-                engine, self.config.workspace, self.access_policy, result,
+                engine,
+                self.config.workspace,
+                self.access_policy,
+                result,
             )
             self.access_drill = drill
             for check in drill.checks:
@@ -471,7 +478,9 @@ class BaseLoop:
 
     def _expose_run_env(self) -> None:
         """Publish the run's ownership markers to every child environment."""
-        run_id = str(getattr(self.config, "run_id", "") or getattr(self.runner, "run_id", ""))
+        run_id = str(
+            getattr(self.config, "run_id", "") or getattr(self.runner, "run_id", "")
+        )
         if not run_id:
             return
         from supervisor.runtime.process_registry import ledger_path
@@ -555,13 +564,19 @@ class BaseLoop:
             "max_history_turns": self.config.max_history_turns,
             "compact_intermediate_steps": self.config.compact_intermediate_steps,
             "history_verbatim_turns": getattr(
-                self.config, "history_verbatim_turns", 1,
+                self.config,
+                "history_verbatim_turns",
+                1,
             ),
             "history_budget_fraction": getattr(
-                self.config, "history_budget_fraction", 0.35,
+                self.config,
+                "history_budget_fraction",
+                0.35,
             ),
             "reuse_identical_verdicts": getattr(
-                self.config, "reuse_identical_verdicts", True,
+                self.config,
+                "reuse_identical_verdicts",
+                True,
             ),
             "model_backup": self.config.supervisor_model_backup,
             "api_key": getattr(self.config, "openai_api_key", "") or None,
@@ -572,7 +587,9 @@ class BaseLoop:
             kwargs["max_protected_files_for_suggestions"] = (
                 max_protected_files_for_suggestions
             )
-        return LLMSupervisor(**kwargs)
+        supervisor = LLMSupervisor(**kwargs)
+        supervisor._cancel_event = getattr(self.runner, "cancel_event", None)
+        return supervisor
 
     def run_streaming(self) -> Generator[Event]:
         try:
@@ -636,9 +653,7 @@ class BaseLoop:
         except Exception:
             logger.warning("Could not compute per-turn deltas", exc_info=True)
             return
-        self._turn_deltas = {
-            path: delta.render() for path, delta in deltas.items()
-        }
+        self._turn_deltas = {path: delta.render() for path, delta in deltas.items()}
 
     def _check_and_update_snapshot(self) -> Generator[Event]:
         """Check if codebase changed and update supervisor if so."""
@@ -1033,8 +1048,7 @@ class BaseLoop:
         verdict.all_targets_met = False
         notes = list(getattr(verdict, "validation_notes", None) or [])
         notes.extend(
-            f"jev: evidence contradicts MET for '{name[:100]}'"
-            for name in downgraded
+            f"jev: evidence contradicts MET for '{name[:100]}'" for name in downgraded
         )
         verdict.validation_notes = notes
         self._record_jev_note(
@@ -1125,7 +1139,9 @@ class BaseLoop:
         suppress_text = False
         if text_closure or text_standdown:
             jev_reason, suppress_text = self._arbitrate_close(
-                verdict, passing, output,
+                verdict,
+                passing,
+                output,
             )
             if jev_reason:
                 return jev_reason
@@ -1154,7 +1170,8 @@ class BaseLoop:
             )
         if self._standdown_streak >= needed and not suppress_text:
             directive = head_tail_excerpt(
-                str(getattr(verdict, "next_action", "") or ""), 160,
+                str(getattr(verdict, "next_action", "") or ""),
+                160,
             )
             return (
                 f"{self._standdown_streak} consecutive judged turns told the "
@@ -1229,16 +1246,18 @@ class BaseLoop:
         # journal are what expose misreports, weakened criteria, and
         # premature give-up.
         summary = safe_read_text(
-            self.config.workspace / "summary.md", default="",
+            self.config.workspace / "summary.md",
+            default="",
         )
         journal = self._restart_task_state()
         report = unblock_rescue.build_executor_record(
-            output=output, summary=summary, journal=journal,
+            output=output,
+            summary=summary,
+            journal=journal,
         )
         yield _ev(
             "warn",
-            "Blocked exit held: forcing a supervisor recovery plan before "
-            "closing.",
+            "Blocked exit held: forcing a supervisor recovery plan before closing.",
         )
 
         query_prompt = unblock_rescue.build_query_prompt(
@@ -1250,7 +1269,9 @@ class BaseLoop:
         )
         try:
             raw_queries = self.supervisor._chat(
-                query_prompt, is_intermediate=True, omit_history=True,
+                query_prompt,
+                is_intermediate=True,
+                omit_history=True,
             ).raw
         except Exception:
             logger.warning("Unblock query planning crashed", exc_info=True)
@@ -1288,7 +1309,9 @@ class BaseLoop:
         try:
             plan = str(
                 self.supervisor._chat(
-                    plan_prompt, is_intermediate=True, omit_history=True,
+                    plan_prompt,
+                    is_intermediate=True,
+                    omit_history=True,
                 ).raw
                 or ""
             ).strip()
@@ -1305,14 +1328,13 @@ class BaseLoop:
         plan_path = ".opencode/unblock_plan.md"
         try:
             (self.config.workspace / ".opencode").mkdir(
-                parents=True, exist_ok=True,
+                parents=True,
+                exist_ok=True,
             )
         except OSError:
             logger.warning("Could not prepare .opencode for the unblock plan")
         self._write(
-            "# Supervisor unblock plan\n\n"
-            f"Blocked reason: {reason}\n\n"
-            f"{plan}\n",
+            f"# Supervisor unblock plan\n\nBlocked reason: {reason}\n\n{plan}\n",
             plan_path,
         )
         yield _ev(
@@ -1332,7 +1354,8 @@ class BaseLoop:
         )
         try:
             decision = self._jev.decide_unblock_plan(
-                plan=plan, evidence=evidence,
+                plan=plan,
+                evidence=evidence,
             )
         except Exception:
             logger.warning("Jev unblock review crashed", exc_info=True)
@@ -1446,8 +1469,7 @@ class BaseLoop:
         if agent_asserted and facts:
             assessment = check_feasibility(facts, facts_source="closure cross-check")
             contradicted = bool(
-                assessment.reachable
-                and _has_positive_reachability_evidence(assessment)
+                assessment.reachable and _has_positive_reachability_evidence(assessment)
             )
 
         if agent_asserted and contradicted:
@@ -1476,7 +1498,7 @@ class BaseLoop:
                     "feasibility facts contradict it, so the target was marked "
                     "`closed`.\n"
                     "To pursue this goal again: edit `.opencode/target_state.json` "
-                    "and change `\"status\": \"closed\"` to `\"running\"`, or start "
+                    'and change `"status": "closed"` to `"running"`, or start '
                     "a fresh cycle with a revised protocol.md.\n"
                 ),
                 event_suffix="",
@@ -1488,7 +1510,7 @@ class BaseLoop:
                 + "The target was marked `closed` on the harness's own evidence "
                 "(stagnation or recorded unreachable facts).\n"
                 "To pursue this goal again: edit `.opencode/target_state.json` and "
-                "change `\"status\": \"closed\"` to `\"running\"`, or start a fresh "
+                'change `"status": "closed"` to `"running"`, or start a fresh '
                 "cycle with a revised protocol.md.\n"
             ),
             event_suffix="",
@@ -1564,7 +1586,8 @@ class BaseLoop:
         self._skill_bank = bank
         self.supervisor.register_context_provider("skills", bank.context_block)
         logger.info(
-            "Supervisor skill bank ready: %s", ", ".join(bank.names()),
+            "Supervisor skill bank ready: %s",
+            ", ".join(bank.names()),
         )
 
     def _fulfill_pending_skills(self) -> None:
@@ -1703,7 +1726,9 @@ class BaseLoop:
             )
         if blocked_reason:
             rescued = yield from self._attempt_blocked_rescue(
-                verdict, blocked_reason, actual_output,
+                verdict,
+                blocked_reason,
+                actual_output,
             )
             if rescued:
                 return
@@ -1726,7 +1751,6 @@ class BaseLoop:
                     lesson = "Successfully met all targets"
                     update_experience(self.config.workspace, worked=[lesson])
                 self._record_structured_success(
-                    verdict.raw,
                     goal=self._memory_goal(),
                     solutions=[lesson],
                 )
@@ -1811,7 +1835,10 @@ class BaseLoop:
                     continue
 
                 diag = self.runner.last_diagnostic()
-                yield _ev("warn", f"{self._engine_name} returned no output. Diagnostic:\n{diag}")
+                yield _ev(
+                    "warn",
+                    f"{self._engine_name} returned no output. Diagnostic:\n{diag}",
+                )
                 yield from self._handle_failure(output)
                 if self._state != LoopState.RUNNING:
                     break
@@ -1876,7 +1903,9 @@ class BaseLoop:
 
         rolled = self.supervisor.rollup_history()
         if rolled:
-            yield _ev("info", f"Condensed {rolled} older supervisor turn(s) to save context.")
+            yield _ev(
+                "info", f"Condensed {rolled} older supervisor turn(s) to save context."
+            )
 
         if self.ctx_monitor.is_critical:
             self.supervisor.compact_history()
@@ -1942,7 +1971,9 @@ class BaseLoop:
                     "step",
                     f"{event.get('phase_label', 'Step')} - "
                     + head_tail_excerpt(
-                        event.get("msg", ""), 100, end_ratio=0.5,
+                        event.get("msg", ""),
+                        100,
+                        end_ratio=0.5,
                     ),
                 )
                 self._step_history.append(event)
@@ -2083,7 +2114,9 @@ class BaseLoop:
         ws = self.config.workspace.resolve()
         tail = self._restart_task_state()
         task_state_section = (
-            f"Recent progress journal (most recent turns):\n\n{tail}\n\n" if tail else ""
+            f"Recent progress journal (most recent turns):\n\n{tail}\n\n"
+            if tail
+            else ""
         )
         guard_section = self._guard_restart_section()
         loop_section = ""
@@ -2108,8 +2141,11 @@ class BaseLoop:
         has ``NEED_EVIDENCE: read_file <path>`` for the bodies it actually
         needs, so the always-on block only needs to say what exists.
         """
-        return "\n\n## Live codebase\n" + self._cached_snapshot.skimmed_digest_for_prompt(
-            max_files=15,
+        return (
+            "\n\n## Live codebase\n"
+            + self._cached_snapshot.skimmed_digest_for_prompt(
+                max_files=15,
+            )
         )
 
     @staticmethod
@@ -2165,7 +2201,9 @@ class BaseLoop:
             changed_files=changed_files,
             test_baseline=baseline.summary() if baseline is not None else "",
             test_final=final.summary() if final is not None else "",
-            test_delta=final.delta(baseline) if final is not None and baseline is not None else "",
+            test_delta=final.delta(baseline)
+            if final is not None and baseline is not None
+            else "",
             test_evidence=test_evidence,
             regressions_count=0,
             iterations=getattr(self, "_iteration", 0),
@@ -2177,12 +2215,15 @@ class BaseLoop:
             solutions=solutions or [],
             violations=violations or [],
             archive_path=str(getattr(self, "_best_archive", "")),
-            confidence=1.0 if final is not None and final.ok else 0.7 if outcome == "success" else 0.4,
+            confidence=1.0
+            if final is not None and final.ok
+            else 0.7
+            if outcome == "success"
+            else 0.4,
         )
 
     def _record_structured_success(
         self,
-        verdict_raw: str,
         goal: str = "",
         key_changes: list[str] | None = None,
         challenges: list[str] | None = None,

@@ -46,16 +46,18 @@ _WINDOWS = os.name == "nt"
 # Directories that must never be offered as a whitelist entry: the whole drive,
 # the OS tree, and the user-profile root are not "reference material", and
 # allowing them would silently restore full-disk access.
-_SYSTEM_ROOT_NAMES: frozenset[str] = frozenset({
-    "windows",
-    "program files",
-    "program files (x86)",
-    "programdata",
-    "system volume information",
-    "$recycle.bin",
-    "recovery",
-    "perflogs",
-})
+_SYSTEM_ROOT_NAMES: frozenset[str] = frozenset(
+    {
+        "windows",
+        "program files",
+        "program files (x86)",
+        "programdata",
+        "system volume information",
+        "$recycle.bin",
+        "recovery",
+        "perflogs",
+    }
+)
 
 _DEVICE_NAMES = {
     "con",
@@ -81,6 +83,7 @@ _DEVICE_NAMES = {
     "lpt8",
     "lpt9",
 }
+
 
 class AccessPolicyError(ValueError):
     """Raised when a whitelist entry cannot be accepted."""
@@ -183,12 +186,14 @@ class AccessPolicy:
             workspace=Path(config.workspace),
             whitelist=tuple(entries),
             enabled=bool(getattr(config, "access_policy_enabled", True)),
-            strict_dynamic=bool(getattr(config, "access_policy_strict", False)),
+            strict_dynamic=bool(getattr(config, "access_policy_strict", True)),
         )
 
     # -- core check ------------------------------------------------------ #
 
-    def check(self, raw_path: str | Path | None, access: AccessKind = "read") -> PolicyDecision:
+    def check(
+        self, raw_path: str | Path | None, access: AccessKind = "read"
+    ) -> PolicyDecision:
         """Decide whether *raw_path* may be accessed.
 
         Relative paths resolve against :attr:`workspace`, which is also the
@@ -209,11 +214,27 @@ class AccessPolicy:
         try:
             resolved = _resolve(text, base=self.workspace)
         except (OSError, ValueError) as exc:
-            return PolicyDecision(False, text, text, access, f"unresolvable path: {exc}")
+            return PolicyDecision(
+                False, text, text, access, f"unresolvable path: {exc}"
+            )
+
+        if any(part.lower() == ".job_store" for part in resolved.parts):
+            return PolicyDecision(
+                False,
+                text,
+                str(resolved),
+                access,
+                "supervisor job store is protected",
+            )
 
         if is_within(resolved, self.workspace):
             return PolicyDecision(
-                True, text, str(resolved), access, "inside workspace", str(self.workspace)
+                True,
+                text,
+                str(resolved),
+                access,
+                "inside workspace",
+                str(self.workspace),
             )
 
         for entry in self.whitelist:
@@ -253,7 +274,9 @@ class AccessPolicy:
 
     # -- shell command scanning ------------------------------------------ #
 
-    def scan_command(self, command: str, cwd: str | Path | None = None) -> list[PolicyViolation]:
+    def scan_command(
+        self, command: str, cwd: str | Path | None = None
+    ) -> list[PolicyViolation]:
         """Analyse a shell command and return out-of-policy paths.
 
         Delegates to the conservative shell analyzer, which fails closed on
@@ -452,7 +475,9 @@ def validate_whitelist_entry(
     first = resolved.parts[1].lower() if len(resolved.parts) > 1 else ""
     if first in _SYSTEM_ROOT_NAMES or resolved.parent == resolved.anchor:
         return None, "system directories are not allowed"
-    if _WINDOWS and re.match(r"^[A-Za-z]:[\\/](Windows|Program Files.*)$", str(resolved), re.IGNORECASE):
+    if _WINDOWS and re.match(
+        r"^[A-Za-z]:[\\/](Windows|Program Files.*)$", str(resolved), re.IGNORECASE
+    ):
         return None, "system directories are not allowed"
 
     return resolved, ""
@@ -463,7 +488,7 @@ def build_policy(
     whitelist: Iterable[str | Path] = (),
     *,
     enabled: bool = True,
-    strict_dynamic: bool = False,
+    strict_dynamic: bool = True,
 ) -> AccessPolicy:
     """Convenience constructor used by the UI and tests."""
     return AccessPolicy(
@@ -475,24 +500,14 @@ def build_policy(
 
 
 def agent_infrastructure_roots() -> tuple[Path, ...]:
-    """Existing agent config/skill/interpreter directories every run may read.
+    """Skill and interpreter roots every run may read.
 
-    Skills live in one general folder; hooks and config are per-agent, so
-    each agent's home is detected separately. Conda environment roots are
-    discovered too (active prefix, the interpreter's own prefix, standard
-    install locations) so absolute interpreter paths are usable. Read-only
-    like any whitelist entry; missing directories are skipped.
+    Agent configuration homes are deliberately excluded: they can contain
+    credentials, session history, and MCP configuration. Conda roots remain
+    available so trusted absolute interpreter paths keep working.
     """
     home = Path.home()
-    candidates = [
-        home / ".agents" / "skills",
-        home / ".codex",
-        home / ".config" / "opencode",
-        home / ".pi",
-    ]
-    env_home = (os.environ.get("CODEX_HOME") or "").strip()
-    if env_home:
-        candidates.append(Path(env_home))
+    candidates = [home / ".agents" / "skills"]
     candidates.extend(_conda_env_roots())
     roots: list[Path] = []
     for candidate in candidates:
@@ -530,7 +545,7 @@ def _conda_env_roots() -> list[Path]:
             return
         prefix = Path(value)
         add(prefix.parent)  # <root>/envs when an env is active
-        add(prefix)         # <root>/envs/<name> (has conda-meta)
+        add(prefix)  # <root>/envs/<name> (has conda-meta)
 
     add_from_prefix(os.environ.get("CONDA_PREFIX"))
     conda_exe = (os.environ.get("CONDA_EXE") or "").strip()
@@ -550,7 +565,9 @@ def _conda_env_roots() -> list[Path]:
     ]
     programdata = (os.environ.get("ProgramData") or "").strip()
     if programdata:
-        bases.extend([Path(programdata) / "miniconda3", Path(programdata) / "Anaconda3"])
+        bases.extend(
+            [Path(programdata) / "miniconda3", Path(programdata) / "Anaconda3"]
+        )
     for base in bases:
         add(base / "envs")
     return candidates

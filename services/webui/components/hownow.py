@@ -26,6 +26,7 @@ from services.webui.components.log_panel import TailStrip
 from services.webui.jobs import get_job_manager
 from services.webui.launch import save_and_apply_settings
 from services.webui.state import app_state
+from supervisor.security.redaction import redact_data
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +57,7 @@ def _load_cache() -> None:
         data = json.loads(_CACHE_PATH.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return
+    data = redact_data(data)
     with _state.lock:
         _state.report = str(data.get("report") or "")
         _state.error = str(data.get("error") or "")
@@ -73,7 +75,8 @@ def _save_cache() -> None:
         }
     try:
         _CACHE_PATH.write_text(
-            json.dumps(data, ensure_ascii=False), encoding="utf-8",
+            json.dumps(redact_data(data), ensure_ascii=False),
+            encoding="utf-8",
         )
     except OSError as exc:
         logger.warning("cannot write hownow cache: %s", exc)
@@ -84,11 +87,13 @@ _load_cache()
 
 def _on_event(event: dict) -> None:
     with _state.lock:
-        _state.steps.append({
-            "ts": time.time(),
-            "level": event.get("level") or "info",
-            "msg": event.get("msg") or "",
-        })
+        _state.steps.append(
+            {
+                "ts": time.time(),
+                "level": event.get("level") or "info",
+                "msg": event.get("msg") or "",
+            }
+        )
 
 
 def _run_sweep() -> None:
@@ -160,10 +165,15 @@ class HowNowPanel:
                 "Wake one fresh agent turn to sweep every live session and "
                 "report which runs need you. Keeps running if you leave."
             ),
-            actions=lambda: ui.button(
-                i18n.t("Run sweep"), on_click=self._start,
-            ).props("outline color=none dense").tooltip(
-                i18n.t("Start a sweep (one at a time)."),
+            actions=lambda: (
+                ui.button(
+                    i18n.t("Run sweep"),
+                    on_click=self._start,
+                )
+                .props("outline color=none dense")
+                .tooltip(
+                    i18n.t("Start a sweep (one at a time)."),
+                )
             ),
         ) as self._body:
             self._results = ui.column().classes("w-full gap-2")
@@ -175,7 +185,8 @@ class HowNowPanel:
     def _start(self) -> None:
         if not start_sweep():
             ui.notify(
-                i18n.t("A how-now sweep is already running."), type="warning",
+                i18n.t("A how-now sweep is already running."),
+                type="warning",
             )
             return
         # Re-arm the poller: _tick() stops it once a sweep settles.
@@ -203,7 +214,8 @@ class HowNowPanel:
             self._status.set_text(
                 i18n.tr(
                     "Sweeping live sessions… {elapsed}s, {n} step(s)",
-                    elapsed=elapsed, n=len(steps),
+                    elapsed=elapsed,
+                    n=len(steps),
                 ),
             )
             self._tail.update(steps)
@@ -231,10 +243,7 @@ class HowNowPanel:
         self._body.set_visibility(True)
         self._body.set_visibility(True)
         with self._results:
-            took = (
-                int(finished_at - started_at)
-                if started_at and finished_at else 0
-            )
+            took = int(finished_at - started_at) if started_at and finished_at else 0
             ui.label(
                 i18n.tr("sweep · {time}", time=_fmt_time(finished_at))
                 + (i18n.tr(" · {n}s", n=took) if took else ""),
@@ -243,7 +252,8 @@ class HowNowPanel:
                 from services.webui import theme
 
                 theme.notice(
-                    "bad", i18n.tr("Sweep failed: {error}", error=error),
+                    "bad",
+                    i18n.tr("Sweep failed: {error}", error=error),
                 )
             else:
                 with ui.column().classes("sop-markdown w-full"):

@@ -7,6 +7,7 @@ from pathlib import Path
 from nicegui import ui
 
 from services.webui import i18n, theme
+from services.webui.batch_launch import batch_launch_failure_message
 from services.webui.components.board import JobBoard
 from services.webui.components.busy import busy_buttons
 from services.webui.components.hownow import HowNowPanel
@@ -220,10 +221,7 @@ def _render_launch_form(
                 # the operator sees a Launch click that "does nothing".
                 except Exception as exc:  # noqa: BLE001 - must never be silent
                     ui.notify(
-                        i18n.tr(
-                            "Launch failed: {detail}",
-                            detail=f"{type(exc).__name__}: {str(exc)[:600]}",
-                        ),
+                        batch_launch_failure_message(exc),
                         type="negative",
                     )
                     return

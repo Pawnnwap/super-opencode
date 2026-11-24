@@ -10,7 +10,7 @@ Why: the copy backend wrote EVERY eligible file into EVERY snapshot —
 ``.archive/`` once grew to 49 GB. Git already solves content-addressed
 incremental storage:
 
-- one private bare repo at ``<workspace>/.archive/snapshots.git``; all
+- one private bare repo in the per-user supervisor data directory; all
   commands run with ``--git-dir``/``--work-tree`` so the workspace's own
   ``.git`` (if any) is never touched and no global git config is needed;
 - one snapshot = ``git add -A`` → ``write-tree`` → ``commit-tree`` WITHOUT
@@ -44,6 +44,7 @@ delegates everything to the copy backend for the rest of the process.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -89,6 +90,22 @@ _PATHSPEC_BATCH = 60
 _SLUG_RE = re.compile(r"[^a-zA-Z0-9_]+")
 
 
+def _archive_data_root() -> Path:
+    override = os.environ.get("SUPER_OPENCODE_DATA_DIR", "").strip()
+    if override:
+        return Path(override).expanduser().resolve()
+    if os.name == "nt":
+        base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")
+        if base:
+            return Path(base) / "super-opencode" / "archives"
+    return Path.home() / ".local" / "share" / "super-opencode" / "archives"
+
+
+def _repo_dir_for(workspace: Path) -> Path:
+    digest = hashlib.sha256(str(workspace).encode("utf-8")).hexdigest()[:24]
+    return _archive_data_root() / digest / REPO_DIRNAME
+
+
 class GitArchiverError(RuntimeError):
     pass
 
@@ -104,7 +121,7 @@ class GitWorkspaceArchiver:
     def __init__(self, workspace: Path, keep_last: int = 5, git_executable: str = ""):
         self.workspace = Path(workspace).resolve()
         self.archive_root = self.workspace / ARCHIVE_DIR
-        self.repo_dir = self.archive_root / REPO_DIRNAME
+        self.repo_dir = _repo_dir_for(self.workspace)
         self.refs_root = self.archive_root / REFS_DIRNAME
         self.keep_last = keep_last
         self._git_exe = git_executable or shutil.which("git") or ""
@@ -121,6 +138,41 @@ class GitWorkspaceArchiver:
 
     # ------------------------------------------------------------ plumbing
 
+    def _git_env(self, index: str | None = None) -> dict[str, str]:
+        env = {
+            key: value
+            for key, value in os.environ.items()
+            if not key.upper().startswith("GIT_")
+        }
+        for key in (
+            "PATH",
+            "SYSTEMROOT",
+            "WINDIR",
+            "COMSPEC",
+            "TEMP",
+            "TMP",
+            "HOME",
+            "USERPROFILE",
+            "APPDATA",
+            "LOCALAPPDATA",
+        ):
+            if key in os.environ:
+                env[key] = os.environ[key]
+        env.update(
+            {
+                "GIT_CONFIG_NOSYSTEM": "1",
+                "GIT_CONFIG_SYSTEM": os.devnull,
+                "GIT_CONFIG_GLOBAL": os.devnull,
+                "GIT_ATTR_NOSYSTEM": "1",
+                "GIT_TERMINAL_PROMPT": "0",
+                "LC_ALL": "C",
+                "LANG": "C",
+            }
+        )
+        if index:
+            env["GIT_INDEX_FILE"] = index
+        return env
+
     def _git(
         self,
         *args: str,
@@ -130,18 +182,32 @@ class GitWorkspaceArchiver:
     ) -> subprocess.CompletedProcess:
         cmd = [
             self._git_exe,
-            "--git-dir", str(self.repo_dir),
-            "--work-tree", str(self.workspace),
-            "-c", "user.name=supervisor-archive",
-            "-c", "user.email=supervisor@local",
-            "-c", "core.autocrlf=false",
-            "-c", "core.fileMode=false",
-            "-c", "core.quotepath=false",
+            "--git-dir",
+            str(self.repo_dir),
+            "--work-tree",
+            str(self.workspace),
+            "-c",
+            "user.name=supervisor-archive",
+            "-c",
+            "user.email=supervisor@local",
+            "-c",
+            "core.autocrlf=false",
+            "-c",
+            "core.fileMode=false",
+            "-c",
+            "core.quotepath=false",
+            "-c",
+            f"core.hooksPath={os.devnull}",
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "core.untrackedCache=false",
+            "-c",
+            f"core.attributesFile={os.devnull}",
+            "-c",
+            f"core.excludesFile={os.devnull}",
             *args,
         ]
-        env = {**os.environ}
-        if index:
-            env["GIT_INDEX_FILE"] = index
         proc = subprocess.run(
             cmd,
             capture_output=True,
@@ -150,7 +216,7 @@ class GitWorkspaceArchiver:
             errors="replace",
             input=input_text,
             cwd=str(self.workspace),
-            env=env,
+            env=self._git_env(index),
             check=False,
         )
         if check and proc.returncode != 0:
@@ -165,11 +231,24 @@ class GitWorkspaceArchiver:
             return
         self.repo_dir.mkdir(parents=True, exist_ok=True)
         proc = subprocess.run(
-            [self._git_exe, "init", "--bare", "--quiet", str(self.repo_dir)],
-            capture_output=True, text=True, check=False,
+            [
+                self._git_exe,
+                "init",
+                "--bare",
+                "--quiet",
+                "--template=",
+                str(self.repo_dir),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            cwd=str(self.repo_dir.parent),
+            env=self._git_env(),
         )
         if proc.returncode != 0:
-            raise GitArchiverError(f"git init --bare failed: {proc.stderr.strip()[:400]}")
+            raise GitArchiverError(
+                f"git init --bare failed: {proc.stderr.strip()[:400]}"
+            )
 
     def _exclude_lines(self, ignore_matcher: IgnoreMatcher | None) -> list[str]:
         workspace_ignore = IgnoreMatcher(self.workspace)
@@ -186,14 +265,18 @@ class GitWorkspaceArchiver:
                 lines.extend(matcher.get_patterns())
         # Dedup, keep order, drop empties.
         seen: set[str] = set()
-        return [ln for ln in (l.strip() for l in lines)
-                if ln and not (ln in seen or seen.add(ln))]
+        return [
+            ln
+            for ln in (l.strip() for l in lines)
+            if ln and not (ln in seen or seen.add(ln))
+        ]
 
     def _write_excludes(self, ignore_matcher: IgnoreMatcher | None) -> None:
         exclude_path = self.repo_dir / "info" / "exclude"
         exclude_path.parent.mkdir(parents=True, exist_ok=True)
         exclude_path.write_text(
-            "\n".join(self._exclude_lines(ignore_matcher)) + "\n", encoding="utf-8",
+            "\n".join(self._exclude_lines(ignore_matcher)) + "\n",
+            encoding="utf-8",
         )
 
     def _load_counter(self) -> int:
@@ -212,7 +295,9 @@ class GitWorkspaceArchiver:
     ) -> ArchiveResult:
         if self._fallback is not None:
             return self._fallback.archive_workspace(
-                label=label, files_to_archive=files_to_archive, ignore_matcher=ignore_matcher,
+                label=label,
+                files_to_archive=files_to_archive,
+                ignore_matcher=ignore_matcher,
             )
         with self._lock:
             try:
@@ -220,7 +305,9 @@ class GitWorkspaceArchiver:
             except Exception as exc:  # noqa: BLE001 - git probe is best-effort - callers re-check exit status
                 self._failures += 1
                 logger.warning(
-                    "git archive attempt failed (%d/2): %s", self._failures, exc,
+                    "git archive attempt failed (%d/2): %s",
+                    self._failures,
+                    exc,
                 )
                 if self._failures >= 2:
                     logger.warning(
@@ -234,7 +321,9 @@ class GitWorkspaceArchiver:
                         ignore_matcher=ignore_matcher,
                     )
                 return ArchiveResult(
-                    success=False, archive_path=None, archived_files=[],
+                    success=False,
+                    archive_path=None,
+                    archived_files=[],
                     message=f"Archiving failed: {exc}",
                 )
 
@@ -248,7 +337,7 @@ class GitWorkspaceArchiver:
         try:
             tags = self._git("tag", "-l", f"{TAG_PREFIX}run_*").stdout.split()
             for tag in tags:
-                name = tag[len(TAG_PREFIX):]
+                name = tag[len(TAG_PREFIX) :]
                 metadata = {
                     "name": name,
                     "path": str(self.refs_root / name),
@@ -279,12 +368,18 @@ class GitWorkspaceArchiver:
         tag = f"{TAG_PREFIX}{relative.parts[0]}"
         try:
             tree_files = self._git(
-                "ls-tree", "-r", "--name-only", tag,
+                "ls-tree",
+                "-r",
+                "--name-only",
+                tag,
             ).stdout.splitlines()
             # Dedicated index so the restore never disturbs the snapshot
             # index; checkout <tag> -- . overlays files (never deletes).
             self._git(
-                "checkout", tag, "--", ".",
+                "checkout",
+                tag,
+                "--",
+                ".",
                 index=str(self.repo_dir / "index-restore"),
             )
             return tree_files
@@ -294,7 +389,7 @@ class GitWorkspaceArchiver:
 
     def get_archive_stats(self) -> dict:
         archives = self.list_archives()
-        total_size = self._tree_size(self.archive_root)
+        total_size = self._tree_size(self.archive_root) + self._tree_size(self.repo_dir)
         return {
             "archive_count": len(archives),
             "total_files": sum(int(a.get("archived_count", 0)) for a in archives),
@@ -328,22 +423,29 @@ class GitWorkspaceArchiver:
         workspace_ignore.load_from_workspace(self.workspace)
         if files_to_archive is None:
             self._git("add", "-A", "--", ".", index=index_full)
-            self._drop_newly_excluded_tracked(index_full, ignore_matcher, workspace_ignore)
+            self._drop_newly_excluded_tracked(
+                index_full, ignore_matcher, workspace_ignore
+            )
         else:
             # Partial snapshot: a throwaway index seeded with only the
             # requested (still-eligible) files, mirroring the copy backend.
             index_partial = str(self.repo_dir / "index-partial")
             self._git("read-tree", "--empty", index=index_partial)
             eligible = [
-                f for f in files_to_archive
+                f
+                for f in files_to_archive
                 if not self._excluded(f, ignore_matcher, workspace_ignore)
                 and (self.workspace / f).is_file()
             ]
             for batch in _batched(eligible):
                 self._git("add", "-f", "--", *batch, index=index_partial)
 
-        tree = self._git("write-tree", index=index_full if files_to_archive is None
-                         else str(self.repo_dir / "index-partial")).stdout.strip()
+        tree = self._git(
+            "write-tree",
+            index=index_full
+            if files_to_archive is None
+            else str(self.repo_dir / "index-partial"),
+        ).stdout.strip()
         files = self._git("ls-tree", "-r", "--name-only", tree).stdout.splitlines()
 
         metadata = {
@@ -406,18 +508,28 @@ class GitWorkspaceArchiver:
         """
         tracked = self._git("ls-files", index=index).stdout.splitlines()
         to_drop = [
-            f for f in tracked
+            f
+            for f in tracked
             if f and self._excluded(f, ignore_matcher, workspace_ignore)
         ]
         for batch in _batched(to_drop):
-            self._git("rm", "-r", "--cached", "--quiet", "--ignore-unmatch",
-                      "--", *batch, index=index)
+            self._git(
+                "rm",
+                "-r",
+                "--cached",
+                "--quiet",
+                "--ignore-unmatch",
+                "--",
+                *batch,
+                index=index,
+            )
 
     def _prune_old_tags(self) -> list[str]:
         if self.keep_last <= 0:
             return []
         tags = sorted(
-            t for t in self._git("tag", "-l", f"{TAG_PREFIX}run_*").stdout.split()
+            t
+            for t in self._git("tag", "-l", f"{TAG_PREFIX}run_*").stdout.split()
             if t.startswith(TAG_PREFIX)
         )
         excess = tags[: max(0, len(tags) - self.keep_last)]
@@ -430,9 +542,10 @@ class GitWorkspaceArchiver:
             gc = self._git("gc", "--prune=now", "--quiet", check=False)
             if gc.returncode != 0:
                 logger.warning(
-                    "archive gc skipped: %s", (gc.stderr or "").strip()[:200],
+                    "archive gc skipped: %s",
+                    (gc.stderr or "").strip()[:200],
                 )
-        return [t[len(TAG_PREFIX):] for t in excess]
+        return [t[len(TAG_PREFIX) :] for t in excess]
 
     def _legacy_archives(self) -> list[dict]:
         archives: list[dict] = []
@@ -447,7 +560,9 @@ class GitWorkspaceArchiver:
             metadata = {"name": archive_dir.name, "path": str(archive_dir)}
             if metadata_file.exists():
                 try:
-                    metadata.update(json.loads(metadata_file.read_text(encoding="utf-8")))
+                    metadata.update(
+                        json.loads(metadata_file.read_text(encoding="utf-8"))
+                    )
                 except (json.JSONDecodeError, OSError):
                     pass
             archives.append(metadata)

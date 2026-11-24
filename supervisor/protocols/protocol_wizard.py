@@ -40,6 +40,7 @@ GATE_FIX_ROUNDS = 3
 # providers accept different names, and a proxy can accept one while clamping
 # it to "off". Endpoints that reject the parameter fall back to one plain call.
 
+
 class ProtocolGateError(Exception):
     """The refined protocol still fails the target audit after all fix rounds."""
 
@@ -88,7 +89,7 @@ def _wizard_system_prompt() -> str:
     The SCRIBE rules stop the model inventing filenames, classes, algorithms,
     and acceptance conditions the user never stated, and stop it silently
     resolving a self-contradiction. Their OUTPUT section is overridden: this
-    reply is still a three-section protocol.md, not the scribe's four-section
+    reply is still a three-section protocol file, not the scribe's five-section
     report, so the last instruction below wins.
     """
     from supervisor.prompts.templates import load_scribe_rules
@@ -127,8 +128,7 @@ def _fix_prompt(protocol_md: str, issues: tuple[str, ...]) -> str:
 
 
 class ProtocolWizard(StreamedLLMHelper):
-    """Drives a guided conversation to produce a refined protocol.md.
-    """
+    """Drives a guided conversation to produce a refined protocol.md."""
 
     # ------------------------------------------------------------------ #
     # One-shot refinement (used by the wizard form)                    #
@@ -162,8 +162,8 @@ class ProtocolWizard(StreamedLLMHelper):
             if body is None:
                 raise
             logger.info(
-                "Protocol wizard: reasoning_effort rejected (%s); retrying "
-                "without it", exc,
+                "Protocol wizard: reasoning_effort rejected (%s); retrying without it",
+                exc,
             )
             return stream_chat_text(
                 self._client,
@@ -205,9 +205,13 @@ class ProtocolWizard(StreamedLLMHelper):
             f"### RESTRICTIONS (raw)\n{raw_restrictions}"
         )
 
-        refined_md = strip_code_fences(self._chat(
-            user_msg, on_progress=on_progress, stop_event=stop_event,
-        ))
+        refined_md = strip_code_fences(
+            self._chat(
+                user_msg,
+                on_progress=on_progress,
+                stop_event=stop_event,
+            )
+        )
 
         issues: tuple[str, ...] = ()
         for fix_round in range(max_fix_rounds + 1):
@@ -220,10 +224,12 @@ class ProtocolWizard(StreamedLLMHelper):
                 issues = (str(exc),)
             else:
                 audit = audit_target(
-                    protocol.target_section, protocol.restrictions_section,
+                    protocol.target_section,
+                    protocol.restrictions_section,
                 )
                 contradiction = audit_contradictions(
-                    protocol.target_section, protocol.restrictions_section,
+                    protocol.target_section,
+                    protocol.restrictions_section,
                 )
                 if audit.is_actionable and not contradiction.blocking:
                     return candidate, protocol
@@ -232,10 +238,13 @@ class ProtocolWizard(StreamedLLMHelper):
                 break
             if on_round is not None:
                 on_round(fix_round + 1, max_fix_rounds, issues)
-            refined_md = strip_code_fences(self._chat(
-                _fix_prompt(candidate, issues),
-                on_progress=on_progress, stop_event=stop_event,
-            ))
+            refined_md = strip_code_fences(
+                self._chat(
+                    _fix_prompt(candidate, issues),
+                    on_progress=on_progress,
+                    stop_event=stop_event,
+                )
+            )
         raise ProtocolGateError(issues, max_fix_rounds)
 
     def refine_section(

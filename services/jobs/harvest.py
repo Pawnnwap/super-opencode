@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from services.jobs.job_states import TERMINAL_JOB_STATES
+from supervisor.security.redaction import redact_data, redact_text
 
 HARVEST_JOB_TYPE = "harvest"
 
@@ -170,7 +171,7 @@ def run_report(state: dict[str, Any]) -> str:
     """The run's stored final report, or the best report file on disk."""
     report = str(state.get("report") or "")
     if report.strip():
-        return report
+        return redact_text(report)
     workspace = str((state.get("config") or {}).get("workspace") or "")
     if not workspace:
         return ""
@@ -184,19 +185,21 @@ def run_report(state: dict[str, Any]) -> str:
         except OSError:
             continue
         if text.strip():
-            return text
+            return redact_text(text)
     return ""
 
 
 def write_run_meta(dest: Path, meta: dict[str, Any]) -> None:
     (dest / "run.json").write_text(
-        json.dumps(meta, indent=2, ensure_ascii=False) + "\n",
+        json.dumps(redact_data(meta), indent=2, ensure_ascii=False) + "\n",
         encoding="utf-8",
     )
 
 
 def write_run_baseline(
-    dest: Path, job_id: str, state: dict[str, Any],
+    dest: Path,
+    job_id: str,
+    state: dict[str, Any],
 ) -> dict[str, Any]:
     """Write report.md + run.json before any agent runs.
 
@@ -349,8 +352,7 @@ def index_markdown(
 ) -> str:
     """Root INDEX.md: one row per selected run, linking its folder."""
     lines = [
-        "# Harvest - "
-        + time.strftime("%Y-%m-%d %H:%M", time.localtime(started)),
+        "# Harvest - " + time.strftime("%Y-%m-%d %H:%M", time.localtime(started)),
         "",
         f"**Runs:** {len(entries)} · **Folder:** `{batch_dir}`",
         "",

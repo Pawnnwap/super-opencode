@@ -147,7 +147,7 @@ def test_prompt_block_states_the_rule(roots):
 class TestCommandScan:
     def test_inside_cwd_is_allowed(self, roots):
         ws, _ = roots
-        policy = build_policy(ws, [])
+        policy = build_policy(ws, [], strict_dynamic=False)
         assert policy.scan_command("python -m pytest tests/") == []
 
     def test_read_outside_is_denied(self, roots, tmp_path):
@@ -182,9 +182,12 @@ class TestCommandScan:
             assert violations, command
         # Readers and copy sources keep their read-only grant.
         assert policy.scan_command(f'Get-Content -Path "{target}"') == []
-        assert policy.scan_command(
-            f'Copy-Item -Path "{target}" -Destination "{ws}/a.txt"',
-        ) == []
+        assert (
+            policy.scan_command(
+                f'Copy-Item -Path "{target}" -Destination "{ws}/a.txt"',
+            )
+            == []
+        )
 
     def test_copy_from_whitelist_to_cwd_is_allowed(self, roots):
         ws, ref = roots
@@ -240,9 +243,12 @@ class TestCommandScan:
             f'Copy-Item -Destination "{ref}/b.txt" -Path "{ws}/a.txt"',
         )
         assert violations and "read-only" in violations[0].reason
-        assert policy.scan_command(
-            f'Copy-Item -Destination "{ws}/b.txt" -Path "{ref}/a.txt"',
-        ) == []
+        assert (
+            policy.scan_command(
+                f'Copy-Item -Destination "{ws}/b.txt" -Path "{ref}/a.txt"',
+            )
+            == []
+        )
 
     def test_read_from_whitelist_is_allowed(self, roots):
         ws, ref = roots
@@ -287,7 +293,8 @@ class TestCommandScan:
         assert policy.scan_command('python -c "print(1)"')
         assert policy.scan_command('node -e "1"')
         assert policy.scan_command('perl -e "print 1"')
-        # A script file inside the cwd is still a normal read.
+        # A script file inside the cwd is allowed when strict mode is disabled.
+        policy = build_policy(ws, [], strict_dynamic=False)
         assert policy.scan_command("python -m pytest tests/") == []
 
     def test_dynamic_constructs_are_denied(self, roots):
@@ -306,7 +313,7 @@ class TestCommandScan:
         # `$null` is PowerShell's empty device: the same discard as NUL, so it
         # must not make an otherwise legal command look dynamic.
         ws, _ = roots
-        policy = build_policy(ws, [])
+        policy = build_policy(ws, [], strict_dynamic=False)
         for command in (
             "python script.py 2>$null",
             "python script.py > $null",
@@ -317,15 +324,24 @@ class TestCommandScan:
     def test_wrappers_are_unwrapped_recursively(self, roots):
         ws, ref = roots
         policy = build_policy(ws, [ref])
-        assert policy.scan_command(
-            f'cmd /c "copy \\"{ref}/a.txt\\" \\"{ws}/a.txt\\""',
-        ) == []
-        assert policy.scan_command(
-            f'bash -c \'cp "{ref}/a.txt" "{ws}/a.txt"\'',
-        ) == []
-        assert policy.scan_command(
-            f'bash -lc \'cp "{ref}/a.txt" "{ws}/a.txt"\'',
-        ) == []
+        assert (
+            policy.scan_command(
+                f'cmd /c "copy \\"{ref}/a.txt\\" \\"{ws}/a.txt\\""',
+            )
+            == []
+        )
+        assert (
+            policy.scan_command(
+                f'bash -c \'cp "{ref}/a.txt" "{ws}/a.txt"\'',
+            )
+            == []
+        )
+        assert (
+            policy.scan_command(
+                f'bash -lc \'cp "{ref}/a.txt" "{ws}/a.txt"\'',
+            )
+            == []
+        )
         violations = policy.scan_command(
             f'cmd /c "copy \\"{ws}/a.txt\\" \\"{ref}/b.txt\\""',
         )
@@ -453,7 +469,9 @@ def test_from_config_reads_whitelist(tmp_path, monkeypatch):
     assert not policy.check_write(ref / "x").allowed
 
 
-def test_from_config_auto_whitelists_agent_infrastructure(tmp_path, monkeypatch):
+def test_from_config_auto_whitelists_only_skills_and_interpreters(
+    tmp_path, monkeypatch
+):
     from supervisor.utils.config import SupervisorConfig
 
     home = tmp_path / "home"
@@ -466,16 +484,16 @@ def test_from_config_auto_whitelists_agent_infrastructure(tmp_path, monkeypatch)
     ws.mkdir()
     cfg = SupervisorConfig(protocol_path=tmp_path / "protocol.md", workspace=ws)
     policy = AccessPolicy.from_config(cfg)
-    assert home / ".codex" in policy.whitelist
     assert home / ".agents" / "skills" in policy.whitelist
-    assert home / ".pi" in policy.whitelist
-    assert home / ".config" / "opencode" not in policy.whitelist  # missing dirs skipped
+    assert home / ".codex" not in policy.whitelist
+    assert home / ".pi" not in policy.whitelist
+    assert home / ".config" / "opencode" not in policy.whitelist
     hook = home / ".codex" / "hooks.json"
-    assert policy.check_read(hook).allowed
+    assert not policy.check_read(hook).allowed
     assert not policy.check_write(hook).allowed
 
 
-def test_agent_roots_include_env_codex_home(tmp_path, monkeypatch):
+def test_agent_roots_exclude_env_codex_home(tmp_path, monkeypatch):
     from supervisor.security.access_policy import agent_infrastructure_roots
 
     home = tmp_path / "home"
@@ -484,7 +502,7 @@ def test_agent_roots_include_env_codex_home(tmp_path, monkeypatch):
     dedicated.mkdir()
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
     monkeypatch.setenv("CODEX_HOME", str(dedicated))
-    assert dedicated in agent_infrastructure_roots()
+    assert dedicated not in agent_infrastructure_roots()
 
 
 def test_agent_roots_include_detected_conda_envs(tmp_path, monkeypatch):

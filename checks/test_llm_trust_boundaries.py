@@ -11,6 +11,7 @@ Each test drives the real gate, not a mock of it:
 from __future__ import annotations
 
 import json
+import socket
 
 import pytest
 
@@ -124,17 +125,28 @@ def test_private_and_metadata_urls_are_refused(url):
     assert is_public_http_url(url, require_https=False) is False
 
 
+@pytest.fixture
+def public_dns(monkeypatch):
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda _host, _port, **_kwargs: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 80)),
+        ],
+    )
+
+
 @pytest.mark.parametrize(
     "url",
     ["https://example.com/docs", "http://example.com/", "https://pypi.org/project/x"],
 )
-def test_public_urls_are_allowed(url):
+def test_public_urls_are_allowed(url, public_dns):
     from mcp_server.codehelp_support.docs import is_public_http_url
 
     assert is_public_http_url(url, require_https=False) is True
 
 
-def test_docs_url_still_requires_https():
+def test_docs_url_still_requires_https(public_dns):
     from mcp_server.codehelp_support.docs import is_public_http_url
 
     assert is_public_http_url("http://example.com/", require_https=True) is False
@@ -149,7 +161,8 @@ def test_web_fetch_rejects_a_loopback_url(monkeypatch):
 
     called: list[str] = []
     monkeypatch.setattr(
-        web_tools, "_http_get_text",
+        web_tools,
+        "_http_get_text",
         lambda url, **_kw: called.append(url) or "body",
     )
     with pytest.raises(ValueError, match="public http"):
@@ -159,7 +172,7 @@ def test_web_fetch_rejects_a_loopback_url(monkeypatch):
     assert called == [], "the request was issued despite the SSRF check"
 
 
-def test_web_fetch_passes_the_validator_to_redirects(monkeypatch):
+def test_web_fetch_passes_the_validator_to_redirects(monkeypatch, public_dns):
     """A public URL must still be re-checked after a redirect."""
     import asyncio
 
@@ -198,8 +211,8 @@ def test_gate_command_is_refused_by_shell_policy(tmp_path, monkeypatch):
 
     monkeypatch.setattr(rubric.subprocess, "run", boom)
     evaluation = rubric._evaluate_command(
-        _gate('python -c "open(\'pwned\',\'w\')"'),
-        {"kind": "command", "cmd": 'python -c "open(\'pwned\',\'w\')"'},
+        _gate("python -c \"open('pwned','w')\""),
+        {"kind": "command", "cmd": "python -c \"open('pwned','w')\""},
         tmp_path,
         10.0,
     )
@@ -220,7 +233,10 @@ def _evaluate_command_for(tmp_path, cmd: str):
     import supervisor.protocols.gate_rubric as rubric
 
     return rubric._evaluate_command(
-        _gate(cmd), {"kind": "command", "cmd": cmd}, tmp_path, 30.0,
+        _gate(cmd),
+        {"kind": "command", "cmd": cmd},
+        tmp_path,
+        30.0,
     )
 
 
@@ -299,11 +315,16 @@ def test_protected_check_cli_round_trip(tmp_path, monkeypatch, capsys):
     from supervisor.security import guard_cli
 
     monkeypatch.setattr(
-        sys, "stdin",
-        io.StringIO(json.dumps({
-            "path": str(tmp_path / "feasibility_facts.json"),
-            "workspace": str(tmp_path),
-        })),
+        sys,
+        "stdin",
+        io.StringIO(
+            json.dumps(
+                {
+                    "path": str(tmp_path / "feasibility_facts.json"),
+                    "workspace": str(tmp_path),
+                }
+            )
+        ),
     )
     assert guard_cli.main(["--check-protected"]) == 0
     payload = json.loads(capsys.readouterr().out)

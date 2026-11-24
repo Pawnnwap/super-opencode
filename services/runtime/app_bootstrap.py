@@ -3,10 +3,14 @@ from __future__ import annotations
 import importlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from urllib.parse import urlparse
+
+from supervisor.security.redaction import redact_text
 
 UPGRADE_SETTINGS_FILE = Path.home() / ".opencode_supervisor_settings.json"
 
@@ -15,6 +19,17 @@ UPGRADE_SETTINGS_FILE = Path.home() / ".opencode_supervisor_settings.json"
 # default. Set "npm_registry": "" in the settings file to use npm's own
 # default registry instead.
 DEFAULT_NPM_REGISTRY = "https://registry.npmmirror.com"
+
+
+def _print(
+    *values: object, sep: str = " ", end: str = "\n", file=None, flush: bool = False
+) -> None:
+    print(
+        redact_text(sep.join(str(value) for value in values)),
+        end=end,
+        file=file,
+        flush=flush,
+    )
 
 
 def get_npm_registry(settings_file: Path = UPGRADE_SETTINGS_FILE) -> str:
@@ -30,11 +45,39 @@ def get_npm_registry(settings_file: Path = UPGRADE_SETTINGS_FILE) -> str:
     return DEFAULT_NPM_REGISTRY
 
 
-def _npm_install_cmd(package: str, registry: str) -> str:
-    cmd = f"npm install -g {package}@latest"
+def _validate_registry(registry: str) -> str:
+    parsed = urlparse(registry)
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or any(char.isspace() or ord(char) < 32 for char in registry)
+        or any(char in registry for char in ";&|<>^")
+    ):
+        raise ValueError(f"invalid npm registry URL: {registry!r}")
+    return registry
+
+
+def _npm_install_cmd(package: str, registry: str) -> list[str]:
+    cmd = ["npm", "install", "-g", f"{package}@latest"]
     if registry:
-        cmd += f" --registry {registry}"
+        cmd.extend(["--registry", _validate_registry(registry)])
     return cmd
+
+
+def _with_npm_executable(command: list[str]) -> list[str]:
+    npm = shutil.which("npm") or shutil.which("npm.cmd")
+    if not npm:
+        return command
+    npm_path = Path(npm)
+    if npm_path.suffix.lower() not in {".cmd", ".bat"}:
+        return [npm, *command[1:]]
+    npm_cli = npm_path.parent / "node_modules" / "npm" / "bin" / "npm-cli.js"
+    node = shutil.which("node") or shutil.which("node.exe")
+    if npm_cli.is_file() and node:
+        return [node, str(npm_cli), *command[1:]]
+    return command
 
 
 def _installed_cli(locator_name: str) -> str:
@@ -86,7 +129,7 @@ def _auto_upgrade_npm_cli(
     install is a repair path, not a startup step.
     """
     if should_skip_upgrade(settings_file):
-        print(
+        _print(
             f"[{label}-upgrade] Skipping upgrade: disabled via config/env var",
             file=sys.stderr,
         )
@@ -94,7 +137,7 @@ def _auto_upgrade_npm_cli(
 
     installed = _installed_cli(label)
     if installed:
-        print(
+        _print(
             f"[{label}-upgrade] {label} already available at {installed}; "
             "skipping auto-upgrade.",
             file=sys.stderr,
@@ -108,8 +151,11 @@ def _auto_upgrade_npm_cli(
 
         # npm everywhere (with registry mirror support); the old curl-based
         # installer cannot honor a mirror and is the access-restricted path.
-        cmd = _npm_install_cmd(package, registry or "")
-        print(f"[{label}-upgrade] Running: {cmd}", file=sys.stderr)
+        cmd = _with_npm_executable(_npm_install_cmd(package, registry or ""))
+        _print(
+            f"[{label}-upgrade] Running: {subprocess.list2cmdline(cmd)}",
+            file=sys.stderr,
+        )
 
         proc = subprocess.Popen(
             cmd,
@@ -118,34 +164,32 @@ def _auto_upgrade_npm_cli(
             stderr=subprocess.PIPE,
             text=True,
             cwd=home_dir,
-            shell=True,
+            shell=False,
         )
         stdout, stderr = proc.communicate(timeout=180)
         if stdout:
-            print(f"[{label}-upgrade] stdout: {stdout.strip()}", file=sys.stderr)
+            _print(f"[{label}-upgrade] stdout: {stdout.strip()}", file=sys.stderr)
         if stderr:
-            print(f"[{label}-upgrade] stderr: {stderr.strip()}", file=sys.stderr)
+            _print(f"[{label}-upgrade] stderr: {stderr.strip()}", file=sys.stderr)
 
         code_msg = (
             "successfully"
             if proc.returncode == 0
             else f"with code {proc.returncode}. Continuing startup."
         )
-        print(
-            f"[{label}-upgrade] Upgrade completed {code_msg}.", file=sys.stderr
-        )
+        _print(f"[{label}-upgrade] Upgrade completed {code_msg}.", file=sys.stderr)
     except subprocess.TimeoutExpired:
-        print(
+        _print(
             f"[{label}-upgrade] Upgrade timed out after 180 seconds. Continuing startup.",
             file=sys.stderr,
         )
     except FileNotFoundError:
-        print(
+        _print(
             f"[{label}-upgrade] npm not found — install Node.js to enable auto-upgrade. Continuing startup.",
             file=sys.stderr,
         )
     except Exception as exc:  # noqa: BLE001 - startup upgrade step must never block boot
-        print(
+        _print(
             f"[{label}-upgrade] Unexpected error: {exc}. Continuing startup.",
             file=sys.stderr,
         )
@@ -198,9 +242,9 @@ def _is_permission_error(stderr: str) -> bool:
     return any(tok in s for tok in ("eacces", "eperm", "permission denied"))
 
 
-def _run_codex_upgrade(cmd: str, home_dir: str) -> tuple[int, str, str]:
-    """Run one upgrade command, echo its output, return (code, stdout, stderr)."""
-    print(f"[codex-upgrade] Running: {cmd}", file=sys.stderr)
+def _run_codex_upgrade(cmd: list[str], home_dir: str) -> tuple[int, str, str]:
+    """Run one upgrade argv, echo its output, return (code, stdout, stderr)."""
+    _print(f"[codex-upgrade] Running: {subprocess.list2cmdline(cmd)}", file=sys.stderr)
     proc = subprocess.Popen(
         cmd,
         stdin=subprocess.DEVNULL,
@@ -208,7 +252,7 @@ def _run_codex_upgrade(cmd: str, home_dir: str) -> tuple[int, str, str]:
         stderr=subprocess.PIPE,
         text=True,
         cwd=home_dir,
-        shell=True,
+        shell=False,
     )
     try:
         stdout, stderr = proc.communicate(timeout=180)
@@ -227,9 +271,9 @@ def _run_codex_upgrade(cmd: str, home_dir: str) -> tuple[int, str, str]:
         proc.communicate()
         raise
     if stdout:
-        print(f"[codex-upgrade] stdout: {stdout.strip()}", file=sys.stderr)
+        _print(f"[codex-upgrade] stdout: {stdout.strip()}", file=sys.stderr)
     if stderr:
-        print(f"[codex-upgrade] stderr: {stderr.strip()}", file=sys.stderr)
+        _print(f"[codex-upgrade] stderr: {stderr.strip()}", file=sys.stderr)
     return proc.returncode, stdout or "", stderr or ""
 
 
@@ -254,7 +298,7 @@ def _restore_codex_config(config_path: Path, original: bytes, mode: int) -> None
             os.fsync(tmp.fileno())
         os.chmod(tmp_path, mode)
         os.replace(tmp_path, config_path)
-        print(
+        _print(
             f"[codex-upgrade] Restored user config changed during upgrade: {config_path}",
             file=sys.stderr,
         )
@@ -267,7 +311,7 @@ def auto_upgrade_codex(
     registry: str | None = None,
 ) -> None:
     if should_skip_upgrade(settings_file):
-        print(
+        _print(
             "[codex-upgrade] Skipping upgrade: disabled via config/env var",
             file=sys.stderr,
         )
@@ -281,7 +325,7 @@ def auto_upgrade_codex(
     # cannot find codex at all.
     installed = _installed_codex()
     if installed:
-        print(
+        _print(
             f"[codex-upgrade] codex already available at {installed}; "
             "skipping auto-upgrade.",
             file=sys.stderr,
@@ -296,7 +340,7 @@ def auto_upgrade_codex(
         original_config = None
         original_mode = 0
     except OSError as exc:
-        print(
+        _print(
             f"[codex-upgrade] Cannot protect existing config {config_path}: {exc}. "
             "Skipping automatic Codex upgrade.",
             file=sys.stderr,
@@ -310,7 +354,9 @@ def auto_upgrade_codex(
         # npm command covers Windows/macOS/Linux — no per-OS install script.
         if registry is None:
             registry = get_npm_registry(settings_file)
-        base_cmd = _npm_install_cmd("@openai/codex", registry or "")
+        base_cmd = _with_npm_executable(
+            _npm_install_cmd("@openai/codex", registry or "")
+        )
         code, _out, err = _run_codex_upgrade(base_cmd, home_dir)
 
         # A global npm install on macOS/Linux can hit EACCES when the npm prefix
@@ -321,52 +367,50 @@ def auto_upgrade_codex(
             if _is_root():
                 pass  # already root; sudo would not help
             elif _sudo_available_noninteractive():
-                print(
+                _print(
                     "[codex-upgrade] Permission denied — retrying with sudo.",
                     file=sys.stderr,
                 )
                 code, _out, err = _run_codex_upgrade(
-                    f"sudo -n {base_cmd}", home_dir
+                    ["sudo", "-n", *base_cmd], home_dir
                 )
             else:
-                print(
+                _print(
                     "[codex-upgrade] Permission denied and sudo unavailable "
                     "non-interactively. Fix npm global perms or run manually: "
-                    f"sudo {base_cmd}. Continuing startup.",
+                    f"sudo {subprocess.list2cmdline(base_cmd)}. Continuing startup.",
                     file=sys.stderr,
                 )
 
         code_msg = (
-            "successfully"
-            if code == 0
-            else f"with code {code}. Continuing startup."
+            "successfully" if code == 0 else f"with code {code}. Continuing startup."
         )
-        print(f"[codex-upgrade] Upgrade completed {code_msg}", file=sys.stderr)
+        _print(f"[codex-upgrade] Upgrade completed {code_msg}", file=sys.stderr)
         # npm can report success (or be killed) with the package unpacked but
         # the bin shims missing; only the runner locator can prove the CLI
         # actually runs, so say so loudly when the repair did not take.
         repaired = _installed_codex()
         if repaired:
-            print(f"[codex-upgrade] codex resolves at {repaired}", file=sys.stderr)
+            _print(f"[codex-upgrade] codex resolves at {repaired}", file=sys.stderr)
         else:
-            print(
+            _print(
                 "[codex-upgrade] ERROR: codex is still not resolvable after the "
                 "install - queued runs cannot start. Re-run: "
                 f"{base_cmd}",
                 file=sys.stderr,
             )
     except subprocess.TimeoutExpired:
-        print(
+        _print(
             "[codex-upgrade] Upgrade timed out after 180 seconds. Continuing startup.",
             file=sys.stderr,
         )
     except FileNotFoundError:
-        print(
+        _print(
             "[codex-upgrade] npm not found — install Node.js to enable auto-upgrade. Continuing startup.",
             file=sys.stderr,
         )
     except Exception as exc:  # noqa: BLE001 - startup upgrade step must never block boot
-        print(
+        _print(
             f"[codex-upgrade] Unexpected error: {exc}. Continuing startup.",
             file=sys.stderr,
         )
@@ -375,8 +419,7 @@ def auto_upgrade_codex(
             try:
                 _restore_codex_config(config_path, original_config, original_mode)
             except OSError as exc:
-                print(
+                _print(
                     f"[codex-upgrade] Failed to restore user config {config_path}: {exc}",
                     file=sys.stderr,
                 )
-

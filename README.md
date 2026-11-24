@@ -60,8 +60,8 @@ Enforcement is native per engine, not a prompt request:
   array is not written: opencode 1.x rejects the file when that key is present.
 - **pi** - a `tool_call` extension loaded with an explicit `-e`, returning
   `{ block: true }` before the tool runs.
-- **codex** - a `PreToolUse` hook in `$CODEX_HOME/hooks.json` that runs the
-  supervisor's policy gate.
+- **codex** - a `PreToolUse` hook in `$CODEX_HOME/config.toml` when supported,
+  with `hooks.json` as the legacy fallback, that runs the supervisor's policy gate.
 
 The policy snapshot lives outside the workspace (under
 `~/.opencode_supervisor/access/`) and is handed to the backend through
@@ -247,8 +247,9 @@ and the concurrency cap stays the only limit on total parallelism.
 
 The supervisor system runs the opencode agent in a controlled feedback loop:
 
-1. **Protocol-driven execution** — A `protocol.md` file defines INPUT, TARGET,
-   and RESTRICTIONS that guide the agent's behavior
+1. **Protocol-driven execution** — A `protocol.jsonl` file is the canonical
+   contract for INPUT, TARGET, and RESTRICTIONS; legacy `protocol.md` remains
+   readable as a compatibility fallback.
 2. **Real-time monitoring** — Context window usage is tracked and the session is
    rotated on cadence (the engines compact their own context)
 3. **Workspace safety** — The system blocks out-of-workspace path references to
@@ -502,14 +503,15 @@ payloads on the next enqueue (state summaries stay).
 
 ### ① Protocol Wizard
 Fill in INPUT / TARGET / RESTRICTIONS in plain language → click
-**Refine with AI** → review the generated `protocol.md` → Accept & Save.
+**Refine with AI** → review the generated `protocol.jsonl` → Accept & Save.
 
 The wizard includes:
 - **Configuration panel** — Execution engine (OpenCode, Codex, or pi), API key
   and base URL, workspace path, supervisor and agent models (plus backup
   models), max retries, context threshold, turn timeout, max tokens, npm
   registry for CLI upgrades, and switches for the Occam's razor pass,
-  supervisor skills, jev decisions, and blocked-run rescue. A
+  supervisor skills, and jev decisions. Blocked-run rescue has no switch:
+  when jev is enabled it is always available. A
   **Clean artifacts** button removes run
   leftovers from the workspace.
 - **Protected Files** — Mark files that the agent cannot modify or delete
@@ -693,7 +695,8 @@ requirements.txt                    Alternative dependency list (core + static-a
 
 ## Protocol System
 
-A `protocol.md` file is the core contract between you and the supervisor.
+A `protocol.jsonl` file is the core contract between you and the supervisor.
+Legacy `protocol.md` files are still accepted and rendered by the wizard.
 It must contain exactly three sections:
 
 ```markdown
@@ -834,7 +837,7 @@ first. `context_threshold` (default 60%) is an advisory warning level only.
 Every run preserves workspace state in `.archive/`:
 
 **Git backend (default, `archive_backend: "git"`)** — snapshots live in a
-private bare repo at `.archive/snapshots.git`, driven with
+private bare repo under the per-user supervisor data directory, driven with
 `--git-dir/--work-tree` so the workspace's own `.git` is never touched:
 
 - One snapshot = `git add -A` → `write-tree` → an **orphan commit**
@@ -858,8 +861,9 @@ private bare repo at `.archive/snapshots.git`, driven with
 timestamped `run_*` directories with `code/`, `results/`, `logs/`,
 `other/` subdirectories and `archive_metadata.json`.
 
-Both: the `.archive/` directory itself is protected from modification, and
-version files are never deleted — only archived.
+Both: the `.archive/` directory itself is protected from modification. Only
+the newest `archive_keep_last` snapshots are retained; `0` means unlimited.
+Live workspace files are never deleted by retention.
 
 ---
 
@@ -881,9 +885,9 @@ left unchanged.
 
 ## Code Assistance MCP Server
 
-The system ships one MCP server (`mcp_server/codehelp.py`, with tool
-implementations in `mcp_server/codehelp_support/`) that provides tools for
-code assistance and documentation lookup:
+The system ships two MCP servers: `mcp_server/codehelp.py` (code assistance,
+with tool implementations in `mcp_server/codehelp_support/`) and
+`mcp_server/web_tools.py` (web search/fetch). Codehelp provides:
 
 - **search_docstrings** — search local codebase for docstrings of packages,
   modules, classes, functions, or methods
@@ -930,7 +934,8 @@ Configure planning rounds in the Live Run launch form — it defaults to
    checkpoint
 5. **Heartbeat monitoring** — Detects stalled processes and extends
    timeouts when progress is being made
-6. **Archive preservation** — Historical versions are preserved, never deleted
+6. **Archive retention** — Only the newest configured number of snapshots is
+   retained; live workspace files are never deleted.
 7. **Process ownership** — A kill can only reach the run's own process tree
    (see below)
 

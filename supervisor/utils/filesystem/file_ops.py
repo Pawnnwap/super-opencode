@@ -56,7 +56,9 @@ def safe_read_text(
             # Check file size to prevent memory issues
             stat = path.stat()
             if stat.st_size > max_size:
-                logger.warning(f"File {path} exceeds max_size ({max_size} bytes), returning default")
+                logger.warning(
+                    f"File {path} exceeds max_size ({max_size} bytes), returning default"
+                )
                 return default
 
             # Try each encoding in sequence
@@ -64,12 +66,16 @@ def safe_read_text(
                 try:
                     content = path.read_text(encoding=encoding)
                     if i > 0:
-                        logger.info(f"Used fallback encoding {encoding} for file {path}")
+                        logger.info(
+                            f"Used fallback encoding {encoding} for file {path}"
+                        )
                     return content
                 except UnicodeDecodeError:
                     if i == len(encodings) - 1:
                         # Last encoding failed, log and return default
-                        logger.warning(f"All encodings failed for file {path}, returning default")
+                        logger.warning(
+                            f"All encodings failed for file {path}, returning default"
+                        )
                         return default
                     # Continue to next encoding
                     continue
@@ -94,7 +100,7 @@ def copy_tree_to_workspace(src_dir: Path, workspace_dir: Path) -> list[str]:
     """
     restored: list[str] = []
     for src in sorted(src_dir.rglob("*")):
-        if not src.is_file():
+        if not src.is_file() or src.is_symlink():
             continue
         rel = src.relative_to(src_dir)
         dst = workspace_dir / rel

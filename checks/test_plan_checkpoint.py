@@ -89,16 +89,19 @@ def test_chat_writes_checkpoint_before_call_and_clears_on_success(tmp_path):
     def create(**_kwargs):
         path = _checkpoint_path(tmp_path)
         observed["exists"] = path.is_file()
-        observed["payload"] = json.loads(path.read_text(encoding="utf-8"))
+        observed["payload"] = load_judge_checkpoint(tmp_path)
+        observed["raw"] = path.read_text(encoding="utf-8")
         return _success()
 
     supervisor = _chat_supervisor(tmp_path, create)
-    with judge_checkpoint({
-        "phase": "plan",
-        "round": 1,
-        "total": 2,
-        "output": "plan output",
-    }):
+    with judge_checkpoint(
+        {
+            "phase": "plan",
+            "round": 1,
+            "total": 2,
+            "output": "plan output",
+        }
+    ):
         chat(supervisor, "plan prompt")
 
     assert observed["exists"] is True
@@ -109,12 +112,14 @@ def test_chat_writes_checkpoint_before_call_and_clears_on_success(tmp_path):
     assert payload["messages"][0]["role"] == "system"
     assert payload["messages"][-1] == {"role": "user", "content": "plan prompt"}
     assert payload["record_content"] == "plan prompt"
+    assert "plan prompt" not in observed["raw"]
     assert not _checkpoint_path(tmp_path).exists()
 
 
 def test_failed_chat_leaves_checkpoint_for_resume(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        "supervisor.core.llm_support.chat.time.sleep", lambda _s: None,
+        "supervisor.core.llm_support.chat.time.sleep",
+        lambda _s: None,
     )
     request = httpx.Request("POST", "http://endpoint/v1/chat/completions")
     response = httpx.Response(502, request=request, text="bad")
@@ -123,12 +128,17 @@ def test_failed_chat_leaves_checkpoint_for_resume(tmp_path, monkeypatch):
         raise InternalServerError("Error code: 502", response=response, body=None)
 
     supervisor = _chat_supervisor(tmp_path, create)
-    with pytest.raises(InternalServerError), judge_checkpoint({
-        "phase": "plan",
-        "round": 1,
-        "total": 2,
-        "output": "plan output",
-    }):
+    with (
+        pytest.raises(InternalServerError),
+        judge_checkpoint(
+            {
+                "phase": "plan",
+                "round": 1,
+                "total": 2,
+                "output": "plan output",
+            }
+        ),
+    ):
         chat(supervisor, "plan prompt")
 
     payload = load_judge_checkpoint(tmp_path)
@@ -157,7 +167,8 @@ def test_resume_chat_consumes_checkpoint_and_restores_history(tmp_path):
     assert verdict is not None
     assert supervisor._last_verdict is verdict
     assert supervisor._history[0] == {
-        "role": "user", "content": "earlier plan round",
+        "role": "user",
+        "content": "earlier plan round",
     }
     assert supervisor._history[1] == {"role": "user", "content": "plan prompt"}
     assert not _checkpoint_path(tmp_path).exists()

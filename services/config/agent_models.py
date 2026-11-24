@@ -16,6 +16,7 @@ import subprocess
 import sys
 import urllib.request
 from pathlib import Path
+from urllib.parse import urlparse
 
 from services.config.opencode_config import fetch_opencode_models
 from supervisor.runners.pi_runner import find_pi
@@ -26,11 +27,15 @@ def fetch_codex_models(base_url: str, api_key: str, timeout: int = 10) -> list[s
     base = (base_url or "").strip().rstrip("/")
     if not base:
         return []
+    parsed = urlparse(base)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        return []
     req = urllib.request.Request(f"{base}/models")
     if (api_key or "").strip():
         req.add_header("Authorization", f"Bearer {api_key.strip()}")
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        # The endpoint scheme and host are validated immediately above.
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # nosec B310
             payload = json.loads(resp.read().decode("utf-8", errors="replace"))
     except Exception:  # noqa: BLE001 — listing is best-effort; UI falls back to text
         return []

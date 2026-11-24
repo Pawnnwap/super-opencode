@@ -38,17 +38,41 @@ $python = Join-Path $root 'venv\Scripts\python.exe'
 $logs = Join-Path $root 'logs'
 if (-not (Test-Path $logs)) { New-Item -ItemType Directory -Path $logs | Out-Null }
 $stamp = Get-Date -Format 'yyyyMMdd_HHmm'
+
+function Test-HttpUrl([string]$Value) {
+  if ([string]::IsNullOrWhiteSpace($Value)) { return $false }
+  if ($Value -match '[&|<>^`]') { return $false }
+  $uri = $null
+  if (-not [Uri]::TryCreate($Value, [UriKind]::Absolute, [ref]$uri)) { return $false }
+  return ($uri.Scheme -in @('http', 'https') -and [bool]$uri.Host -and -not $uri.UserInfo)
+}
+
 $upstream = $Upstream.TrimEnd('/')
+$pendingData = $null
+$pending = Join-Path $root '.job_store\launch.pending'
+if (Test-Path $pending) {
+  try { $pendingData = Get-Content $pending -Raw | ConvertFrom-Json } catch {}
+}
 if (-not $PSBoundParameters.ContainsKey('Upstream')) {
-  # Task-owned runs have no command line to carry -Upstream; the delegated
-  # caller records its request here (plain name: the job store globs *.json).
-  $pending = Join-Path $root '.job_store\launch.pending'
-  if (Test-Path $pending) {
-    try {
-      $asked = (Get-Content $pending -Raw | ConvertFrom-Json).upstream
-      if ($asked) { $upstream = $asked.TrimEnd('/') }
-    } catch {}
+  $envUpstream = $env:SOP_UPSTREAM
+  if ($envUpstream) {
+    $upstream = $envUpstream.TrimEnd('/')
+  } elseif ($pendingData -and $pendingData.upstream) {
+    # Task-owned runs have no command line to carry -Upstream; the delegated
+    # caller records its request here (plain name: the job store globs *.json).
+    $upstream = $pendingData.upstream.TrimEnd('/')
   }
+}
+if ($Detached -and $pendingData) {
+  if (-not $PSBoundParameters.ContainsKey('ProxyOnly') -and $pendingData.proxy_only) {
+    $ProxyOnly = [bool]$pendingData.proxy_only
+  }
+  if (-not $PSBoundParameters.ContainsKey('AppOnly') -and $pendingData.app_only) {
+    $AppOnly = [bool]$pendingData.app_only
+  }
+}
+if (-not (Test-HttpUrl $upstream)) {
+  throw "Invalid -Upstream URL: $upstream"
 }
 
 function Test-PortListening([int]$Port) {
@@ -231,7 +255,7 @@ function Start-CapabilityProxy {
   # Delayed expansion (!VAR!) on purpose: cmd expands %VAR% once at parse
   # time, which would record the LAUNCH-time errorlevel/date instead of the
   # exit-time one. No launched path may contain "!" (none do).
-  $inner = 'cd /d "{0}" && "{1}" -u codex_compat_proxy.py {2} {3} > "{4}" 2> "{5}" & echo !DATE! !TIME! exitcode=!ERRORLEVEL!>> "{6}"' -f `
+  $inner = 'cd /d "{0}" && "{1}" -u codex_compat_proxy.py {2} "{3}" > "{4}" 2> "{5}" & echo !DATE! !TIME! exitcode=!ERRORLEVEL!>> "{6}"' -f `
     $root, $python, $ProxyPort, $upstream,
     (Join-Path $logs 'codex_compat_proxy.out.log'), (Join-Path $logs 'codex_compat_proxy.err.log'),
     (Join-Path $logs 'codex_compat_proxy.exitcode')
@@ -424,15 +448,21 @@ function Invoke-DelegatedStart {
     Stop-ServiceProcess $AppPort
   }
   Write-PortsFile
-  @{ upstream = $upstream } | ConvertTo-Json |
-    Set-Content (Join-Path $root '.job_store\launch.pending') -Encoding utf8
+  @{ upstream = $upstream; proxy_only = [bool]$ProxyOnly; app_only = [bool]$AppOnly } |
+    ConvertTo-Json | Set-Content (Join-Path $root '.job_store\launch.pending') -Encoding utf8
   Ensure-ScheduledTasks
   schtasks /Run /TN soprun_detached_launch 2>&1 | Out-Null  # an already-running instance is fine
   Write-Output 'start  : delegated to scheduled task soprun_detached_launch (session-immune ownership)'
   $deadline = (Get-Date).AddSeconds($ReadyTimeoutSec)
   while ((Get-Date) -lt $deadline) {
     Start-Sleep -Seconds 5
-    if ((Test-PortListening $AppPort) -and (Test-PortListening $ProxyPort) -and (Test-JobWorkerAlive)) {
+    $needProxy = -not $AppOnly
+    $needApp = -not $ProxyOnly
+    $needWorker = $needApp
+    $proxyReady = (Test-PortListening $ProxyPort)
+    $appReady = (Test-PortListening $AppPort)
+    $workerReady = (Test-JobWorkerAlive)
+    if ((!$needProxy -or $proxyReady) -and (!$needApp -or $appReady) -and (!$needWorker -or $workerReady)) {
       Write-Output "service: http://127.0.0.1:$AppPort  (proxy $ProxyPort -> $upstream)"
       return
     }

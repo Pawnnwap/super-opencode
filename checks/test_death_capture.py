@@ -48,10 +48,14 @@ def test_death_capture_records_identity_and_exceptions(tmp_path):
         raise RuntimeError("boom-for-death-capture")
     except RuntimeError:
         info = sys.exc_info()
-    threading.excepthook(SimpleNamespace(
-        exc_type=info[0], exc_value=info[1], exc_traceback=info[2],
-        thread=threading.current_thread(),
-    ))
+    threading.excepthook(
+        SimpleNamespace(
+            exc_type=info[0],
+            exc_value=info[1],
+            exc_traceback=info[2],
+            thread=threading.current_thread(),
+        )
+    )
     text = log.read_text(encoding="utf-8")
     assert "boom-for-death-capture" in text
     assert "unhandled exception in thread" in text
@@ -63,8 +67,11 @@ def test_launcher_sentinels_use_exit_time_values():
     # record the wrong errorlevel/date for the sentinel.
     assert "!ERRORLEVEL!" in src and "%ERRORLEVEL%" not in src
     assert src.count("exitcode=!ERRORLEVEL!") == 3  # proxy, app, worker
-    for name in ("supervisor_app.exitcode", "job_worker.exitcode",
-                 "codex_compat_proxy.exitcode"):
+    for name in (
+        "supervisor_app.exitcode",
+        "job_worker.exitcode",
+        "codex_compat_proxy.exitcode",
+    ):
         assert name in src
 
 
@@ -113,7 +120,7 @@ def test_ui_arms_death_capture_and_lifecycle_logs():
 
 def test_ui_watchdog_ticks_the_liveness_clock():
     src = _read("app.py")
-    assert 'Path(".job_store") / "ui.lock"' in src
+    assert 'Path(JOB_STORE_DIR) / "ui.lock"' in src
     assert "_touch_ui_lock()" in src
     watchdog = src.split("def _ui_watchdog")[1]
     assert "_touch_ui_lock()" in watchdog.split("def ")[0]
@@ -145,7 +152,13 @@ def test_service_logs_live_in_the_dedicated_logs_directory():
 def test_browser_beacon_reports_socket_and_tab_events():
     src = _read("services", "webui", "layout.py")
     assert "[beacon]" in src
-    for needle in ("socket disconnect", "connect_error", "reconnect_attempt",
-                   "freeze", "visibilitychange", "window.onerror"):
+    for needle in (
+        "socket disconnect",
+        "connect_error",
+        "reconnect_attempt",
+        "freeze",
+        "visibilitychange",
+        "window.onerror",
+    ):
         assert needle in src
     assert "BEACON_JS" in src.split("def apply_theme")[1]

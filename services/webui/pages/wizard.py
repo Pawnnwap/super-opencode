@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from collections.abc import Callable
 from html import escape
@@ -22,6 +23,7 @@ _MAX_LISTED_FILES = 2000
 # offers the first _DROPLIST_FILES of them to stay responsive.
 _DROPLIST_FILES = 500
 _IGNORE_SUGGEST_FILES = 1000
+logger = logging.getLogger(__name__)
 
 # Holds the refine call currently in flight, if any, so the Cancel button can
 # abort it.
@@ -57,9 +59,13 @@ def _stash_protocol_draft() -> None:
 def _take_protocol_draft(workspace: Path) -> dict:
     """Pop a stashed draft for this workspace, if any."""
     try:
-        return nicegui_app.storage.general.pop(
-            f"protocol_draft::{workspace}", {},
-        ) or {}
+        return (
+            nicegui_app.storage.general.pop(
+                f"protocol_draft::{workspace}",
+                {},
+            )
+            or {}
+        )
     except Exception:  # noqa: BLE001 — no client context, nothing to restore
         return {}
 
@@ -96,8 +102,8 @@ def _bind_input(
         value=value,
         password=password,
         on_change=_change,
-    # Bounded, not w-full: a full-width input pushes its row-mates onto the
-    # next line, which is how every row of settings became one-per-line.
+        # Bounded, not w-full: a full-width input pushes its row-mates onto the
+        # next line, which is how every row of settings became one-per-line.
     ).classes(classes or "w-72 mono")
 
 
@@ -109,12 +115,21 @@ def _bind_switch(key: str, label: str, *, on_change: Callable[[], None] | None =
             on_change()
 
     return ui.switch(
-        i18n.t(label), value=bool(app_state.get(key)), on_change=_change,
+        i18n.t(label),
+        value=bool(app_state.get(key)),
+        on_change=_change,
     )
 
 
-def _bind_number(key: str, label: str, *, min: int, max: int, format: str = "%.0f",
-                 classes: str = "w-44"):
+def _bind_number(
+    key: str,
+    label: str,
+    *,
+    min: int,
+    max: int,
+    format: str = "%.0f",
+    classes: str = "w-44",
+):
     def _change(e) -> None:
         if e.value is not None:
             app_state[key] = int(e.value)
@@ -122,8 +137,12 @@ def _bind_number(key: str, label: str, *, min: int, max: int, format: str = "%.0
 
     # w-44 so the LABEL fits: a cramped field ellipsizes its own title.
     return ui.number(
-        i18n.t(label), value=int(app_state.get(key) or 0), min=min, max=max,
-        format=format, on_change=_change,
+        i18n.t(label),
+        value=int(app_state.get(key) or 0),
+        min=min,
+        max=max,
+        format=format,
+        on_change=_change,
     ).classes(classes)
 
 
@@ -142,8 +161,13 @@ def _bind_float(
             _save()
 
     return ui.number(
-        i18n.t(label), value=float(app_state.get(key) or 0), min=min, max=max,
-        step=0.01, format=format, on_change=_change,
+        i18n.t(label),
+        value=float(app_state.get(key) or 0),
+        min=min,
+        max=max,
+        step=0.01,
+        format=format,
+        on_change=_change,
     ).classes(classes)
 
 
@@ -233,7 +257,11 @@ def _section(
     is decorative, and the only way back to a section is 1500px of scrolling.
     """
     return theme.fold(
-        f"wizard.{title}", title, icon=icon, caption=caption, default=open_,
+        f"wizard.{title}",
+        title,
+        icon=icon,
+        caption=caption,
+        default=open_,
         anchor=anchor,
     )
 
@@ -291,7 +319,10 @@ def _config_section() -> None:
     switches, limits and maintenance live in Advanced settings (collapsed).
     """
     with _section(
-        "Configuration", anchor="configuration", open_=True, icon="key",
+        "Configuration",
+        anchor="configuration",
+        open_=True,
+        icon="key",
         caption="Credentials, workspace and the execution engine",
     ):
         theme.group_label("Credentials")
@@ -366,6 +397,7 @@ def _clean_artifacts() -> None:
             i18n.tr("Cleaned artifacts in {workspace}", workspace=workspace.name),
         )
 
+
 # ── Models section ────────────────────────────────────────────────────────────
 
 
@@ -414,7 +446,8 @@ def _agent_variant_choices(engine: str, model: str) -> list[str]:
     if engine == "opencode":
         return list(
             opencode_variant_choices(
-                app_state.get("opencode_executable") or "opencode", model or "",
+                app_state.get("opencode_executable") or "opencode",
+                model or "",
             )
         )
     if engine == "pi":
@@ -425,9 +458,7 @@ def _agent_variant_choices(engine: str, model: str) -> list[str]:
 def _agent_model_field() -> None:
     """Agent model droplist (or free input) + fetch button, nothing else."""
     engine = (app_state.get("engine") or "opencode").strip().lower()
-    models = (
-        app_state.opencode_models if app_state.model_list_engine == engine else []
-    )
+    models = app_state.opencode_models if app_state.model_list_engine == engine else []
     if models:
         current = app_state.get("opencode_model") or models[0]
         options = models + [i18n.t("(custom)")]
@@ -439,20 +470,30 @@ def _agent_model_field() -> None:
             label=i18n.tr("Agent model ({engine})", engine=engine),
             on_change=lambda e: _set_model(e.value),
         ).classes("w-96 mono")
-        refresh_button = ui.button(
-            i18n.t("Refresh models"), icon="sync",
-            on_click=lambda: _refresh_models(refresh_button),
-        ).props("flat dense").tooltip(i18n.t("Re-read the engine's model list."))
+        refresh_button = (
+            ui.button(
+                i18n.t("Refresh models"),
+                icon="sync",
+                on_click=lambda: _refresh_models(refresh_button),
+            )
+            .props("flat dense")
+            .tooltip(i18n.t("Re-read the engine's model list."))
+        )
     else:
         _bind_input(
             "opencode_model",
             i18n.tr("Agent model ({engine})", engine=engine),
         )
-        refresh_button = ui.button(
-            i18n.t("Fetch models"), icon="cloud_download",
-            on_click=lambda: _refresh_models(refresh_button),
-        ).props("outline color=none dense").tooltip(
-            i18n.t("Read the engine's model list."),
+        refresh_button = (
+            ui.button(
+                i18n.t("Fetch models"),
+                icon="cloud_download",
+                on_click=lambda: _refresh_models(refresh_button),
+            )
+            .props("outline color=none dense")
+            .tooltip(
+                i18n.t("Read the engine's model list."),
+            )
         )
 
 
@@ -467,7 +508,8 @@ def _advanced_section() -> None:
 
     engine = (app_state.get("engine") or "opencode").strip().lower()
     with _section(
-        "Advanced settings", icon="tune",
+        "Advanced settings",
+        icon="tune",
         caption="Not needed for a normal run — models, arbiter, limits",
     ):
         theme.group_label("Models & reasoning")
@@ -481,9 +523,11 @@ def _advanced_section() -> None:
             else:
                 variant_label = "Thinking variant"
             _reasoning_select(
-                "agent_reasoning", variant_label,
+                "agent_reasoning",
+                variant_label,
                 _agent_variant_choices(
-                    engine, app_state.get("opencode_model") or "",
+                    engine,
+                    app_state.get("opencode_model") or "",
                 ),
             )
             _reasoning_select(
@@ -536,12 +580,14 @@ def _advanced_section() -> None:
             _bind_float(
                 "jev_decision_threshold",
                 "Jev confidence threshold",
-                min=0.50, max=0.99,
+                min=0.50,
+                max=0.99,
             )
             _bind_float(
                 "jev_choice_threshold",
                 "Jev choice threshold",
-                min=0.50, max=0.99,
+                min=0.50,
+                max=0.99,
             ).tooltip(
                 i18n.t(
                     "Minimum probability for a multi-way jev ruling (DONE, "
@@ -588,15 +634,21 @@ def _advanced_section() -> None:
             )
             _bind_number("max_parallel_jobs", "Max parallel jobs", min=1, max=32)
             _bind_number(
-                "max_stored_jobs", "Stored jobs (log retention)",
-                min=5, max=1000, classes="w-56",
+                "max_stored_jobs",
+                "Stored jobs (log retention)",
+                min=5,
+                max=1000,
+                classes="w-56",
             )
 
         theme.group_label("Maintenance")
         # The detail lives in the tooltips so the labels never ellipsize.
         with ui.row().classes("sop-row"):
-            npm_registry = _bind_input("npm_registry", "npm registry for CLI upgrades",
-                                       classes="flex-grow mono")
+            npm_registry = _bind_input(
+                "npm_registry",
+                "npm registry for CLI upgrades",
+                classes="flex-grow mono",
+            )
             npm_registry.tooltip(i18n.t("Empty = the default registry."))
             skills_dir = _bind_input(
                 "supervisor_skills_dir",
@@ -611,11 +663,11 @@ def _advanced_section() -> None:
                 ),
             )
         ui.button(
-            i18n.t("Clean artifacts"), on_click=lambda: _clean_artifacts(),
+            i18n.t("Clean artifacts"),
+            on_click=lambda: _clean_artifacts(),
         ).props("flat dense").tooltip(
             i18n.t(
-                "Delete build artifacts and caches in the configured "
-                "workspace.",
+                "Delete build artifacts and caches in the configured workspace.",
             ),
         )
         _skills_listing()
@@ -655,7 +707,8 @@ async def _refresh_models(button=None) -> None:
         ui.notify(
             i18n.tr(
                 "Fetched {n} {engine} models — reloading page.",
-                n=len(models), engine=engine,
+                n=len(models),
+                engine=engine,
             ),
         )
         ui.run_javascript("location.reload()")
@@ -677,7 +730,9 @@ async def _refresh_models(button=None) -> None:
 def _protection_section() -> None:
     """One panel for everything that bounds what the agent may touch."""
     with _section(
-        "Access & Protection", anchor="access", icon="shield",
+        "Access & Protection",
+        anchor="access",
+        icon="shield",
         caption="Read-only paths, protected files, ignore list",
     ):
         theme.hint(
@@ -737,8 +792,10 @@ def _protection_section() -> None:
                     detail = i18n.tr(
                         "{phase} — {reasoning} reasoning chars · "
                         "{answer} answer chars · {elapsed}",
-                        phase=phase, reasoning=f"{reasoning:,}",
-                        answer=f"{content:,}", elapsed=_elapsed(),
+                        phase=phase,
+                        reasoning=f"{reasoning:,}",
+                        answer=f"{content:,}",
+                        elapsed=_elapsed(),
                     )
                     status.set_text(detail)
                     status.update()
@@ -748,7 +805,8 @@ def _protection_section() -> None:
 
                 def _on_stream(content: int, reasoning: int) -> None:
                     phase = i18n.t(
-                        "waiting for the model" if not (content or reasoning)
+                        "waiting for the model"
+                        if not (content or reasoning)
                         else ("reasoning" if not content else "writing answer"),
                     )
                     _live(f"{step['n']}/2 {phase}", content, reasoning)
@@ -759,7 +817,8 @@ def _protection_section() -> None:
                         "1/2 suggesting read-only directories (LLM) — waiting "
                         "for the model",
                     ),
-                    0, 0,
+                    0,
+                    0,
                 )
                 try:
                     result = await nicegui_run.io_bound(
@@ -785,14 +844,16 @@ def _protection_section() -> None:
                             detail=f"{type(exc).__name__}: {str(exc)[:200]}",
                         ),
                     )
-                    _live(i18n.tr("1/2 FAILED after {elapsed}", elapsed=_elapsed()), 0, 0)
+                    _live(
+                        i18n.tr("1/2 FAILED after {elapsed}", elapsed=_elapsed()), 0, 0
+                    )
                 step["n"] = 2
                 _live(
                     i18n.t(
-                        "2/2 generating ignore patterns (LLM) — waiting for "
-                        "the model",
+                        "2/2 generating ignore patterns (LLM) — waiting for the model",
                     ),
-                    0, 0,
+                    0,
+                    0,
                 )
                 patterns = ""
                 try:
@@ -809,7 +870,9 @@ def _protection_section() -> None:
                             detail=f"{type(exc).__name__}: {str(exc)[:200]}",
                         ),
                     )
-                    _live(i18n.tr("2/2 FAILED after {elapsed}", elapsed=_elapsed()), 0, 0)
+                    _live(
+                        i18n.tr("2/2 FAILED after {elapsed}", elapsed=_elapsed()), 0, 0
+                    )
                 # apply_generation + _profile_sync WRITE profile/ignore files;
                 # an OSError there escaped into NiceGUI's async task, which only
                 # logs to stderr, so the button looked dead while nothing was
@@ -858,16 +921,20 @@ def _protection_section() -> None:
             return ok
 
         with ui.row().classes("items-center gap-3 flex-wrap"):
-            auto_button = ui.button(
-                i18n.t("Auto-generate access & protection (LLM)"),
-                on_click=_auto_generate,
-            ).props("dense color=primary").tooltip(
-                i18n.t(
-                    "One LLM pass: suggests read-only reference directories "
-                    "from the saved protocol, generates .opencodeignore "
-                    "patterns, validates every entry, and saves both into the "
-                    "workspace.",
-                ),
+            auto_button = (
+                ui.button(
+                    i18n.t("Auto-generate access & protection (LLM)"),
+                    on_click=_auto_generate,
+                )
+                .props("dense color=primary")
+                .tooltip(
+                    i18n.t(
+                        "One LLM pass: suggests read-only reference directories "
+                        "from the saved protocol, generates .opencodeignore "
+                        "patterns, validates every entry, and saves both into the "
+                        "workspace.",
+                    ),
+                )
             )
             if not ready:
                 auto_button.set_enabled(False)
@@ -892,13 +959,16 @@ def _protected_section() -> None:
             ).classes("sop-hint")
             return
         add_select = ui.select(
-            [], multiple=True,
+            [],
+            multiple=True,
             label=i18n.t("Add protected files (workspace scan)"),
         ).classes("w-full")
 
         async def _load_options() -> None:
             entries = await nicegui_run.io_bound(
-                _list_workspace_files, workspace, _MAX_LISTED_FILES,
+                _list_workspace_files,
+                workspace,
+                _MAX_LISTED_FILES,
             )
             add_select.options = entries[:_DROPLIST_FILES]
             add_select.update()
@@ -941,8 +1011,7 @@ def _refresh_chips(protected: list[str], container) -> None:
                 )
                 if auto:
                     ui.html(
-                        '<span class="chip">'
-                        f'{escape(i18n.t("config · auto"))}</span>',
+                        f'<span class="chip">{escape(i18n.t("config · auto"))}</span>',
                     )
                 else:
                     ui.space()
@@ -993,7 +1062,8 @@ def _access_section() -> None:
 
         with ui.row().classes("w-full gap-6 flex-wrap"):
             _bind_switch(
-                "access_policy_enabled", "Enforce the hard path policy",
+                "access_policy_enabled",
+                "Enforce the hard path policy",
                 on_change=_persist,
             ).props("dense")
             _bind_switch(
@@ -1053,7 +1123,7 @@ def _access_section() -> None:
                     )
                     ui.html(
                         '<span class="chip chip--accent">'
-                        f'{escape(i18n.t("read-only"))}</span>',
+                        f"{escape(i18n.t('read-only'))}</span>",
                     )
                     ui.button(
                         icon="close",
@@ -1080,8 +1150,9 @@ def _access_section() -> None:
             report = _run_policy_drill_cached(workspace, policy)
             theme.notice(
                 "ok" if report.ok else "bad",
-                i18n.t("Policy drill passed — " if report.ok
-                       else "Policy drill FAILED — ")
+                i18n.t(
+                    "Policy drill passed — " if report.ok else "Policy drill FAILED — "
+                )
                 + report.summary(),
             )
             if not report.ok:
@@ -1190,7 +1261,8 @@ def _ignore_section() -> None:
             ignore_path.read_text(encoding="utf-8") if ignore_path.exists() else ""
         )
         area = ui.textarea(
-            i18n.t(".opencodeignore content"), value=current,
+            i18n.t(".opencodeignore content"),
+            value=current,
         ).classes(
             "w-full mono",
         )
@@ -1325,7 +1397,8 @@ def _connectivity_section() -> None:
                     "\n".join(
                         i18n.tr(
                             "{mark} {name}: {message}",
-                            mark="✅" if ok else "❌", name=name,
+                            mark="✅" if ok else "❌",
+                            name=name,
                             message=message[:140],
                         )
                         for name, (ok, message) in results.items()
@@ -1341,8 +1414,7 @@ def _connectivity_section() -> None:
                         status.text
                         + "\n"
                         + i18n.t(
-                            "✅ Both connectivity tests passed — Live Run "
-                            "unlocked.",
+                            "✅ Both connectivity tests passed — Live Run unlocked.",
                         ),
                     )
                 # The hand-off button at the page bottom is gated on these
@@ -1353,7 +1425,8 @@ def _connectivity_section() -> None:
         with ui.row().classes("gap-3 flex-wrap items-center"):
             test_buttons = [
                 ui.button(
-                    i18n.t("Run Tests"), on_click=lambda: _run("all"),
+                    i18n.t("Run Tests"),
+                    on_click=lambda: _run("all"),
                 ).props(
                     "color=primary",
                 ),
@@ -1364,18 +1437,19 @@ def _connectivity_section() -> None:
                     "outline color=none",
                 ),
                 ui.button(
-                    i18n.t("Test Supervisor"), on_click=lambda: _run("supervisor"),
+                    i18n.t("Test Supervisor"),
+                    on_click=lambda: _run("supervisor"),
                 ).props("outline color=none"),
             ]
             if app_state.tests_ok():
                 ui.html(
                     '<span class="chip chip--ok">'
-                    f'{escape(i18n.t("both probes passed"))}</span>',
+                    f"{escape(i18n.t('both probes passed'))}</span>",
                 )
             else:
                 ui.html(
                     '<span class="chip chip--warn">'
-                    f'{escape(i18n.t("probes not passed yet"))}</span>',
+                    f"{escape(i18n.t('probes not passed yet'))}</span>",
                 )
 
 
@@ -1425,7 +1499,7 @@ def _update_quality(labels: dict, sections: dict[str, str]) -> None:
         "restrictions": analysis.restrictions_score.overall,
     }
     for key, value in scores.items():
-        tone, color = _quality_score(float(value))
+        _tone, color = _quality_score(float(value))
         label = labels.get(key)
         if label is None:
             continue
@@ -1448,7 +1522,10 @@ def _protocol_section() -> None:
     from supervisor.protocols.protocol import load_protocol, resolve_protocol_path
 
     with _section(
-        "Protocol", anchor="protocol", open_=True, icon="description",
+        "Protocol",
+        anchor="protocol",
+        open_=True,
+        icon="description",
         caption="What the task is: context, objectives, boundaries",
     ):
         workspace = _workspace()
@@ -1468,14 +1545,17 @@ def _protocol_section() -> None:
             except (OSError, ValueError) as exc:
                 theme.notice(
                     "bad",
-                    i18n.tr("Could not load {name}: {error}", name=path.name, error=exc),
+                    i18n.tr(
+                        "Could not load {name}: {error}", name=path.name, error=exc
+                    ),
                 )
             else:
                 theme.notice(
                     "ok",
                     i18n.tr(
                         "Loaded {name} from {workspace}.",
-                        name=path.name, workspace=workspace.name,
+                        name=path.name,
+                        workspace=workspace.name,
                     ),
                 )
         else:
@@ -1491,10 +1571,15 @@ def _protocol_section() -> None:
             ("target", "TARGET (objectives)"),
             ("restrictions", "RESTRICTIONS (boundaries)"),
         ):
-            areas[key] = ui.textarea(
-                i18n.t(label),
-                value=getattr(loaded, f"{key}_section", "") if loaded else "",
-            ).classes("w-full mono").props("autogrow").style("min-height: 4.5rem")
+            areas[key] = (
+                ui.textarea(
+                    i18n.t(label),
+                    value=getattr(loaded, f"{key}_section", "") if loaded else "",
+                )
+                .classes("w-full mono")
+                .props("autogrow")
+                .style("min-height: 4.5rem")
+            )
 
         def _sections() -> dict[str, str]:
             return {key: str(area.value or "") for key, area in areas.items()}
@@ -1518,7 +1603,9 @@ def _protocol_section() -> None:
         with ui.row().classes("sop-chips items-center"):
             chips: dict[str, object] = {}
             for key, label in (
-                ("overall", "overall"), ("input", "INPUT"), ("target", "TARGET"),
+                ("overall", "overall"),
+                ("input", "INPUT"),
+                ("target", "TARGET"),
                 ("restrictions", "RESTRICTIONS"),
             ):
                 ui.label(i18n.t(label)).classes("sop-hint")
@@ -1535,11 +1622,17 @@ def _protocol_section() -> None:
             refine_button = ui.button(
                 i18n.t("Refine with AI"),
                 on_click=lambda: _refine(
-                    workspace, _sections, areas, status, refine_button, cancel_button,
+                    workspace,
+                    _sections,
+                    areas,
+                    status,
+                    refine_button,
+                    cancel_button,
                 ),
             ).props("outline color=none")
             cancel_button = ui.button(
-                i18n.t("Cancel"), on_click=lambda: _cancel_refine(status),
+                i18n.t("Cancel"),
+                on_click=lambda: _cancel_refine(status),
             ).props("outline color=red")
             cancel_button.set_visibility(False)
             ui.button(
@@ -1580,8 +1673,8 @@ def _accept_protocol(workspace: Path, sections_getter) -> None:
     # render and make the page disagree with the file.
     try:
         nicegui_app.storage.general.pop(f"protocol_draft::{workspace}", None)
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception:
+        logger.debug("Could not clear protocol draft %s", workspace, exc_info=True)
     # Refresh the workspace profile so the new config file is protected too.
     _profile_save(workspace)
     # Stay on the page: Access & Protection sits directly below and only
@@ -1592,15 +1685,20 @@ def _accept_protocol(workspace: Path, sections_getter) -> None:
     _stepper.refresh()
     ui.notify(
         i18n.tr(
-            "{name} saved to {workspace} — Access & Protection below is now "
-            "unlocked.",
-            name=path.name, workspace=workspace.name,
+            "{name} saved to {workspace} — Access & Protection below is now unlocked.",
+            name=path.name,
+            workspace=workspace.name,
         ),
     )
 
 
 async def _refine(
-    workspace: Path | None, sections_getter, areas, status, refine_button, cancel_button,
+    workspace: Path | None,
+    sections_getter,
+    areas,
+    status,
+    refine_button,
+    cancel_button,
 ) -> None:
     sections = sections_getter()
     if not all(sections[key].strip() for key in ("input", "target", "restrictions")):
@@ -1608,8 +1706,7 @@ async def _refine(
         return
     status.set_text(
         i18n.t(
-            "Refining protocol with AI… (the model reasons at length before "
-            "answering)",
+            "Refining protocol with AI… (the model reasons at length before answering)",
         ),
     )
     stop_event = _refine_call.begin()
@@ -1630,7 +1727,9 @@ async def _refine(
             started = time.monotonic()
 
             def _on_progress(
-                content_chars: int, reasoning_chars: int, _chunks: int,
+                content_chars: int,
+                reasoning_chars: int,
+                _chunks: int,
             ) -> None:
                 # Called from the io_bound worker thread; NiceGUI queues the
                 # update onto the client's event loop.
@@ -1641,7 +1740,8 @@ async def _refine(
                     i18n.tr(
                         "Refining — {phase}… {reasoning} reasoning chars · "
                         "{answer} answer chars · {elapsed}s",
-                        phase=phase, reasoning=f"{reasoning_chars:,}",
+                        phase=phase,
+                        reasoning=f"{reasoning_chars:,}",
                         answer=f"{content_chars:,}",
                         elapsed=f"{time.monotonic() - started:.0f}",
                     ),
@@ -1649,15 +1749,17 @@ async def _refine(
                 status.update()
 
             def _on_gate_round(
-                fix_round: int, max_fix_rounds: int, issues: tuple[str, ...],
+                fix_round: int,
+                max_fix_rounds: int,
+                issues: tuple[str, ...],
             ) -> None:
                 # Same worker-thread contract as _on_progress: the audit
                 # rejected the draft and the wizard is editing it again.
                 status.set_text(
                     i18n.tr(
-                        "Gate check failed — auto-fix round {round}/{total}: "
-                        "{issues}",
-                        round=fix_round, total=max_fix_rounds,
+                        "Gate check failed — auto-fix round {round}/{total}: {issues}",
+                        round=fix_round,
+                        total=max_fix_rounds,
                         issues=" ".join(issues),
                     ),
                 )
@@ -1741,9 +1843,7 @@ def _setup_blockers(workspace: Path | None) -> list[str]:
         )
     policy = AccessPolicy(
         workspace=workspace,
-        whitelist=tuple(
-            Path(item) for item in (profile.get("access_whitelist") or [])
-        ),
+        whitelist=tuple(Path(item) for item in (profile.get("access_whitelist") or [])),
         enabled=bool(profile.get("access_policy_enabled", True)),
         strict_dynamic=bool(profile.get("access_policy_strict", False)),
     )
@@ -1768,7 +1868,9 @@ def _setup_steps(workspace: Path | None) -> list[tuple[str, bool]]:
     from supervisor.security.access_policy import AccessPolicy
     from supervisor.security.access_profile import load_profile
 
-    configured = bool((app_state.get("openai_key") or "").strip()) and workspace is not None
+    configured = (
+        bool((app_state.get("openai_key") or "").strip()) and workspace is not None
+    )
     protocol_ok = False
     if workspace is not None:
         protocol_ok, _reason = _protocol_ready(workspace)
@@ -1807,15 +1909,20 @@ def _stepper() -> None:
     steps = _setup_steps(_workspace())
     done_count = sum(1 for _label, done, _anchor in steps if done)
     current = next(
-        (index for index, step in enumerate(steps) if not step[1]), len(steps) - 1,
+        (index for index, step in enumerate(steps) if not step[1]),
+        len(steps) - 1,
     )
     with ui.row().classes("sop-steps"):
         for index, (label, done, anchor) in enumerate(steps):
             state = "done" if done else ("current" if index == current else "todo")
             # A real link, not a styled div: clickable, focusable, and it works
             # with the keyboard and the browser's own history.
-            link = ui.element("a").classes(f"sop-step sop-step--{state}").props(
-                f'href="#{anchor}" aria-label="{escape(i18n.t(label))}"',
+            link = (
+                ui.element("a")
+                .classes(f"sop-step sop-step--{state}")
+                .props(
+                    f'href="#{anchor}" aria-label="{escape(i18n.t(label))}"',
+                )
             )
             if index == current:
                 link.props('aria-current="step"')
@@ -1850,7 +1957,9 @@ def _stepper() -> None:
         # a sixth step.
         ui.label(
             i18n.tr(
-                "{done}/{total} steps done", done=done_count, total=len(steps),
+                "{done}/{total} steps done",
+                done=done_count,
+                total=len(steps),
             ),
         ).classes("sop-hint mono")
 
@@ -1864,36 +1973,42 @@ def _ready_section() -> None:
     this button is the only hand-off.
     """
     blockers = _setup_blockers(_workspace())
-    with theme.panel(
-        "Hand-off", icon="rocket_launch", tone="" if blockers else "quiet",
-        anchor="handoff",
-        subtitle=(
-            i18n.tr(
-                "{n} step(s) left before this page can be left", n=len(blockers),
-            )
-            if blockers else i18n.t("Every setup step and probe is complete")
+    with (
+        theme.panel(
+            "Hand-off",
+            icon="rocket_launch",
+            tone="" if blockers else "quiet",
+            anchor="handoff",
+            subtitle=(
+                i18n.tr(
+                    "{n} step(s) left before this page can be left",
+                    n=len(blockers),
+                )
+                if blockers
+                else i18n.t("Every setup step and probe is complete")
+            ),
         ),
+        ui.row().classes("w-full items-center gap-4 flex-wrap"),
+        ui.column().classes("grow gap-1 min-w-0"),
     ):
-        with ui.row().classes("w-full items-center gap-4 flex-wrap"):
-            with ui.column().classes("grow gap-1 min-w-0"):
-                if blockers:
-                    ui.label(
-                        i18n.t("Locked until every setup step is complete:"),
-                    ).classes(
-                        "sop-hint",
+        if blockers:
+            ui.label(
+                i18n.t("Locked until every setup step is complete:"),
+            ).classes(
+                "sop-hint",
+            )
+            for item in blockers:
+                with ui.row().classes("items-start gap-2 flex-nowrap"):
+                    ui.icon("radio_button_unchecked").style(
+                        "color:var(--sop-warn);font-size:14px;margin-top:2px",
                     )
-                    for item in blockers:
-                        with ui.row().classes("items-start gap-2 flex-nowrap"):
-                            ui.icon("radio_button_unchecked").style(
-                                "color:var(--sop-warn);font-size:14px;margin-top:2px",
-                            )
-                            ui.label(i18n.ts(item)).classes("sop-meta")
-                else:
-                    theme.notice(
-                        "ok",
-                        "Setup complete — the run page is unlocked and reads "
-                        "this workspace and protocol.",
-                    )
+                    ui.label(i18n.ts(item)).classes("sop-meta")
+        else:
+            theme.notice(
+                "ok",
+                "Setup complete — the run page is unlocked and reads "
+                "this workspace and protocol.",
+            )
             with ui.column().classes("items-end gap-1"):
                 if blockers:
                     # An outline, not a dimmed primary: "not yet" must not

@@ -3,8 +3,10 @@ openai>=1.30.0
 # NO_PROXY entry (`[::1]`) with InvalidURL before any request is sent.
 httpx2>=2.16
 pytest>=8.0.0
-rich>=13.0.0
-pyscn>=1.1.2
+rich>=14.3.0
+psutil>=7.1.0
+cryptography>=42.0.0
+mcp>=1.0.0,<2
 ruff>=0.4.4
 vulture>=2.11
 deadcode>=0.1.3
@@ -19,4 +21,4 @@ pylint>=3.0.0
 pyflakes>=3.0.0
 semgrep>=1.50.0
 pip-audit>=2.6.0
-mcp
+pyscn>=1.1.2

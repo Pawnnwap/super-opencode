@@ -3,10 +3,11 @@
 A local supervisor that drives a coding agent (opencode / codex / pi) against a
 strict `protocol.jsonl`, enforces a hard filesystem access policy, and records
 acceptance gates. Everything runs on `127.0.0.1`; no cloud control plane.
+The access policy is a deterministic rule gate, not a kernel sandbox.
 
 ## 1. Requirements
 
-- Windows 10/11, PowerShell 5.1+, Python 3.13 (the repo ships a `venv\`).
+- Windows 10/11, PowerShell 5.1+, Python 3.11 or newer (the repo ships a `venv\`).
 - An agent CLI reachable from the app: `opencode`, `codex`, or `pi`.
 - An OpenAI-compatible model endpoint for the **supervisor** LLM and one for the
   **agent** engine (both configurable; a local endpoint is the intended setup).
@@ -43,6 +44,9 @@ never start them from an interactive shell long-term. It registers:
 | `soprun_guardian_backstop` | every 15 min: restart the guardian if its heartbeat is stale |
 
 UI: <http://127.0.0.1:8501>. Proxy: `127.0.0.1:8321` (local-only).
+For the first browser sign-in, append `?token=<contents-of-.job_store\\ui.token>`
+to the UI URL; the app then sets an HttpOnly session cookie. `/healthz` remains
+public for the guardian.
 
 The proxy is fully configurable: `-ProxyPort`, `-AppPort`, and `-Upstream` (or
 `SOP_UPSTREAM`) — nothing is pinned in code; the effective ports are written to
@@ -55,8 +59,8 @@ The **Protocol Wizard** page (`/`) holds the whole setup:
 
 1. **Configuration** — workspace path, supervisor model/API key/base URL, agent
    engine + model + executable.
-2. **Connectivity Tests** — required before Live Run unlocks. An app restart
-   re-locks them (flags are session-only); just run the tests again.
+2. **Connectivity Tests** — required before Live Run unlocks. Passing probes are
+   cached for seven days and invalidated when their configuration fingerprint changes.
 3. **Advanced settings** — limits, retries, timeouts, log detail.
 4. **Access & Protection** — one panel, one *Auto-generate* button (LLM):
    - read-only whitelist dirs (agent config/skill dirs are added automatically),
@@ -120,7 +124,7 @@ Logs (all under `logs\`): `supervisor_app.out/err.log`,
 ## 9. Checks
 
 ```powershell
-venv\Scripts\python.exe -m pytest checks\test_*.py -q
+venv\Scripts\python.exe -m pytest checks -q
 ```
 
 ## 10. For AI agents

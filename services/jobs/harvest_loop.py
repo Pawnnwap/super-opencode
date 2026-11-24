@@ -43,6 +43,7 @@ from services.jobs.harvest import (
 from services.jobs.state_store import JobStateStore
 from supervisor.protocols.protocol import resolve_protocol_path
 from supervisor.runners.factory import create_runner, resolve_engine
+from supervisor.security.redaction import redact_text
 from supervisor.workspace.workspace_guard import WorkspaceGuard
 
 logger = logging.getLogger(__name__)
@@ -197,6 +198,7 @@ class HarvestLoop:
                 source_workspace=workspace,
                 read_roots=tuple(read_roots),
             )
+            self._redact_text_file(dest / "harvest.md")
             if status == "stopped":
                 entry.harvest = "cancelled"
                 entry.detail = "cancelled while the agent was running"
@@ -220,7 +222,10 @@ class HarvestLoop:
                     else "the harvest agent did not write harvest.md"
                 )
                 self._write_fallback(
-                    dest, job_id, reason, "" if status == "error" else prose,
+                    dest,
+                    job_id,
+                    reason,
+                    "" if status == "error" else prose,
                 )
                 yield _ev(
                     "warn",
@@ -236,14 +241,21 @@ class HarvestLoop:
         has_summary = False
         if not cancelled:
             has_summary = yield from self._synthesize(
-                batch, prompt, entries, read_roots=tuple(read_roots),
+                batch,
+                prompt,
+                entries,
+                read_roots=tuple(read_roots),
             )
 
         index_text = index_markdown(
-            batch, started, prompt, entries, has_summary=has_summary,
+            batch,
+            started,
+            prompt,
+            entries,
+            has_summary=has_summary,
         )
         try:
-            (batch / "INDEX.md").write_text(index_text, encoding="utf-8")
+            (batch / "INDEX.md").write_text(redact_text(index_text), encoding="utf-8")
         except OSError as exc:
             yield _ev("error", f"Cannot write {batch / 'INDEX.md'}: {exc}")
             return
@@ -313,7 +325,7 @@ class HarvestLoop:
             return "ok", runner.read_prose()
         except Exception as exc:
             logger.exception("Harvest agent failed in %s", cwd)
-            return "error", str(exc)
+            return "error", redact_text(str(exc))
         finally:
             self.runner = None
             if runner is not None:
@@ -374,26 +386,32 @@ class HarvestLoop:
             return True
 
         yield _ev(
-            "info", f"Writing batch summary from {len(usable)} harvest note(s)",
+            "info",
+            f"Writing batch summary from {len(usable)} harvest note(s)",
         )
         status, prose = yield from self._run_agent(
-            batch, synthesis_prompt(prompt, batch, usable), read_roots=read_roots,
+            batch,
+            synthesis_prompt(prompt, batch, usable),
+            read_roots=read_roots,
         )
         if status == "stopped":
             return False
+        self._redact_text_file(target)
         if _has_text(target):
             yield _ev("info", "HARVEST.md written")
             return True
         if prose.strip():
             try:
                 target.write_text(
-                    f"# Harvest\n\n{prose.strip()}\n", encoding="utf-8",
+                    redact_text(f"# Harvest\n\n{prose.strip()}\n"),
+                    encoding="utf-8",
                 )
             except OSError as exc:
                 yield _ev("warn", f"Cannot write {target}: {exc}")
                 return False
             yield _ev(
-                "warn", "Batch agent wrote no HARVEST.md; saved its reply instead",
+                "warn",
+                "Batch agent wrote no HARVEST.md; saved its reply instead",
             )
             return True
         yield _ev("warn", "Batch summary unavailable; INDEX.md still lists every run")
@@ -444,7 +462,10 @@ class HarvestLoop:
             from supervisor.security.preflight import run_drill
 
             drill = run_drill(
-                resolve_engine(run_config), workspace, policy, result,
+                resolve_engine(run_config),
+                workspace,
+                policy,
+                result,
             )
             if not drill.ok:
                 raise RuntimeError(
@@ -510,8 +531,21 @@ class HarvestLoop:
                 pass  # not empty, or never created
 
     @staticmethod
+    def _redact_text_file(path: Path) -> None:
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return
+        cleaned = redact_text(text)
+        if cleaned != text:
+            path.write_text(cleaned, encoding="utf-8")
+
+    @staticmethod
     def _write_fallback(
-        dest: Path, job_id: str, reason: str, prose: str,
+        dest: Path,
+        job_id: str,
+        reason: str,
+        prose: str,
     ) -> None:
         parts = [
             f"# Harvest fallback - {job_id}",
@@ -530,7 +564,10 @@ class HarvestLoop:
             ),
             "",
         ]
-        (dest / "harvest.md").write_text("\n".join(parts), encoding="utf-8")
+        (dest / "harvest.md").write_text(
+            redact_text("\n".join(parts)),
+            encoding="utf-8",
+        )
 
     @staticmethod
     def _finish_meta(dest: Path, meta: dict, entry: HarvestEntry) -> None:

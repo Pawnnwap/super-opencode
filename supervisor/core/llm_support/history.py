@@ -5,6 +5,7 @@ import logging
 
 from supervisor.core.llm_support.history_compaction import extract_output
 from supervisor.monitoring.session_tracker import estimate_request_tokens
+from supervisor.security.redaction import redact_text
 from supervisor.utils.text_utils import head_tail_excerpt
 
 logger = logging.getLogger(__name__)
@@ -88,9 +89,7 @@ def compact_history(supervisor) -> None:
             tail = preserved[-keep_count:]
             supervisor._history = core + tail
         else:
-            supervisor._history = preserved[
-                -min(keep_count * 2, len(preserved)) :
-            ]
+            supervisor._history = preserved[-min(keep_count * 2, len(preserved)) :]
 
 
 def rollup_history(supervisor, keep_recent: int = 6, headline_chars: int = 200) -> int:
@@ -178,12 +177,12 @@ def log_prompt(supervisor, title: str, messages: list[dict]) -> None:
 
         with open(log_file, "a", encoding="utf-8") as f:
             f.write(f"\n{'=' * 80}\n")
-            f.write(f"--- {title} ---\n")
+            f.write(f"--- {redact_text(title)} ---\n")
             f.write(f"Timestamp: {datetime.datetime.now().astimezone().isoformat()}\n")
             f.write(f"{'=' * 80}\n\n")
             for msg in messages:
                 role = msg.get("role", "unknown").upper()
-                content = msg.get("content", "")
+                content = redact_text(str(msg.get("content", "")))
                 f.write(f"[{role}]\n{content}\n\n{'-' * 40}\n\n")
     except Exception as exc:  # noqa: BLE001 - prompt logging is a debug aid
         logger.debug("Failed to log prompt: %s", exc)
@@ -200,9 +199,7 @@ def should_omit_step_context(
     history_context = (
         f"{experience_context}{feedback_context}{protected_context}{opencode_output}"
     )
-    conv_text = "\n".join(
-        m["content"] for m in supervisor._history if m.get("content")
-    )
+    conv_text = "\n".join(m["content"] for m in supervisor._history if m.get("content"))
     estimate = estimate_request_tokens(supervisor._system, conv_text, history_context)
     threshold = int(supervisor._max_tokens * 0.65)
     return estimate.total > threshold
@@ -232,4 +229,3 @@ def update_system_prompt(supervisor, new_preamble: str) -> None:
     supervisor._system = supervisor._system_base
     if new_preamble:
         supervisor._system += f"\n\n{new_preamble}"
-

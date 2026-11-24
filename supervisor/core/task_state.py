@@ -22,6 +22,7 @@ import re
 import time
 from pathlib import Path
 
+from supervisor.security.redaction import redact_text
 from supervisor.utils.text_utils import head_tail_excerpt
 
 logger = logging.getLogger(__name__)
@@ -72,13 +73,17 @@ def append_task_state(
     it tells the restarted agent what the judge asked for last, which no
     amount of re-reading the workspace recovers.
     """
+    feedback = redact_text(feedback)
+    next_action = redact_text(next_action)
     headline = "✅ ALL TARGETS MET" if targets_met else _headline(feedback, max_chars)
     next_line = ""
     if (next_action or "").strip():
         next_line = (
             "→ next: "
             + head_tail_excerpt(
-                " ".join(next_action.split()), _DEFAULT_NEXT_CHARS, end_ratio=0.5,
+                " ".join(next_action.split()),
+                _DEFAULT_NEXT_CHARS,
+                end_ratio=0.5,
             )
             + "\n"
         )

@@ -21,7 +21,6 @@ object).
 from __future__ import annotations
 
 import logging
-import os
 import subprocess
 import sys
 import threading
@@ -39,6 +38,7 @@ from supervisor.runners.opencode_support.result import RunResult
 from supervisor.runners.opencode_support.stream import LineEvent
 from supervisor.runners.process_utils import remember_process_identity
 from supervisor.runners.stream_driver import StreamOutcome, consume_process_stream
+from supervisor.runtime.process_base import base_environment
 from supervisor.runtime.processes import EngineProcess
 from supervisor.utils.text_utils import coerce_str
 
@@ -67,8 +67,8 @@ def _cancelled_result() -> RunResult:
 
 
 def default_child_env() -> dict[str, str]:
-    """Child environment disabling colors/TUI for every engine."""
-    return {**os.environ, "NO_COLOR": "1", "TERM": "dumb"}
+    """Minimal child environment disabling colors/TUI for every engine."""
+    return base_environment({"NO_COLOR": "1", "TERM": "dumb"})
 
 
 def windows_shell_for(exe: str) -> bool:
@@ -315,7 +315,11 @@ def run_prompt_common(
             # nothing on stdout AND stderr hands the judge a bare `[exit N]`.
             # That reads as "the agent refused to produce evidence", so gates
             # get closed as UNMET on a harness fault. Label it for what it is.
-            if returncode not in (0, None) and not stdout.strip() and not stderr.strip():
+            if (
+                returncode not in (0, None)
+                and not stdout.strip()
+                and not stderr.strip()
+            ):
                 stdout = (
                     f"[{engine} produced no output at all and exited {returncode}] "
                     "This is an engine/harness failure, not agent silence: no turn "

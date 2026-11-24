@@ -40,6 +40,7 @@ from supervisor.core.target_state import (
     record_target_iteration,
 )
 from supervisor.protocols.protocol import Protocol
+from supervisor.security.redaction import redact_data
 from supervisor.utils.config import SupervisorConfig
 from supervisor.utils.text_utils import head_tail_excerpt
 
@@ -713,6 +714,7 @@ class GoalGuard:
             "event": event,
         }
         record.update(fields)
+        record = redact_data(record)
         path = self._workspace / ".opencode" / AUDIT_FILENAME
         try:
             path.parent.mkdir(parents=True, exist_ok=True)

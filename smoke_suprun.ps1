@@ -2,11 +2,17 @@
 # Usage: .\smoke_suprun.ps1 [-Port 8322] [-Workspace <dir>]
 param(
   [int]$Port = 8322,
-  [string]$Workspace = 'E:\pyprojects\llm_deep_research\sop_indicator_study_1015_1',
-  [string]$Upstream = $env:SOP_UPSTREAM
+  [string]$Workspace = '',
+  [string]$Upstream = $env:SOP_UPSTREAM,
+  [string]$CodexKey = $env:SUPER_OPENCODE_CODEX_KEY
 )
 $ErrorActionPreference = 'SilentlyContinue'
-$root = 'E:\pyprojects\super-opencode'
+$root = $PSScriptRoot
+if (-not $Workspace) { $Workspace = (Get-Location).Path }
+if (-not (Test-Path -LiteralPath $Workspace -PathType Container)) {
+  Write-Output "workspace not found: $Workspace"
+  exit 2
+}
 Set-Location $Workspace
 Remove-Item 'mcp_smoke.txt'
 
@@ -22,7 +28,11 @@ if (-not (Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction Silen
   Start-Sleep -Seconds 2
 }
 
-$env:SUPER_OPENCODE_CODEX_KEY = 'longwin'
+if (-not $CodexKey) {
+  Write-Output "no codex key: pass -CodexKey or set SUPER_OPENCODE_CODEX_KEY"
+  exit 2
+}
+$env:SUPER_OPENCODE_CODEX_KEY = $CodexKey
 $cx = "$root\codex-suprun.cmd"
 $flags = @('exec', '--json', '--yolo', '--skip-git-repo-check', '--color', 'never',
   '-c', 'features.multi_agent=false',

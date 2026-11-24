@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from supervisor.security.access_policy import AccessPolicy, PolicyViolation
+from supervisor.security.redaction import redact_data, redact_text
 
 logger = logging.getLogger(__name__)
 
@@ -317,6 +318,7 @@ def decision_payload(violations: list[PolicyViolation], policy: AccessPolicy) ->
         f"Writable root: {policy.workspace}. "
         "Whitelisted directories are read-only and everything else is denied."
     )
+    reason = redact_text(reason)
     return {
         "hookSpecificOutput": {
             "hookEventName": _EVENT_NAME,
@@ -340,6 +342,7 @@ def log_violations(
         "cwd": event.get("cwd", ""),
         "violations": [item.as_dict() for item in violations],
     }
+    record = redact_data(record)
     try:
         log_path.parent.mkdir(parents=True, exist_ok=True)
         with open(log_path, "a", encoding="utf-8") as handle:

@@ -27,6 +27,7 @@ from supervisor.protocols.protocol import (
     load_protocol,
     resolve_protocol_path,
 )
+from supervisor.security.redaction import redact_text
 from supervisor.utils.config import SupervisorConfig
 
 
@@ -45,7 +46,8 @@ def refuse_self_contradictory_protocol(protocol_path: Path) -> None:
         # gate only judges the sections it can read.
         return
     audit = audit_contradictions(
-        protocol.target_section, protocol.restrictions_section,
+        protocol.target_section,
+        protocol.restrictions_section,
     )
     if not audit.blocking:
         return
@@ -87,6 +89,28 @@ REPLICA_SKIP_FILES = {
 INIT_MODES = ("copy", "protocol")
 
 
+class BatchLaunchError(RuntimeError):
+    """A batch failed after one or more jobs had already entered the queue."""
+
+    def __init__(
+        self,
+        batch_id: str,
+        job_ids: list[str],
+        cause: Exception,
+        *,
+        cancelled_job_ids: list[str] | None = None,
+        cancel_failures: dict[str, str] | None = None,
+    ):
+        self.batch_id = batch_id
+        self.job_ids = list(job_ids)
+        self.cancelled_job_ids = list(cancelled_job_ids or [])
+        self.cancel_failures = dict(cancel_failures or {})
+        super().__init__(
+            f"Batch {batch_id} failed after {len(self.job_ids)} job(s) were "
+            f"enqueued: {type(cause).__name__}: {cause}",
+        )
+
+
 def _replica_ignore(directory: str, names: list[str]) -> set[str]:
     # Dirs match case-insensitively: Windows spells the MATLAB dirs ``MATLAB`` /
     # ``MathWorks``, and a case-sensitive match would copy exactly the locked
@@ -102,7 +126,9 @@ def _replica_ignore(directory: str, names: list[str]) -> set[str]:
 
 
 def provision_replica(
-    workspace: Path, replica: Path, init_mode: str,
+    workspace: Path,
+    replica: Path,
+    init_mode: str,
 ) -> Path:
     """Create one replica workspace seeded per ``init_mode``.
 
@@ -141,6 +167,28 @@ def provision_replica(
     return replica
 
 
+def batch_launch_failure_message(exc: Exception) -> str:
+    """Explain what happened to already-enqueued jobs and whether retry is safe."""
+    if not isinstance(exc, BatchLaunchError):
+        return redact_text(f"Launch failed: {type(exc).__name__}: {exc}")
+
+    parts = [f"Batch launch failed: {exc}"]
+    if exc.cancelled_job_ids:
+        parts.append(
+            f"cancellation was requested for {len(exc.cancelled_job_ids)} "
+            "started job(s): " + ", ".join(exc.cancelled_job_ids) + "."
+        )
+    if exc.cancel_failures:
+        parts.append(
+            f"{len(exc.cancel_failures)} started job(s) could not be cancelled: "
+            + ", ".join(exc.cancel_failures)
+            + ". Stop them before retrying."
+        )
+    elif exc.cancelled_job_ids:
+        parts.append("Retry after they reach a terminal state.")
+    return redact_text(" ".join(parts))
+
+
 def launch_study_batch(
     session_state: dict[str, Any],
     manager,
@@ -175,17 +223,46 @@ def launch_study_batch(
                 workspace=replica,
                 **overrides,
             )
-            job_ids.append(manager.enqueue_job("run", config, meta={
-                "batch_id": batch_id,
-                "replica_index": index,
-                "replica_count": replicas,
-            }))
+            job_ids.append(
+                manager.enqueue_job(
+                    "run",
+                    config,
+                    meta={
+                        "batch_id": batch_id,
+                        "replica_index": index,
+                        "replica_count": replicas,
+                    },
+                )
+            )
             configs.append(config)
-    except Exception:
+    except Exception as exc:
         # Partial provisioning: drop the replicas that never got enqueued
         # so a retry doesn't trip over stale directories.
         for index in range(len(job_ids) + 1, replicas + 1):
             stale = parent / f"{batch_id}_r{index}"
             shutil.rmtree(stale, ignore_errors=True)
-        raise
+        if not job_ids:
+            raise
+
+        cancelled: list[str] = []
+        failures: dict[str, str] = {}
+        cancel_job = getattr(manager, "cancel_job", None)
+        for job_id in job_ids:
+            if not callable(cancel_job):
+                failures[job_id] = "job manager cannot cancel jobs"
+                continue
+            try:
+                if cancel_job(job_id):
+                    cancelled.append(job_id)
+                else:
+                    failures[job_id] = "cancel request was not accepted"
+            except Exception as cancel_exc:  # noqa: BLE001 - compensation must continue
+                failures[job_id] = f"{type(cancel_exc).__name__}: {cancel_exc}"
+        raise BatchLaunchError(
+            batch_id,
+            job_ids,
+            exc,
+            cancelled_job_ids=cancelled,
+            cancel_failures=failures,
+        ) from exc
     return batch_id, job_ids, configs

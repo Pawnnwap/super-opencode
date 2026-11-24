@@ -100,7 +100,6 @@ def test_turn_scoring_prose_keeps_model_text_only():
     error text must land in stdout (``text_parts``) and NOT in prose, so a dead
     provider is never mistaken for a completed turn.
     """
-    from supervisor.runners.stream_driver import StreamOutcome  # noqa: F401
 
     text_ev = classify_line(json.dumps({"type": "text", "part": {"text": "done"}}))
     err_ev = classify_line(json.dumps(NO_ROUTE))

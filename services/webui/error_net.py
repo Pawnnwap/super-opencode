@@ -23,6 +23,8 @@ import logging
 from nicegui import app as nicegui_app
 from nicegui import ui
 
+from supervisor.security.redaction import redact_text
+
 logger = logging.getLogger("ui.errors")
 
 # Long enough to read a WinError path, short enough not to linger.
@@ -34,7 +36,7 @@ def message_for(exc: BaseException) -> str:
     """The single-line text shown to the operator."""
     from services.webui import i18n
 
-    detail = f"{type(exc).__name__}: {str(exc)[:_MAX_MESSAGE_CHARS]}"
+    detail = redact_text(f"{type(exc).__name__}: {str(exc)[:_MAX_MESSAGE_CHARS]}")
     return i18n.tr("Action failed: {detail}", detail=detail)
 
 

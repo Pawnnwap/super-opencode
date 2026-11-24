@@ -2,15 +2,29 @@ from __future__ import annotations
 
 import ipaddress
 import re
+import sys
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from .http import _http_get_text_with_meta
+try:
+    from supervisor.security.redaction import redact_text
+except ModuleNotFoundError:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    from supervisor.security.redaction import redact_text
+
+from .http import (
+    _http_get_text_with_meta,
+    is_public_address,
+    resolve_public_addresses,
+)
 from .packages import _codehelp_search_package_version
 
 
 def _text_excerpt(text: str, max_chars: int) -> str:
-    text = re.sub(r"<(script|style)[^>]*>.*?</\1>", " ", text, flags=re.IGNORECASE | re.DOTALL)
+    text = re.sub(
+        r"<(script|style)[^>]*>.*?</\1>", " ", text, flags=re.IGNORECASE | re.DOTALL
+    )
     text = re.sub(r"<[^>]+>", " ", text)
     text = re.sub(r"\s+", " ", text).strip()
     return text[:max_chars] + ("..." if len(text) > max_chars else "")
@@ -51,18 +65,15 @@ def is_public_http_url(url: str, *, require_https: bool = True) -> bool:
     try:
         address = ipaddress.ip_address(host)
     except ValueError:
-        # A domain name: the DNS answer is not resolved here (that would make
-        # the check itself a network call), so only the literal forms and the
-        # reserved suffixes are refused.
+        # A domain name is safe only when every A/AAAA answer is public. The
+        # connection layer repeats this check and pins the validated address.
+        try:
+            port = parsed.port or (443 if require_https else 80)
+            resolve_public_addresses(host, port)
+        except (OSError, ValueError):
+            return False
         return True
-    return not (
-        address.is_private
-        or address.is_loopback
-        or address.is_link_local
-        or address.is_reserved
-        or address.is_multicast
-        or address.is_unspecified
-    )
+    return is_public_address(str(address))
 
 
 def _codehelp_fetch_official_docs(
@@ -85,12 +96,14 @@ def _codehelp_fetch_official_docs(
         }
     max_chars = max(200, min(max_chars, 8_000))
     try:
-        text, document_provenance = _http_get_text_with_meta(docs_url, validate_url=_safe_docs_url)
+        text, document_provenance = _http_get_text_with_meta(
+            docs_url, validate_url=_safe_docs_url
+        )
     except Exception as exc:  # noqa: BLE001 - network/tool boundary - upstream failures degrade to a message
         return {
             "status": "error",
             "error_type": "fetch_failed",
-            "error": str(exc),
+            "error": redact_text(str(exc)),
             "package": package_name,
             "docs_url": docs_url,
             "provenance": registry.get("provenance", []),
@@ -103,5 +116,8 @@ def _codehelp_fetch_official_docs(
         "query": query,
         "content": _text_excerpt(text, max_chars),
         "authority": "URL declared by the package registry; verify project ownership before relying on it.",
-        "provenance": [*registry.get("provenance", []), {"source": "registry_declared_docs", **document_provenance}],
+        "provenance": [
+            *registry.get("provenance", []),
+            {"source": "registry_declared_docs", **document_provenance},
+        ],
     }

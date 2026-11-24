@@ -4,9 +4,11 @@ import json
 import os
 import subprocess
 import sys
+import uuid
 from pathlib import Path
 
 from supervisor.runners.opencode_runner import find_opencode
+from supervisor.security.redaction import redact_text
 
 
 def find_opencode_config_dir() -> Path:
@@ -18,12 +20,13 @@ def find_opencode_config_dir() -> Path:
 def atomic_write_json(path: Path, content: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
 
-    tmp_path = path.with_suffix(".tmp")
+    tmp_path = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     try:
-        fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+        fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as tmp:
             json.dump(content, tmp, indent=2)
         tmp_path.replace(path)
+        os.chmod(path, 0o600)
     except (PermissionError, OSError):
         if tmp_path.exists():
             tmp_path.unlink(missing_ok=True)
@@ -44,7 +47,9 @@ def _load_config_json(path: Path, on_warning=None) -> dict:
         except json.JSONDecodeError:
             raise exc
         if on_warning:
-            on_warning("Config used JSONC comments or trailing commas; normalized during migration.")
+            on_warning(
+                "Config used JSONC comments or trailing commas; normalized during migration."
+            )
     if not isinstance(content, dict):
         raise TypeError(f"Config must be a JSON object, got {type(content).__name__}")
     return content
@@ -176,7 +181,9 @@ def get_opencode_config_file(
         dirty = True
 
     python_cmd = sys.executable or "python"
-    codehelp_path = str((project_root / "mcp_server" / "codehelp.py").resolve()).replace("\\", "/")
+    codehelp_path = str(
+        (project_root / "mcp_server" / "codehelp.py").resolve()
+    ).replace("\\", "/")
 
     removed_legacy_hashline = False
     if _is_legacy_hashline_config(content["mcp"].get("hashline")):
@@ -284,7 +291,9 @@ def fetch_opencode_models(exe: str = "") -> list[str]:
 
         if proc.returncode != 0:
             error_output = proc.stderr.strip() or proc.stdout.strip()
-            print(f"[opencode-models] Error: {error_output}", file=sys.stderr)
+            print(
+                f"[opencode-models] Error: {redact_text(error_output)}", file=sys.stderr
+            )
             return []
 
         models = []
@@ -301,8 +310,13 @@ def fetch_opencode_models(exe: str = "") -> list[str]:
     except subprocess.TimeoutExpired:
         print("[opencode-models] Request timed out after 15s.", file=sys.stderr)
     except FileNotFoundError:
-        print(f"[opencode-models] Executable '{resolved_exe}' not found.", file=sys.stderr)
+        print(
+            f"[opencode-models] Executable '{resolved_exe}' not found.", file=sys.stderr
+        )
     except Exception as exc:  # noqa: BLE001 - config write is best-effort
-        print(f"[opencode-models] Unexpected error: {exc}", file=sys.stderr)
+        print(
+            f"[opencode-models] Unexpected error: {redact_text(str(exc))}",
+            file=sys.stderr,
+        )
 
     return []

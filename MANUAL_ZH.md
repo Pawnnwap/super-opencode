@@ -8,7 +8,7 @@ codex / pi 反复执行、评审、回收，并用硬性路径策略限制代理
 ## 1. 准备工作
 
 1. Windows 10/11，PowerShell 5.1 以上。
-2. 仓库内已有 `venv\`（Python 3.13）。若没有：
+2. 仓库内已有 `venv\`（Python 3.11+）。若没有：
 
    ```powershell
    python -m venv venv
@@ -59,7 +59,9 @@ codex / pi 反复执行、评审、回收，并用硬性路径策略限制代理
 
 ## 3. 打开界面并完成配置
 
-浏览器打开 <http://127.0.0.1:8501>，进入 **Protocol Wizard** 页：
+浏览器打开 <http://127.0.0.1:8501>，首次登录需在 URL 后追加
+`?token=<.job_store\\ui.token 文件内容>`；应用随后设置 HttpOnly 会话 Cookie。
+`/healthz` 保持公开供 guardian 检查。进入 **Protocol Wizard** 页：
 
 1. **Configuration**
    - 工作区路径：选一个空目录或已有项目目录；
@@ -67,7 +69,7 @@ codex / pi 反复执行、评审、回收，并用硬性路径策略限制代理
    - 执行引擎：opencode / codex / pi，以及对应模型与可执行文件路径。
 2. **Connectivity Tests**
    - 点击 **RUN TESTS**，两项都通过后，Live Run 才会解锁。
-   - 注意：界面重启后需要重新点一次（测试结果是本次会话的）。
+   - 注意：通过结果会缓存 7 天；相关配置指纹变化时自动失效，无需每次重启重测。
 
 ---
 

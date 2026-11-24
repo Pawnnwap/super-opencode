@@ -106,6 +106,33 @@ def test_registered_pid_kill_succeeds(tmp_path):
             spawned.popen.wait(timeout=10)
 
 
+def test_registry_write_failure_kills_the_spawned_child(tmp_path, monkeypatch):
+    from supervisor.runtime import process_control
+
+    children = []
+    original_popen = process_control.subprocess.Popen
+
+    def _capture_popen(*args, **kwargs):
+        child = original_popen(*args, **kwargs)
+        children.append(child)
+        return child
+
+    def _fail_register(self, record):
+        raise OSError("ledger disk full")
+
+    monkeypatch.setattr(process_control.subprocess, "Popen", _capture_popen)
+    monkeypatch.setattr(process_control.ProcessRegistry, "register", _fail_register)
+
+    with pytest.raises(OSError, match="ledger disk full"):
+        spawn_tracked(
+            run_id="run_ledger_fail",
+            role="python",
+            argv=[sys.executable, "-c", "import time; time.sleep(30)"],
+        )
+
+    assert children and _wait_gone(children[0])
+
+
 def test_recycled_pid_is_never_signalled(tmp_path):
     """A ledger record whose create time no longer matches is dead evidence.
 
@@ -255,6 +282,85 @@ def test_reconcile_labels_stale_without_killing(tmp_path):
             spawned.popen.wait(timeout=10)
 
 
+def test_worker_recovery_kills_orphaned_process_tree(tmp_path):
+    from services.jobs.job_manager import JobManager
+    from services.jobs.worker_service import _recover_orphans
+
+    store = tmp_path / "store"
+    manager = JobManager(str(store))
+    spawned = spawn_tracked(
+        run_id="run_orphan",
+        role="engine",
+        argv=[sys.executable, "-c", "import time; time.sleep(30)"],
+    )
+    try:
+        manager.store.save_job_state(
+            "run_orphan",
+            {
+                "type": "run",
+                "state": "RUNNING",
+                "config": {"run_id": "run_orphan"},
+            },
+        )
+
+        flagged = _recover_orphans(manager)
+
+        assert flagged == ["run_orphan"]
+        assert _wait_gone(spawned.popen)
+        assert manager.store.get_job_state("run_orphan")["state"] == "ABANDONED"
+    finally:
+        if spawned.popen.poll() is None:
+            spawned.popen.kill()
+            spawned.popen.wait(timeout=10)
+
+
+def test_worker_recovery_kills_engine_descendants(tmp_path):
+    import psutil
+
+    from services.jobs.job_manager import JobManager
+    from services.jobs.worker_service import _recover_orphans
+
+    script = (
+        "import subprocess, sys, time\n"
+        "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])\n"
+        "print(child.pid, flush=True)\n"
+        "time.sleep(30)\n"
+    )
+    manager = JobManager(str(tmp_path / "store"))
+    spawned = spawn_tracked(
+        run_id="run_orphan_tree",
+        role="engine",
+        argv=[sys.executable, "-c", script],
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    child_pid = int(spawned.popen.stdout.readline().strip())
+    try:
+        manager.store.save_job_state(
+            "run_orphan_tree",
+            {
+                "type": "run",
+                "state": "RUNNING",
+                "config": {"run_id": "run_orphan_tree"},
+            },
+        )
+
+        assert _recover_orphans(manager) == ["run_orphan_tree"]
+
+        assert _wait_gone(spawned.popen)
+        deadline = time.time() + 10
+        while psutil.pid_exists(child_pid) and time.time() < deadline:
+            time.sleep(0.05)
+        assert not psutil.pid_exists(child_pid)
+    finally:
+        terminate_run("run_orphan_tree", reason="cleanup")
+        if spawned.popen.poll() is None:
+            spawned.popen.kill()
+            spawned.popen.wait(timeout=10)
+        if psutil.pid_exists(child_pid):
+            psutil.Process(child_pid).kill()
+
+
 # --------------------------------------------------------------------------- #
 # Language wrappers
 # --------------------------------------------------------------------------- #
@@ -276,7 +382,9 @@ def test_python_child_is_tracked_and_timed_out(tmp_path):
 
 def test_cargo_child_is_tracked(tmp_path):
     try:
-        child = RustProcess(run_id="run_h", subcommand="--version", cwd=tmp_path, timeout=120)
+        child = RustProcess(
+            run_id="run_h", subcommand="--version", cwd=tmp_path, timeout=120
+        )
         result = child.run()
     except FileNotFoundError:
         pytest.skip("cargo is not installed")
@@ -311,7 +419,7 @@ def test_matlab_child_is_grouped(tmp_path):
 
 
 def _policy(tmp_path):
-    return build_policy(tmp_path, [])
+    return build_policy(tmp_path, [], strict_dynamic=False)
 
 
 @pytest.mark.parametrize(

@@ -27,6 +27,8 @@ import threading
 import time
 import traceback
 
+from supervisor.security.redaction import redact_data, redact_text
+
 # Keep the fatal-log handle alive for the process lifetime: faulthandler
 # writes into it directly at crash time, and a closed/GC'd file object would
 # lose the dump.
@@ -40,22 +42,30 @@ def install(log_name: str) -> None:
     faulthandler.enable(file=fh, all_threads=True)
 
     def _dump(header: str, tb_text: str) -> None:
-        fh.write(f"\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] {header}\n{tb_text}")
+        fh.write(
+            f"\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] "
+            f"{redact_text(header)}\n{redact_text(tb_text)}"
+        )
         fh.flush()
 
     def _sys_excepthook(exc_type, exc, tb) -> None:
+        tb_text = redact_text("".join(traceback.format_exception(exc_type, exc, tb)))
         _dump(
             f"unhandled exception in {threading.current_thread().name}",
-            "".join(traceback.format_exception(exc_type, exc, tb)),
+            tb_text,
         )
-        sys.__excepthook__(exc_type, exc, tb)
+        sys.stderr.write(tb_text)
 
     def _thread_excepthook(args) -> None:
         _dump(
             f"unhandled exception in thread {args.thread.name!r}",
-            "".join(traceback.format_exception(
-                args.exc_type, args.exc_value, args.exc_traceback,
-            )),
+            "".join(
+                traceback.format_exception(
+                    args.exc_type,
+                    args.exc_value,
+                    args.exc_traceback,
+                )
+            ),
         )
 
     sys.excepthook = _sys_excepthook
@@ -75,7 +85,7 @@ def dump_stacks(reason: str) -> None:
         return
     fh = _handles[0]
     try:
-        fh.write(f"\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] {reason}\n")
+        fh.write(f"\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] {redact_text(reason)}\n")
         fh.flush()
         faulthandler.dump_traceback(file=fh, all_threads=True)
         fh.flush()
@@ -102,12 +112,17 @@ def _identity_line() -> str:
             parent = parent.parent()
     except Exception as exc:  # noqa: BLE001 - forensics must never crash startup
         parents.append({"error": repr(exc)})
-    return json.dumps({
-        "ts": time.time(),
-        "when": time.strftime("%Y-%m-%d %H:%M:%S"),
-        "argv": sys.argv,
-        "chain": parents,
-    }, ensure_ascii=False)
+    return json.dumps(
+        redact_data(
+            {
+                "ts": time.time(),
+                "when": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "argv": sys.argv,
+                "chain": parents,
+            }
+        ),
+        ensure_ascii=False,
+    )
 
 
 def _proc_info(proc) -> dict:
@@ -116,5 +131,5 @@ def _proc_info(proc) -> dict:
             "pid": proc.pid,
             "name": proc.name(),
             "create_time": proc.create_time(),
-            "cmdline": " ".join(proc.cmdline())[:200],
+            "cmdline": redact_text(" ".join(proc.cmdline())[:200]),
         }

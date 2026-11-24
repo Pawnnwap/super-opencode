@@ -4,6 +4,8 @@ import logging
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from supervisor.security.secrets import protect_secrets
+
 logger = logging.getLogger(__name__)
 
 
@@ -59,7 +61,7 @@ class SupervisorConfig:
     # Strict mode also denies every interpreter invocation (`python script.py`,
     # `node app.js`), not just inline code. Inline code (`python -c`, `node -e`)
     # and other dynamic constructs are always denied by the shell analyzer.
-    access_policy_strict: bool = False
+    access_policy_strict: bool = True
     read_external_feedback: bool = False
     max_tokens: int = 128_000
     max_protected_files_for_suggestions: int = 5
@@ -205,11 +207,7 @@ class SupervisorConfig:
             if isinstance(backup, str) and not backup.strip():
                 object.__setattr__(self, backup_name, None)
                 continue
-            if (
-                backup
-                and primary
-                and str(backup).strip() == str(primary).strip()
-            ):
+            if backup and primary and str(backup).strip() == str(primary).strip():
                 object.__setattr__(self, backup_name, None)
                 logger.warning(
                     "Ignoring %s backup model %r: identical to the primary "
@@ -225,4 +223,4 @@ class SupervisorConfig:
         data["protected_files"] = list(self.protected_files)
         data["access_whitelist"] = list(self.access_whitelist)
         data["harvest_job_ids"] = list(self.harvest_job_ids)
-        return data
+        return protect_secrets(data)

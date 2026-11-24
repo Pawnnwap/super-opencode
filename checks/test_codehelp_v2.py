@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import socket
+
+import pytest
 
 from mcp_server.codehelp_support.dependencies import _codehelp_analyze_dependencies
 from mcp_server.codehelp_support.docs import (
@@ -8,6 +11,17 @@ from mcp_server.codehelp_support.docs import (
     _safe_docs_url,
 )
 from mcp_server.codehelp_support.packages import _pypi_version
+
+
+@pytest.fixture
+def public_dns(monkeypatch):
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443)),
+        ],
+    )
 
 
 def test_analyze_dependency_reads_python_and_node_manifests(tmp_path, monkeypatch):
@@ -26,7 +40,10 @@ dev = ["pytest>=8"]
     (tmp_path / "requirements-dev.txt").write_text("numpy~=1.26\n", encoding="utf-8")
     (tmp_path / "package.json").write_text(
         json.dumps(
-            {"dependencies": {"react": "^19.0.0"}, "devDependencies": {"typescript": "~5.0.0"}},
+            {
+                "dependencies": {"react": "^19.0.0"},
+                "devDependencies": {"typescript": "~5.0.0"},
+            },
         ),
         encoding="utf-8",
     )
@@ -64,7 +81,11 @@ def test_registry_result_has_docs_and_provenance(monkeypatch):
                 },
                 "releases": {"1.2.3": [{"upload_time": "2026-01-02T00:00:00"}]},
             },
-            {"url": "https://pypi.org/pypi/example/json", "cached": False, "fetched_at": "now"},
+            {
+                "url": "https://pypi.org/pypi/example/json",
+                "cached": False,
+                "fetched_at": "now",
+            },
         ),
     )
 
@@ -76,7 +97,9 @@ def test_registry_result_has_docs_and_provenance(monkeypatch):
     assert result["provenance"][0]["cached"] is False
 
 
-def test_fetch_official_docs_strips_markup_and_returns_provenance(monkeypatch):
+def test_fetch_official_docs_strips_markup_and_returns_provenance(
+    monkeypatch, public_dns
+):
     monkeypatch.setattr(
         "mcp_server.codehelp_support.docs._codehelp_search_package_version",
         lambda *_args: {
@@ -103,7 +126,7 @@ def test_fetch_official_docs_strips_markup_and_returns_provenance(monkeypatch):
     assert "verify project ownership" in result["authority"]
 
 
-def test_docs_urls_require_public_https():
+def test_docs_urls_require_public_https(public_dns):
     assert _safe_docs_url("https://docs.example.test")
     assert not _safe_docs_url("http://docs.example.test")
     assert not _safe_docs_url("https://127.0.0.1/docs")

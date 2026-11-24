@@ -5,6 +5,7 @@ import json
 import os
 import shutil
 import subprocess
+import tempfile
 import threading
 import time
 import uuid
@@ -26,6 +27,7 @@ from supervisor.runners.opencode_runner import (
 )
 from supervisor.runners.opencode_support import catalog
 from supervisor.runners.pi_runner import PiRunner, find_pi
+from supervisor.security.redaction import redact_text
 from supervisor.utils.text_utils import normalize_model_response
 
 
@@ -58,7 +60,7 @@ def run_test_with_timeout(
     except TimeoutError:
         return False, f"{test_name} timed out."
     except Exception as exc:  # noqa: BLE001 - connectivity probe - any backend error is a failed test
-        return False, f"{test_name} failed: {exc}"
+        return False, redact_text(f"{test_name} failed: {exc}")
 
 
 # --------------------------------------------------------------------------- #
@@ -185,7 +187,8 @@ def opencode_variant_choices(exe: str, model: str) -> tuple[str, ...]:
     declared = catalog.declared_variants(exe, model)
     if declared is not None:
         return tuple(
-            key for key, _rank in sorted(
+            key
+            for key, _rank in sorted(
                 ((name, _effort_rank(name)) for name in declared),
                 key=lambda kv: (kv[1], kv[0]),
             )
@@ -237,7 +240,9 @@ def _ephemeral_workspace(prefix: str) -> Path:
     session — crucial for parallel jobs whose `resume --last` fallback must
     never grab a smoke-test session. The dir is removed by the caller.
     """
-    base = Path(os.environ.get("TEMP", os.environ.get("TMPDIR", "/tmp")))
+    base = Path(
+        os.environ.get("TEMP") or os.environ.get("TMPDIR") or tempfile.gettempdir()
+    )
     workspace = base / f"{prefix}_probe_{uuid.uuid4().hex[:8]}"
     workspace.mkdir(parents=True, exist_ok=True)
     return workspace
@@ -252,7 +257,9 @@ def _stable_probe_home(prefix: str) -> Path:
     Session isolation is unaffected: rollouts key off the unique per-probe
     cwd, not the home.
     """
-    base = Path(os.environ.get("TEMP", os.environ.get("TMPDIR", "/tmp")))
+    base = Path(
+        os.environ.get("TEMP") or os.environ.get("TMPDIR") or tempfile.gettempdir()
+    )
     home = base / f"{prefix}_probe_home"
     home.mkdir(parents=True, exist_ok=True)
     return home
@@ -331,7 +338,7 @@ def _probe_body(
     if timed_out:
         return False, f"{engine} timed out without model text."
     diag = runner.last_diagnostic() if runner._last_result else "(no result)"
-    return False, f"{engine} returned an error without model text.\n{diag}"
+    return False, redact_text(f"{engine} returned an error without model text.\n{diag}")
 
 
 def _execute_probe(
@@ -350,7 +357,7 @@ def _execute_probe(
     except TimeoutError:
         return False, f"{engine} test timed out."
     except Exception as exc:  # noqa: BLE001
-        return False, f"{engine} test failed: {exc}"
+        return False, redact_text(f"{engine} test failed: {exc}")
     finally:
         try:
             runner.stop()
@@ -369,7 +376,7 @@ def test_opencode_connectivity(
         exe = find_opencode(opencode_executable or "")
     except FileNotFoundError as exc:
         shutil.rmtree(workspace, ignore_errors=True)
-        return False, str(exc)
+        return False, redact_text(str(exc))
 
     variant = lowest_opencode_variant(exe, opencode_model or "")
     backup = _distinct_backup(opencode_model, opencode_model_backup)
@@ -428,7 +435,7 @@ def test_codex_connectivity(
         exe = find_codex(codex_executable or "")
     except FileNotFoundError as exc:
         shutil.rmtree(workspace, ignore_errors=True)
-        return False, str(exc)
+        return False, redact_text(str(exc))
 
     # Full session-store isolation via CODEX_HOME when the probe is
     # self-contained (external provider + key supplied via `-c`/env, so no
@@ -510,7 +517,7 @@ def test_pi_connectivity(
         exe = find_pi(pi_executable or "")
     except FileNotFoundError as exc:
         shutil.rmtree(workspace, ignore_errors=True)
-        return False, str(exc)
+        return False, redact_text(str(exc))
 
     backup = _distinct_backup(pi_model, pi_model_backup)
 
@@ -573,7 +580,10 @@ def test_agent_connectivity(
 _REASONING_OFF_BODIES: tuple[tuple[dict, str], ...] = (
     ({"reasoning_effort": "none"}, "reasoning: none"),
     ({"reasoning_effort": "minimal"}, "reasoning: minimal"),
-    ({"chat_template_kwargs": {"thinking": False}}, "thinking off (chat_template_kwargs)"),
+    (
+        {"chat_template_kwargs": {"thinking": False}},
+        "thinking off (chat_template_kwargs)",
+    ),
     ({"thinking": {"type": "disabled"}}, "thinking disabled"),
     ({"enable_thinking": False}, "enable_thinking=false"),
     ({}, "provider default"),
@@ -624,11 +634,11 @@ def test_supervisor_connectivity(
             # Auth / endpoint / model problems no reasoning setting can fix —
             # fail immediately instead of hammering the endpoint five more
             # times.
-            return False, f"Supervisor test failed: {exc}"
+            return False, redact_text(f"Supervisor test failed: {exc}")
         except TimeoutError:
             return False, "Supervisor test timed out."
         except Exception as exc:  # noqa: BLE001
             # Most likely this endpoint rejected the reasoning parameter —
             # fall through to the next convention (ultimately the plain call).
-            last_msg = f"Supervisor test failed: {exc}"
-    return False, last_msg
+            last_msg = redact_text(f"Supervisor test failed: {exc}")
+    return False, redact_text(last_msg)

@@ -130,15 +130,29 @@ def test_wedged_idle_worker_is_restarted_with_identity():
 def test_queue_stall_idle_repairs_after_stall_window():
     state = GuardianState()
     decide(snap(pending=3, running=0), state, now=1000.0, queue_due=True)
-    assert kinds(decide(snap(pending=3, running=0), state, now=1000.0 + STALL - 1, queue_due=True)) == []
-    actions = decide(snap(pending=3, running=0), state, now=1000.0 + STALL + 1, queue_due=True)
+    assert (
+        kinds(
+            decide(
+                snap(pending=3, running=0),
+                state,
+                now=1000.0 + STALL - 1,
+                queue_due=True,
+            )
+        )
+        == []
+    )
+    actions = decide(
+        snap(pending=3, running=0), state, now=1000.0 + STALL + 1, queue_due=True
+    )
     assert kinds(actions) == ["restart_worker"]
 
 
 def test_queue_stall_with_running_jobs_never_kills():
     state = GuardianState()
     decide(snap(pending=3, running=1), state, now=1000.0, queue_due=True)
-    actions = decide(snap(pending=3, running=1), state, now=1000.0 + STALL + 1, queue_due=True)
+    actions = decide(
+        snap(pending=3, running=1), state, now=1000.0 + STALL + 1, queue_due=True
+    )
     assert kinds(actions) == ["note"]
 
 
@@ -146,26 +160,38 @@ def test_queue_change_resets_the_stall_clock():
     state = GuardianState()
     decide(snap(pending=3, running=0), state, now=1000.0, queue_due=True)
     decide(snap(pending=2, running=0), state, now=1200.0, queue_due=True)
-    actions = decide(snap(pending=2, running=0), state, now=1200.0 + STALL + 1, queue_due=True)
+    actions = decide(
+        snap(pending=2, running=0), state, now=1200.0 + STALL + 1, queue_due=True
+    )
     assert kinds(actions) == ["restart_worker"]
 
 
 def test_queue_backoff_suppresses_repeat_repairs():
     state = GuardianState()
     decide(snap(pending=3, running=0), state, now=1000.0, queue_due=True)
-    first = decide(snap(pending=3, running=0), state, now=1000.0 + STALL + 1, queue_due=True)
+    first = decide(
+        snap(pending=3, running=0), state, now=1000.0 + STALL + 1, queue_due=True
+    )
     assert kinds(first) == ["restart_worker"]
-    second = decide(snap(pending=3, running=0), state, now=1000.0 + STALL + 60, queue_due=True)
+    second = decide(
+        snap(pending=3, running=0), state, now=1000.0 + STALL + 60, queue_due=True
+    )
     assert kinds(second) == ["note"]
 
 
 def test_queue_stall_ignores_a_dead_worker():
     state = GuardianState()
     dead = snap(
-        pending=3, running=0, worker_pid=None, worker_alive=False, worker_lock_age=900.0,
+        pending=3,
+        running=0,
+        worker_pid=None,
+        worker_alive=False,
+        worker_lock_age=900.0,
     )
     assert kinds(decide(dead, state, now=1000.0, queue_due=True)) == ["start_worker"]
-    assert kinds(decide(dead, state, now=1000.0 + STALL + 1, queue_due=True)) == ["start_worker"]
+    assert kinds(decide(dead, state, now=1000.0 + STALL + 1, queue_due=True)) == [
+        "start_worker"
+    ]
 
 
 def test_pid_probes():
@@ -178,9 +204,23 @@ def test_job_counts_reads_recent_records_only(tmp_path, monkeypatch):
     (tmp_path / "a.json").write_text('{"state": "PENDING"}', encoding="utf-8")
     (tmp_path / "b.json").write_text('{"state": "RUNNING"}', encoding="utf-8")
     (tmp_path / "worker_settings.json").write_text(
-        '{"max_parallel_jobs": 2}', encoding="utf-8",
+        '{"max_parallel_jobs": 2}',
+        encoding="utf-8",
     )
     assert guardian.job_counts() == (1, 1, 2)
+
+
+def test_job_counts_does_not_hide_old_active_jobs(tmp_path, monkeypatch):
+    monkeypatch.setattr(guardian, "JOB_STORE", tmp_path)
+    old = tmp_path / "old.json"
+    old.write_text('{"state": "RUNNING"}', encoding="utf-8")
+    for index in range(45):
+        path = tmp_path / f"new_{index}.json"
+        path.write_text('{"state": "SUCCESS"}', encoding="utf-8")
+        os.utime(path, (1000 + index, 1000 + index))
+    os.utime(old, (1, 1))
+
+    assert guardian.job_counts() == (0, 1, 4)
 
 
 def test_wait_for_worker_exit_clears_the_still_fresh_lock(tmp_path, monkeypatch):

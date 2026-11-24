@@ -25,6 +25,8 @@ import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from supervisor.security.redaction import redact_data, redact_text
+
 logger = logging.getLogger(__name__)
 
 # A Windows create_time is a float in seconds; a recycled pid differs by far
@@ -76,7 +78,9 @@ class ProcRecord:
     state: str = "live"  # live | exited
 
     def as_line(self) -> str:
-        return json.dumps(asdict(self), ensure_ascii=False)
+        payload = asdict(self)
+        payload["cmdline"] = redact_text(self.cmdline)
+        return json.dumps(payload, ensure_ascii=False)
 
 
 class ProcessRegistry:
@@ -100,7 +104,7 @@ class ProcessRegistry:
 
     def register(self, record: ProcRecord) -> None:
         """Append one spawn record and fsync it before returning."""
-        self._append(record)
+        self._append(record, strict=True)
 
     def mark_exited(self, pid: int, create_time: float | None = None) -> None:
         """Append a terminal marker for *pid* (no-op when already terminal)."""
@@ -134,6 +138,7 @@ class ProcessRegistry:
             "target": target,
             "reason": reason,
         }
+        payload = redact_data(payload)
         try:
             self.directory.mkdir(parents=True, exist_ok=True)
             with self.refusal_path.open("a", encoding="utf-8") as handle:
@@ -143,7 +148,7 @@ class ProcessRegistry:
         except OSError:
             logger.debug("could not append kill refusal", exc_info=True)
 
-    def _append(self, record: ProcRecord) -> None:
+    def _append(self, record: ProcRecord, *, strict: bool = False) -> None:
         try:
             self.directory.mkdir(parents=True, exist_ok=True)
             with self.path.open("a", encoding="utf-8") as handle:
@@ -151,6 +156,8 @@ class ProcessRegistry:
                 handle.flush()
                 os.fsync(handle.fileno())
         except OSError:
+            if strict:
+                raise
             logger.warning("could not append process ledger record", exc_info=True)
 
     # -- reads ----------------------------------------------------------- #

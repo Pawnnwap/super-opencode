@@ -40,7 +40,7 @@ R8 Input is fact. The paths, filenames, and directory structure the user gave
 
 OUTPUT
 
-Return exactly these four sections, in this order:
+Return exactly these five sections, in this order:
 
 TARGET
 Numbered requirements. Each line is checkable (R4).

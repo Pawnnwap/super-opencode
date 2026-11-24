@@ -12,7 +12,6 @@ Used by the self-evolution loop to:
 
 from __future__ import annotations
 
-import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -30,6 +29,7 @@ class RunTestResult:
     output: str  # full pytest / check output
     exit_code: int
     syntax_errors: list[str] = field(default_factory=list)
+    summary_parsed: bool = False
 
     def __post_init__(self):
         if self.syntax_errors is None:
@@ -41,11 +41,23 @@ class RunTestResult:
 
     @property
     def ok(self) -> bool:
-        """True if no failures or errors."""
-        return self.failed == 0 and self.errors == 0 and len(self.syntax_errors) == 0
+        """True only for a successful pytest run with executed-test evidence."""
+        return (
+            self.exit_code == 0
+            and self.summary_parsed
+            and self.total > 0
+            and self.failed == 0
+            and self.errors == 0
+            and len(self.syntax_errors) == 0
+        )
 
     def summary(self) -> str:
-        parts = [f"passed={self.passed}  failed={self.failed}  errors={self.errors}"]
+        parts = [
+            (
+                f"passed={self.passed}  failed={self.failed}  errors={self.errors}  "
+                f"exit_code={self.exit_code}  summary_parsed={self.summary_parsed}"
+            )
+        ]
         if self.syntax_errors:
             parts.append(f"syntax_errors={len(self.syntax_errors)}")
         parts.append(f"({self.duration_s:.1f}s)")
@@ -129,7 +141,7 @@ class OcTestRunner(BaseRunner):
             timeout=300,
         ).run()
         output = result.stdout + result.stderr
-        passed, failed, errors = _parse_pytest_summary(output)
+        passed, failed, errors, summary_parsed = _parse_pytest_summary(output)
         return RunTestResult(
             passed=passed,
             failed=failed,
@@ -137,6 +149,7 @@ class OcTestRunner(BaseRunner):
             duration_s=time.monotonic() - t0,
             output=output,
             exit_code=result.returncode,
+            summary_parsed=summary_parsed,
         )
 
     def _run_syntax_check(self, t0: float) -> RunTestResult:
@@ -175,18 +188,20 @@ class OcTestRunner(BaseRunner):
 # ------------------------------------------------------------------ #
 
 
-def _parse_pytest_summary(output: str) -> tuple[int, int, int]:
-    """Extract (passed, failed, errors) from pytest -q output."""
+def _parse_pytest_summary(output: str) -> tuple[int, int, int, bool]:
+    """Extract counts and whether a pytest summary was actually present."""
     import re
 
     passed = failed = errors = 0
+    parsed = False
     # Look for lines like: "3 passed, 1 failed, 2 errors in 0.42s"
     pattern = re.compile(r"(\d+)\s+passed|(\d+)\s+failed|(\d+)\s+error", re.IGNORECASE)
     for m in pattern.finditer(output):
+        parsed = True
         if m.group(1):
             passed = int(m.group(1))
         if m.group(2):
             failed = int(m.group(2))
         if m.group(3):
             errors = int(m.group(3))
-    return passed, failed, errors
+    return passed, failed, errors, parsed

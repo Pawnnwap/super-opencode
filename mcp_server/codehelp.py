@@ -2,10 +2,18 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import sys
+from pathlib import Path
 from typing import Any
+
+try:
+    from supervisor.security.redaction import redact_text
+except ModuleNotFoundError:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from supervisor.security.redaction import redact_text
 
 logger = logging.getLogger(__name__)
 
@@ -45,9 +53,9 @@ except ImportError as exc:
 server = Server("codehelp")
 
 if not hasattr(Server, "list_tools"):
-    Server.list_tools = lambda self: (lambda f: f)  # type: ignore[attr-defined]
+    Server.list_tools = lambda self: lambda f: f  # type: ignore[attr-defined]
 if not hasattr(Server, "call_tool"):
-    Server.call_tool = lambda self: (lambda f: f)  # type: ignore[attr-defined]
+    Server.call_tool = lambda self: lambda f: f  # type: ignore[attr-defined]
 
 
 CODEHELP_SEARCH_DOCSTRINGS_TOOL = Tool(
@@ -68,6 +76,7 @@ CODEHELP_SEARCH_DOCSTRINGS_TOOL = Tool(
         "properties": {
             "target": {
                 "type": "string",
+                "minLength": 1,
                 "description": (
                     "Name to search for. Supports dotted paths like 'MyClass.my_method' "
                     "or bare names like 'parse'. Case-sensitive."
@@ -102,6 +111,7 @@ CODEHELP_SEARCH_PACKAGE_VERSION_TOOL = Tool(
         "properties": {
             "package_name": {
                 "type": "string",
+                "minLength": 1,
                 "description": "Package name exactly as it appears on the registry (e.g. 'requests', 'numpy', 'react').",
             },
             "ecosystem": {
@@ -137,6 +147,7 @@ CODEHELP_SEARCH_PACKAGE_EXAMPLES_TOOL = Tool(
         "properties": {
             "query": {
                 "type": "string",
+                "minLength": 1,
                 "description": (
                     "Search query. Start with the package name for best tag filtering. "
                     "E.g. 'requests retry on failure', 'flask authentication blueprint'."
@@ -173,6 +184,7 @@ CODEHELP_ANALYZE_DEPENDENCY_TOOL = Tool(
             },
             "package_name": {
                 "type": "string",
+                "minLength": 1,
                 "description": "Optional exact package name filter.",
                 "default": "",
             },
@@ -197,6 +209,7 @@ CODEHELP_FETCH_OFFICIAL_DOCS_TOOL = Tool(
         "properties": {
             "package_name": {
                 "type": "string",
+                "minLength": 1,
                 "description": "Package name as listed in PyPI or npm.",
             },
             "ecosystem": {
@@ -240,30 +253,38 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         target = arguments.get("target", "")
         codebase_path = arguments.get("codebase_path", ".")
         if not target:
-            return [TextContent(type="text", text="Error: 'target' is required")]
-        result = _codehelp_search_docstrings(target, codebase_path)
+            raise ValueError("target is required")
+        result = await asyncio.to_thread(
+            _codehelp_search_docstrings, target, codebase_path
+        )
         return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
     if name == "search_package_version":
         package_name = arguments.get("package_name", "")
         ecosystem = arguments.get("ecosystem", "auto")
         if not package_name:
-            return [TextContent(type="text", text="Error: 'package_name' is required")]
+            raise ValueError("package_name is required")
         try:
-            result = _codehelp_search_package_version(package_name, ecosystem)
+            result = await asyncio.to_thread(
+                _codehelp_search_package_version, package_name, ecosystem
+            )
         except Exception as exc:  # noqa: BLE001 - MCP tool boundary - a failing lookup returns text, never crashes the server
-            result = {"error": str(exc), "package": package_name}
+            result = {"error": redact_text(str(exc)), "package": package_name}
         return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
     if name == "search_package_examples":
         query = arguments.get("query", "")
         max_results = int(arguments.get("max_results", 5))
+        if not 1 <= max_results <= 10:
+            raise ValueError("max_results must be between 1 and 10")
         if not query:
-            return [TextContent(type="text", text="Error: 'query' is required")]
+            raise ValueError("query is required")
         try:
-            result = _codehelp_search_package_examples(query, max_results)
+            result = await asyncio.to_thread(
+                _codehelp_search_package_examples, query, max_results
+            )
         except Exception as exc:  # noqa: BLE001 - MCP tool boundary - a failing lookup returns text, never crashes the server
-            result = {"error": str(exc), "query": query}
+            result = {"error": redact_text(str(exc)), "query": query}
         return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
     if name == "analyze_dependency":
@@ -271,9 +292,18 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         package_name = arguments.get("package_name", "")
         include_latest = bool(arguments.get("include_latest", False))
         try:
-            result = _codehelp_analyze_dependencies(codebase_path, package_name, include_latest)
+            result = await asyncio.to_thread(
+                _codehelp_analyze_dependencies,
+                codebase_path,
+                package_name,
+                include_latest,
+            )
         except Exception as exc:  # noqa: BLE001 - MCP tool boundary - a failing lookup returns text, never crashes the server
-            result = {"status": "error", "error": str(exc), "codebase_path": codebase_path}
+            result = {
+                "status": "error",
+                "error": redact_text(str(exc)),
+                "codebase_path": codebase_path,
+            }
         return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
     if name == "fetch_official_docs":
@@ -283,13 +313,25 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         try:
             max_chars = int(arguments.get("max_chars", 4_000))
         except (TypeError, ValueError):
-            return [TextContent(type="text", text="Error: 'max_chars' must be an integer")]
+            raise ValueError("max_chars must be an integer") from None
+        if not 200 <= max_chars <= 8_000:
+            raise ValueError("max_chars must be between 200 and 8000")
         if not package_name:
-            return [TextContent(type="text", text="Error: 'package_name' is required")]
+            raise ValueError("package_name is required")
         try:
-            result = _codehelp_fetch_official_docs(package_name, ecosystem, query, max_chars)
+            result = await asyncio.to_thread(
+                _codehelp_fetch_official_docs,
+                package_name,
+                ecosystem,
+                query,
+                max_chars,
+            )
         except Exception as exc:  # noqa: BLE001 - MCP tool boundary - a failing lookup returns text, never crashes the server
-            result = {"status": "error", "error": str(exc), "package": package_name}
+            result = {
+                "status": "error",
+                "error": redact_text(str(exc)),
+                "package": package_name,
+            }
         return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
     raise ValueError(f"Unknown tool: '{name}'")
@@ -297,10 +339,10 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
 
 async def _main() -> None:
     async with stdio_server() as (read_stream, write_stream):
-        await server.run(read_stream, write_stream, server.create_initialization_options())
+        await server.run(
+            read_stream, write_stream, server.create_initialization_options()
+        )
 
 
 if __name__ == "__main__":
-    import asyncio
-
     asyncio.run(_main())

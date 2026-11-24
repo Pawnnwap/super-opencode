@@ -99,7 +99,7 @@ def test_codex_upgrade_kills_process_on_timeout(
     )
 
     with pytest.raises(app_bootstrap.subprocess.TimeoutExpired):
-        app_bootstrap._run_codex_upgrade("npm command", "/tmp")
+        app_bootstrap._run_codex_upgrade(["npm", "command"], "/tmp")
 
     assert process.killed
     assert process.calls == 2

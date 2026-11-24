@@ -30,8 +30,10 @@ Run:  set SOP_UPSTREAM=http://HOST:PORT   (or pass the upstream as argv[2])
 Point codex at http://127.0.0.1:<port>/v1 (codex_base_url) and the supervisor
 at the same host (openai_base_url) so both engines share one negotiated profile.
 """
+
 from __future__ import annotations
 
+import hmac
 import json
 import os
 import re
@@ -42,6 +44,9 @@ import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import urlparse
+
+from supervisor.security.redaction import redact_data, redact_text
 
 ROOT = Path(__file__).resolve().parent
 UPSTREAM = os.environ.get("SOP_UPSTREAM", "").strip().rstrip("/")
@@ -51,6 +56,12 @@ LOG_FILE = Path(
 )
 TTL_SECONDS = int(os.environ.get("SOP_CAP_TTL", str(6 * 3600)))
 MAX_LOG_BYTES = 2_000_000
+MAX_BODY_BYTES = int(os.environ.get("SOP_CAP_MAX_BODY", str(16 * 1024 * 1024)))
+MAX_RESPONSE_BYTES = int(os.environ.get("SOP_CAP_MAX_RESPONSE", str(16 * 1024 * 1024)))
+MAX_STREAM_BYTES = int(os.environ.get("SOP_CAP_MAX_STREAM", str(64 * 1024 * 1024)))
+MAX_ERROR_BYTES = 64 * 1024
+MAX_CONNECTIONS = int(os.environ.get("SOP_CAP_MAX_CONNECTIONS", "32"))
+ADMIN_TOKEN = os.environ.get("SOP_CAP_ADMIN_TOKEN", "").strip()
 # Effort clamp tie-break: "down" (default, cheaper) or "up".
 EFFORT_TIE = os.environ.get("SOP_EFFORT_TIE", "down").strip().lower()
 
@@ -59,8 +70,8 @@ LADDER = ["none", "minimal", "low", "medium", "high", "xhigh"]
 _lock = threading.RLock()
 _profiles: dict[str, dict] = {}
 _probing: set[str] = set()
-_last_auth = {"value": ""}
 _stats = {"requests": 0, "rewrites": 0, "learned": 0, "errors": 0}
+_connections = threading.BoundedSemaphore(MAX_CONNECTIONS)
 # NOTE: the flattened-name map is REQUEST-scoped (threaded server, several
 # models flatten concurrently) — a module-global map once let one model's
 # rewrite leak into another model's response-name restore.
@@ -79,6 +90,7 @@ def _blank_profile() -> dict:
 
 
 def _log(line: str) -> None:
+    line = redact_text(line)
     try:
         LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
         if LOG_FILE.exists() and LOG_FILE.stat().st_size > MAX_LOG_BYTES:
@@ -113,62 +125,91 @@ def _load_cache() -> None:
 def _save_cache() -> None:
     tmp = CACHE_FILE.with_suffix(".json.tmp")
     tmp.write_text(
-        json.dumps({"upstream": UPSTREAM, "profiles": _profiles}, indent=2),
+        json.dumps(
+            redact_data({"upstream": UPSTREAM, "profiles": _profiles}),
+            indent=2,
+        ),
         encoding="utf-8",
     )
     tmp.replace(CACHE_FILE)
 
 
-def _profile(model: str) -> dict:
+def _profile(model: str, auth: str = "") -> dict:
     key = f"{UPSTREAM}|{model}"
     with _lock:
         prof = _profiles.get(key)
-        if prof is None or (time.time() - float(prof.get("checked_at") or 0)) > TTL_SECONDS:
+        if (
+            prof is None
+            or (time.time() - float(prof.get("checked_at") or 0)) > TTL_SECONDS
+        ):
             prof = _profiles.setdefault(key, _blank_profile())
             if key not in _probing:
                 _probing.add(key)
-                threading.Thread(target=_probe, args=(key, model), daemon=True).start()
+                threading.Thread(
+                    target=_probe, args=(key, model, auth), daemon=True
+                ).start()
         return dict(prof)
 
 
+def _validated_upstream() -> str:
+    parsed = urlparse(UPSTREAM)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise ValueError("SOP_UPSTREAM must be an absolute http(s) URL")
+    return UPSTREAM
+
+
 def _post_upstream(path: str, body: bytes, headers: dict, timeout: int = 120):
-    req = urllib.request.Request(UPSTREAM + path, data=body, headers=headers, method="POST")
-    return urllib.request.urlopen(req, timeout=timeout)
+    req = urllib.request.Request(
+        _validated_upstream() + path, data=body, headers=headers, method="POST"
+    )
+    # The upstream scheme and host are validated immediately above.
+    return urllib.request.urlopen(req, timeout=timeout)  # nosec B310
 
 
-def _try_shape(model: str, extra: dict) -> tuple[int, str]:
+def _try_shape(model: str, extra: dict, auth: str = "") -> tuple[int, str]:
     """One tiny completion; returns (http_status, first 300 chars of body/text)."""
-    payload = {"model": model, "input": "say OK", "stream": False, "max_output_tokens": 16}
+    payload = {
+        "model": model,
+        "input": "say OK",
+        "stream": False,
+        "max_output_tokens": 16,
+    }
     payload.update(extra)
     headers = {
         "Content-Type": "application/json",
-        "Authorization": _last_auth["value"] or "Bearer x",
+        "Authorization": auth or "Bearer x",
     }
     try:
-        resp = _post_upstream("/v1/responses", json.dumps(payload).encode(), headers, 90)
+        resp = _post_upstream(
+            "/v1/responses", json.dumps(payload).encode(), headers, 90
+        )
         return resp.status, "ok"
     except urllib.error.HTTPError as exc:
-        return exc.code, exc.read()[:300].decode("utf-8", "replace")
+        return exc.code, exc.read(301).decode("utf-8", "replace")
     except Exception as exc:  # noqa: BLE001
         return 0, str(exc)[:300]
 
 
-def _chat_effort_ok(model: str, effort: str) -> bool:
+def _chat_effort_ok(model: str, effort: str, auth: str = "") -> bool:
     payload = {
         "model": model,
         "messages": [{"role": "user", "content": "say OK"}],
         "max_tokens": 16,
         "reasoning_effort": effort,
     }
-    headers = {"Content-Type": "application/json",
-               "Authorization": _last_auth["value"] or "Bearer x"}
+    headers = {"Content-Type": "application/json", "Authorization": auth or "Bearer x"}
     try:
-        return _post_upstream("/v1/chat/completions", json.dumps(payload).encode(), headers, 60).status == 200
+        return (
+            _post_upstream(
+                "/v1/chat/completions", json.dumps(payload).encode(), headers, 60
+            ).status
+            == 200
+        )
     except Exception:  # noqa: BLE001
         return False
 
 
-def _probe(key: str, model: str) -> None:
+def _probe(key: str, model: str, auth: str = "") -> None:
     """Discover capabilities with throwaway requests, then cache the profile.
 
     A baseline request with the exact same envelope is checked first: if the
@@ -179,36 +220,72 @@ def _probe(key: str, model: str) -> None:
     prof = _blank_profile()
     shapes = {
         "grammar_custom_tools": [
-            {"type": "custom", "name": "apply_patch", "description": "p",
-             "format": {"type": "grammar",
-                        "grammar": {"type": "lark", "definition": "start: /x+/"}}},
+            {
+                "type": "custom",
+                "name": "apply_patch",
+                "description": "p",
+                "format": {
+                    "type": "grammar",
+                    "grammar": {"type": "lark", "definition": "start: /x+/"},
+                },
+            },
         ],
         "namespace_tools": [
-            {"type": "namespace", "name": "mcp__probe", "description": "d",
-             "tools": [{"type": "function", "name": "probe_ping", "description": "n",
-                        "parameters": {"type": "object", "properties": {}}, "strict": False}]},
+            {
+                "type": "namespace",
+                "name": "mcp__probe",
+                "description": "d",
+                "tools": [
+                    {
+                        "type": "function",
+                        "name": "probe_ping",
+                        "description": "n",
+                        "parameters": {"type": "object", "properties": {}},
+                        "strict": False,
+                    }
+                ],
+            },
         ],
         "web_search_tool": [{"type": "web_search", "external_web_access": False}],
     }
     try:
-        baseline, detail = _try_shape(model, {})
+        baseline, detail = _try_shape(model, {}, auth)
         if baseline != 200:
             prof["checked_at"] = 0.0
-            _log(f"probe aborted: baseline request rejected ({baseline} {detail[:160]})")
+            _log(
+                f"probe aborted: baseline request rejected ({baseline} {detail[:160]})"
+            )
             return
         for knob, tools in shapes.items():
-            status, detail = _try_shape(model, {"tools": tools})
+            status, detail = _try_shape(model, {"tools": tools}, auth)
             prof[knob] = status == 200
-            _log(f"probe {knob} -> {status}{'' if status == 200 else ' ' + detail[:140]}")
+            _log(
+                f"probe {knob} -> {status}{'' if status == 200 else ' ' + detail[:140]}"
+            )
         freeform, _ = _try_shape(
             model,
-            {"tools": [{"type": "custom", "name": "apply_patch", "description": "p",
-                        "format": {"type": "text"}}]},
+            {
+                "tools": [
+                    {
+                        "type": "custom",
+                        "name": "apply_patch",
+                        "description": "p",
+                        "format": {"type": "text"},
+                    }
+                ]
+            },
+            auth,
         )
         _log(f"probe freeform_custom -> {freeform}")
-        responses_ok = [e for e in LADDER if _try_shape(model, {"reasoning": {"effort": e}})[0] == 200]
+        responses_ok = [
+            e
+            for e in LADDER
+            if _try_shape(model, {"reasoning": {"effort": e}}, auth)[0] == 200
+        ]
         prof["responses_efforts"] = responses_ok
-        prof["chat_efforts"] = [e for e in responses_ok if _chat_effort_ok(model, e)]
+        prof["chat_efforts"] = [
+            e for e in responses_ok if _chat_effort_ok(model, e, auth)
+        ]
         _log(f"probe efforts -> responses={responses_ok} chat={prof['chat_efforts']}")
         prof["checked_at"] = time.time()
     finally:
@@ -229,11 +306,15 @@ def clamp_effort(effort: str, allowed: list[str] | None) -> str:
         return effort
     rank = LADDER.index(effort) if effort in LADDER else len(LADDER) // 2
     sign = 1 if EFFORT_TIE != "up" else -1
-    return min(allowed, key=lambda a: (abs(LADDER.index(a) - rank), sign * LADDER.index(a)))
+    return min(
+        allowed, key=lambda a: (abs(LADDER.index(a) - rank), sign * LADDER.index(a))
+    )
 
 
 def _flatten_namespace(
-    ns: dict, notes: list[str], name_map: dict[str, tuple[str, str]],
+    ns: dict,
+    notes: list[str],
+    name_map: dict[str, tuple[str, str]],
 ) -> list[dict]:
     prefix = str(ns.get("name") or "mcp").replace(".", "_")
     out: list[dict] = []
@@ -242,7 +323,9 @@ def _flatten_namespace(
             continue
         flat = dict(item)
         original = str(flat.get("name") or "")
-        name = original if original.startswith(prefix + "__") else f"{prefix}__{original}"
+        name = (
+            original if original.startswith(prefix + "__") else f"{prefix}__{original}"
+        )
         flat["name"] = name[:64]
         name_map[flat["name"]] = (prefix, original)
         out.append(flat)
@@ -251,7 +334,9 @@ def _flatten_namespace(
 
 
 def apply_profile(
-    data: dict, prof: dict, kind: str,
+    data: dict,
+    prof: dict,
+    kind: str,
 ) -> tuple[dict, list[str], dict[str, tuple[str, str]]]:
     """Downgrade only where the profile says the endpoint cannot take it.
 
@@ -305,7 +390,9 @@ REASON_RULES = [
     (re.compile(r"namespace", re.IGNORECASE), "namespace_tools"),
     (re.compile(r"web_search", re.IGNORECASE), "web_search_tool"),
 ]
-SUPPORTED_RE = re.compile(r"[Ss]upported (?:types|values|efforts) are ([^.]+)", re.IGNORECASE)
+SUPPORTED_RE = re.compile(
+    r"[Ss]upported (?:types|values|efforts) are ([^.]+)", re.IGNORECASE
+)
 
 
 def learn_from_400(text: str, prof: dict, kind: str) -> bool:
@@ -362,13 +449,44 @@ def _restore_names(blob: bytes, name_map: dict[str, tuple[str, str]]) -> bytes:
     return json.dumps(data).encode() if state["changed"] else blob
 
 
+def _restore_sse_names(frame: bytes, name_map: dict[str, tuple[str, str]]) -> bytes:
+    if not name_map:
+        return frame
+    output = []
+    for line in frame.splitlines(keepends=True):
+        stripped = line.lstrip()
+        if not stripped.startswith(b"data:"):
+            output.append(line)
+            continue
+        prefix = line[: len(line) - len(stripped)]
+        payload = stripped[5:].strip()
+        restored = _restore_names(payload, name_map)
+        if restored == payload:
+            output.append(line)
+            continue
+        newline = (
+            b"\r\n"
+            if line.endswith(b"\r\n")
+            else b"\n"
+            if line.endswith(b"\n")
+            else b""
+        )
+        output.append(prefix + b"data: " + restored + newline)
+    return b"".join(output)
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
     def _send(self, status: int, headers: dict, payload: bytes) -> None:
         self.send_response(status)
         for k, v in headers.items():
-            if k.lower() in ("transfer-encoding", "connection", "content-length", "content-encoding"):
+            if k.lower() in (
+                "transfer-encoding",
+                "connection",
+                "content-length",
+                "content-encoding",
+            ):
                 continue
             self.send_header(k, v)
         self.send_header("Content-Length", str(len(payload)))
@@ -381,8 +499,14 @@ class Handler(BaseHTTPRequestHandler):
         if self.path.startswith("/healthz"):
             with _lock:
                 body = json.dumps(
-                    {"upstream": UPSTREAM, "probing": sorted(_probing),
-                     "stats": _stats, "profiles": _profiles},
+                    redact_data(
+                        {
+                            "upstream": UPSTREAM,
+                            "probing": sorted(_probing),
+                            "stats": _stats,
+                            "profiles": _profiles,
+                        }
+                    ),
                     indent=2,
                 ).encode()
             self._send(200, {"Content-Type": "application/json"}, body)
@@ -395,38 +519,64 @@ class Handler(BaseHTTPRequestHandler):
 
     def _relay_get(self) -> None:
         headers = {
-            k: v for k, v in self.headers.items()
-            if k.lower() not in ("host", "content-length", "connection", "accept-encoding")
+            k: v
+            for k, v in self.headers.items()
+            if k.lower()
+            not in ("host", "content-length", "connection", "accept-encoding")
         }
         try:
-            req = urllib.request.Request(UPSTREAM + self.path, headers=headers, method="GET")
-            resp = urllib.request.urlopen(req, timeout=60)
+            req = urllib.request.Request(
+                _validated_upstream() + self.path, headers=headers, method="GET"
+            )
+            # The upstream scheme and host are validated immediately above.
+            resp = urllib.request.urlopen(req, timeout=60)  # nosec B310
         except urllib.error.HTTPError as exc:
-            detail = exc.read()
+            detail = exc.read(MAX_ERROR_BYTES)
             with _lock:
                 _stats["errors"] += 1
             _log(f"upstream {exc.code} GET {self.path}: {detail[:220]!r}")
-            self._send(exc.code,
-                       {"Content-Type": exc.headers.get("Content-Type", "application/json")},
-                       detail)
+            self._send(
+                exc.code,
+                {"Content-Type": exc.headers.get("Content-Type", "application/json")},
+                detail,
+            )
             return
         except Exception as exc:  # noqa: BLE001
             with _lock:
                 _stats["errors"] += 1
             _log(f"upstream error GET {self.path}: {exc}")
-            self._send(502, {"Content-Type": "application/json"},
-                       json.dumps({"error": {"message": f"proxy upstream error: {exc}"}}).encode())
+            self._send(
+                502,
+                {"Content-Type": "application/json"},
+                json.dumps(
+                    {"error": {"message": f"proxy upstream error: {exc}"}}
+                ).encode(),
+            )
             return
         self._relay_response(resp)
 
     def do_POST(self):
-        n = int(self.headers.get("Content-Length") or 0)
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            n = -1
+        if n < 0 or n > MAX_BODY_BYTES:
+            self._send(
+                413,
+                {"Content-Type": "application/json"},
+                b'{"error":"request too large"}',
+            )
+            self.close_connection = True
+            return
         raw = self.rfile.read(n)
         auth = self.headers.get("Authorization") or ""
-        if auth:
-            _last_auth["value"] = auth
-
         if self.path.startswith("/admin/reprobe"):
+            expected = f"Bearer {ADMIN_TOKEN}" if ADMIN_TOKEN else ""
+            if not expected or not hmac.compare_digest(auth, expected):
+                self._send(
+                    404, {"Content-Type": "application/json"}, b'{"error":"not found"}'
+                )
+                return
             with _lock:
                 _profiles.clear()
             try:
@@ -438,8 +588,10 @@ class Handler(BaseHTTPRequestHandler):
 
         kind = "chat" if "chat/completions" in self.path else "responses"
         headers_base = {
-            k: v for k, v in self.headers.items()
-            if k.lower() not in ("host", "content-length", "connection", "accept-encoding")
+            k: v
+            for k, v in self.headers.items()
+            if k.lower()
+            not in ("host", "content-length", "connection", "accept-encoding")
         }
 
         def forward(body: bytes):
@@ -458,12 +610,14 @@ class Handler(BaseHTTPRequestHandler):
         model = str(data.get("model") or "")
         with _lock:
             _stats["requests"] += 1
-        prof = _profile(model)
+        prof = _profile(model, auth)
         attempts = 0
         while True:
             attempts += 1
             payload, notes, name_map = apply_profile(
-                json.loads(json.dumps(data)), prof, kind,
+                json.loads(json.dumps(data)),
+                prof,
+                kind,
             )
             body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
             if notes:
@@ -473,7 +627,7 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 resp = forward(body)
             except urllib.error.HTTPError as exc:
-                detail = exc.read()
+                detail = exc.read(MAX_ERROR_BYTES)
                 text = detail.decode("utf-8", "replace")
                 narrowed = attempts <= 4 and learn_from_400(text, prof, kind)
                 if exc.code == 400 and narrowed:
@@ -489,16 +643,27 @@ class Handler(BaseHTTPRequestHandler):
                 with _lock:
                     _stats["errors"] += 1
                 _log(f"upstream {exc.code} {self.path} model={model}: {detail[:220]!r}")
-                self._send(exc.code,
-                           {"Content-Type": exc.headers.get("Content-Type", "application/json")},
-                           detail)
+                self._send(
+                    exc.code,
+                    {
+                        "Content-Type": exc.headers.get(
+                            "Content-Type", "application/json"
+                        )
+                    },
+                    detail,
+                )
                 return
             except Exception as exc:  # noqa: BLE001
                 with _lock:
                     _stats["errors"] += 1
                 _log(f"upstream error {self.path}: {exc}")
-                self._send(502, {"Content-Type": "application/json"},
-                           json.dumps({"error": {"message": f"proxy upstream error: {exc}"}}).encode())
+                self._send(
+                    502,
+                    {"Content-Type": "application/json"},
+                    json.dumps(
+                        {"error": {"message": f"proxy upstream error: {exc}"}}
+                    ).encode(),
+                )
                 return
             self._relay_response(resp, name_map)
             return
@@ -507,8 +672,13 @@ class Handler(BaseHTTPRequestHandler):
         try:
             resp = forward(raw)
         except Exception as exc:  # noqa: BLE001
-            self._send(502, {"Content-Type": "application/json"},
-                       json.dumps({"error": {"message": str(exc)}}).encode())
+            self._send(
+                502,
+                {"Content-Type": "application/json"},
+                json.dumps(
+                    {"error": {"message": redact_text(str(exc))}},
+                ).encode(),
+            )
             return
         self._relay_response(resp)
 
@@ -517,28 +687,109 @@ class Handler(BaseHTTPRequestHandler):
         if "text/event-stream" in ctype:
             self.send_response(resp.status)
             for k, v in resp.headers.items():
-                if k.lower() in ("transfer-encoding", "connection", "content-length", "content-encoding"):
+                if k.lower() in (
+                    "transfer-encoding",
+                    "connection",
+                    "content-length",
+                    "content-encoding",
+                ):
                     continue
                 self.send_header(k, v)
             self.send_header("Connection", "close")
             self.end_headers()
             self.close_connection = True
-            while True:
-                chunk = resp.read(8192)
-                if not chunk:
-                    break
-                self.wfile.write(chunk)
-                self.wfile.flush()
+            read1 = getattr(resp, "read1", None)
+            if read1 is None:
+                read1 = lambda size: resp.read(size)
+            streamed = 0
+            if not name_map:
+                while True:
+                    chunk = read1(8192)
+                    if not chunk:
+                        break
+                    streamed += len(chunk)
+                    if streamed > MAX_STREAM_BYTES:
+                        _log("stream response limit exceeded")
+                        break
+                    self.wfile.write(chunk)
+                    self.wfile.flush()
+            else:
+                pending = b""
+                while True:
+                    chunk = read1(8192)
+                    if not chunk:
+                        break
+                    streamed += len(chunk)
+                    if streamed > MAX_STREAM_BYTES:
+                        _log("stream response limit exceeded")
+                        break
+                    pending += chunk
+                    while pending:
+                        boundaries = [
+                            index
+                            for index in (
+                                pending.find(b"\n\n"),
+                                pending.find(b"\r\n\r\n"),
+                            )
+                            if index >= 0
+                        ]
+                        if not boundaries:
+                            break
+                        index = min(boundaries)
+                        delimiter = (
+                            b"\r\n\r\n"
+                            if pending.startswith(b"\r\n\r\n", index)
+                            else b"\n\n"
+                        )
+                        frame = pending[: index + len(delimiter)]
+                        pending = pending[index + len(delimiter) :]
+                        self.wfile.write(_restore_sse_names(frame, name_map))
+                        self.wfile.flush()
+                if pending:
+                    self.wfile.write(_restore_sse_names(pending, name_map))
+                    self.wfile.flush()
             resp.close()
             return
-        payload = resp.read()
+        payload = resp.read(MAX_RESPONSE_BYTES + 1)
         resp.close()
+        if len(payload) > MAX_RESPONSE_BYTES:
+            self._send(
+                502,
+                {"Content-Type": "application/json"},
+                b'{"error":"upstream response too large"}',
+            )
+            return
         if name_map:
             payload = _restore_names(payload, name_map)
         self._send(resp.status, {"Content-Type": ctype or "application/json"}, payload)
 
     def log_message(self, *args):
         pass
+
+
+class _BoundedHTTPServer(ThreadingHTTPServer):
+    daemon_threads = True
+
+    def process_request(self, request, client_address):
+        if not _connections.acquire(blocking=False):
+            try:
+                request.sendall(
+                    b"HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"
+                )
+            finally:
+                self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except Exception:
+            _connections.release()
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            _connections.release()
 
 
 if __name__ == "__main__":
@@ -552,10 +803,16 @@ if __name__ == "__main__":
             file=sys.stderr,
         )
         raise SystemExit(2)
+    _validated_upstream()
     if port != 8321:
         # Keep a test instance's artifacts out of the production log/cache.
         LOG_FILE = LOG_FILE.with_name(f"{LOG_FILE.name}.{port}")
         CACHE_FILE = CACHE_FILE.with_name(f"{CACHE_FILE.name}.{port}")
     _load_cache()
-    print(f"capability proxy 127.0.0.1:{port} -> {UPSTREAM} (cache={CACHE_FILE})", flush=True)
-    ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
+    print(
+        redact_text(
+            f"capability proxy 127.0.0.1:{port} -> {UPSTREAM} (cache={CACHE_FILE})",
+        ),
+        flush=True,
+    )
+    _BoundedHTTPServer(("127.0.0.1", port), Handler).serve_forever()

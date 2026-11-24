@@ -14,6 +14,7 @@ Two widgets live here:
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import ClassVar
 
 from nicegui import run as nicegui_run
 from nicegui import ui
@@ -154,7 +155,7 @@ class TailStrip:
     to be findable at a glance, or the strip is just a small log.
     """
 
-    _LEVEL_CLASS = {
+    _LEVEL_CLASS: ClassVar[dict[str, str]] = {
         "warn": "log-warn",
         "error": "log-error",
         "success": "log-success",
@@ -174,10 +175,14 @@ class TailStrip:
         logs = [e for e in (logs or []) if isinstance(e, dict)]
         # Noise never reaches the strip — it exists to answer "what's
         # happening right now", not to be exhaustive.
-        visible = [e for e in logs if (e.get("level") or "info") not in DEFAULT_HIDDEN_LEVELS]
+        visible = [
+            e for e in logs if (e.get("level") or "info") not in DEFAULT_HIDDEN_LEVELS
+        ]
         start = start_ts(logs)
-        shown = visible[-self.keep:]
-        signature = tuple((e.get("level") or "info", _one_line(e, start)) for e in shown)
+        shown = visible[-self.keep :]
+        signature = tuple(
+            (e.get("level") or "info", _one_line(e, start)) for e in shown
+        )
         if signature == self._signature:
             return
         self._signature = signature
@@ -190,8 +195,7 @@ class TailStrip:
                 # Errors wrap instead of ellipsizing: a cause that is cut off
                 # mid-sentence is the same as no cause at all.
                 label = ui.label(_one_line(event, start)).classes(
-                    "mono text-xs w-full "
-                    + self._LEVEL_CLASS.get(level, ""),
+                    "mono text-xs w-full " + self._LEVEL_CLASS.get(level, ""),
                 )
                 if level in {"error", "blocked"}:
                     label.classes("sop-tail__wrap")
@@ -215,33 +219,53 @@ class LogPanel:
         self._download_fetcher = download_fetcher
 
         with ui.row().classes("w-full items-center gap-3 flex-wrap"):
-            self.search_input = ui.input(
-                placeholder=i18n.t("Search logs…"),
-                on_change=lambda _e: self._refresh(),
-            ).classes("mono w-56").props("debounce=300")
-            self.counts_label = ui.label("").classes("sop-hint mono")
-            self.speech_switch = ui.switch(
-                i18n.t("Agent speech"), value=True,
-                on_change=lambda _e: self._refresh(),
-            ).props("dense").tooltip(
-                "The agent's plain-text prose and reasoning summaries "
-                "(💭 thoughts). Tool I/O stays out; tool markers have their "
-                "own toggle.",
+            self.search_input = (
+                ui.input(
+                    placeholder=i18n.t("Search logs…"),
+                    on_change=lambda _e: self._refresh(),
+                )
+                .classes("mono w-56")
+                .props("debounce=300")
             )
-            self.tool_switch = ui.switch(
-                i18n.t("Tool use"), value=True, on_change=lambda _e: self._refresh(),
-            ).props("dense").tooltip(
-                i18n.t("Shell / edit / mcp tool markers from the agent."),
+            self.counts_label = ui.label("").classes("sop-hint mono")
+            self.speech_switch = (
+                ui.switch(
+                    i18n.t("Agent speech"),
+                    value=True,
+                    on_change=lambda _e: self._refresh(),
+                )
+                .props("dense")
+                .tooltip(
+                    "The agent's plain-text prose and reasoning summaries "
+                    "(💭 thoughts). Tool I/O stays out; tool markers have their "
+                    "own toggle.",
+                )
+            )
+            self.tool_switch = (
+                ui.switch(
+                    i18n.t("Tool use"),
+                    value=True,
+                    on_change=lambda _e: self._refresh(),
+                )
+                .props("dense")
+                .tooltip(
+                    i18n.t("Shell / edit / mcp tool markers from the agent."),
+                )
             )
             # Never let the trailing icons wrap under the filters: they are
             # one control group and split apart at larger type sizes.
             with ui.row().classes("items-center gap-1 ml-auto flex-nowrap"):
                 if detail_fetcher is not None:
-                    self.ref_input = ui.input(
-                        placeholder=i18n.t("event #"),
-                    ).classes("mono w-24").props("dense")
+                    self.ref_input = (
+                        ui.input(
+                            placeholder=i18n.t("event #"),
+                        )
+                        .classes("mono w-24")
+                        .props("dense")
+                    )
                     ui.button(
-                        icon="open_in_new", on_click=self._show_ref,
+                        icon="open_in_new",
+                        on_click=self._show_ref,
                     ).props("flat dense").tooltip(
                         i18n.t(
                             "Fetch one headline event's full body from the job "
@@ -250,7 +274,8 @@ class LogPanel:
                     )
                 if download_fetcher is not None:
                     ui.button(
-                        icon="download", on_click=self._download,
+                        icon="download",
+                        on_click=self._download,
                     ).props("flat dense").tooltip(
                         i18n.t("Download the full log as text."),
                     )
@@ -307,8 +332,10 @@ class LogPanel:
             ui.label(
                 i18n.tr(
                     "Event #{ref} · {level} · {chars} chars · {ts}",
-                    ref=ref, level=detail.get("level", "?"),
-                    chars=f"{len(body):,}", ts=ts,
+                    ref=ref,
+                    level=detail.get("level", "?"),
+                    chars=f"{len(body):,}",
+                    ts=ts,
                 ),
             ).classes("text-xs text-[#8b949e]")
             with ui.scroll_area().classes("w-full flex-grow"):
@@ -333,7 +360,9 @@ class LogPanel:
         self.counts_label.set_text(
             i18n.tr(
                 "{err} err · {warn} warn · {tool} tool",
-                err=counts["error"], warn=counts["warn"], tool=counts["tool"],
+                err=counts["error"],
+                warn=counts["warn"],
+                tool=counts["tool"],
             ),
         )
 
@@ -371,13 +400,17 @@ class LogPanel:
         # Search/toggle changes are a deliberate re-read: start at the top.
         # Pure event arrival keeps the reader's position.
         re_read = (
-            search != self._signature[2]
-            or bool(self.tool_switch.value) != self._signature[3]
-            or bool(self.speech_switch.value) != self._signature[4]
-        ) if self._signature else True
+            (
+                search != self._signature[2]
+                or bool(self.tool_switch.value) != self._signature[3]
+                or bool(self.speech_switch.value) != self._signature[4]
+            )
+            if self._signature
+            else True
+        )
         self._signature = signature
         start = start_ts(logs)
-        visible = filtered[-self.max_lines:] if self.max_lines else filtered
+        visible = filtered[-self.max_lines :] if self.max_lines else filtered
         # Re-arm the tracker: the panel may have been rendered inside a
         # collapsed expansion, so no scroll container existed at bind time.
         ui.run_javascript(_TRACKER_JS)

@@ -6,6 +6,7 @@ import re
 from collections.abc import Sequence
 from pathlib import Path
 
+from supervisor.security.redaction import redact_text
 from supervisor.utils.text_utils import coerce_str
 
 logger = logging.getLogger(__name__)
@@ -54,8 +55,8 @@ def provider_connection_error(text: str) -> str | None:
     for code in ("502", "503", "504"):
         idx = lowered.find(code)
         if idx != -1 and any(
-            word in lowered for word in ("error", "status", "api", "gateway",
-                                          "unavailable", "response")
+            word in lowered
+            for word in ("error", "status", "api", "gateway", "unavailable", "response")
         ):
             return f"http {code}"
     return None
@@ -123,26 +124,28 @@ def resolve_model_arg(
 _EXE_PATH_RE = re.compile(
     r'(?:&\s+)?["\']?'
     r'(?<![A-Za-z0-9])[A-Za-z]:[\\/](?:[^\s"\'\\/]*[\\/])*'
-    r'(?P<name>powershell|pwsh|cmd|pythonw?|bash|sh|node|npm|npx|uvx?|conda)'
-    r'(?:\.exe|\.cmd|\.bat|\.ps1)?'
+    r"(?P<name>powershell|pwsh|cmd|pythonw?|bash|sh|node|npm|npx|uvx?|conda)"
+    r"(?:\.exe|\.cmd|\.bat|\.ps1)?"
     r'["\']?',
     re.IGNORECASE,
 )
 # Leading `$env:NAME="value"; ` segments that the agents' Windows shell
 # wrappers repeat on every single call (PYTHONIOENCODING and friends) — both
 # at the very start and right after `-Command`.
-_ENV_PRELUDE_RE = re.compile(r'^\$env:[A-Za-z_]\w*\s*=\s*(?:"[^"]*"|\'[^\']*\'|\S+);\s*')
+_ENV_PRELUDE_RE = re.compile(
+    r'^\$env:[A-Za-z_]\w*\s*=\s*(?:"[^"]*"|\'[^\']*\'|\S+);\s*'
+)
 _ENV_AFTER_COMMAND_RE = re.compile(
     r"(-Command\s+['\"]?)(?:\$env:[A-Za-z_]\w*\s*=\s*(?:\"[^\"]*\"|'[^']*'|\S+);\s*)+",
     re.IGNORECASE,
 )
 # Flags the wrappers always pass and no human needs in a breadcrumb.
-_NOISE_FLAGS_RE = re.compile(r'\s+(?:-NoProfile|-NonInteractive)\b', re.IGNORECASE)
+_NOISE_FLAGS_RE = re.compile(r"\s+(?:-NoProfile|-NonInteractive)\b", re.IGNORECASE)
 # The whole `powershell -Command` wrapper: the payload IS the command — the
 # shell name and flag repeat on every Windows call and add nothing.
 _SHELL_WRAPPER_RE = re.compile(
-    r'^(?:powershell|pwsh)\s+'
-    r'(?:-NoProfile\s+|-NonInteractive\s+|-ExecutionPolicy\s+\S+\s+|-Sta\s+|-MTA\s+)*'
+    r"^(?:powershell|pwsh)\s+"
+    r"(?:-NoProfile\s+|-NonInteractive\s+|-ExecutionPolicy\s+\S+\s+|-Sta\s+|-MTA\s+)*"
     r'-Command\s*["\']?',
     re.IGNORECASE,
 )
@@ -184,7 +187,7 @@ def compact_tool_detail(detail: str, limit: int = TOOL_DETAIL_LIMIT) -> str:
     text = _NOISE_FLAGS_RE.sub("", text)
     wrapper = _SHELL_WRAPPER_RE.match(text)
     if wrapper:
-        text = text[wrapper.end():].lstrip()
+        text = text[wrapper.end() :].lstrip()
         # The wrapper consumed the payload's OPENING quote — drop its
         # matching closing quote (when it survives the 200-char cap it
         # would just read as a stray character).
@@ -192,7 +195,7 @@ def compact_tool_detail(detail: str, limit: int = TOOL_DETAIL_LIMIT) -> str:
         if opening in ('"', "'") and text.endswith(opening):
             text = text[:-1]
     text = text.removeprefix("& ")
-    return text[:limit]
+    return redact_text(text)[:limit]
 
 
 def feed_stdin_prompt(proc, prompt: str) -> None:

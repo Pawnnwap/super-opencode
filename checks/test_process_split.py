@@ -11,17 +11,22 @@ shared UI+jobs process. Contract under test:
   (cancel_if_live -> request_stop) without touching foreign jobs.
 """
 
-import os
 import threading
 import time
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from services.jobs import job_manager as jm
+from services.jobs import store_client as store_client_module
 from services.jobs.job_manager import JobManager
 from services.jobs.store_client import StoreJobClient
-from services.jobs.worker_service import _acquire_lock, _mark_orphans
+from services.jobs.worker_service import (
+    _acquire_lock,
+    _mark_orphans,
+    _release_worker_lock,
+)
 from supervisor.utils.config import SupervisorConfig
 
 
@@ -47,6 +52,13 @@ class StubLoop:
 
 
 @pytest.fixture(autouse=True)
+def _isolated_worker_lock():
+    _release_worker_lock()
+    yield
+    _release_worker_lock()
+
+
+@pytest.fixture(autouse=True)
 def stub_loops(monkeypatch):
     """Per-test StubLoop subclass with FRESH end-signal events.
 
@@ -59,10 +71,14 @@ def stub_loops(monkeypatch):
     (flake, 2026-11-03). Fresh events per test keep zombies talking to
     their own flags, and an end signal is never erased before it is seen.
     """
-    loops = type("StubLoop", (StubLoop,), {
-        "release": threading.Event(),
-        "stop_flag": threading.Event(),
-    })
+    loops = type(
+        "StubLoop",
+        (StubLoop,),
+        {
+            "release": threading.Event(),
+            "stop_flag": threading.Event(),
+        },
+    )
     monkeypatch.setattr(jm, "SupervisorLoop", loops)
     return loops
 
@@ -92,6 +108,70 @@ def test_ui_enqueue_writes_pending_record_only(tmp_path):
     assert manager._active_jobs == {}
 
 
+def test_direct_enqueue_stamps_the_new_run_id(tmp_path, monkeypatch):
+    _, manager = _make(tmp_path)
+
+    def _no_worker(self, _job_id, _job_type, _config, _stop_event, _meta):
+        self._release_slot()
+
+    monkeypatch.setattr(JobManager, "_worker", _no_worker)
+    config = replace(_config(tmp_path / "ws_replay"), run_id="run_old00000001")
+
+    job_id = manager.enqueue_job("run", config)
+
+    state = manager.store.get_job_state(job_id)
+    assert state["config"]["run_id"] == job_id
+
+
+def test_store_claim_replaces_a_stale_run_id(tmp_path, monkeypatch):
+    client, manager = _make(tmp_path)
+    config = replace(_config(tmp_path / "ws_replay"), run_id="run_old00000001")
+    job_id = client.enqueue_job("run", config)
+    seen: list[str] = []
+    claimed = threading.Event()
+
+    def _capture_worker(self, job_id, _job_type, config, _stop_event, _meta, *_args):
+        seen.append((job_id, config.run_id))
+        claimed.set()
+        with self._lock:
+            entry = self._active_jobs.pop(job_id, {})
+        if entry.get("claim") is not None:
+            entry["claim"].release()
+        self._release_slot()
+
+    monkeypatch.setattr(JobManager, "_worker", _capture_worker)
+
+    assert manager.run_stored_job(job_id)
+    assert claimed.wait(5)
+    assert seen == [(job_id, job_id)]
+
+
+def test_two_managers_cannot_claim_the_same_pending_job(tmp_path, monkeypatch):
+    client, first = _make(tmp_path)
+    second = JobManager(str(client.store.store_dir), max_parallel_jobs=2)
+    job_id = client.enqueue_job("run", _config(tmp_path / "ws_claim"))
+    entered = threading.Event()
+    release = threading.Event()
+
+    def _blocking_worker(self, job_id, _job_type, _config, _stop_event, _meta, *_args):
+        entered.set()
+        release.wait(5)
+        with self._lock:
+            entry = self._active_jobs.pop(job_id, {})
+        claim = entry.get("claim")
+        if claim is not None:
+            claim.release()
+        self._release_slot()
+
+    monkeypatch.setattr(JobManager, "_worker", _blocking_worker)
+    try:
+        assert first.run_stored_job(job_id)
+        assert entered.wait(5)
+        assert second.run_stored_job(job_id) is False
+    finally:
+        release.set()
+
+
 def test_ui_enqueue_rejects_active_workspace_collision(tmp_path):
     client, _ = _make(tmp_path)
     ws = tmp_path / "ws_a"
@@ -100,15 +180,61 @@ def test_ui_enqueue_rejects_active_workspace_collision(tmp_path):
         client.enqueue_job("run", _config(ws))
 
 
+def test_concurrent_enqueues_cannot_share_a_workspace(tmp_path, monkeypatch):
+    store = tmp_path / "store"
+    first = StoreJobClient(str(store))
+    second = StoreJobClient(str(store))
+    workspace = tmp_path / "ws_shared"
+    workspace.mkdir()
+    original = jm.assert_workspace_free
+
+    def slow_check(*args, **kwargs):
+        time.sleep(0.1)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(jm, "assert_workspace_free", slow_check)
+    monkeypatch.setattr(store_client_module, "assert_workspace_free", slow_check)
+    barrier = threading.Barrier(3)
+    results = []
+
+    def _enqueue(client):
+        barrier.wait()
+        try:
+            results.append(client.enqueue_job("run", _config(workspace)))
+        except ValueError:
+            results.append("rejected")
+        except Exception as exc:  # noqa: BLE001 - surface worker-thread failures
+            import traceback
+
+            results.append(f"error:{type(exc).__name__}:{exc}:{traceback.format_exc()}")
+
+    threads = [
+        threading.Thread(target=_enqueue, args=(client,)) for client in (first, second)
+    ]
+    for thread in threads:
+        thread.start()
+    barrier.wait()
+    for thread in threads:
+        thread.join(15)
+
+    assert len(results) == 2, results
+    assert results.count("rejected") == 1, results
+    assert len([result for result in results if result != "rejected"]) == 1
+
+
 def test_ui_cancel_writes_state_and_spares_terminal_jobs(tmp_path):
     client, manager = _make(tmp_path)
     job_id = client.enqueue_job("run", _config(tmp_path / "ws_a"))
     client.cancel_job(job_id)
     assert manager.store.get_job_state(job_id)["state"] == "CANCELLED"
 
-    manager.store.save_job_state(job_id, {
-        **(manager.store.get_job_state(job_id) or {}), "state": "SUCCESS",
-    })
+    manager.store.save_job_state(
+        job_id,
+        {
+            **(manager.store.get_job_state(job_id) or {}),
+            "state": "SUCCESS",
+        },
+    )
     client.cancel_job(job_id)
     assert manager.store.get_job_state(job_id)["state"] == "SUCCESS"
 
@@ -116,7 +242,8 @@ def test_ui_cancel_writes_state_and_spares_terminal_jobs(tmp_path):
 def test_daemon_claims_pending_and_runs_it(tmp_path, stub_loops):
     client, manager = _make(tmp_path)
     job_id = client.enqueue_job(
-        "run", _config(tmp_path / "ws_a"),
+        "run",
+        _config(tmp_path / "ws_a"),
         meta={"batch_id": "b1", "replica_index": 1, "replica_count": 2},
     )
     assert manager.run_stored_job(job_id)
@@ -156,15 +283,16 @@ def test_daemon_honours_ui_cancel_of_live_job(tmp_path, stub_loops):
     stub_loops.release.set()
 
 
-def test_lock_is_single_and_stale_locks_are_recycled(tmp_path):
+def test_lock_is_single_and_released_for_the_next_holder(tmp_path):
     store = tmp_path / "store"
     store.mkdir()
-    now = time.time()
-    assert _acquire_lock(store, now=now)
-    assert not _acquire_lock(store, now=now + 1)      # fresh holder
-    stale = (now - 60, now - 60)
-    os.utime(store / "worker.lock", stale)
-    assert _acquire_lock(store, now=now)               # stale -> recycled
+    assert _acquire_lock(store)
+    try:
+        assert not _acquire_lock(store)
+    finally:
+        _release_worker_lock()
+    assert _acquire_lock(store)
+    _release_worker_lock()
 
 
 def test_daemon_start_marks_orphans_abandoned(tmp_path):
@@ -174,10 +302,16 @@ def test_daemon_start_marks_orphans_abandoned(tmp_path):
     # clobber ABANDONED (last-writer-wins lost update - the flake this
     # test kept hitting). The contract under test is _mark_orphans only.
     stale = "run_stale00000001"
-    manager.store.save_job_state(stale, {
-        "type": "run", "state": "RUNNING", "progress": 0.0,
-        "heartbeat_at": time.time(), "config": {},
-    })
+    manager.store.save_job_state(
+        stale,
+        {
+            "type": "run",
+            "state": "RUNNING",
+            "progress": 0.0,
+            "heartbeat_at": time.time(),
+            "config": {},
+        },
+    )
     flagged = _mark_orphans(manager)
     assert flagged == [stale]
     assert manager.store.get_job_state(stale)["state"] == "ABANDONED"
@@ -246,7 +380,9 @@ def test_worker_exits_cancelled_when_sentinel_drops_mid_stream(tmp_path):
     deadline = time.time() + 10
     while time.time() < deadline:
         state = manager.store.get_job_state(job_id) or {}
-        if state.get("state") == "CANCELLED" and not manager.cancel_sentinel_exists(job_id):
+        if state.get("state") == "CANCELLED" and not manager.cancel_sentinel_exists(
+            job_id
+        ):
             break
         time.sleep(0.05)
     assert state.get("state") == "CANCELLED"

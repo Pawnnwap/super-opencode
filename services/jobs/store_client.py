@@ -23,6 +23,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from services.jobs.file_lock import FileLock
 from services.jobs.job_manager import (
     JobManager,
     assert_workspace_free,
@@ -31,9 +32,10 @@ from services.jobs.job_manager import (
 from services.jobs.job_states import (
     ACTIVE_JOB_STATES,
     JOB_STORE_DIR,
+    TERMINAL_JOB_STATES,
     WORKER_SETTINGS_FILE,
 )
-from services.jobs.state_store import JobStateStore
+from services.jobs.state_store import JobStateStore, validate_job_id
 
 
 class StoreJobClient:
@@ -62,7 +64,8 @@ class StoreJobClient:
         }
         self.store.store_dir.mkdir(parents=True, exist_ok=True)
         (self.store.store_dir / WORKER_SETTINGS_FILE).write_text(
-            json.dumps(payload), encoding="utf-8",
+            json.dumps(payload),
+            encoding="utf-8",
         )
 
     def set_max_parallel_jobs(self, value: int) -> None:
@@ -87,46 +90,64 @@ class StoreJobClient:
         job_id = f"{job_type}_{uuid.uuid4().hex[:8]}"
         record, _ = pending_record(job_type, config, meta, time.time())
 
-        with self._lock:
+        with self._lock, FileLock(self.store.store_dir / "enqueue.lock"):
             assert_workspace_free(self.store, Path(config.workspace).resolve())
             self.store.save_job_state(job_id, record)
         return job_id
 
-    def cancel_job(self, job_id: str) -> None:
-        """Request cancellation by writing state; the daemon honours it.
-
-        The sentinel file carries the durable intent: the daemon worker
-        rewrites the state field (RUNNING heartbeat) every few seconds, so
-        the request must not live only there. Terminal jobs are left
-        untouched - rewriting a finished job's state would corrupt history.
-        """
+    def cancel_job(self, job_id: str) -> bool:
+        """Persist stop intent; return False when no durable request was written."""
+        job_id = validate_job_id(job_id)
         state = self.store.get_job_state(job_id) or {}
         if state.get("state") not in ACTIVE_JOB_STATES:
-            return
-        sentinel = self.store.store_dir / f"{job_id}.cancel"
+            return False
+        if state.get("state") == "STOPPING" and self.store.request_cancel_exists(
+            job_id
+        ):
+            return True
         try:
-            sentinel.write_text(str(time.time()), encoding="utf-8")
+            self.store.write_cancel_sentinel(job_id)
         except OSError:
-            pass
-        self.store.append_log(job_id, {"level": "warn", "msg": "Job cancelled by user."})
-        state["state"] = "CANCELLED"
-        state["heartbeat_at"] = time.time()
-        self.store.save_job_state(job_id, state)
+            return False
+
+        claim = FileLock(self.store.store_dir / f"{job_id}.claim")
+        worker_owns_claim = not claim.acquire()
+        try:
+
+            def _transition(state):
+                if state.get("state") in TERMINAL_JOB_STATES:
+                    return
+                state["state"] = "STOPPING" if worker_owns_claim else "CANCELLED"
+                state["heartbeat_at"] = time.time()
+
+            self.store.update_job_state(job_id, _transition)
+        finally:
+            if not worker_owns_claim:
+                claim.release()
+        self.store.append_log(
+            job_id, {"level": "warn", "msg": "Job cancelled by user."}
+        )
+        return True
 
     def cancel_batch(self, batch_id: str) -> list[str]:
         """Cancel every still-active job of a batch. Returns cancelled ids."""
         cancelled: list[str] = []
         for jid in self.store.list_jobs():
             state = self.store.get_job_state(jid) or {}
-            if state.get("batch_id") == batch_id and state.get("state") in ACTIVE_JOB_STATES:
-                self.cancel_job(jid)
+            if (
+                state.get("batch_id") == batch_id
+                and state.get("state") in ACTIVE_JOB_STATES
+                and self.cancel_job(jid)
+            ):
                 cancelled.append(jid)
         return cancelled
 
     # ----------------------------------------------------------- reads -- #
 
     def get_job_status(
-        self, job_id: str, max_logs: int | None = None,
+        self,
+        job_id: str,
+        max_logs: int | None = None,
     ) -> dict[str, Any] | None:
         return self.store.read_job_status(job_id, max_logs)
 

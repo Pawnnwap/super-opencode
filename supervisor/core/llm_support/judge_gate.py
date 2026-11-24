@@ -21,6 +21,11 @@ from typing import Self
 DEFAULT_LIMIT = 4
 ENV_VAR = "SOP_JUDGE_MAX_CONCURRENCY"
 
+
+class JudgeCancelled(RuntimeError):
+    """Raised when a run stops waiting for judge capacity."""
+
+
 _init_lock = threading.Lock()
 _semaphore: threading.BoundedSemaphore | None = None
 
@@ -51,10 +56,27 @@ def reset_for_tests(limit: int | None = None) -> None:
 class judge_slot:
     """Hold one judge-call slot for the duration of an HTTP request."""
 
+    def __init__(self, cancel_event=None):
+        self._cancel_event = cancel_event
+        self._acquired = False
+
     def __enter__(self) -> Self:
-        _gate().acquire()
+        gate = _gate()
+        if self._cancel_event is None:
+            gate.acquire()
+            self._acquired = True
+            return self
+        while not gate.acquire(timeout=0.1):
+            if self._cancel_event.is_set():
+                raise JudgeCancelled("judge wait cancelled")
+        if self._cancel_event.is_set():
+            gate.release()
+            raise JudgeCancelled("judge wait cancelled")
+        self._acquired = True
         return self
 
     def __exit__(self, exc_type, exc, tb) -> bool:
-        _gate().release()
+        if self._acquired:
+            _gate().release()
+            self._acquired = False
         return False

@@ -92,7 +92,9 @@ def test_cancel_event_unblocks_a_pipe_held_open(monkeypatch):
     killed = []
     cancel = threading.Event()
     monkeypatch.setattr(
-        stream_driver, "kill_process_tree", lambda target: killed.append(target),
+        stream_driver,
+        "kill_process_tree",
+        lambda target: killed.append(target),
     )
     outcome_box = {}
 
@@ -161,9 +163,18 @@ def test_cancel_returns_with_real_grandchild_holding_pipe(tmp_path):
     thread = threading.Thread(target=run, daemon=True)
     started = time.monotonic()
     thread.start()
-    assert _wait_until(
-        lambda: pid_file.exists() and bool(pid_file.read_text().strip()), 10,
-    )
+    try:
+        assert _wait_until(
+            lambda: pid_file.exists() and bool(pid_file.read_text().strip()),
+            20,
+        ), f"grandchild did not start; returncode={proc.poll()}"
+    except BaseException:
+        kill_process_tree(proc)
+        try:
+            proc.wait(timeout=10)
+        except Exception:  # noqa: BLE001, S110 - cleanup
+            pass
+        raise
     grandchild_pid = int(pid_file.read_text().strip())
     cancel.set()
     thread.join(timeout=3)
@@ -240,7 +251,9 @@ def test_cancelled_stream_never_retries_with_backup(monkeypatch, tmp_path):
             pass
 
     monkeypatch.setattr(
-        process_common.subprocess, "Popen", lambda *_a, **_k: FakeProc(),
+        process_common.subprocess,
+        "Popen",
+        lambda *_a, **_k: FakeProc(),
     )
     monkeypatch.setattr(process_common, "feed_stdin_prompt", lambda *_a: None)
 
@@ -249,8 +262,12 @@ def test_cancelled_stream_never_retries_with_backup(monkeypatch, tmp_path):
         if False:  # pragma: no cover - makes this a generator
             yield
         return StreamOutcome(
-            stdout="", stderr="", returncode=-1, timed_out=False,
-            tokens_total=0, cancelled=True,
+            stdout="",
+            stderr="",
+            returncode=-1,
+            timed_out=False,
+            tokens_total=0,
+            cancelled=True,
         )
 
     monkeypatch.setattr(process_common, "consume_process_stream", fake_consume)
@@ -279,7 +296,9 @@ def test_cancelled_stream_never_retries_with_backup(monkeypatch, tmp_path):
 def test_stop_sets_cancel_event_and_kills_only_its_process(monkeypatch, tmp_path):
     killed = []
     monkeypatch.setattr(
-        base_runner, "kill_process_tree", lambda proc: killed.append(proc),
+        base_runner,
+        "kill_process_tree",
+        lambda proc: killed.append(proc),
     )
 
     class Runner(BaseRunner):
@@ -297,6 +316,7 @@ def test_stop_sets_cancel_event_and_kills_only_its_process(monkeypatch, tmp_path
 
 def test_context_restart_clears_a_cleanup_stop(tmp_path):
     """Compaction stops the old process then starts a new session."""
+
     class Runner(BaseRunner):
         _engine = "test"
 
@@ -360,7 +380,8 @@ def test_kill_process_tree_touches_only_its_own_tree(tmp_path):
     child_created = None
     try:
         assert _wait_until(
-            lambda: pid_file.exists() and bool(pid_file.read_text().strip()), 10,
+            lambda: pid_file.exists() and bool(pid_file.read_text().strip()),
+            10,
         )
         child_pid = int(pid_file.read_text().strip())
         child_created = psutil.Process(child_pid).create_time()
@@ -369,8 +390,7 @@ def test_kill_process_tree_touches_only_its_own_tree(tmp_path):
         def child_gone() -> bool:
             try:
                 return (
-                    abs(psutil.Process(child_pid).create_time() - child_created)
-                    > 0.01
+                    abs(psutil.Process(child_pid).create_time() - child_created) > 0.01
                 )
             except psutil.NoSuchProcess:
                 return True

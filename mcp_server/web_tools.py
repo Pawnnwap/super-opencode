@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import html as html_mod
 import re
 import urllib.parse
@@ -15,22 +16,21 @@ except ImportError:
     from codehelp_support.docs import is_public_http_url  # type: ignore[no-redef]
     from codehelp_support.http import _http_get_text  # type: ignore[no-redef]
 
-_SEARCH_ENDPOINT = (
-    "https://www.bing.com/search?setmkt=en-US&setlang=en"
-)
+_SEARCH_ENDPOINT = "https://www.bing.com/search?setmkt=en-US&setlang=en"
 # Independent index fallback: Yandex/DDG/Brave/Startpage/searx are
 # blocked or captcha-gated from this network; marginalia responds with
 # organic results (verified 2026-10-13).
 _FALLBACK_ENDPOINT = "https://search.marginalia.nu/search"
 _MAX_FETCH_CHARS = 200_000
+_MAX_RESULTS = 20
 _UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
 
 server = Server("web_tools")
 
 if not hasattr(Server, "list_tools"):
-    Server.list_tools = lambda self: (lambda f: f)  # type: ignore[attr-defined]
+    Server.list_tools = lambda self: lambda f: f  # type: ignore[attr-defined]
 if not hasattr(Server, "call_tool"):
-    Server.call_tool = lambda self: (lambda f: f)  # type: ignore[attr-defined]
+    Server.call_tool = lambda self: lambda f: f  # type: ignore[attr-defined]
 
 
 def _strip_tags(fragment: str) -> str:
@@ -41,14 +41,19 @@ def _strip_tags(fragment: str) -> str:
 def _marginalia_results(html_content: str, max_results: int) -> list[dict[str, str]]:
     """Parse Marginalia's independent index: keep the longest anchor text per URL."""
     titled: dict[str, str] = {}
-    for m in re.finditer(r'<a[^>]*href="(https?://[^"]+)"[^>]*>(.*?)</a>', html_content, re.DOTALL):
+    for m in re.finditer(
+        r'<a[^>]*href="(https?://[^"]+)"[^>]*>(.*?)</a>', html_content, re.DOTALL
+    ):
         url = m.group(1)
         if any(d in url for d in ("marginalia", "web.archive.org")):
             continue
         text = _strip_tags(m.group(2))
         if url not in titled or len(text) > len(titled[url]):
             titled[url] = text
-    return [{"title": text or url, "url": url, "snippet": ""} for url, text in titled.items()][:max_results]
+    return [
+        {"title": text or url, "url": url, "snippet": ""}
+        for url, text in titled.items()
+    ][:max_results]
 
 
 def _search_both(
@@ -58,9 +63,9 @@ def _search_both(
     """Query global Bing AND the Marginalia index, merged, Bing first, deduped."""
     merged: list[dict[str, str]] = []
     seen: set[str] = set()
-    for r in _search(query, _SEARCH_ENDPOINT, "q", _bing_results, max_results) + _search(
-        query, _FALLBACK_ENDPOINT, "query", _marginalia_results, max_results
-    ):
+    for r in _search(
+        query, _SEARCH_ENDPOINT, "q", _bing_results, max_results
+    ) + _search(query, _FALLBACK_ENDPOINT, "query", _marginalia_results, max_results):
         if r["url"] in seen:
             continue
         seen.add(r["url"])
@@ -87,7 +92,9 @@ def _search(
 def _bing_results(html_content: str, max_results: int) -> list[dict[str, str]]:
     results = []
     for block in re.findall(r'<li class="b_algo".*?</li>', html_content, re.DOTALL):
-        match = re.search(r'<h2[^>]*><a[^>]*href="([^"]+)"[^>]*>(.*?)</a>', block, re.DOTALL)
+        match = re.search(
+            r'<h2[^>]*><a[^>]*href="([^"]+)"[^>]*>(.*?)</a>', block, re.DOTALL
+        )
         if not match:
             continue
         url = match.group(1)
@@ -114,8 +121,17 @@ async def list_tools() -> list[Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string", "description": "Search query."},
-                    "max_results": {"type": "integer", "default": 5},
+                    "query": {
+                        "type": "string",
+                        "description": "Search query.",
+                        "minLength": 1,
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "default": 5,
+                        "minimum": 1,
+                        "maximum": _MAX_RESULTS,
+                    },
                 },
                 "required": ["query"],
             },
@@ -126,8 +142,17 @@ async def list_tools() -> list[Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "url": {"type": "string", "description": "Absolute http(s) URL."},
-                    "max_chars": {"type": "integer", "default": 200000},
+                    "url": {
+                        "type": "string",
+                        "description": "Absolute http(s) URL.",
+                        "minLength": 1,
+                    },
+                    "max_chars": {
+                        "type": "integer",
+                        "default": _MAX_FETCH_CHARS,
+                        "minimum": 1,
+                        "maximum": _MAX_FETCH_CHARS,
+                    },
                 },
                 "required": ["url"],
             },
@@ -142,12 +167,21 @@ async def call_tool(name: str, arguments: dict[str, str]) -> list[TextContent]:
         if not query:
             raise ValueError("query is required")
         max_results = int(arguments.get("max_results", 5))
-        results = _search_both(query, max_results)
-        lines = "\n".join(
-            f"{i + 1}. {r['title']}\n   {r['url']}\n   {r['snippet']}"
-            for i, r in enumerate(results)
-        ) or "No results."
-        return [TextContent(type="text", text=f"{len(results)} results for `{query}`:\n{lines}")]
+        if not 1 <= max_results <= _MAX_RESULTS:
+            raise ValueError(f"max_results must be between 1 and {_MAX_RESULTS}")
+        results = await asyncio.to_thread(_search_both, query, max_results)
+        lines = (
+            "\n".join(
+                f"{i + 1}. {r['title']}\n   {r['url']}\n   {r['snippet']}"
+                for i, r in enumerate(results)
+            )
+            or "No results."
+        )
+        return [
+            TextContent(
+                type="text", text=f"{len(results)} results for `{query}`:\n{lines}"
+            )
+        ]
 
     if name == "web_fetch":
         url = str(arguments.get("url", ""))
@@ -156,15 +190,20 @@ async def call_tool(name: str, arguments: dict[str, str]) -> list[TextContent]:
         # The URL is agent-supplied: without this, web_fetch is an SSRF
         # primitive that can reach the supervisor's own API on 127.0.0.1,
         # LAN services, and cloud metadata endpoints.
-        if not is_public_http_url(url, require_https=False):
+        if not await asyncio.to_thread(is_public_http_url, url, require_https=False):
             raise ValueError("url must be a public http(s) address")
         max_chars = int(arguments.get("max_chars", _MAX_FETCH_CHARS))
-        text = _http_get_text(
+        if not 1 <= max_chars <= _MAX_FETCH_CHARS:
+            raise ValueError(f"max_chars must be between 1 and {_MAX_FETCH_CHARS}")
+        text = await asyncio.to_thread(
+            _http_get_text,
             url,
             timeout=20,
             validate_url=lambda target: is_public_http_url(target, require_https=False),
         )
-        text = _strip_tags(re.sub(r"<(script|style)[^>]*>.*?</\1>", " ", text, flags=re.DOTALL))
+        text = _strip_tags(
+            re.sub(r"<(script|style)[^>]*>.*?</\1>", " ", text, flags=re.DOTALL)
+        )
         return [TextContent(type="text", text=text[:max_chars])]
 
     raise ValueError(f"Unknown tool: {name}")
@@ -172,11 +211,10 @@ async def call_tool(name: str, arguments: dict[str, str]) -> list[TextContent]:
 
 async def _main() -> None:
     async with stdio_server() as (read_stream, write_stream):
-        await server.run(read_stream, write_stream, server.create_initialization_options())
+        await server.run(
+            read_stream, write_stream, server.create_initialization_options()
+        )
 
 
 if __name__ == "__main__":
-    import asyncio
-
     asyncio.run(_main())
-

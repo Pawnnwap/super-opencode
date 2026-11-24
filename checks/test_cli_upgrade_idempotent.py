@@ -14,6 +14,7 @@ import services.runtime.app_bootstrap as boot
 
 def _no_install(monkeypatch):
     """Fail loudly if any npm install is attempted."""
+
     def _explode(*_a, **_k):
         raise AssertionError("npm install must not run when the CLI resolves")
 
@@ -35,7 +36,7 @@ def test_pi_upgrade_skips_when_the_cli_resolves(monkeypatch, tmp_path):
 def test_missing_cli_still_gets_the_repair_install(monkeypatch, tmp_path):
     """A CLI that does NOT resolve must still be installed (the repair path)."""
     monkeypatch.setattr(boot, "_installed_cli", lambda _name: "")
-    seen: list[str] = []
+    seen: list[list[str]] = []
 
     class _Proc:
         returncode = 0
@@ -49,7 +50,7 @@ def test_missing_cli_still_gets_the_repair_install(monkeypatch, tmp_path):
 
     monkeypatch.setattr(boot.subprocess, "Popen", _fake_popen)
     boot.auto_upgrade_opencode(settings_file=tmp_path / "settings.json")
-    assert seen and "opencode-ai" in seen[0]
+    assert seen and any(arg.startswith("opencode-ai@") for arg in seen[0])
 
 
 def test_skip_switch_still_wins(monkeypatch, tmp_path):

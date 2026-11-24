@@ -34,12 +34,15 @@ import subprocess
 import sys
 import time
 import traceback
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from supervisor.security.redaction import redact_data, redact_text
+
 ROOT = Path(__file__).resolve().parents[2]
-JOB_STORE = ROOT / ".job_store"
+JOB_STORE = Path(os.environ.get("SOP_JOB_STORE_DIR") or ROOT / ".job_store")
 LOG_DIR = ROOT / "logs"
 LOG_PATH = LOG_DIR / "guardian.log"
 HEARTBEAT = JOB_STORE / "guardian.heartbeat"
@@ -114,16 +117,23 @@ def plan(
         if snap.app_process_alive and (
             snap.app_lock_age is None or snap.app_lock_age <= 60
         ):
-            actions.append(Action("note", "app is booting (process alive, port not up yet)"))
+            actions.append(
+                Action("note", "app is booting (process alive, port not up yet)")
+            )
         elif snap.app_process_alive:
             if cooled("app", APP_REPAIR_BACKOFF_SEC):
                 state.last_repair["app"] = now
                 actions.append(
-                    Action("restart_app", f"app process wedged (lock {snap.app_lock_age:.0f}s) - restarting"),
+                    Action(
+                        "restart_app",
+                        f"app process wedged (lock {snap.app_lock_age:.0f}s) - restarting",
+                    ),
                 )
         elif cooled("stack", APP_REPAIR_BACKOFF_SEC):
             state.last_repair["stack"] = now
-            actions.append(Action("start_stack", "app not running - starting the stack"))
+            actions.append(
+                Action("start_stack", "app not running - starting the stack")
+            )
         state.app_http_failures = 0
     elif not snap.app_http_ok:
         state.app_http_failures += 1
@@ -179,17 +189,26 @@ def plan(
             or q.get("pending") != snap.pending
             or q.get("running") != snap.running
         ):
-            q.update(since=now, pid=snap.worker_pid, pending=snap.pending, running=snap.running)
+            q.update(
+                since=now,
+                pid=snap.worker_pid,
+                pending=snap.pending,
+                running=snap.running,
+            )
         if snap.pending > 0 and snap.running < snap.max_parallel:
             stalled = now - float(q.get("since", now))
             last_repair = float(q.get("last_repair", 0.0) or 0.0)
             if stalled >= stall_seconds:
                 if snap.running > 0:
                     actions.append(
-                        Action("note", "queue stalled with jobs in flight - never kills"),
+                        Action(
+                            "note", "queue stalled with jobs in flight - never kills"
+                        ),
                     )
                 elif last_repair > 0 and now - last_repair < backoff_seconds:
-                    actions.append(Action("note", "queue stall - repair backoff in effect"))
+                    actions.append(
+                        Action("note", "queue stall - repair backoff in effect")
+                    )
                 else:
                     q["last_repair"] = now
                     actions.append(
@@ -218,10 +237,15 @@ def pid_alive(pid: int | None) -> bool:
         kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
         kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
         kernel32.OpenProcess.restype = wintypes.HANDLE
-        kernel32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+        kernel32.GetExitCodeProcess.argtypes = [
+            wintypes.HANDLE,
+            ctypes.POINTER(wintypes.DWORD),
+        ]
         kernel32.GetExitCodeProcess.restype = wintypes.BOOL
         kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
-        handle = kernel32.OpenProcess(0x1000, False, int(pid))  # QUERY_LIMITED_INFORMATION
+        handle = kernel32.OpenProcess(
+            0x1000, False, int(pid)
+        )  # QUERY_LIMITED_INFORMATION
         if not handle:
             return False
         try:
@@ -266,8 +290,11 @@ def process_token(pid: int | None) -> float | None:
         try:
             creation, _exit, _kernel, _user = (wintypes.FILETIME() for _ in range(4))
             if not kernel32.GetProcessTimes(
-                handle, ctypes.byref(creation), ctypes.byref(_exit),
-                ctypes.byref(_kernel), ctypes.byref(_user),
+                handle,
+                ctypes.byref(creation),
+                ctypes.byref(_exit),
+                ctypes.byref(_kernel),
+                ctypes.byref(_user),
             ):
                 return None
             ticks = (creation.dwHighDateTime << 32) | creation.dwLowDateTime
@@ -368,7 +395,9 @@ def _powershell() -> str:
     if not _WINDOWS:
         return "powershell"
     root = os.environ.get("SystemRoot") or os.environ.get("WINDIR") or r"C:\Windows"
-    candidate = Path(root) / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+    candidate = (
+        Path(root) / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+    )
     return str(candidate) if candidate.exists() else "powershell"
 
 
@@ -412,8 +441,14 @@ def find_worker_pids() -> list[int]:
         if not entry.name.isdigit():
             continue
         try:
-            cmdline = (entry / "cmdline").read_bytes().replace(b"\x00", b" ").decode(
-                "utf-8", "ignore",
+            cmdline = (
+                (entry / "cmdline")
+                .read_bytes()
+                .replace(b"\x00", b" ")
+                .decode(
+                    "utf-8",
+                    "ignore",
+                )
             )
         except OSError:
             continue
@@ -441,7 +476,9 @@ def launcher_argv(flags: list[str]) -> list[str]:
 def run_launcher(flags: list[str]) -> None:
     argv = launcher_argv(flags)
     if not argv:
-        log("no launcher configured on this OS (set SOP_GUARDIAN_LAUNCHER); repair skipped")
+        log(
+            "no launcher configured on this OS (set SOP_GUARDIAN_LAUNCHER); repair skipped"
+        )
         return
     kwargs: dict = {"cwd": str(ROOT), "stdin": subprocess.DEVNULL}
     kwargs["stdout"] = subprocess.DEVNULL
@@ -460,8 +497,12 @@ def run_launcher(flags: list[str]) -> None:
 
 
 def _http_ok(url: str, timeout: float = 3.0) -> bool:
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme != "http" or parsed.hostname != "127.0.0.1":
+        return False
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as response:
+        # Health probes are restricted to literal loopback HTTP URLs.
+        with urllib.request.urlopen(url, timeout=timeout) as response:  # nosec B310
             return 200 <= int(response.status) < 300
     except Exception:  # noqa: BLE001 - any failure means "not healthy"
         return False
@@ -490,13 +531,13 @@ def _mtime_age(path: Path) -> float | None:
         return None
 
 
-def job_counts(limit: int = 40) -> tuple[int, int, int]:
-    """(pending, running, max_parallel) from the newest job records only."""
+def job_counts() -> tuple[int, int, int]:
+    """(pending, running, max_parallel) from every retained job record."""
     files = sorted(
         JOB_STORE.glob("*.json"),
         key=lambda path: path.stat().st_mtime,
         reverse=True,
-    )[:limit]
+    )
     pending = running = 0
     for path in files:
         state = str(_read_json(path).get("state", "")).upper()
@@ -564,7 +605,9 @@ def log(message: str) -> None:
         if LOG_PATH.exists() and LOG_PATH.stat().st_size > LOG_MAX_BYTES:
             LOG_PATH.replace(LOG_PATH.with_name(LOG_PATH.name + ".1"))
         with LOG_PATH.open("a", encoding="utf-8") as handle:
-            handle.write(time.strftime("%Y-%m-%d %H:%M:%S ") + message + "\n")
+            handle.write(
+                time.strftime("%Y-%m-%d %H:%M:%S ") + redact_text(message) + "\n"
+            )
     except OSError:
         pass
 
@@ -602,7 +645,7 @@ def _load_ports() -> dict:
 
 def save_queue_state(state: dict) -> None:
     try:
-        QUEUE_STATE.write_text(json.dumps(state), encoding="utf-8")
+        QUEUE_STATE.write_text(json.dumps(redact_data(state)), encoding="utf-8")
     except OSError:
         pass
 
@@ -684,7 +727,8 @@ def run_guardian(args) -> int:
         heartbeat
         and heartbeat.get("pid") != os.getpid()
         and pid_alive(heartbeat.get("pid"))
-        and time.time() - float(heartbeat.get("ts", 0) or 0) <= max(60.0, args.health_interval * 3)
+        and time.time() - float(heartbeat.get("ts", 0) or 0)
+        <= max(60.0, args.health_interval * 3)
     ):
         log("another guardian is alive - exiting")
         return 0
@@ -728,18 +772,24 @@ def run_guardian(args) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--once", action="store_true", help="backstop: ensure the guardian is alive")
+    parser.add_argument(
+        "--once", action="store_true", help="backstop: ensure the guardian is alive"
+    )
     parser.add_argument("--health-interval", type=float, default=20.0)
     parser.add_argument("--queue-interval", type=float, default=180.0)
     parser.add_argument("--lock-max-age", type=float, default=30.0)
     parser.add_argument("--stall-minutes", type=float, default=5.0)
     parser.add_argument("--backoff-minutes", type=float, default=30.0)
     parser.add_argument(
-        "--app-port", type=int, default=None,
+        "--app-port",
+        type=int,
+        default=None,
         help=f"default: .job_store/ports.json, else {APP_PORT}",
     )
     parser.add_argument(
-        "--proxy-port", type=int, default=None,
+        "--proxy-port",
+        type=int,
+        default=None,
         help=f"default: .job_store/ports.json, else {PROXY_PORT}",
     )
     args = parser.parse_args(argv)

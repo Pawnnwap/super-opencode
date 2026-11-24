@@ -83,25 +83,32 @@ class LiveJobScreen:
             with ui.column().classes("grow gap-3").style("flex:2 1 0;min-width:0"):
                 with theme.panel("Progress", icon="timeline"):
                     self.progress = ProgressWidgets(
-                        self.max_tokens, show_phase=self.show_phase,
+                        self.max_tokens,
+                        show_phase=self.show_phase,
                     )
                 with theme.panel(
-                    "Latest", icon="bolt",
+                    "Latest",
+                    icon="bolt",
                     subtitle="newest events, one line each",
                 ):
                     self.tail = TailStrip(keep=5)
                 from services.webui.ui_state import state_expansion
 
                 with state_expansion(
-                    f"job.{self.job_type}.fulllog", i18n.t("Full log"),
+                    f"job.{self.job_type}.fulllog",
+                    i18n.t("Full log"),
                     icon="receipt_long",
                 ).classes("sop-fold"):
                     self.log_panel = LogPanel(
                         detail_fetcher=self._fetch_event_detail,
                         download_fetcher=self._fetch_full_logs,
                     )
-            with ui.column().classes("gap-3").style(
-                "flex:1 1 280px;min-width:260px;max-width:360px",
+            with (
+                ui.column()
+                .classes("gap-3")
+                .style(
+                    "flex:1 1 280px;min-width:260px;max-width:360px",
+                )
             ):
                 self._render_details(status)
 
@@ -127,7 +134,9 @@ class LiveJobScreen:
         # loop: on the loop it stalled every open detail page behind disk and
         # JSON work whenever the job's codex stream burst.
         status = await nicegui_run.io_bound(
-            self.job_manager.get_job_status, self.job_id, 2000,
+            self.job_manager.get_job_status,
+            self.job_id,
+            2000,
         )
         if status is None:
             # An unreadable status is NOT a terminal state. The store is
@@ -145,7 +154,8 @@ class LiveJobScreen:
                 i18n.tr(
                     "Job {id} state is unreadable ({n} consecutive failed "
                     "reads) — use Refresh",
-                    id=self.job_id, n=self._read_failures,
+                    id=self.job_id,
+                    n=self._read_failures,
                 ),
                 type="warning",
             )
@@ -161,7 +171,9 @@ class LiveJobScreen:
             self.timer.active = False
             self._render_failure(status)
             self._render_report(status)
-            ui.notify(i18n.tr("Job {id} finished: {state}", id=self.job_id, state=state))
+            ui.notify(
+                i18n.tr("Job {id} finished: {state}", id=self.job_id, state=state)
+            )
 
     def _fetch_event_detail(self, ref: int) -> dict | None:
         return self.job_manager.get_event_detail(self.job_id, ref)
@@ -172,12 +184,21 @@ class LiveJobScreen:
 
     # ------------------------------------------------------------------ #
 
+    def _stop(self) -> None:
+        if self.job_manager.cancel_job(self.job_id):
+            ui.notify(i18n.tr("Stop requested: {id}", id=self.job_id))
+        else:
+            ui.notify(
+                i18n.t("Stop failed: cancellation was not persisted"), type="negative"
+            )
+
     def _render_header(self, status: dict, state: str) -> None:
         workspace = str((status.get("config") or {}).get("workspace") or "")
         with ui.row().classes("w-full items-center gap-3 flex-wrap"):
             with ui.column().classes("gap-1 min-w-0"):
                 ui.label(
-                    i18n.t("Run job") if self.job_type != "harvest"
+                    i18n.t("Run job")
+                    if self.job_type != "harvest"
                     else i18n.t("Harvest job"),
                 ).classes("sop-kicker")
                 with ui.row().classes("items-center gap-3 flex-nowrap"):
@@ -190,7 +211,7 @@ class LiveJobScreen:
                 if state in ACTIVE_JOB_STATES:
                     ui.button(
                         i18n.t("Stop"),
-                        on_click=lambda: self.job_manager.cancel_job(self.job_id),
+                        on_click=lambda: self._stop(),
                     ).props("color=red")
                 else:
                     ui.button(
@@ -243,7 +264,8 @@ class LiveJobScreen:
             # switcher reads as "the same study, instance 2 of 3".
             replica = (
                 f" r{s.get('replica_index', '?')}/{s.get('replica_count', '?')}"
-                if s.get("batch_id") else ""
+                if s.get("batch_id")
+                else ""
             )
             return f"{job_id}{replica} [{s.get('state', '?')}{(' - ' + name) if name else ''}]"
 
@@ -275,7 +297,10 @@ class LiveJobScreen:
             rows += [
                 ("Engine", engine),
                 ("Model", f"{app_state.get('opencode_model') or i18n.t('(not set)')}"),
-                ("Runs", i18n.tr("{n} selected", n=len(config.get('harvest_job_ids') or []))),
+                (
+                    "Runs",
+                    i18n.tr("{n} selected", n=len(config.get("harvest_job_ids") or [])),
+                ),
                 (
                     "Folder",
                     config.get("harvest_dir") or config.get("workspace") or "?",
@@ -298,7 +323,8 @@ class LiveJobScreen:
                 ),
                 (
                     "Occam Razor",
-                    i18n.t("on") if config.get("enable_occam_razor", False)
+                    i18n.t("on")
+                    if config.get("enable_occam_razor", False)
                     else i18n.t("off"),
                 ),
             ]
@@ -364,60 +390,67 @@ class LiveJobScreen:
             return
         slot.clear()
         workspace = str((status.get("config") or {}).get("workspace") or "")
-        with slot:
-            with theme.panel(
-                i18n.tr("Failure · {state}", state=state), icon="error",
-                tone="warn", anchor="failure",
-            ):
-                if headline:
-                    ui.label(headline[:4000]).classes(
-                        "mono text-xs whitespace-pre-wrap",
-                    ).style(
-                        "color:var(--sop-text-2);max-height:120px;overflow:auto;"
-                        "background:var(--sop-surface-2);font-weight:600;"
-                        "border:1px solid var(--sop-line);border-radius:8px;"
-                        "padding:10px 12px",
-                    )
-                if body:
-                    ui.label(body[:4000]).classes(
-                        "mono text-xs whitespace-pre-wrap",
-                    ).style(
-                        "color:var(--sop-text-2);max-height:320px;overflow:auto;"
-                        "background:var(--sop-surface-2);"
-                        "border:1px solid var(--sop-line);border-radius:8px;"
-                        "padding:10px 12px",
-                    )
-                if not headline and not body:
-                    ui.label(
-                        "No error event was recorded — open the full log below.",
-                    ).classes("sop-hint")
-                if status.get("resume_available"):
-                    ui.label(
-                        "A pending plan judge was checkpointed — launching "
-                        "this workspace again resumes it without re-running "
-                        "the agent turn.",
-                    ).classes("sop-hint")
-                copy_text = headline or body
-                with ui.row().classes("items-center gap-2 flex-wrap"):
-                    if copy_text:
-                        ui.button(
-                            i18n.t("Copy error"), icon="content_copy",
-                            on_click=lambda b=copy_text: ui.run_javascript(
-                                f"navigator.clipboard.writeText({_json.dumps(b)})",
-                            ),
-                        ).props("outline color=none dense")
-                    if workspace:
-                        ui.button(
-                            i18n.t("Open folder"), icon="folder_open",
-                            on_click=lambda: ui.run_javascript(
-                                f"fetch('/jobs/{self.job_id}/open-folder', "
-                                "{method: 'POST'})",
-                            ),
-                        ).props("outline color=none dense")
+        with (
+            slot,
+            theme.panel(
+                i18n.tr("Failure · {state}", state=state),
+                icon="error",
+                tone="warn",
+                anchor="failure",
+            ),
+        ):
+            if headline:
+                ui.label(headline[:4000]).classes(
+                    "mono text-xs whitespace-pre-wrap",
+                ).style(
+                    "color:var(--sop-text-2);max-height:120px;overflow:auto;"
+                    "background:var(--sop-surface-2);font-weight:600;"
+                    "border:1px solid var(--sop-line);border-radius:8px;"
+                    "padding:10px 12px",
+                )
+            if body:
+                ui.label(body[:4000]).classes(
+                    "mono text-xs whitespace-pre-wrap",
+                ).style(
+                    "color:var(--sop-text-2);max-height:320px;overflow:auto;"
+                    "background:var(--sop-surface-2);"
+                    "border:1px solid var(--sop-line);border-radius:8px;"
+                    "padding:10px 12px",
+                )
+            if not headline and not body:
+                ui.label(
+                    "No error event was recorded — open the full log below.",
+                ).classes("sop-hint")
+            if status.get("resume_available"):
+                ui.label(
+                    "A pending plan judge was checkpointed — launching "
+                    "this workspace again resumes it without re-running "
+                    "the agent turn.",
+                ).classes("sop-hint")
+            copy_text = headline or body
+            with ui.row().classes("items-center gap-2 flex-wrap"):
+                if copy_text:
                     ui.button(
-                        i18n.t("Launch again"), icon="replay",
-                        on_click=lambda: ui.navigate.to("/run"),
+                        i18n.t("Copy error"),
+                        icon="content_copy",
+                        on_click=lambda b=copy_text: ui.run_javascript(
+                            f"navigator.clipboard.writeText({_json.dumps(b)})",
+                        ),
                     ).props("outline color=none dense")
+                if workspace:
+                    ui.button(
+                        i18n.t("Open folder"),
+                        icon="folder_open",
+                        on_click=lambda: ui.run_javascript(
+                            f"fetch('/jobs/{self.job_id}/open-folder', "
+                            "{method: 'POST'})",
+                        ),
+                    ).props("outline color=none dense")
+                ui.button(
+                    i18n.t("Launch again"),
+                    icon="replay",
+                    on_click=lambda: ui.navigate.to("/run"),
+                ).props("outline color=none dense")
 
     def _render_report(self, status: dict) -> None:
         report = status.get("report")
@@ -438,7 +471,9 @@ class LiveJobScreen:
         self.report_slot.clear()
         with self.report_slot:  # noqa: SIM117 - NiceGUI element nesting
             with state_expansion(
-                f"job.{self.job_id}.report", i18n.t(title), default=True,
+                f"job.{self.job_id}.report",
+                i18n.t(title),
+                default=True,
                 icon="summarize",
             ).classes("sop-fold"):
                 with ui.row().classes("w-full items-center gap-2"):

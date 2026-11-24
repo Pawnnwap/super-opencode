@@ -8,6 +8,7 @@ With the CLI-based runner, each turn is:
 
 No idle detection, no drain threads, no pipe hacks.
 """
+
 from __future__ import annotations
 
 import logging
@@ -21,6 +22,7 @@ from supervisor.core.llm_support.chat import judge_phase, load_judge_checkpoint
 from supervisor.core.loop_base import BaseLoop, Event, LoopState, _ev
 from supervisor.core.occam_razor import OccamRazorStage
 from supervisor.protocols.protocol import read_protocol_text
+from supervisor.security.redaction import install_log_redaction
 from supervisor.utils.config import SupervisorConfig
 
 logger = logging.getLogger(__name__)
@@ -184,7 +186,8 @@ class SupervisorLoop(BaseLoop):
         else:
             self._harvest_gates()
             yield _ev(
-                "error", "Run ended with failures. See failure_report.md in workspace.",
+                "error",
+                "Run ended with failures. See failure_report.md in workspace.",
             )
 
     def _run_occam_razor(self) -> Generator[Event]:
@@ -438,7 +441,8 @@ class SupervisorLoop(BaseLoop):
                     "Re-evaluate applying their guidance.\n--- end skills ---"
                 )
             verdict = self.supervisor.judge_with_step_context(
-                "\n\n".join(parts), step_context,
+                "\n\n".join(parts),
+                step_context,
             )
             # No load chains: requests seen in the re-judge wait for next turn.
             self._queue_deferred_skill_requests(verdict)
@@ -486,7 +490,9 @@ class SupervisorLoop(BaseLoop):
         return f"Test suite: {result.summary()}\n{result.output[-800:]}"
 
     def _post_judge_feedback(
-        self, safe_msg: str, output: str,
+        self,
+        safe_msg: str,
+        output: str,
     ) -> Generator[Event, None, str]:
         alignment = self.supervisor.verify_protocol_alignment(output, self.protocol)
         if not alignment.aligned:
@@ -646,7 +652,8 @@ class SupervisorLoop(BaseLoop):
             )
             if drift and drift != getattr(self, "_rubric_drift_logged", None):
                 logger.warning(
-                    "gate rubric drift (protocol changed?): %s", "; ".join(drift),
+                    "gate rubric drift (protocol changed?): %s",
+                    "; ".join(drift),
                 )
                 self._rubric_drift_logged = drift
         assessment = check_feasibility(facts, facts_source=str(path))
@@ -669,7 +676,9 @@ class SupervisorLoop(BaseLoop):
             # facts come from the last harvest (live evaluation happens at
             # the DONE exit check, not per turn).
             block += "\n" + render_scorecard(
-                gates, {}, last_harvest=self._last_gate_harvest(),
+                gates,
+                {},
+                last_harvest=self._last_gate_harvest(),
             )
         return block
 
@@ -798,3 +807,4 @@ def _setup_logging(level: str) -> None:
         datefmt="%H:%M:%S",
         stream=sys.stderr,
     )
+    install_log_redaction()

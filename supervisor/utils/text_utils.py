@@ -1,6 +1,8 @@
 import json
 import re
 
+from supervisor.security.redaction import redact_text
+
 _THINKING_BLOCK_RE = re.compile(
     r"(?:<thought>|<think>).*?(?:</thought>|</think>)",
     re.DOTALL,
@@ -99,7 +101,7 @@ def coerce_str(value: object, field_name: str) -> str:
             "Type coercion: field '%s' received %r (type=%s) — expected str. "
             "Converting automatically. Check the caller / UI widget that produced this value.",
             field_name,
-            value,
+            redact_text(repr(value)),
             type(value).__name__,
         )
         value = str(value)

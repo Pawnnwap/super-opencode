@@ -39,6 +39,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from supervisor.security.redaction import redact_text
+
 logger = logging.getLogger(__name__)
 
 CLOSE_ACTIONS = (
@@ -191,6 +193,9 @@ class JevDecisionClient:
         api_key: str = "",
         transport: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
     ) -> None:
+        parsed = urllib.parse.urlparse(url)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            raise ValueError("jev decision URL must be absolute http(s)")
         self.url = url
         self.timeout = timeout
         self.threshold = threshold
@@ -216,7 +221,11 @@ class JevDecisionClient:
         try:
             return self._transport(payload)
         except Exception as exc:  # any outage must fall back to heuristics  # noqa: BLE001 - optional external judge - failure falls back to the local path
-            logger.warning("jev decision service unavailable (%s): %s", self.url, exc)
+            logger.warning(
+                "jev decision service unavailable (%s): %s",
+                redact_text(self.url),
+                redact_text(str(exc)),
+            )
             return None
 
     def decide_close(self, evidence: str) -> CloseDecision | None:
@@ -232,7 +241,9 @@ class JevDecisionClient:
                 str(name): float(prob)
                 for name, prob in (action_block.get("probabilities") or {}).items()
             }
-            action = max(actions, key=actions.get) if actions else "continue_design_work"
+            action = (
+                max(actions, key=actions.get) if actions else "continue_design_work"
+            )
         except (KeyError, TypeError, ValueError) as exc:
             logger.warning("jev close response malformed: %s", exc)
             return None
@@ -364,12 +375,8 @@ class JevDecisionClient:
                 ),
                 "criteria": {
                     "violation": "A restriction is actually breached.",
-                    "no_violation": (
-                        "The flagged text is benign or a false positive."
-                    ),
-                    "uncertain": (
-                        "The evidence is not sufficient to decide."
-                    ),
+                    "no_violation": ("The flagged text is benign or a false positive."),
+                    "uncertain": ("The evidence is not sufficient to decide."),
                 },
             },
         }
@@ -394,26 +401,20 @@ class JevDecisionClient:
         context = (
             "DONE PROPOSAL REVIEW\n"
             f"- Mandate: {_clip(mandate, 700)}\n"
-            "- Criteria:\n"
-            + ("\n".join(lines) if lines else "  (none)")
-            + "\n"
+            "- Criteria:\n" + ("\n".join(lines) if lines else "  (none)") + "\n"
             f"- Changed files: {_clip(', '.join(changed_files[:20]), 500)}\n"
             f"- Agent last output: {_clip(output, 900)}"
         )
         questions = {
             "verdict": {
                 "type": "choice",
-                "instructions": (
-                    "Should this DONE completion proposal be accepted?"
-                ),
+                "instructions": ("Should this DONE completion proposal be accepted?"),
                 "criteria": {
                     "accept": "The evidence supports every target.",
                     "reject": (
                         "The completion claim is not supported by the evidence."
                     ),
-                    "need_evidence": (
-                        "More evidence is required before accepting."
-                    ),
+                    "need_evidence": ("More evidence is required before accepting."),
                 },
             },
         }
@@ -440,7 +441,9 @@ class JevDecisionClient:
             f"{_bounded(plan, 4500)}"
         )
         data = self.ask(
-            context, _UNBLOCK_QUESTIONS, system_prompt=_UNBLOCK_SYSTEM_PROMPT,
+            context,
+            _UNBLOCK_QUESTIONS,
+            system_prompt=_UNBLOCK_SYSTEM_PROMPT,
         )
         if data is None:
             return None
@@ -464,7 +467,8 @@ class JevDecisionClient:
         )
         if self.api_key:
             request.add_header("Authorization", f"Bearer {self.api_key}")
-        with urllib.request.urlopen(request, timeout=self.timeout) as response:
+        # The endpoint scheme and host are validated in __init__.
+        with urllib.request.urlopen(request, timeout=self.timeout) as response:  # nosec B310
             return json.loads(response.read().decode("utf-8"))
 
 

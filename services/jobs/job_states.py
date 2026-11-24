@@ -12,6 +12,7 @@ Layering: this module is pure (no UI, no store), so both ``services.jobs`` and
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 
 
@@ -25,8 +26,8 @@ class StateStyle:
     57% "need attention" and the number stopped meaning anything.
     """
 
-    tone: str          # accent | ok | warn | bad | neutral
-    label: str         # operator-facing text
+    tone: str  # accent | ok | warn | bad | neutral
+    label: str  # operator-facing text
     needs_attention: bool
 
 
@@ -36,6 +37,7 @@ class StateStyle:
 STATE_CONTRACT: dict[str, StateStyle] = {
     "PENDING": StateStyle("accent", "PENDING", False),
     "RUNNING": StateStyle("accent", "RUNNING", False),
+    "STOPPING": StateStyle("warn", "STOPPING", False),
     "SUCCESS": StateStyle("ok", "SUCCESS", False),
     "FAILED": StateStyle("bad", "FAILED", True),
     "BLOCKED": StateStyle("warn", "BLOCKED", True),
@@ -56,7 +58,7 @@ PILL_TONE_CLASS: dict[str, str] = {
 # Where the job records live. The UI process, the worker daemon and the batch
 # launcher must all agree on this path — it IS the IPC between them, so a
 # mismatch silently strands jobs in a store nobody reads.
-JOB_STORE_DIR = ".job_store"
+JOB_STORE_DIR = os.environ.get("SOP_JOB_STORE_DIR", ".job_store")
 
 # The UI writes its concurrency caps here; the daemon reads them at start.
 # Same IPC rule as JOB_STORE_DIR: one spelling, or the daemon runs the caps
@@ -64,7 +66,7 @@ JOB_STORE_DIR = ".job_store"
 WORKER_SETTINGS_FILE = "worker_settings.json"
 
 # Queued or executing: the job still owns its workspace.
-ACTIVE_JOB_STATES = frozenset({"PENDING", "RUNNING"})
+ACTIVE_JOB_STATES = frozenset({"PENDING", "RUNNING", "STOPPING"})
 
 # Reached a final state; never resumes on its own. ABANDONED belongs here: the
 # worker daemon writes it when it restarts over a RUNNING job, and a state that
@@ -88,7 +90,7 @@ __all__ = [
     "JOB_STORE_DIR",
     "PILL_TONE_CLASS",
     "STATE_CONTRACT",
-    "StateStyle",
     "TERMINAL_JOB_STATES",
     "WORKER_SETTINGS_FILE",
+    "StateStyle",
 ]

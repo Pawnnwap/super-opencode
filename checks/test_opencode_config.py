@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
-from services.config.opencode_config import get_opencode_config_file
+from services.config.opencode_config import atomic_write_json, get_opencode_config_file
 
 
 def _managed_hashline(project_root: Path) -> dict:
@@ -13,6 +14,16 @@ def _managed_hashline(project_root: Path) -> dict:
         "enabled": True,
         "environment": {},
     }
+
+
+def test_atomic_write_json_uses_restrictive_unique_temp_files(tmp_path):
+    path = tmp_path / "opencode.json"
+    atomic_write_json(path, {"provider": {"key": "secret"}})
+
+    assert json.loads(path.read_text(encoding="utf-8"))["provider"]["key"] == "secret"
+    assert not list(tmp_path.glob("*.tmp"))
+    if os.name != "nt":
+        assert path.stat().st_mode & 0o777 == 0o600
 
 
 def test_migrates_managed_hashline_to_native_edit_tools(tmp_path):

@@ -35,7 +35,10 @@ def _stub_loops(monkeypatch):
         def run_streaming(self):
             yield {"level": "success", "msg": "ok"}
 
+    ws._release_worker_lock()
     monkeypatch.setattr(jm, "SupervisorLoop", Noop)
+    yield
+    ws._release_worker_lock()
 
 
 def _start_worker_main(monkeypatch, tmp_path):
@@ -125,10 +128,13 @@ def test_abandoned_record_carries_stage_and_reason(tmp_path):
     """ABANDONED must not be a silent tombstone: say where and why it stopped."""
     store = JobStateStore(str(tmp_path / ".job_store"))
     store.save_job_state("run_x", {"type": "run", "state": "RUNNING"})
-    store.append_log("run_x", {
-        "level": "tool",
-        "msg": "[shell] python build_indicator.py --stage screen",
-    })
+    store.append_log(
+        "run_x",
+        {
+            "level": "tool",
+            "msg": "[shell] python build_indicator.py --stage screen",
+        },
+    )
 
     class _M:
         pass
@@ -238,10 +244,15 @@ def test_pending_jobs_do_not_rehash_the_tree_every_poll(monkeypatch, tmp_path):
     # A PENDING record that can never be claimed (no free slot is not the
     # point here - the claim path is what used to re-hash).
     store = JobStateStore(str(store_dir))
-    store.save_job_state("run_waiting", {
-        "type": "run", "state": "PENDING", "created_at": 1.0,
-        "config": {"workspace": str(tmp_path / "ws"), "protocol_path": "p.md"},
-    })
+    store.save_job_state(
+        "run_waiting",
+        {
+            "type": "run",
+            "state": "PENDING",
+            "created_at": 1.0,
+            "config": {"workspace": str(tmp_path / "ws"), "protocol_path": "p.md"},
+        },
+    )
 
     t = threading.Thread(target=ws.main, daemon=True)
     t.start()

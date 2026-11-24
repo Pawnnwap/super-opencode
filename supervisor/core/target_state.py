@@ -15,6 +15,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
+from supervisor.security.redaction import redact_data, redact_text
 from supervisor.utils.text_utils import head_tail_excerpt
 
 _STATE_DIR = ".opencode"
@@ -49,9 +50,23 @@ _MAX_LESSONS = 8
 _STAGNATION_LIMIT = 2
 _TOKEN_RE = re.compile(r"[a-z0-9_./-]{3,}", re.IGNORECASE)
 _STOP_WORDS = {
-    "agent", "and", "before", "candidate", "code", "current", "from",
-    "into", "must", "output", "please", "should", "that", "the", "this",
-    "with", "without",
+    "agent",
+    "and",
+    "before",
+    "candidate",
+    "code",
+    "current",
+    "from",
+    "into",
+    "must",
+    "output",
+    "please",
+    "should",
+    "that",
+    "the",
+    "this",
+    "with",
+    "without",
 }
 
 
@@ -94,7 +109,9 @@ def initialise_target_state(
     state = TargetState(
         target=target.strip(),
         success_criteria=list(success_criteria or _criteria_from_target(target)),
-        failure_conditions=list(failure_conditions or _failure_conditions_from_target(target)),
+        failure_conditions=list(
+            failure_conditions or _failure_conditions_from_target(target)
+        ),
         updated_at=_now(),
     )
     _write_state(workspace, state)
@@ -110,7 +127,9 @@ def load_target_state(workspace: Path) -> TargetState | None:
     if not isinstance(payload, dict) or not isinstance(payload.get("target"), str):
         return None
     fields = {field.name for field in TargetState.__dataclass_fields__.values()}
-    return TargetState(**{key: value for key, value in payload.items() if key in fields})
+    return TargetState(
+        **{key: value for key, value in payload.items() if key in fields}
+    )
 
 
 def record_target_iteration(
@@ -133,6 +152,9 @@ def record_target_iteration(
     if state is None:
         state = initialise_target_state(workspace, target="Unnamed TARGET")
     state.iteration = max(state.iteration, iteration)
+    direction = redact_text(direction)
+    evidence = redact_text(evidence)
+    reason = redact_text(reason)
     normalized = direction_fingerprint(direction)
     if normalized and normalized not in state.tried_directions:
         state.tried_directions.append(normalized)
@@ -146,7 +168,11 @@ def record_target_iteration(
         state.stagnation_count = 0
         state.status = "running"
     else:
-        state.status = "replan_required" if state.stagnation_count + 1 >= _STAGNATION_LIMIT else "retry_with_new_direction"
+        state.status = (
+            "replan_required"
+            if state.stagnation_count + 1 >= _STAGNATION_LIMIT
+            else "retry_with_new_direction"
+        )
         state.stagnation_count += 1
         if normalized and normalized not in state.rejected_directions:
             state.rejected_directions.append(normalized)
@@ -381,7 +407,9 @@ def target_state_context(workspace: Path) -> str:
     if state.lessons:
         lines.append("Lessons so far: " + " | ".join(state.lessons[-3:]))
     if state.rejected_directions:
-        lines.append("Avoid repeated directions: " + " | ".join(state.rejected_directions[-3:]))
+        lines.append(
+            "Avoid repeated directions: " + " | ".join(state.rejected_directions[-3:])
+        )
     if state.last_reason:
         # Evaluator reasons end with the verdict — keep both ends.
         lines.append(
@@ -426,7 +454,12 @@ def _write_state(workspace: Path, state: TargetState) -> None:
     fd, tmp_name = tempfile.mkstemp(prefix=".target_state_", dir=path.parent)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(asdict(state), handle, indent=2, sort_keys=True)
+            json.dump(
+                redact_data(asdict(state)),
+                handle,
+                indent=2,
+                sort_keys=True,
+            )
         Path(tmp_name).replace(path)
     except Exception:
         Path(tmp_name).unlink(missing_ok=True)

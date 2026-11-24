@@ -1,7 +1,7 @@
 # Dedicated CODEX_HOME for supervised runs (super-opencode).
-# Isolated from the user's ~/.codex: no MCP servers, no goal/agent tools,
-# so a supervised agent gets a plain codex tool surface and cannot touch the
-# operator's own codex sessions.
+# Isolated from the user's ~/.codex: only the supervised Codehelp and web-tools
+# MCP servers are configured, with no goal/agent-control tools, so a supervised
+# agent cannot touch the operator's own codex sessions.
 model_catalog_json = 'E:/pyprojects/super-opencode/.codex_home_soprun/models.json'
 model = "deepseek-v4.1-flash"
 model_provider = "super_opencode"

@@ -65,9 +65,15 @@ def test_surface_ladder_and_text_floor():
     assert "--sop-surface-3: #232c3a;" in theme.CSS
 
 
-def test_state_contract_covers_every_terminal_state():
+def test_state_contract_covers_every_job_state():
     assert set(STATE_CONTRACT) == {
-        "PENDING", "RUNNING", "SUCCESS", "FAILED", "BLOCKED", "ABANDONED",
+        "PENDING",
+        "RUNNING",
+        "STOPPING",
+        "SUCCESS",
+        "FAILED",
+        "BLOCKED",
+        "ABANDONED",
         "CANCELLED",
     }
     for state, style in STATE_CONTRACT.items():

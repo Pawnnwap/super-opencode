@@ -10,7 +10,10 @@ from __future__ import annotations
 
 import json
 import os
+import uuid
 from pathlib import Path
+
+from supervisor.security.secrets import decrypt_secrets, protect_secrets
 
 _SETTINGS_FILE = Path(
     os.path.join(str(Path.home()), ".opencode_supervisor_settings.json"),
@@ -98,7 +101,7 @@ DEFAULTS: dict = {
     # everything else is denied for every backend.
     "access_policy_enabled": True,
     "access_whitelist": [],
-    "access_policy_strict": False,
+    "access_policy_strict": True,
     "enable_occam_razor": False,
     "enable_supervisor_skills": True,
     "supervisor_skills_dir": "",
@@ -122,7 +125,9 @@ def load_settings() -> dict:
     """Load persisted settings from disk. Returns {} if file missing or corrupt."""
     try:
         if _SETTINGS_FILE.exists():
-            return json.loads(_SETTINGS_FILE.read_text(encoding="utf-8-sig"))
+            return decrypt_secrets(
+                json.loads(_SETTINGS_FILE.read_text(encoding="utf-8-sig"))
+            )
     except Exception:  # noqa: BLE001, S110 - corrupt settings fall back to defaults
         pass
     return {}
@@ -131,10 +136,20 @@ def load_settings() -> dict:
 def save_settings(values: dict) -> None:
     """Write the persisted subset of ``values`` to disk."""
     data = {k: values.get(k, "") for k in _PERSIST_KEYS}
+    data = protect_secrets(data)
+    tmp = _SETTINGS_FILE.with_name(f".{_SETTINGS_FILE.name}.{uuid.uuid4().hex}.tmp")
     try:
-        _SETTINGS_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        _SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with tmp.open("w", encoding="utf-8") as handle:
+            handle.write(json.dumps(data, indent=2))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, _SETTINGS_FILE)
     except Exception:  # noqa: BLE001, S110 - persistence is best-effort (e.g. read-only home)
         pass
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def apply_api_config(values: dict) -> None:

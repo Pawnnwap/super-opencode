@@ -1,12 +1,15 @@
 import json
 import logging
 import os
+import re
 import time
 import uuid
 from pathlib import Path
 from typing import Any
 
-from services.jobs.job_states import JOB_STORE_DIR
+from services.jobs.file_lock import FileLock
+from services.jobs.job_states import JOB_STORE_DIR, TERMINAL_JOB_STATES
+from supervisor.security.redaction import redact_data
 
 logger = logging.getLogger(__name__)
 
@@ -16,11 +19,21 @@ _MAX_FULL_BYTES = 16 * 1024 * 1024
 # Store-directory files that are NOT job records. The store is also the IPC
 # channel for ports and worker settings, and the UI keeps its panel state
 # here; a *.json glob would otherwise hand them to every scan as job ids.
-_CONTROL_FILES = frozenset({
-    "ports.json",
-    "worker_settings.json",
-    "ui_panels.json",
-})
+_CONTROL_FILES = frozenset(
+    {
+        "ports.json",
+        "worker_settings.json",
+        "ui_panels.json",
+    }
+)
+_JOB_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\Z")
+
+
+def validate_job_id(job_id: str) -> str:
+    text = str(job_id)
+    if not _JOB_ID_RE.fullmatch(text) or ".." in text:
+        raise ValueError(f"invalid job id: {job_id!r}")
+    return text
 
 
 class JobStateStore:
@@ -33,13 +46,13 @@ class JobStateStore:
         self._full_next_ref: dict[str, int] = {}
 
     def _get_job_path(self, job_id: str) -> Path:
-        return self.store_dir / f"{job_id}.json"
+        return self.store_dir / f"{validate_job_id(job_id)}.json"
 
     def _get_logs_path(self, job_id: str) -> Path:
-        return self.store_dir / f"{job_id}.logs"
+        return self.store_dir / f"{validate_job_id(job_id)}.logs"
 
     def _get_full_path(self, job_id: str) -> Path:
-        return self.store_dir / f"{job_id}.full"
+        return self.store_dir / f"{validate_job_id(job_id)}.full"
 
     def _seed_full_ref(self, job_id: str) -> int:
         """Recover the highest ref ever written so refs stay unique."""
@@ -76,15 +89,12 @@ class JobStateStore:
         self._full_next_ref[job_id] += 1
         ref = self._full_next_ref[job_id]
 
-        record = {**record, "ref": ref, "ts": time.time()}
+        record = redact_data({**record, "ref": ref, "ts": time.time()})
         path = self._get_full_path(job_id)
         self.store_dir.mkdir(parents=True, exist_ok=True)
         for attempt in range(3):
             try:
-                if (
-                    path.exists()
-                    and path.stat().st_size > _MAX_FULL_BYTES
-                ):
+                if path.exists() and path.stat().st_size > _MAX_FULL_BYTES:
                     backup = path.with_name(path.name + ".1")
                     if backup.exists():
                         backup.unlink()
@@ -98,7 +108,9 @@ class JobStateStore:
                     raise
                 logger.warning(
                     "Transient error appending sidecar for %s (attempt %d): %s",
-                    job_id, attempt + 1, exc,
+                    job_id,
+                    attempt + 1,
+                    exc,
                 )
                 time.sleep(0.05 * (attempt + 1))
         return ref  # unreachable; for type-checkers
@@ -123,6 +135,23 @@ class JobStateStore:
                 logger.warning("Cannot read sidecar for %s: %s", job_id, exc)
         return None
 
+    def request_cancel_exists(self, job_id: str) -> bool:
+        return (self.store_dir / f"{validate_job_id(job_id)}.cancel").exists()
+
+    def write_cancel_sentinel(self, job_id: str) -> Path:
+        job_id = validate_job_id(job_id)
+        path = self.store_dir / f"{job_id}.cancel"
+        tmp = path.with_name(f"{path.name}.{uuid.uuid4().hex[:8]}.tmp")
+        try:
+            with tmp.open("w", encoding="utf-8") as handle:
+                handle.write(str(time.time()))
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(tmp, path)
+        finally:
+            tmp.unlink(missing_ok=True)
+        return path
+
     def save_job_state(self, job_id: str, state: dict[str, Any]):
         """Save job metadata and current state.
 
@@ -141,6 +170,7 @@ class JobStateStore:
         """
         state["job_id"] = job_id
         state["updated_at"] = time.time()
+        state = redact_data(state)
         path = self._get_job_path(job_id)
         self.store_dir.mkdir(parents=True, exist_ok=True)
         tmp_path = path.with_name(f"{path.name}.{uuid.uuid4().hex[:8]}.tmp")
@@ -154,15 +184,33 @@ class JobStateStore:
                     return
                 except OSError as exc:
                     if attempt == 4:
-                        logger.error("Failed to save job state for %s after 5 attempts: %s", job_id, exc)
+                        logger.error(
+                            "Failed to save job state for %s after 5 attempts: %s",
+                            job_id,
+                            exc,
+                        )
                         raise
-                    logger.warning("Transient error saving job state for %s (attempt %d): %s", job_id, attempt + 1, exc)
+                    logger.warning(
+                        "Transient error saving job state for %s (attempt %d): %s",
+                        job_id,
+                        attempt + 1,
+                        exc,
+                    )
                     time.sleep(0.1 * (attempt + 1))
         finally:
             try:
                 tmp_path.unlink(missing_ok=True)
             except OSError:
                 pass
+
+    def update_job_state(self, job_id: str, updater):
+        """Serialize a read-modify-write transition across processes."""
+        job_id = validate_job_id(job_id)
+        with FileLock(self.store_dir / f"{job_id}.state.lock"):
+            state = self.get_job_state(job_id) or {}
+            updater(state)
+            self.save_job_state(job_id, state)
+            return state
 
     def get_job_state(self, job_id: str) -> dict[str, Any] | None:
         """Load job metadata and state.
@@ -180,7 +228,9 @@ class JobStateStore:
         return self._read_state_file(self._get_job_path(job_id))
 
     def get_job_state_cached(
-        self, job_id: str, cache: dict[str, tuple[Any, ...]],
+        self,
+        job_id: str,
+        cache: dict[str, tuple[Any, ...]],
     ) -> dict[str, Any] | None:
         """Like :meth:`get_job_state`, but reusing a caller-held file cache.
 
@@ -243,6 +293,7 @@ class JobStateStore:
         self.store_dir.mkdir(parents=True, exist_ok=True)
         if isinstance(log_event, dict) and "ts" not in log_event:
             log_event = {**log_event, "ts": time.time()}
+        log_event = redact_data(log_event)
         for attempt in range(3):
             try:
                 with open(path, "a", encoding="utf-8") as f:
@@ -250,9 +301,16 @@ class JobStateStore:
                 return
             except OSError as exc:
                 if attempt == 2:
-                    logger.error("Failed to append log for %s after 3 attempts: %s", job_id, exc)
+                    logger.error(
+                        "Failed to append log for %s after 3 attempts: %s", job_id, exc
+                    )
                     raise
-                logger.warning("Transient error appending log for %s (attempt %d): %s", job_id, attempt + 1, exc)
+                logger.warning(
+                    "Transient error appending log for %s (attempt %d): %s",
+                    job_id,
+                    attempt + 1,
+                    exc,
+                )
                 time.sleep(0.05 * (attempt + 1))
 
     def get_logs(self, job_id: str) -> list[dict[str, Any]]:
@@ -271,7 +329,12 @@ class JobStateStore:
                         if isinstance(parsed, dict):
                             logs.append(parsed)
                     except json.JSONDecodeError as exc:
-                        logger.warning("Skipping corrupt log line %d for job %s: %s", lineno, job_id, exc)
+                        logger.warning(
+                            "Skipping corrupt log line %d for job %s: %s",
+                            lineno,
+                            job_id,
+                            exc,
+                        )
         except OSError as exc:
             logger.warning("Cannot read logs for job %s: %s", job_id, exc)
         return logs
@@ -326,7 +389,10 @@ class JobStateStore:
         return logs[-max_events:]
 
     def delete_job(self, job_id: str):
-        """Clean up job files."""
+        """Clean up job files only after the worker has reached a terminal state."""
+        state = self.get_job_state(job_id)
+        if state and state.get("state") not in TERMINAL_JOB_STATES:
+            raise ValueError(f"job {job_id} is not terminal")
         base = self._get_logs_path(job_id)
         for path in [self._get_job_path(job_id), base] + [
             base.with_name(base.name + suffix) for suffix in (".full", ".full.1")
@@ -363,8 +429,11 @@ class JobStateStore:
         only because none carries a ``state`` field.
         """
         return [
-            f.stem for f in self.store_dir.glob("*.json")
+            f.stem
+            for f in self.store_dir.glob("*.json")
             if f.name not in _CONTROL_FILES
+            and _JOB_ID_RE.fullmatch(f.stem)
+            and ".." not in f.stem
         ]
 
     # ------------------------------------------------ shared read shapes -- #
@@ -373,7 +442,9 @@ class JobStateStore:
     # cannot drift apart.
 
     def read_job_status(
-        self, job_id: str, max_logs: int | None = None,
+        self,
+        job_id: str,
+        max_logs: int | None = None,
     ) -> dict[str, Any] | None:
         """State plus logs. ``max_logs`` caps to the newest N events.
 
@@ -385,7 +456,9 @@ class JobStateStore:
         if not state:
             return None
         state["logs"] = (
-            self.get_logs(job_id) if max_logs is None else self.tail_logs(job_id, max_logs)
+            self.get_logs(job_id)
+            if max_logs is None
+            else self.tail_logs(job_id, max_logs)
         )
         return state
 
