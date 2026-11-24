@@ -100,6 +100,14 @@ def test_gate_checks_codebase_path(tmp_path):
     assert violations_for_event(policy, event)
 
 
+def test_windows_absolute_path_is_rejected_on_posix(monkeypatch):
+    """A foreign drive path must not become a workspace-relative filename."""
+    from supervisor.security import access_policy
+
+    monkeypatch.setattr(access_policy, "_WINDOWS", False)
+    assert access_policy._unsafe_reason("C:\\Windows")
+
+
 # --------------------------------------------------------------------------- #
 # F-02: web_fetch SSRF
 # --------------------------------------------------------------------------- #

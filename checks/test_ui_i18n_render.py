@@ -15,7 +15,7 @@ import asyncio
 import pytest
 from nicegui.testing.user_simulation import user_simulation
 
-from services.webui import i18n, layout
+from services.webui import i18n, layout, ui_state
 from services.webui.jobs import get_job_manager
 from services.webui.pages import run
 
@@ -24,8 +24,22 @@ from services.webui.pages import run
 def english_by_default(monkeypatch, tmp_path):
     """Isolated settings file and a clean language on both ends of a test."""
     from services.config import settings
+    from services.jobs.store_client import StoreJobClient
+    from services.webui import jobs
 
+    manager = StoreJobClient(str(tmp_path / "jobs"))
+    manager.store.save_job_state(
+        "run_i18n",
+        {
+            "type": "run",
+            "state": "SUCCESS",
+            "config": {"workspace": str(tmp_path)},
+            "logs": [],
+        },
+    )
+    monkeypatch.setattr(jobs, "_manager", manager)
     monkeypatch.setattr(settings, "_SETTINGS_FILE", tmp_path / "settings.json")
+    monkeypatch.setattr(ui_state, "_EXPANSIONS", {})
     i18n.set_lang("en")
     yield
     i18n.set_lang("en")
@@ -65,6 +79,7 @@ def test_filter_option_labels_follow_the_language():
     """Select labels are translated while their VALUES stay the English
     sentinels the filter logic compares against."""
     i18n.set_lang("zh")
+    ui_state.state()["board.run.filters"] = True
 
     async def scenario() -> None:
         async with user_simulation(_page) as user:

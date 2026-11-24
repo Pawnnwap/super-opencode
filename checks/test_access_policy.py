@@ -228,8 +228,9 @@ class TestCommandScan:
         # A quoted spaced path is one token; truncating it at the space used to
         # produce a bogus `...\ref` path and reject a legal copy.
         assert policy.scan_command(f'cp "{ref}/a b.txt" "{ws}/a b.txt"') == []
-        assert policy.scan_command(f'copy "{ref}\\a b.txt" "{ws}\\a b.txt"') == []
-        assert policy.scan_command(f'xcopy "{ref}" "{ws}\\copy" /E /I') == []
+        if WINDOWS:
+            assert policy.scan_command(f'copy "{ref}\\a b.txt" "{ws}\\a b.txt"') == []
+            assert policy.scan_command(f'xcopy "{ref}" "{ws}\\copy" /E /I') == []
         assert policy.scan_command(f'cat "{ref}/a b.txt"') == []
 
         violations = policy.scan_command(f'echo hi > "{ref}/x y.txt"')

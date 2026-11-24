@@ -4,9 +4,12 @@ Network-free: the codex probe tests drive a fake runner so the ladder,
 per-attempt budget and backup gating are verified without spawning a CLI.
 """
 
+import os
 import subprocess
 import time
 from typing import ClassVar
+
+import pytest
 
 # NOTE: import the module, never `from ... import test_codex_connectivity` —
 # pytest would collect that imported probe function as a test and hit the
@@ -195,6 +198,7 @@ def test_codex_probe_gives_each_attempt_its_own_budget_and_warm_home(
     )
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows cmd/tasklist process-tree fixture")
 def test_stop_kills_whole_process_tree(tmp_path):
     """A `.cmd`-shim-style process tree must leave no grandchild behind."""
     runner = OpencodeRunner(

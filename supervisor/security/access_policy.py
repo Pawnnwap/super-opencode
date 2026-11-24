@@ -408,6 +408,8 @@ def _unsafe_reason(raw: str) -> str:
         return "UNC paths are not allowed"
     if re.match(r"^[A-Za-z]:[^\\/]", raw):
         return "drive-relative paths are ambiguous"
+    if not _WINDOWS and re.match(r"^[A-Za-z]:[\\/]", raw):
+        return "Windows absolute paths are ambiguous on this platform"
     name = raw.rstrip(" .").split("\\")[-1].split("/")[-1].split(":")[0].strip().lower()
     if name in _DEVICE_NAMES:
         return f"DOS device name ({name}) is not allowed"
