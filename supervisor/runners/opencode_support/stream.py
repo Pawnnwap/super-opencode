@@ -75,6 +75,11 @@ class LineEvent:
     # prose: the wire carries no patch content, so consecutive edits of one
     # file are indistinguishable markers even when every patch differs.
     made_progress: bool = False
+    # Which kind of world-changing call made_progress reports: "patch" (an
+    # applied file_change) or "shell_write" (a shell command that wrote a
+    # file). The driver keeps the silent-streak budget running for shell
+    # writes, because their marker cannot show what they appended.
+    progress_kind: str = ""
 
 
 def parse_event_line(line: str | None) -> tuple[str | None, dict | None]:

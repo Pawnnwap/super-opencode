@@ -185,3 +185,86 @@ def test_failed_patch_repeats_are_STILL_detected():
     assert event.made_progress is False
     signals = [detector.record_tool(event.marker) for _ in range(6)]
     assert any(s is not None for s in signals)
+
+# --- regression: chunked shell appends must not look like a loop ------------
+# A run died on "repeated the same tool call" while appending DISTINCT source
+# blocks to one script: the unified-exec wrapper (C:\Program Files\...\pwsh.exe)
+# plus the 94-char workspace path filled the whole 200-char marker, so every
+# append looked identical and the run was killed mid-file.
+
+LONG_WS = (
+    r"D:\studies\llm_research\minute_data_study_experiments_batch"
+    r"\study_placeholder_workspace_pathname"
+)
+PWSH = r'"C:\Program Files\PowerShell\7\pwsh.exe" -Command '
+
+
+def _exec_item(cmd, exit_code=0, status="completed"):
+    return {
+        "type": "command_execution",
+        "command": PWSH + '"' + cmd.replace("\n", " ") + '"',
+        "status": status,
+        "exit_code": exit_code,
+    }
+
+
+def _append_item(block, exit_code=0, status="completed"):
+    cmd = (
+        "cd " + LONG_WS + "\n"
+        "Add-Content -LiteralPath indicator.py -Encoding ascii -Value @'\n"
+        + block + "\n'@"
+    )
+    return _exec_item(cmd, exit_code=exit_code, status=status)
+
+
+def _record(detector, item):
+    event = classify_line(json.dumps({"type": "item.completed", "item": item}))
+    assert event.kind == "tool"
+    signal = detector.record_tool(event.marker)
+    if event.made_progress:
+        detector.record_text(silent_budget=event.progress_kind != "shell_write")
+    return event, signal
+
+
+def test_pwsh_wrapper_under_program_files_is_unwrapped():
+    marker = _marker_for(_append_item("def a(): pass"))
+    assert marker.startswith("[shell] cd "), marker
+    assert "Program Files" not in marker, marker
+    assert "pwsh" not in marker, marker
+
+
+def test_chunked_appends_to_one_file_are_NOT_a_loop():
+    detector = LoopDetector()
+    for i in range(10):
+        _, signal = _record(
+            detector, _append_item(f"def step_{i}(): return {i}"),
+        )
+        assert signal is None, f"false loop at append {i}: {signal}"
+
+
+def test_shell_write_resets_only_the_consecutive_chain():
+    detector = LoopDetector()
+    item = _append_item("def a(): pass")
+    fired = None
+    for _ in range(30):
+        event, signal = _record(detector, item)
+        assert event.made_progress is True
+        assert event.progress_kind == "shell_write"
+        if signal is not None and fired is None:
+            fired = signal
+    assert fired is not None, "silent write-only streak never detected"
+    assert "without producing any output" in fired.reason
+
+
+def test_failing_shell_command_repeats_are_STILL_detected():
+    item = _exec_item(
+        "cd " + LONG_WS + "\npython build_indicator.py",
+        exit_code=1,
+        status="failed",
+    )
+    event, _ = _record(LoopDetector(), item)
+    assert event.made_progress is False
+    detector = LoopDetector()
+    signals = [detector.record_tool(event.marker) for _ in range(6)]
+    assert any(s is not None for s in signals)
+

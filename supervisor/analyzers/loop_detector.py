@@ -68,10 +68,18 @@ class LoopDetector:
         self._streak_keys: set[str] = set()
         self._fired = False
 
-    def record_text(self) -> None:
-        """A prose (text) event means the agent is making progress."""
-        self._tools_since_text = 0
-        self._streak_keys.clear()
+    def record_text(self, *, silent_budget: bool = True) -> None:
+        """A prose (text) event means the agent is making progress.
+
+        ``silent_budget=False`` breaks the consecutive chain only and leaves
+        the silent-tool-streak budget running. A successful shell write proves
+        that one call moved something, but it says nothing about how many
+        low-novelty calls have piled up since the last prose, so a long
+        write-only streak must stay detectable.
+        """
+        if silent_budget:
+            self._tools_since_text = 0
+            self._streak_keys.clear()
         # "Consecutive" means no intervening progress: prose (or an applied
         # patch, which the driver reports as progress) breaks the chain.
         self._consecutive = 0

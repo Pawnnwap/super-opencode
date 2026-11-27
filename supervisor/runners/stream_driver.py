@@ -261,7 +261,12 @@ def consume_process_stream(
                     # A successfully applied patch is forward progress even
                     # when its marker repeats (same file, new content): reset
                     # the stuck counters so legitimate edit streaks survive.
-                    loop_detector.record_text()
+                    # A shell write proves less - its marker cannot show the
+                    # bytes it appended - so it breaks the consecutive chain
+                    # but must not also whitelist an unbounded silent streak.
+                    loop_detector.record_text(
+                        silent_budget=event.progress_kind != "shell_write"
+                    )
 
     if cancelled:
         _kill_process_tree(proc)

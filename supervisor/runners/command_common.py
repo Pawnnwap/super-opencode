@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import re
@@ -129,6 +130,27 @@ _EXE_PATH_RE = re.compile(
     r'["\']?',
     re.IGNORECASE,
 )
+# Same rewrite for a QUOTED path whose directory segments contain spaces -
+# the codex unified-exec wrapper spells itself (Program Files has a space).
+# The pattern above forbids spaces inside a segment, so that wrapper
+# survived compaction, ate ~50 of the 200 marker chars, and the payload was
+# cut before anything distinguishing appeared
+# (a measured run: six DISTINCT appends collapsed to one marker and the loop
+# detector killed it mid-file).
+#
+# The surrounding quotes make the span unambiguous, so spaces are safe here.
+# [\x22\x27] is the pair of quote characters, spelled as escapes so the
+# pattern source stays plain ASCII.
+# LINEAR-TIME INVARIANT still holds: the inner class forbids the separator,
+# so each repetition consumes exactly one separator and the match is unique.
+_EXE_PATH_QUOTED_RE = re.compile(
+    r"(?:&\s+)?[\x22\x27]"
+    r"(?<![A-Za-z0-9])[A-Za-z]:[\\/](?:[^\x22\x27\\/]*[\\/])*"
+    r"(?P<name>powershell|pwsh|cmd|pythonw?|bash|sh|node|npm|npx|uvx?|conda)"
+    r"(?:\.exe|\.cmd|\.bat|\.ps1)?"
+    r"[\x22\x27]",
+    re.IGNORECASE,
+)
 # Leading `$env:NAME="value"; ` segments that the agents' Windows shell
 # wrappers repeat on every single call (PYTHONIOENCODING and friends) — both
 # at the very start and right after `-Command`.
@@ -156,6 +178,33 @@ _SHELL_WRAPPER_RE = re.compile(
 # parsers share one number.
 TOOL_DETAIL_LIMIT = 200
 
+# A truncated breadcrumb rides along with a short digest of the whole
+# normalized payload, so two calls that share a long prefix (the same
+# `cd <workspace>; Add-Content -LiteralPath <same file>` head) stay distinct
+# to the loop detector. 8 hex chars is far past the collision point for the
+# few hundred markers one turn produces, and the total stays under the cap.
+_DETAIL_DIGEST_CHARS = 8
+_MARKER_DIGEST_LEN = _DETAIL_DIGEST_CHARS + 1
+
+
+def _detail_digest(text: str) -> str:
+    """Short stable digest of an already-normalized tool detail."""
+    return hashlib.sha1(text.encode("utf-8", "replace")).hexdigest()[
+        :_DETAIL_DIGEST_CHARS
+    ]
+
+
+# Shell verbs that create or modify files. Recognizes a successful shell
+# WRITE as forward progress: the codex wire carries no command body, so a
+# chunked file-authoring session is otherwise indistinguishable from a stuck
+# streak. Mirrors the write verbs the log UI highlights.
+SHELL_WRITE_RE = re.compile(
+    r"\b(?:set-content|add-content|out-file|set-item|new-item|move-item|"
+    r"copy-item|remove-item|apply_patch|tee|touch|truncate|mv|cp|rm|del)\b"
+    r"|\bgit\s+apply\b|\bsed\s+-i\b"
+    r"|[12]?>{1,2}\s*\S",
+    re.IGNORECASE,
+)
 # The marker keeps at most ``limit`` chars, so scanning more than a few KiB of
 # the raw detail buys nothing. The bound also caps memory and any downstream
 # regex work on absurd single-line tool payloads (multi-MB diffs/outputs).
@@ -173,10 +222,14 @@ def compact_tool_detail(detail: str, limit: int = TOOL_DETAIL_LIMIT) -> str:
     payload remains. The payload itself is preserved — the loop detector keys
     on the marker, so distinct calls must stay distinct; only the
     ever-repeating wrapper noise is removed. Capped at *limit* chars.
+
+    When the cap bites, a digest of the whole payload is appended, so
+    truncation never turns two different calls into one marker.
     """
     text = " ".join((detail or "")[:_TOOL_DETAIL_INPUT_LIMIT].split())
     if not text:
         return ""
+    text = _EXE_PATH_QUOTED_RE.sub(lambda m: m.group("name"), text)
     text = _EXE_PATH_RE.sub(lambda m: m.group("name"), text)
     while True:
         stripped = _ENV_PRELUDE_RE.sub("", text)
@@ -195,7 +248,10 @@ def compact_tool_detail(detail: str, limit: int = TOOL_DETAIL_LIMIT) -> str:
         if opening in ('"', "'") and text.endswith(opening):
             text = text[:-1]
     text = text.removeprefix("& ")
-    return redact_text(text)[:limit]
+    text = redact_text(text)
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - _MARKER_DIGEST_LEN)] + "#" + _detail_digest(text)
 
 
 def feed_stdin_prompt(proc, prompt: str) -> None:

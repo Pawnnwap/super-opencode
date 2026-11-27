@@ -42,7 +42,11 @@ codex run still surfaces *something* even if a field name drifts.
 
 from __future__ import annotations
 
-from supervisor.runners.command_common import TOOL_DETAIL_LIMIT, compact_tool_detail
+from supervisor.runners.command_common import (
+    SHELL_WRITE_RE,
+    TOOL_DETAIL_LIMIT,
+    compact_tool_detail,
+)
 from supervisor.runners.opencode_support.stream import (
     LineEvent,
     build_output,
@@ -209,6 +213,29 @@ def _tool_marker(item: dict) -> str:
     return f"[{label}]"
 
 
+def _shell_write_succeeded(item: dict) -> bool:
+    """True when a completed shell call demonstrably wrote a file.
+
+    codex carries no command body for a command_execution item, so a
+    chunked file-authoring session (Set-Content/Add-Content appends to one
+    file) produces markers that cannot show the bytes appended. Without this
+    the loop detector reads that session as a stuck streak - a measured run
+    was killed on the sixth append of a 500-line deliverable. Only a
+    SUCCESSFUL write counts: a failing command
+    repeats freely and is still the loop this detector exists for.
+    """
+    if item.get("type") != "command_execution":
+        return False
+    if item.get("status") not in (None, "completed"):
+        return False
+    if item.get("exit_code") not in (None, 0):
+        return False
+    command = item.get("command")
+    if not isinstance(command, str) or not command.strip():
+        return False
+    return bool(SHELL_WRITE_RE.search(command))
+
+
 def _error_message(event: dict) -> str:
     """Pull the human message off an ``error`` / ``turn.failed`` event."""
     msg = event.get("message")
@@ -292,6 +319,8 @@ def classify_line(line: str | None) -> LineEvent | None:
             return LineEvent(kind="other")
         # command_execution / file_change / mcp_tool_call / web_search and any
         # unknown tool item -> compact marker (verbose I/O dropped).
+        edited = itype in _EDIT_ITEM_TYPES and item.get("status") == "completed"
+        wrote = _shell_write_succeeded(item)
         return LineEvent(
             kind="tool",
             marker=_tool_marker(item),
@@ -301,9 +330,8 @@ def classify_line(line: str | None) -> LineEvent | None:
             count_for_loop=itype != "error",
             # An applied patch changed the file even when the marker repeats
             # (same target, new content — the wire carries no patch body).
-            made_progress=(
-                itype in _EDIT_ITEM_TYPES and item.get("status") == "completed"
-            ),
+            made_progress=edited or wrote,
+            progress_kind="patch" if edited else "shell_write" if wrote else "",
         )
 
     # turn.started, item.started, item.updated, etc. — not turn output.

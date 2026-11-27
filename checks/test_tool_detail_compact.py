@@ -199,3 +199,39 @@ def test_codex_error_item_keeps_its_message():
     assert event is not None and event.kind == "tool"
     assert event.marker.startswith("[error] Model metadata for")
     assert "fallback metadata" in event.marker
+
+
+def test_truncated_markers_stay_distinct():
+    prefix = (
+        "cd D:\\workspace\\some\\long\\study\\path; Add-Content "
+        "-LiteralPath indicator.py -Encoding ascii -Value @' "
+    )
+    a = compact_tool_detail(prefix + "def step_1(): pass " + "x" * 300)
+    b = compact_tool_detail(prefix + "def step_2(): pass " + "y" * 300)
+    assert len(a) == 200 and len(b) == 200
+    assert a != b
+
+
+def test_truncated_identical_payloads_still_collapse():
+    payload = "cd D:\\ws; Add-Content -LiteralPath a.py -Value @' " + "z" * 400
+    assert compact_tool_detail(payload) == compact_tool_detail(payload)
+
+
+def test_quoted_program_files_wrapper_is_unwrapped():
+    out = compact_tool_detail(
+        '"C:\\Program Files\\PowerShell\\7\\pwsh.exe" -Command '
+        '"Set-Content -LiteralPath out.py -Value 1"'
+    )
+    assert out == "Set-Content -LiteralPath out.py -Value 1"
+
+
+def test_quoted_spaced_long_path_stays_linear():
+    detail = (
+        '"C:/Program Files/dir with space/'
+        + "/".join(f"seg{i}" for i in range(200))
+        + '/pwsh.exe"'
+    )
+    started = time.perf_counter()
+    compact_tool_detail(detail)
+    assert time.perf_counter() - started < 2.0
+
