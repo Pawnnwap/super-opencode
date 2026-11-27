@@ -159,6 +159,11 @@ def loop_breaker_section(reason: str) -> str:
         "Do not simply retry it. Break the loop:\n"
         "- If a shell command failed or returned nothing twice, change the "
         f"mechanism, not the wording: {SHELL_HEREDOC_RULE}\n"
+        "- If you were writing a file in chunks (shell appends of source "
+        "blocks), stop chunking and write the whole file in one call with "
+        "the file tool: the supervisor keys its loop detector on a short "
+        "breadcrumb of every call, so a chain of appends to one file can "
+        "read as a repeated call even when every chunk differs.\n"
         "- If you only need to inspect state, use a read-only command "
         "(cat, ls) instead of re-running the failing script.\n\n"
     )

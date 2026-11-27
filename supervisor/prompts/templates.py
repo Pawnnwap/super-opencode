@@ -12,8 +12,13 @@ SHELL_HEREDOC_RULE = (
     "Never pass interpreter code through a stdin heredoc (`python - <<'EOF'`) "
     "inside a `bash -lc` / `powershell -Command` one-liner — stdin gets "
     "mangled in this environment and the call silently returns nothing. "
-    "Write the code to a script file in the workspace and run it, or pass "
-    "it with `python -c`."
+    "Write the code to a script file in the workspace and run that file "
+    "(`Set-Content -LiteralPath script.py`, then `python script.py`). The "
+    "access gate rejects inline interpreter code (`python -c`) and heredoc "
+    "forms, so a script file is the only route. A shell one-liner is also "
+    "capped at about 32k chars by Windows CreateProcess, so never build a "
+    "long file by appending pieces through the shell - write it in one call "
+    "with the file tool."
 )
 
 # The transcription rules for a model turning user notes into a protocol.

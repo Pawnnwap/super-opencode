@@ -322,17 +322,29 @@ class _Context:
 
     def _segment(self, segment: str, depth: int) -> None:
         if _has_script_block(segment):
-            self.deny(_short(segment), "script blocks cannot be verified")
+            self.deny(
+                _short(segment),
+                "script blocks cannot be verified; write the file with "
+                "Set-Content -LiteralPath <file> (literal path) instead",
+            )
             return
         if "<<" in segment:
-            self.deny(_short(segment), "heredocs cannot be verified")
+            self.deny(
+                _short(segment),
+                "heredocs cannot be verified; write the file with "
+                "Set-Content -LiteralPath <file> (literal path) instead",
+            )
             return
 
         tokens = _tokenize(segment, self.cwd)
         if not tokens:
             return
         if any(token.dynamic for token in tokens):
-            self.deny(_short(segment), "dynamic expansion cannot be verified")
+            self.deny(
+                _short(segment),
+                "dynamic expansion cannot be verified; pass literal paths "
+                "and literal values in a gated command",
+            )
             return
 
         # Redirect targets are writes, regardless of the command verb.
@@ -437,7 +449,11 @@ class _Context:
         for index, arg in enumerate(args):
             lowered = arg.lower()
             if lowered in _INLINE_FLAGS:
-                self.deny(name, f"{name} inline code cannot be verified")
+                self.deny(
+                    name,
+                    f"{name} inline code cannot be verified; put the code "
+                    "in a script file in the workspace and run that file",
+                )
                 return
             if arg == "-" or arg.startswith(("--eval=", "-e=")):
                 self.deny(name, f"{name} executing from stdin cannot be verified")
